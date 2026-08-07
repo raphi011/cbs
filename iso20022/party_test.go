@@ -145,9 +145,9 @@ func TestIBANCompact(t *testing.T) {
 	}
 }
 
-// TestIBANValidateAcceptsTheSeedsReadableIdentifiers is the claim sub-project 5
-// made and this package must not quietly break: the seed's IBANs carry no valid
-// mod-97 check digit, and they must still produce schema-valid documents.
+// TestIBANValidateAcceptsTheSeedsReadableIdentifiers is the claim this package
+// must not quietly break: the seed's IBANs carry no valid mod-97 check digit,
+// and they must still produce schema-valid documents.
 func TestIBANValidateAcceptsTheSeedsReadableIdentifiers(t *testing.T) {
 	for _, v := range []IBAN{"SE89-AURORA-1001", "IT60-VERDE-2002", "NO93-NORD-3001"} {
 		if err := v.Validate(); err != nil {

@@ -168,8 +168,7 @@ describe("navFor", () => {
     }
   });
 
-  // Send arrives in Task 13 and is inserted between these two, in the order the
-  // tab strip shows them.
+  // In the order the tab strip shows them.
   it("gives a customer the screens they have, all under their own account", () => {
     const nav = navFor({ persona: "customer", pid: "bank_1", did: "dep_9" });
     expect(nav.map((n) => n.href)).toEqual([

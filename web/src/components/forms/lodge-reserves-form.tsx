@@ -21,14 +21,14 @@ import { describeError } from "@/lib/api/errors";
 import type { Asset } from "@/lib/types";
 
 // Places a bank's vault cash on reserve at the central bank: the lodgement, and
-// the second half of what funding used to be.
+// the second half of funding one.
 //
 // # Why this is a form at all
 //
-// Until Task 18a there was nothing here to do. A deposit credited the customer
-// and raised the bank's central-bank reserve in the same unit of work, so
-// reserves appeared as a side effect of cash arriving and no operator ever chose
-// to move them. That worked only because one store held both books.
+// A deposit that credited the customer and raised the bank's central-bank
+// reserve in the same unit of work would make reserves a side effect of cash
+// arriving, with no operator ever choosing to move them. That needs one store
+// holding both books.
 //
 // A bank cannot write in the central bank's ledger. So cash in stops at the
 // bank's own vault (see FundParticipantForm) and moving it onward is a REQUEST

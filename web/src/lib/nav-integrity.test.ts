@@ -20,10 +20,9 @@ const IDENTITIES: Identity[] = [
   { persona: "customer", pid: PID, did: DID },
 ];
 
-// Routes a later task builds. Each line is deleted by the task that creates its
-// page, so this list is empty now that 6b's last pending route (the customer's
-// home, Task 12) has one — an entry that outlives its task is a nav link
-// pointing at nothing, which is what this file exists to reject.
+// Routes that are planned and not yet built. Each line is deleted by the change
+// that creates its page: an entry that outlives its route is a nav link pointing
+// at nothing, which is what this file exists to reject.
 const PENDING = new Set<string>();
 
 // An App Router route renders src/app/<segments>/page.tsx. A dynamic segment is
@@ -61,11 +60,10 @@ describe("nav integrity", () => {
     }
   });
 
-  // A hole a task forgot to close is worse than one that was never dug: once
-  // Task 9 or Task 12 lands, its line in PENDING is exempting a route that now
-  // resolves, and the exemption above would hide a *real* dead link from then
-  // on. This fails the day that happens, forcing the line's deletion rather
-  // than letting it rot into a permanent carve-out.
+  // A hole nobody closed is worse than one that was never dug: a PENDING line
+  // for a route that now resolves would hide a *real* dead link from then on.
+  // This fails the day that happens, forcing the line's deletion rather than
+  // letting it rot into a permanent carve-out.
   it("every PENDING entry is still unbuilt", () => {
     for (const href of PENDING) {
       expect(existsSync(routeFileFor(href)), `PENDING entry ${href} now resolves — delete it`).toBe(

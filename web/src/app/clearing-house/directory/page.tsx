@@ -12,11 +12,10 @@ import type { RosterEntry } from "@/lib/types";
 // The clearing house's ROUTING directory: every address the scheme will send a
 // message to.
 //
-// This screen used to answer a different question — type an IBAN, see which bank
-// holds it — and it is worth knowing why it does not any more, because the two
+// It does NOT answer "type an IBAN, see which bank holds it". The two questions
 // look alike and are not.
 //
-// That lookup was a SWEEP. The clearing house holds no deposit register of its
+// That lookup is a SWEEP. The clearing house holds no deposit register of its
 // own, so answering "who holds this IBAN" meant reading every member bank's
 // register in turn, on an operator's screen. No institution in this network can
 // do that: a bank holds its own register and no other, and there is no directory

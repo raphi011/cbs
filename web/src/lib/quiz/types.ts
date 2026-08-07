@@ -18,9 +18,9 @@ export const EXPLORE_ROUTES = [
   // seat to pick.
   //
   // It is also where the three MANDATE questions in chapter 12 point, and that
-  // is a decision rather than a fallback. Mandates moved to a BANK's console at
-  // Task 18b — /bank/{pid}/mandates — because a mandate is the creditor's bank's
-  // row and no listing spans them, and a route carrying a pid is one this list
+  // is a decision rather than a fallback. Mandates live on a BANK's console —
+  // /bank/{pid}/mandates — because a mandate is the creditor's bank's row and no
+  // listing spans them, and a route carrying a pid is one this list
   // cannot hold: it would name a seeded bank, so the curriculum would depend on
   // the fixture and a renamed bank would break a question. Leaving the three
   // questions with no link at all was the other option and is worse — the point

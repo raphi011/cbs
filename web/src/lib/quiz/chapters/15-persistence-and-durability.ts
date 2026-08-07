@@ -222,7 +222,7 @@ export const chapter: Chapter = {
       difficulty: "core",
       concept: "routing-roster",
       prompt:
-        "Admitting a bank writes three rows — the bank's own, the central bank's record of the account it opened, and the clearing house's routing entry — where a single `participants` row used to carry all of it. What forced the split?",
+        "Admitting a bank writes three rows — the bank's own, the central bank's record of the account it opened, and the clearing house's routing entry — rather than one `participants` row carrying all of it. What forces the split?",
       options: [
         "Row width: one row carrying every institution's fields had grown past what the store could index",
         "The settlement agent resolved the account it was about to post to through a row it did not own, so an institution given a database of its own would have had nothing to settle from",

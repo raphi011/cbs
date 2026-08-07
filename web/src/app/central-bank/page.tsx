@@ -70,10 +70,10 @@ interface Shortfall {
 //
 // # This console no longer settles anything
 //
-// It used to carry a Settle button per closed cycle. Settlement is now performed
-// on INSTRUCTION — the clearing house reaches a cut-off and sends a pacs.009,
-// and the central bank's actor answers it — so there is no act left for a human
-// here and no route behind one. What is left is watching, and the three sections
+// There is no Settle button. Settlement is performed on INSTRUCTION — the
+// clearing house reaches a cut-off and sends a pacs.009, and the central bank's
+// actor answers it — so there is no act for a human here and no route behind
+// one. What is left is watching, and the three sections
 // below are what watching consists of: the instructions still outstanding, the
 // ones that were discharged, and the reserves they moved. A cycle sitting in the
 // first section still Closed is one the central bank REFUSED, and the reserves

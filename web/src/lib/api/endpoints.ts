@@ -63,13 +63,11 @@ import type {
 // Every bank in the network, on the CENTRAL BANK's listener beside the route
 // that founds them.
 //
-// It was the clearing house's, on the reading that this is the console
-// membership is watched from. That institution's database has no banks table
-// since Task 18d — what it holds is a ROSTER of addresses, which is exactly the
-// list that omits the founded-and-not-yet-admitted bank this read exists to
-// show. Both routes on the central bank's port are the OPERATOR's rather than
-// the settlement agent's; see the api package's centralBankRouter, which says so
-// at length.
+// Not the clearing house's: that institution's database has no banks table, and
+// the ROSTER of addresses it does hold is exactly the list that omits the
+// founded-and-not-yet-admitted bank this read exists to show. Both routes on the
+// central bank's port are the OPERATOR's rather than the settlement agent's; see
+// the api package's centralBankRouter.
 export function listParticipants(): Promise<Participant[]> {
   return request("GET", cb("/members"));
 }
@@ -85,11 +83,9 @@ export function addParticipant(body: AddParticipantRequest): Promise<Participant
 // Takes cash in over the counter: credits a customer deposit account, and leaves
 // the bank holding the cash. Returns the account's new balance.
 //
-// It does NOT raise the bank's central-bank reserve, and this comment used to say
-// it did. The two were one call for as long as one store held both books; since
-// Task 18a a deposit reaches the bank's own vault and no institution but that
-// bank, because a bank cannot write in the central bank's ledger. lodgeReserves
-// below is the other half.
+// It does NOT raise the bank's central-bank reserve. A deposit reaches the bank's
+// own vault and no institution but that bank, because a bank cannot write in the
+// central bank's ledger. lodgeReserves below is the other half.
 export function fundDeposit(pid: string, body: FundRequest): Promise<Balance> {
   return request("POST", bank(pid, `/deposits`), body);
 }
@@ -123,11 +119,10 @@ export function listSchemes(): Promise<Scheme[]> {
 // institution can answer is "who may be addressed" and not "who holds this
 // IBAN".
 //
-// There used to be a resolveIdentifierAtCsm here, asking the second question of
-// this listener. It is gone with the route: answering it meant sweeping every
-// bank's deposit register, and the clearing house holds none — see
-// api/surface.go and payment.ResolveIdentifier. Nothing in this system answers
-// "which bank holds this IBAN" now; a payer is told the BIC the way they are
+// There is no way to ask the clearing house the second question: answering it
+// would mean sweeping every bank's deposit register, and that institution holds
+// none — see api/surface.go and payment.ResolveIdentifier. Nothing in this system
+// answers "which bank holds this IBAN"; a payer is told the BIC the way they are
 // told the IBAN.
 export function listRoster(): Promise<RosterEntry[]> {
   return request("GET", csm("/roster"));
@@ -520,8 +515,8 @@ export function getTotals(pid: string): Promise<Totals[]> {
 
 // --- Payment: mandates ----------------------------------------------------
 //
-// On a BANK's listener, and every one of these used to be on the clearing
-// house's. A mandate is the CREDITOR's bank's row — in SEPA the creditor holds
+// On a BANK's listener, all of them. A mandate is the CREDITOR's bank's row — in
+// SEPA the creditor holds
 // the mandate, and the bank that checks one at submission is the creditor's —
 // so the pid here is the collecting bank's, and what it lists is its own
 // customers' authorisations rather than every member's on one page.
@@ -655,10 +650,8 @@ export function closeCycle(cid: string): Promise<ClearingCycle> {
 // operator funds the short member and calls this; the clearing house rebuilds
 // the same pacs.009 and the settlement agent decides again.
 //
-// The one that used to exist is worth remembering for HOW it broke rather than
-// why it went. Its path was cb("/settlements") — a string — so when the route
-// was deleted, tsc, eslint and next build all stayed green and the console
-// 404'd at runtime.
+// A deleted route is worth remembering for HOW it breaks: a path is a string, so
+// tsc, eslint and next build all stay green and the console 404s at runtime.
 //
 // csm() below buys nothing against that, and saying otherwise would be the same
 // kind of claim this file is warning about. cb and csm are one-line template
@@ -678,9 +671,8 @@ export function settleCycle(cid: string): Promise<ClearingCycle> {
 
 // The settlements, on the SETTLEMENT AGENT's listener — which is the only one
 // that serves them, so this and centralBankSettlements below are now one route
-// under two names. They were two ports until Task 18d: a settlement is that
-// institution's record of its own act, in its own database, and the clearing
-// house has no table for one.
+// under two names. A settlement is that institution's record of its own act, in
+// its own database, and the clearing house has no table for one.
 //
 // What the clearing house learns settlement from instead is its OWN cycle,
 // whose status the agent's ACSC moved. See centralBankCycles.

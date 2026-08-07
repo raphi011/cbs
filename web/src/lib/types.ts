@@ -312,12 +312,9 @@ export interface ParticipantAccounts {
 // A founded bank runs its own book, and that part is unrestricted: it opens
 // customer accounts, publishes products and adds ledgers, all measured against a
 // bank held in this state. What it cannot do is anything needing another
-// institution. It CAN take a cash deposit, and this comment used to say it could
-// not — "funding a customer raises the bank's reserve at the central bank in the
-// same step, and there is no reserve to raise until the scheme has answered", with
-// a 422 naming the membership. That described the code and misdescribed banking: a
-// bank's counter has nothing to do with its central bank account. Cash in lands in
-// this bank's own vault and POST /deposits answers 200.
+// institution. It CAN take a cash deposit: a bank's counter has nothing to do
+// with its central bank account, so cash in lands in this bank's own vault and
+// POST /deposits answers 200.
 //
 // What it cannot do is LODGE that cash — put it on reserve — because only the
 // central bank can credit an account in the central bank's book. POST /lodgements
@@ -325,12 +322,9 @@ export interface ParticipantAccounts {
 // takes part in can settle, because a settlement instruction names its members
 // through the routing directory this bank is not in.
 //
-// This comment used to say a founded bank cannot clear a payment "because
-// nothing routes to it", and that is not what happens: the backend routes on the
-// mesh's actor table rather than on the directory, so a payment addressed to a
-// founded bank clears like any other and the cut-off carrying it is what fails.
-// Nothing in this UI depends on the difference; it is corrected here because a
-// comment that names a mechanism is asserting one.
+// It is NOT that nothing routes to a founded bank: the backend routes on the
+// mesh's actor table rather than on the directory, so a payment addressed to one
+// clears like any other and the cut-off carrying it is what fails.
 //
 // Both are ordinary states. Admission is a conversation between three
 // institutions, so POST /members answers 202 with a founded bank and the
@@ -368,12 +362,11 @@ export interface AccountIdentifier {
 // lookups at once can tell the answers apart. See api/handlers_directory.go's
 // directoryEntryDTO.
 //
-// It used to carry `name` and `asset`, and to be answerable network-wide. Both
-// went at Task 18a: the resolution was a sweep over every bank's register, and
-// the name and asset were a join into whichever bank turned out to hold the
-// address — one bank reading another's register for the payee's name, over
-// HTTP. A bank holds its own register and no other, so the honest question is
-// "is this one of mine".
+// It carries no `name` and no `asset`, and it is not answerable network-wide.
+// Either would be a join into whichever bank turns out to hold the address — one
+// bank reading another's register for the payee's name, over HTTP. A bank holds
+// its own register and no other, so the question it answers is "is this one of
+// mine".
 export interface DirectoryEntry {
   participant: string;
   account: string;
@@ -468,8 +461,8 @@ export interface Settlement {
   id: string;
   cycleId: string;
   // What was settled in, recorded on the row by the settlement agent from the
-  // instruction it acted on. It used to be resolved server-side by following
-  // the settlement to its cycle to that cycle's scheme, which is a chain into
+  // instruction it acted on. Resolving it server-side would follow the
+  // settlement to its cycle to that cycle's scheme, which is a chain into
   // another institution's database. See payment.Settlement.Asset.
   asset: string;
   netPositions: Record<string, number>;
@@ -713,7 +706,7 @@ export interface FundRequest {
 }
 
 // LodgementRequest is a bank asking its central bank to move vault cash onto the
-// bank's reserve account: the second half of what funding used to be.
+// bank's reserve account: the second half of funding one.
 //
 // It names an ASSET where FundRequest names an account, and the contrast is the
 // whole difference. A deposit is about one customer's account, so the asset

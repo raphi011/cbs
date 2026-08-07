@@ -47,43 +47,36 @@ export default function CustomerSend() {
   const [iban, setIban] = useState("");
   const [amount, setAmount] = useState<number | null>(null);
   const [reference, setReference] = useState("");
-  // What the payer says about the payee, and since Task 18a it is three things:
-  // the IBAN, the NAME and the BIC.
+  // What the payer says about the payee, and it is three things: the IBAN, the
+  // NAME and the BIC.
   //
-  // # The BIC field was removed and is back, and the reversal is the lesson
+  // # Why the payer types the BIC
   //
-  // This form used to ask for the payee's bank; Task 14 took the field away,
-  // because the clearing house relays a pacs.008 on CdtrAgt and a wrong BIC here
-  // sent the payment to the wrong bank. The submitting bank derived it instead,
-  // from the payee's own bank record — which is what a SEPA originating bank
-  // does, IBAN-only since 2016.
+  // The submitting bank cannot derive it. That would read the payee's own bank
+  // record, and a bank holds only its own; there is no other source, because the
+  // clearing house's roster is keyed by the BIC being asked for and this network
+  // has no IBAN-to-BIC directory service — which is the thing SEPA's IBAN-only
+  // rule actually rests on. So the address a payer gives is an IBAN AND a BIC, as
+  // it was before 2016 and as it still is for a payment outside SEPA.
   //
-  // That record belongs to the payee's bank, and under a store per entity a bank
-  // holds only its own. There is no other source: the clearing house's roster is
-  // keyed by the BIC being asked for, and this network has no IBAN-to-BIC
-  // directory service — which is the thing SEPA's IBAN-only rule actually rests
-  // on. So the address a payer gives is an IBAN AND a BIC, as it was before 2016
-  // and as it still is for a payment outside SEPA.
+  // What makes that safe is not this form. A wrong BIC sends the payment to the
+  // bank that was named, and THAT bank refuses it — it holds no such IBAN in its
+  // own register, so it answers AC01 and the payer's debit is reversed. It is the
+  // narrowing of the address lookup, not the presence or absence of the field,
+  // that stops a typed BIC misapplying somebody's money.
   //
-  // What makes that safe is not this form. A wrong BIC now sends the payment to
-  // the bank that was named, and THAT bank refuses it — it holds no such IBAN in
-  // its own register, so it answers AC01 and the payer's debit is reversed. It is
-  // the narrowing of the address lookup, not the removal of the field, that
-  // stopped a typed BIC being able to misapply somebody's money.
+  // # There is no payee lookup here
   //
-  // # There is no payee lookup here at all any more
-  //
-  // There was: GET /directory resolved the typed IBAN across the whole network
-  // and this form would not submit until it had. It cannot, because answering it
-  // meant reading every bank's deposit register. A bank's own directory answers
-  // only for its own customers now, so a lookup here would confirm exactly the
-  // payees this form is not for.
+  // Resolving the typed IBAN across the whole network would mean reading every
+  // bank's deposit register. A bank's own directory answers only for its own
+  // customers, so a lookup here would confirm exactly the payees this form is
+  // not for.
   //
   // Nothing is lost that a payer really had. A real payer is not told their
   // payee's name back by their bank before they pay — they read it off an
-  // invoice — and this form used to render the resolved bank one line above the
-  // fields asking the payer to type the payee's details, which taught the
-  // opposite of what the system does.
+  // invoice — and rendering a resolved bank one line above the fields asking the
+  // payer to type the payee's details teaches the opposite of what the system
+  // does.
   const [creditorName, setCreditorName] = useState("");
   const [creditorAgent, setCreditorAgent] = useState("");
   // The identifier the bank accepted. Holding it is what makes this form the
@@ -132,11 +125,10 @@ export default function CustomerSend() {
         scheme: SEND_SCHEME,
         debtor: { participant: pid, account: did },
         // The payee is named by ADDRESS and by nothing else. participant and
-        // account are the payee bank's own internal keys and a payer has never
-        // had any way to know them — this form used to fill them from the
-        // directory sweep, which is exactly the read that closed. The receiving
-        // bank resolves the IBAN in its own register and fills them in
-        // (payment.AcceptInboundTx).
+        // account are the payee bank's own internal keys and a payer has no way
+        // to know them; filling them would take a directory sweep, which is a
+        // read no bank may make. The receiving bank resolves the IBAN in its own
+        // register and fills them in (payment.AcceptInboundTx).
         creditor: {
           participant: "",
           account: "",

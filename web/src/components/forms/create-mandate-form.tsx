@@ -28,9 +28,9 @@ import type { PartyRef } from "@/lib/types";
 // holds (see payment.Mandate.Asset) — so this form resolves the same way the
 // backend does, and it can, because that account is this bank's own.
 //
-// It used to resolve from the DEBTOR's account and it could not honestly: the
-// debtor banks somewhere else, so the form was reading another bank's deposit
-// register over HTTP for a scale, exactly as the backend was.
+// Resolving it from the DEBTOR's account would not be honest: the debtor banks
+// somewhere else, so the form would be reading another bank's deposit register
+// over HTTP for a scale.
 export function CreateMandateForm({ pid }: { pid: string }) {
   const [open, setOpen] = useState(false);
   const [debtor, setDebtor] = useState<PartyRef>(emptyPartyRef);

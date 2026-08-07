@@ -24,14 +24,13 @@ import type { Asset } from "@/lib/types";
 // Takes cash in over the counter: credits the customer's deposit, and leaves the
 // bank holding the cash as vault cash.
 //
-// It does NOT raise the bank's central-bank reserve, and this comment used to say
-// it did — "this is how reserves (which start at 0) are seeded". Since Task 18a
-// that is the LODGEMENT's job (see LodgeReservesForm): a bank cannot write in the
-// central bank's ledger, so moving cash onto reserve is a request it sends rather
-// than an entry it makes.
+// It does NOT raise the bank's central-bank reserve: that is the LODGEMENT's job
+// (see LodgeReservesForm), because a bank cannot write in the central bank's
+// ledger and moving cash onto reserve is a request it sends rather than an entry
+// it makes.
 //
-// So this is still the entry point of the money loop and no longer the whole of
-// its first step. Cash in, then lodge, then the bank can settle.
+// So this is the entry point of the money loop and not the whole of its first
+// step. Cash in, then lodge, then the bank can settle.
 export function FundParticipantForm({
   pid,
   did,

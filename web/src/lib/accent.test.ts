@@ -20,10 +20,10 @@ function hueOf(accent: string | undefined): number {
 // anyway, and being current was not one of them.
 //
 // It goes stale silently. Every id in the backend comes from one counter per
-// book, so an act that draws one more than it used to shifts every id after it —
-// which happened during this very task, leaving this file asserting about
-// `bank_1/3/5/7` while the seed produced something else. Nothing failed. A list
-// of ids nobody has still passes, and it passes while real banks collide.
+// book, so an act that draws one more shifts every id after it — and a file
+// asserting about `bank_1/3/5/7` while the seed produces something else fails
+// nothing. A list of ids nobody has still passes, and it passes while real banks
+// collide.
 //
 // And even current it is a SAMPLE. Four ids reach at most four of the palette's
 // hues, so a hue that collides with an institution goes unseen unless one of

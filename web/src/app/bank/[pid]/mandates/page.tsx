@@ -16,15 +16,14 @@ import { useAssetLookup, useMandates, useRevokeMandate } from "@/lib/api/hooks";
 import { describeError } from "@/lib/api/errors";
 import type { Mandate } from "@/lib/types";
 
-// This screen is a BANK's and it used to be the clearing house's, which is the
-// second of Task 18's two directory-shaped moves.
+// This screen is a BANK's, not the clearing house's.
 //
 // A mandate is the CREDITOR's bank's row: in SEPA the creditor holds the
-// mandate, and the bank that checks one at submission is the creditor's. What
-// the clearing house showed was every member's authorisations over every other
-// member's customers' accounts on one page — and it rendered each amount by
-// asking the backend to load the DEBTOR's bank and list its deposit register for
-// the asset, one institution reading another's for a display field.
+// mandate, and the bank that checks one at submission is the creditor's. On the
+// clearing house it would be every member's authorisations over every other
+// member's customers' accounts on one page — and rendering each amount would
+// mean loading the DEBTOR's bank and listing its deposit register for the asset,
+// one institution reading another's for a display field.
 //
 // So this lists the mandates whose creditor is THIS bank's own customer, and
 // nothing else. There is no debtor-side screen: a debtor's bank holds no mandate

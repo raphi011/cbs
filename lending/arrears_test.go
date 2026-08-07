@@ -73,8 +73,8 @@ func TestArrearsFor(t *testing.T) {
 	}
 }
 
-// TestArrearsFor_RevolvingLineOutOfOrderCycles is a regression test for a scan
-// that used to assume Seq order tracked DueDate order. A revolving line's
+// TestArrearsFor_RevolvingLineOutOfOrderCycles refuses a scan that assumes Seq
+// order tracks DueDate order. A revolving line's
 // cycles are appended by Seq, but ChargeInterestTx takes each cycle's due date
 // from the caller's billing date — a backdated charge produces a later-Seq
 // cycle with an EARLIER due date than the one before it. The oldest UNPAID due

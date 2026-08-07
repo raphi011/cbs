@@ -22,14 +22,12 @@ import type { Participant } from "@/lib/types";
 // and Returned payments are done; everything before that is still moving.
 const IN_FLIGHT = new Set(["Initiated", "Accepted", "Cleared"]);
 
-// This screen used to also show a "Total reserves" stat and a per-bank
-// reserve figure, both read from `useReserves()` → the central bank's
-// `GET /reserves`. That made it the only screen in the app reading a listener
+// No reserve figures here. Reading `useReserves()` → the central bank's
+// `GET /reserves` would make this the only screen in the app reading a listener
 // whose whole point is that it belongs to someone else — the lobby's own copy
-// says the clearing house sees payments and the central bank sees reserves.
-// Removing them is the point of the operator split, not a gap: this page
-// keeps membership, payments, cycles, settlements, schemes and directory, and
-// reserves live at /central-bank now.
+// says the clearing house sees payments and the central bank sees reserves. This
+// page keeps membership, payments, cycles, settlements, schemes and directory;
+// reserves live at /central-bank.
 export default function ClearingHouse() {
   const { data: participants, isLoading, error, refetch } = useParticipants();
   const { data: cycles } = useCycles();
@@ -122,8 +120,8 @@ export default function ClearingHouse() {
 // application the scheme has not answered — no settlement account, no routing
 // entry — and it is an ordinary state rather than a broken one, because
 // admission is a conversation between three institutions and this list is read
-// from one of them. The card used to say "Member of the network" for every bank
-// in it, which was true only while founding and joining were one commit.
+// from one of them. "Member of the network" is not true of every bank in this
+// list, because founding and joining are two commits.
 function ParticipantCard({
   participant: p,
   provisioned,
@@ -185,9 +183,8 @@ const STEPS: { title: string; body: string; hint: HintKey }[] = [
   {
     // "Create" and not "Join", because founding and joining are two steps now
     // and this one is the first: a bank is created, and what it does next is
-    // apply. The body used to say a member bank joins the network, which is the
-    // step after this one and is answered by two institutions that are not the
-    // bank.
+    // apply. Joining is the step after this one, and it is answered by two
+    // institutions that are not the bank.
     title: "Create",
     body: "A bank is founded and applies to the scheme; the central bank and the clearing house answer.",
     hint: "double-entry",

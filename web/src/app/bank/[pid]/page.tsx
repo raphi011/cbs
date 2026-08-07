@@ -64,9 +64,9 @@ function DepositAccountRow({ pid, account }: { pid: string; account: DepositAcco
   );
 }
 
-// A back office opens on its customers. The internal-accounts card of raw ids
-// that used to be here is gone: the chart of accounts is one click away under
-// General ledger, and a bank's home is the people it holds money for.
+// A back office opens on its customers. No card of raw internal-account ids: the
+// chart of accounts is one click away under General ledger, and a bank's home is
+// the people it holds money for.
 export default function BankHome() {
   const params = useParams();
   const pid = typeof params.pid === "string" ? params.pid : "";

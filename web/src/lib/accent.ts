@@ -18,17 +18,15 @@ const CLEARING_HOUSE_ACCENT = "oklch(0.58 0.10 150)";
 // The palette a bank's hue is drawn from, exported so a test can check the whole
 // of it rather than a sample of ids.
 //
-// 150 used to be in this list: a bank hashed onto it and came out at the same hue
-// as the clearing house, differing only in chroma — the two read as the same
-// colour family at a glance, which is exactly what a bank's accent must not do to
-// an institution's. 170 keeps its place without landing on it or on 260.
+// 150 is deliberately absent: a bank hashing onto it comes out at the same hue as
+// the clearing house, differing only in chroma, and the two read as the same
+// colour family at a glance. 170 keeps its place without landing on it or on 260.
 //
 // No hue here may equal an institution's, and that is a property of this LIST
 // rather than of any bank: every pid maps into it, so a hue that collides
 // collides for whichever banks happen to hash onto it. accent.test.ts checks the
-// list itself for that reason. It used to check four seeded ids instead — which
-// is a SAMPLE, and a sample of four cannot see a collision that lands on the
-// other three hues, whether or not those four ids are current.
+// list itself for that reason, rather than a sample of ids: a sample of four
+// cannot see a collision that lands on the other three hues.
 export const BANK_HUES = [25, 265, 330, 60, 200, 100, 170];
 
 function hueFor(pid: string): number {

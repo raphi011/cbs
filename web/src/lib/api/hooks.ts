@@ -445,10 +445,8 @@ export function useCloseDepositAccount(pid: string) {
 
 // Takes cash in: the customer's balance rises and the bank holds the cash.
 //
-// It invalidates this bank's deposits and NOTHING of the central bank's, and the
-// difference from what this hook used to do is Task 18a's. Funding raised the
-// reserve in step, so this refreshed reserves and the central-bank audit log too;
-// a deposit now reaches the bank's own vault and no institution but that bank, so
+// It invalidates this bank's deposits and NOTHING of the central bank's. A
+// deposit reaches the bank's own vault and no institution but that bank, so
 // invalidating the central bank's queries would be re-fetching data this call
 // cannot have changed. useLodgeReserves is what moves them.
 export function useFundDeposit(pid: string) {
@@ -731,10 +729,9 @@ export function useBankPayments(pid: string) {
 }
 
 // The second half of a 202: ask about the identifier you were given. The wait is
-// real since 7b — the bank answers with an identifier and the counterparty's
-// answer arrives at another actor, as a pacs.002 — so this is where the outcome
-// comes from and not a formality. 6a shaped the client this way a sub-project
-// early, and it needed no rewriting when the behaviour caught up.
+// real — the bank answers with an identifier and the counterparty's answer
+// arrives at another actor, as a pacs.002 — so this is where the outcome comes
+// from and not a formality.
 export function useBankPayment(pid: string, payid: string) {
   return useQuery({
     queryKey: qk.bankPayment(pid, payid),

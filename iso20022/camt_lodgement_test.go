@@ -96,8 +96,9 @@ func TestCamt050GoldenRoundTrip(t *testing.T) {
 // which the central bank neither keeps nor may read — so naming it would be
 // telling a servicer the number of an account in a ledger it has no access to.
 //
-// This is the message-level half of the crossing sub-project 8 closes. A reader
-// who changes DbtrAcct to mandatory should have to delete this test first.
+// This is the message-level half of the split between a deposit and a lodgement.
+// A reader who changes DbtrAcct to mandatory should have to delete this test
+// first.
 func TestTheLodgementNamesTheAccountItCreditsAndNotTheOneItDebits(t *testing.T) {
 	raw, err := Marshal(sampleCamt050())
 	if err != nil {

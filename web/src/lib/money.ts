@@ -3,8 +3,8 @@
 // converts an amount to the major-unit string a human reads and types: 2 for
 // EUR (cents), 8 for BTC (satoshi), 0 for an asset with no fractional unit at
 // all. There is no default scale — every formatter here takes the asset it is
-// rendering. Guessing 2 is exactly the bug this file used to have: dividing by
-// a hardcoded 100 rendered 1 BTC (100_000_000 satoshi) as "1,000,000.00".
+// rendering. Guessing 2 is the bug this avoids: dividing by a hardcoded 100
+// renders 1 BTC (100_000_000 satoshi) as "1,000,000.00".
 
 // AssetScale is the minimum an amount formatter needs to know about an asset:
 // its code (for display alongside the number) and its scale (for the
