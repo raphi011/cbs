@@ -4055,6 +4055,79 @@ func (s *Network) RecordRelayedTx(ctx context.Context, tx Tx, id PaymentID, req 
 	return p, nil
 }
 
+// AcceptAtBank is AcceptAtBankTx in its own unit of work, which is what a bank
+// acting on a pacs.002 it has just been handed needs: the message names one
+// payment and there is nothing else to commit with it.
+func (s *Network) AcceptAtBank(ctx context.Context, id PaymentID) (Payment, error) {
+	var out Payment
+	err := s.store.Update(ctx, func(ctx context.Context, tx Tx) error {
+		var err error
+		out, err = s.AcceptAtBankTx(ctx, tx, id)
+		return err
+	})
+	return out, err
+}
+
+// AcceptAtBankTx is a member bank's half of an acceptance: it records on this
+// bank's OWN copy that the clearing house has taken the payment into a cycle.
+//
+// It posts nothing, and that is the whole of what makes it look unnecessary. No
+// money moves when a payment is accepted — the payer's money left their account
+// at submission and the payee's does not arrive until the cut-off settles — so a
+// bank is left with an acceptance it has nothing to DO about, and for one commit
+// it did nothing with it at all.
+//
+// What it has to do with it is REMEMBER it, and the reason is what a bank's copy
+// is FOR. It is this institution's own record of a payment it is party to, and a
+// record that jumps from "instructed" to "settled" is one that cannot answer the
+// question a customer actually asks in between, cannot distinguish a payment
+// waiting on a cut-off from one nobody has looked at, and leaves this bank's
+// audit log with a hole in the middle of its own payment's life. The clearing
+// house's copy has the fact; this bank cannot read it and is not meant to.
+//
+// It is NOT a guard on the rejection that may follow. That is what the first
+// version of it was written as, and Network.transition says why it does not
+// hold: a rejection is a pre-settlement act, and a payment already in a cycle is
+// exactly the kind a cut-off rejects.
+//
+// It is on the same footing as RejectAtBankTx and SettleAtBankTx rather than a
+// bare status write, for their reason: a bank's copy moves only through an act
+// that names who is moving it and refuses a bank that has no standing to. The
+// three of them are the whole of what a bank does with what it is told.
+//
+// # Only the bank that was TOLD reaches Accepted
+//
+// The ACCP goes to the bank waiting for the answer to its instruction and to no
+// other — csm.tell's submitter, which is the payer's bank on a push and the
+// payee's on a pull. The bank that ANSWERED the instruction is not told and its
+// copy stays Initiated until settlement, which is why Initiated -> Settled is a
+// legal edge at a bank. Neither bank is wrong about the payment; they were told
+// different things because they asked different things.
+func (s *Network) AcceptAtBankTx(ctx context.Context, tx Tx, id PaymentID) (Payment, error) {
+	self, err := s.selfBIC()
+	if err != nil {
+		return Payment{}, err
+	}
+	p, err := tx.GetPayment(ctx, id)
+	if err != nil {
+		return Payment{}, err
+	}
+	if p.DebtorDetails.Agent != self && p.CreditorDetails.Agent != self {
+		return Payment{}, fmt.Errorf("%w: %s is between %s and %s, and this is %s",
+			ErrNotThisBanksPayment, id, p.DebtorDetails.Agent, p.CreditorDetails.Agent, self)
+	}
+	if err := s.transition(&p, Accepted); err != nil {
+		return Payment{}, err
+	}
+	if err := tx.PutPayment(ctx, p); err != nil {
+		return Payment{}, err
+	}
+	if err := s.appendAuditTx(ctx, tx, ledger.EventPaymentAccepted, string(p.ID), p); err != nil {
+		return Payment{}, err
+	}
+	return p, nil
+}
+
 // AcceptAtCSM is AcceptAtCSMTx in its own unit of work.
 func (s *Network) AcceptAtCSM(ctx context.Context, id PaymentID) (Payment, error) {
 	var out Payment
@@ -4448,13 +4521,32 @@ func (s *Network) RejectAtBank(ctx context.Context, id PaymentID, code iso20022.
 //
 // # Which refusals it accepts
 //
-// Initiated only, at a bank, which is every state a bank's copy can be in before
-// its outcome is known — see Network.transition, where Accepted and Cleared are
-// facts about a cycle and belong to the clearing house alone. A rejection
-// arriving for a payment this bank has already recorded as Settled or Rejected
-// is ErrInvalidStateTransition, which is the sentinel the mesh dead-letters:
-// there is nobody to answer, and reversing a settled payment's debit on a late
-// message is the failure the guard exists for.
+// Initiated and Accepted, which are the two states a payment can be in while its
+// money is still moving towards settlement. A rejection is a pre-SETTLEMENT act
+// — that is what separates it from a return — so being already in a cycle is no
+// objection to one: a cut-off that finds a participant short of its position
+// rejects payments that have been Accepted for hours.
+//
+// Settled and Rejected are what it refuses, and both refusals are about the
+// LEDGER rather than about tidiness. Reversing after settlement would take back a
+// debit that has already funded a reserve movement; reversing twice would reverse
+// a leg that is already reversed. Those are the two edges Network.transition
+// withholds from a bank, and this is the act that would do the damage if they
+// were not.
+//
+// What it can NOT check is whether this network really made the decision the
+// message reports. The status it reads is its own copy's, and its own copy used
+// to be the clearing house's — so the guard that read "does the row say Rejected"
+// was reading the decider's own record and is not available to anybody now. See
+// Network.transition on what a real network answers that with, and mesh's
+// csm.relayed for the clearing house's half: it must not send an RJCT about a
+// payment it has not rejected.
+//
+// The refusal names the status rather than returning the bare sentinel, because
+// a dead letter that says which state refused the reversal is the difference
+// between a redelivery and a message that arrived after finality. It wraps
+// ErrInvalidStateTransition, which is the sentinel the mesh dead-letters: there
+// is nobody to answer.
 //
 // The code and the free text are the CLEARING HOUSE's, quoted off the pacs.002
 // and stored unchanged. This bank did not decide and does not paraphrase.
@@ -4475,7 +4567,8 @@ func (s *Network) RejectAtBankTx(ctx context.Context, tx Tx, id PaymentID, code 
 			ErrNotThisBanksPayment, id, p.DebtorDetails.Agent, p.CreditorDetails.Agent, self)
 	}
 	if err := s.transition(&p, Rejected); err != nil {
-		return Payment{}, err
+		return Payment{}, fmt.Errorf("%s cannot reject %s, which this network records as %v: %w",
+			self, p.ID, p.Status, err)
 	}
 	p.RejectCode = code
 	p.RejectReason = reason
@@ -5474,27 +5567,55 @@ func (s *Network) ReserveBalance(ctx context.Context, bic iso20022.BIC, asset le
 // Task 18d gives each institution its own copy, and a copy can only record what
 // its owner was TOLD. The two machines are what each of them can honestly say:
 //
-//   - The CLEARING HOUSE runs the whole of it. Accepted and Cleared are facts
-//     about a CYCLE, and the cycle is this institution's own — a bank has no
-//     cycles and its shape has no cycle_id column to hold one.
-//   - A BANK goes Initiated, and then straight to whatever it is told. It is
-//     never told "accepted": csm.tell sends an ACCP to the submitter and nothing
-//     to the other bank, and an acceptance asks nothing of either of them. It IS
-//     told the payment settled (an ACSC per payment, after the cut-off) and told
-//     it was rejected (a pacs.002 carrying the code), and both of those are edges
-//     it makes on its own row.
+//   - The CLEARING HOUSE runs the whole of it. Cleared is a fact about a CYCLE,
+//     and the cycle is this institution's own — a bank has no cycles and its
+//     shape has no cycle_id column to hold one.
+//   - A BANK goes Initiated, and then to whatever it is told. It is told the
+//     clearing house took the payment on (an ACCP, if this bank is the one
+//     waiting for the answer to its instruction), told it settled (an ACSC per
+//     payment, after the cut-off), and told it was rejected (a pacs.002 carrying
+//     the code). Each of those is an edge it makes on its own row.
 //
-// So Initiated -> Settled is legal at a bank and illegal at the clearing house,
-// which is the one difference and is the whole argument: a bank skipping Accepted
-// and Cleared is not a bank losing track of a payment, it is a bank that was
-// never a party to the clearing.
+// So Cleared is the clearing house's alone, and Initiated -> Settled is legal at
+// a bank and illegal at the clearing house. The second is the load-bearing one:
+// only the bank the ACCP was ADDRESSED to hears about the acceptance, so the
+// bank that answered the instruction goes straight from Initiated to Settled,
+// and that is not a bank losing track of a payment — it is a bank that was never
+// told, because it was never waiting.
+//
+// # Why a bank tracks Accepted at all, having not needed to
+//
+// This table said Initiated -> {Rejected, Settled} for one commit, on the
+// argument that an acceptance "asks nothing of a bank". It asks nothing, and it
+// TELLS the bank where the payment has got to. Without the state a bank cannot
+// tell "not yet decided" from "already in a cycle", cannot answer a customer who
+// asks, and has an audit log that skips the middle of its own payment's life.
+//
+// It is NOT a guard against a rejection, and the first version of it was written
+// as one. Accepted -> Rejected stays legal here, because a rejection is a
+// pre-SETTLEMENT act and not a pre-acceptance one: a scheme rejects a payment
+// that has been in a cycle for hours when the cut-off finds a participant short
+// of its position, and a bank that refused that message on the grounds that it
+// had already been told ACCP would be refusing the ordinary case. What a bank
+// cannot do is reverse a debit AFTER settlement or twice, and those are the two
+// edges this table really withholds — Settled and Rejected have no way back.
+//
+// What a bank genuinely cannot do any more is tell a rejection this network made
+// from one it did not. Its own copy used to be the clearing house's copy, so the
+// row it read WAS the decision; it holds its own now and no institution can read
+// another's. Nothing replaces that here, because nothing here could: what a real
+// network answers it with is the channel — an authenticated message on a closed
+// network — and reconciliation against the cycle reports afterwards. The
+// clearing house's side of the same fact is that it must never send an RJCT
+// about a payment it has not rejected, which is a property of csm.relayed and
+// csm.refuseBulk rather than of this table.
 //
 // # What the split buys, beyond honesty
 //
 // The clearing house's machine got STRICTER rather than looser. Nothing but this
-// institution can now write Accepted or Cleared anywhere in the network, because
-// no other institution's table has an edge to them — where before, any actor
-// holding the shared row could.
+// institution can now write Cleared anywhere in the network, because no other
+// institution's table has an edge to it — where before, any actor holding the
+// shared row could.
 func (s *Network) transition(p *Payment, to PaymentStatus) error {
 	allowed := map[PaymentStatus][]PaymentStatus{
 		Initiated: {Accepted, Rejected},
@@ -5504,7 +5625,8 @@ func (s *Network) transition(p *Payment, to PaymentStatus) error {
 	}
 	if s.id.role == roleBank {
 		allowed = map[PaymentStatus][]PaymentStatus{
-			Initiated: {Rejected, Settled},
+			Initiated: {Accepted, Rejected, Settled},
+			Accepted:  {Rejected, Settled},
 			Settled:   {Returned},
 		}
 	}

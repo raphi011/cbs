@@ -172,28 +172,11 @@ func (c *csm) handle(ctx context.Context, from iso20022.BIC, raw []byte) error {
 // bank that holds the payee, because a push travels towards the money's
 // destination — and records this institution's own copy of it.
 //
-// # The record comes AFTER the routing, and the order is decided rather than
-// incidental
-//
-// A message this actor cannot route never becomes a payment here. Both refusals
-// above the relay are of that kind — a bulk file, and the RC01 for an agent this
-// mesh has no address for — and neither leaves a row behind saying the clearing
-// house is carrying something that never left the building. Recording first
-// would mean rejecting that row a moment later to say the same thing.
-//
-// It is safe to record after the send because an actor handles its inbox
-// SERIALLY (Mesh.run: pop, handle, repeat). The receiving bank's pacs.002 lands
-// in this actor's inbox and cannot be popped until this handler returns, so the
-// row is always there before anything asks for it. That is a property of the
-// transport, and it is named here because it is what makes the order a choice.
-//
-// What it costs is one seam: a relay that succeeded and a record that failed
-// leaves the message in flight with no row to answer against, and the bank's
-// answer then dead-letters. The error is returned rather than swallowed, so it
-// is one dead letter here and one there.
-//
-// c.relay itself still reads and writes NO store — see its doc, which makes a
-// property of that. The write is this function's.
+// Only the FILE's own shape is judged before the record. A bulk file names
+// several counterparty agents and therefore several destinations, which is a
+// refusal of the message rather than of a payment and needs nothing looked up;
+// see refuseBulk. Everything after it goes through relayRecorded, which is where
+// the order of the record and the relay is argued.
 func (c *csm) relayCreditTransfer(ctx context.Context, from iso20022.BIC, env iso20022.Envelope, doc *iso20022.Pacs008) error {
 	body := doc.FIToFICstmrCdtTrf
 	ref := body.CdtTrfTxInf[0].PmtId
@@ -203,13 +186,64 @@ func (c *csm) relayCreditTransfer(ctx context.Context, from iso20022.BIC, env is
 		CreDtTm:   body.GrpHdr.CreDtTm.Time,
 	}
 	if n := len(body.CdtTrfTxInf); n != 1 {
-		return c.refuseBulk(from, orig, ref, "CdtTrfTxInf", n)
+		return c.refuseBulk(from, orig, "CdtTrfTxInf", n)
 	}
-	if err := c.relay(from, env, doc, orig, ref, body.CdtTrfTxInf[0].CdtrAgt.FinInstnId.BICFI); err != nil {
+	p, err := c.ops.RecordRelayedCreditTransfer(ctx, doc)
+	if err != nil {
+		return fmt.Errorf("mesh: %s cannot carry %s: %w", c.bic, ref.TxId, err)
+	}
+	return c.relayRecorded(ctx, from, env, doc, orig, ref, body.CdtTrfTxInf[0].CdtrAgt.FinInstnId.BICFI, p)
+}
+
+// relayRecorded is the second half of carrying an instruction: send it on, and
+// keep this institution's own copy agreeing with what it sent.
+//
+// # The record comes BEFORE the routing, and the order is decided rather than
+// incidental
+//
+// It ran the other way round for one commit, on the argument that a message this
+// actor cannot route never becomes a payment here — so an RC01 would leave no row
+// behind saying the clearing house is carrying something that never left the
+// building. The argument is fine and the ordering it produced was not, because
+// the row is also this actor's DUPLICATE CHECK. Recording last means a replayed
+// instruction is routed and answered first and refused afterwards, and what it is
+// answered with is a status naming a payment this clearing house is holding live
+// in a cycle. A bank acting on that reverses a debit that is funding a settlement
+// (payment.RejectAtBankTx, which cannot tell the difference and says so). A real
+// CSM checks for a duplicate at ingestion, before it validates or forwards
+// anything, and this is that check: RecordRelayedTx refuses an instruction naming
+// a payment it already holds past Initiated, so the replay is a dead letter and
+// nothing goes on the wire about it.
+//
+// What the old order bought is bought back below. An RC01 leaves a row, and the
+// row is REJECTED in the same breath, so this institution's copy says what its
+// message said. That is strictly better than not writing one: the clearing house
+// now has a record that it refused to carry this payment, which is the fact an
+// operator asking "what happened to it" needs and which nothing used to hold.
+//
+// The seam moves rather than closing. A record that succeeded and a relay that
+// failed to SEND leaves a row for a message in nobody's inbox, where before a
+// relay that succeeded and a record that failed left a message with no row to
+// answer against. The error is returned rather than swallowed either way, so it
+// is one dead letter.
+//
+// c.relay itself still reads and writes NO store — see its doc, which makes a
+// property of that. Both writes are this function's.
+func (c *csm) relayRecorded(ctx context.Context, from iso20022.BIC, env iso20022.Envelope,
+	doc iso20022.Document, orig payment.OriginalMessage, ref iso20022.PaymentIdentification,
+	to iso20022.BIC, p payment.Payment) error {
+
+	routed, err := c.relay(from, env, doc, orig, ref, to)
+	if err != nil || routed {
 		return err
 	}
-	if _, err := c.ops.RecordRelayedCreditTransfer(ctx, doc); err != nil {
-		return fmt.Errorf("mesh: %s relayed %s and could not record it: %w", c.bic, ref.TxId, err)
+	// The RC01 is already on the wire and this actor said it. Its own copy has to
+	// say the same thing, or it is a clearing house holding an Initiated payment
+	// it has told the submitting bank it will not carry — and that bank, acting on
+	// the message, will have reversed its customer's debit.
+	if _, err := c.ops.RejectAtCSM(ctx, p.ID, iso20022.StatusReasonBankIdentifierIncorrect,
+		fmt.Sprintf("no route to %s", to)); err != nil {
+		return fmt.Errorf("mesh: %s answered RC01 for %s and could not record it: %w", c.bic, p.ID, err)
 	}
 	return nil
 }
@@ -222,7 +256,7 @@ func (c *csm) relayCreditTransfer(ctx context.Context, from iso20022.BIC, env is
 // to the bank that sent it, which would answer its own instruction — and the
 // resolution inside DirectDebitRequest would succeed while it did, because both
 // parties resolve by address whoever is asking.
-// It records its own copy after the relay, for relayCreditTransfer's reasons.
+// It records its own copy before the relay, for relayRecorded's reasons.
 func (c *csm) relayDirectDebit(ctx context.Context, from iso20022.BIC, env iso20022.Envelope, doc *iso20022.Pacs003) error {
 	body := doc.FIToFICstmrDrctDbt
 	ref := body.DrctDbtTxInf[0].PmtId
@@ -232,15 +266,13 @@ func (c *csm) relayDirectDebit(ctx context.Context, from iso20022.BIC, env iso20
 		CreDtTm:   body.GrpHdr.CreDtTm.Time,
 	}
 	if n := len(body.DrctDbtTxInf); n != 1 {
-		return c.refuseBulk(from, orig, ref, "DrctDbtTxInf", n)
+		return c.refuseBulk(from, orig, "DrctDbtTxInf", n)
 	}
-	if err := c.relay(from, env, doc, orig, ref, body.DrctDbtTxInf[0].DbtrAgt.FinInstnId.BICFI); err != nil {
-		return err
+	p, err := c.ops.RecordRelayedDirectDebit(ctx, doc)
+	if err != nil {
+		return fmt.Errorf("mesh: %s cannot carry %s: %w", c.bic, ref.TxId, err)
 	}
-	if _, err := c.ops.RecordRelayedDirectDebit(ctx, doc); err != nil {
-		return fmt.Errorf("mesh: %s relayed %s and could not record it: %w", c.bic, ref.TxId, err)
-	}
-	return nil
+	return c.relayRecorded(ctx, from, env, doc, orig, ref, body.DrctDbtTxInf[0].DbtrAgt.FinInstnId.BICFI, p)
 }
 
 // relayReturn hands a return on to the SETTLEMENT AGENT, and keeps a copy for
@@ -339,7 +371,14 @@ func (c *csm) relayReturn(from iso20022.BIC, env iso20022.Envelope, doc *iso2002
 	if first.OrgnlTxId != "" {
 		c.held[payment.PaymentID(first.OrgnlTxId)] = heldReturn{doc: doc, from: from}
 	}
-	return c.relay(from, env, doc, orig, ref, c.m.cfg.CentralBankBIC)
+	// Whether it routed is discarded here, and only here. There is no copy of
+	// this actor's to reconcile against an RC01 — a return names a payment that
+	// settled, so this institution's row for it is already Settled and a
+	// settlement agent nobody can address is not a fact about the payment. The
+	// returning bank has been told, which is what it needs; see relayRecorded for
+	// the two callers that do have a row to keep in step.
+	_, err := c.relay(from, env, doc, orig, ref, c.m.cfg.CentralBankBIC)
+	return err
 }
 
 // releaseReturn sends the held pacs.004 on to the bank that did not ask for the
@@ -640,9 +679,35 @@ func (c *csm) refuseAdmission(to iso20022.BIC, doc *iso20022.Acmt007, in payment
 // A bulk file names several counterparty agents and therefore several
 // destinations, and this clearing house has one routing decision per message to
 // make. Refused rather than split: sending the first of five would drop four.
-func (c *csm) refuseBulk(from iso20022.BIC, orig payment.OriginalMessage, ref iso20022.PaymentIdentification, element string, n int) error {
-	return c.answer(from, orig, ref, iso20022.StatusReasonNotSpecifiedAgentGenerated,
-		fmt.Sprintf("this clearing house routes one payment per message; %s carries %d", element, n))
+//
+// # It names the FILE and no transaction in it, and that is the fix to a defect
+//
+// It quoted the first transaction's PmtId, which is the id this actor would have
+// routed by if there had been one to route. That made the answer a status about
+// A PAYMENT, and a receiving bank reads it as one: it looks the id up in its own
+// register and acts on the decision. Against a doctored file — the real
+// instruction with its one transaction duplicated, which is the only way to have
+// a bulk file in this system — the id names a payment that is live in a cycle,
+// and the payer's bank reverses a debit that is funding a settlement.
+//
+// The file was refused WHOLE, so nothing in it was decided and no transaction id
+// in it means anything. What the sender matches on is OrgnlMsgId, which every
+// pacs.002 carries and which names the file it sent; the group status says RJCT
+// and the text says which element carried how many. A bank skips a status naming
+// no transaction — bank.receiveStatus already documents that arm.
+//
+// The shape is Mesh.answerUnreadable's, and the two belong together: an FF01 is
+// this same kind of answer about this same kind of failure, one step earlier.
+// Neither can refer back by a transaction — one because the file did not parse,
+// this one because the file parsed and was refused entire — so both take the
+// EPC's NOTPROVIDED convention for the reference they do not have.
+func (c *csm) refuseBulk(from iso20022.BIC, orig payment.OriginalMessage, element string, n int) error {
+	return c.forward(from, orig, payment.TransactionStatusReport{
+		EndToEndID: notProvided,
+		Status:     iso20022.TransactionStatusRejected,
+		Code:       iso20022.StatusReasonNotSpecifiedAgentGenerated,
+		Text:       fmt.Sprintf("this clearing house routes one payment per message; %s carries %d", element, n),
+	})
 }
 
 // relay forwards an instruction to the agent the message named, whichever
@@ -674,8 +739,18 @@ func (c *csm) refuseBulk(from iso20022.BIC, orig payment.OriginalMessage, ref is
 // to rewrite. Its GrpHdr/MsgId therefore stays that bank's, which is what the
 // receiving bank quotes back as OrgnlMsgId and what lets the answer be matched
 // to the original all the way home.
+//
+// # It says whether it routed
+//
+// The RC01 arm answers the sender and returns no error, because a refusal the
+// sender was told about is completed work — bank.answer's rule, applied here.
+// That left its two instruction callers unable to tell a message that went out
+// from one that came back as a rejection, and they went on to RECORD a payment
+// the clearing house had just told a bank it would not carry. The boolean is
+// what closes that: see relayed, which is where the two acts are put back in one
+// place.
 func (c *csm) relay(from iso20022.BIC, env iso20022.Envelope, doc iso20022.Document,
-	orig payment.OriginalMessage, ref iso20022.PaymentIdentification, to iso20022.BIC) error {
+	orig payment.OriginalMessage, ref iso20022.PaymentIdentification, to iso20022.BIC) (bool, error) {
 
 	relayed := iso20022.Envelope{
 		AppHdr: iso20022.AppHdr{
@@ -692,9 +767,9 @@ func (c *csm) relay(from iso20022.BIC, env iso20022.Envelope, doc iso20022.Docum
 		// RC01, and it is this actor that says it because it is the only one
 		// holding the routing table. A bank cannot know that a BIC is unroutable;
 		// it can only know that its message was not answered.
-		return c.answer(from, orig, ref, iso20022.StatusReasonBankIdentifierIncorrect, err.Error())
+		return false, c.answer(from, orig, ref, iso20022.StatusReasonBankIdentifierIncorrect, err.Error())
 	}
-	return err
+	return err == nil, err
 }
 
 // receiveStatus is the clearing house acting on what the payee's bank said, and
@@ -760,10 +835,11 @@ func (c *csm) receiveStatus(ctx context.Context, from iso20022.BIC, doc *iso2002
 
 		// What the ANSWERING BANK said, kept before this actor decides anything,
 		// because clear rewrites r on the path where the clearing house turns an
-		// acceptance into its own rejection. An ACCP from the payer's bank is what
-		// says its debtor leg is posted; see tell, which used to read the leg id
-		// off a column this institution's schema does not have.
-		payerAccepted := r.Status == iso20022.TransactionStatusAccepted
+		// acceptance into its own rejection. An ACCP is what says that bank wrote
+		// its own copy of this payment — and, on a pull, posted the debtor leg
+		// with it; see tell, which has a message to send that bank on a rejection
+		// and none at all if it never accepted.
+		answeringBankAccepted := r.Status == iso20022.TransactionStatusAccepted
 
 		var decided payment.Payment
 		var err error
@@ -787,7 +863,7 @@ func (c *csm) receiveStatus(ctx context.Context, from iso20022.BIC, doc *iso2002
 			return err
 		}
 
-		if err := c.tell(ctx, decided, orig, r, payerAccepted); err != nil {
+		if err := c.tell(ctx, decided, orig, r, answeringBankAccepted); err != nil {
 			return err
 		}
 	}
@@ -795,61 +871,74 @@ func (c *csm) receiveStatus(ctx context.Context, from iso20022.BIC, doc *iso2002
 }
 
 // tell sends the decision to every bank that has to have it. See the note on
-// receiveStatus for which banks those are and why a rejected collection has two.
+// receiveStatus for which banks those are and why a rejected payment has two.
 //
 // # The MONEY message goes first, and neither is skipped because the other
 // failed
 //
 // The two messages are not the same kind of news. The submitter's is the answer
-// to a question it asked. The payer's bank's — sent only when a rejection
-// leaves it holding a posted debtor leg it did not submit, which is a rejected
-// collection and nothing else — is what makes it give a customer their money
-// back. Sending the informational one first and returning on its error left the
-// refund unattempted, and that is reachable: the send is answered with
-// ErrUnknownBIC during Reset's ForgetBanks/JoinRoster window. A payer whose money
-// is in a suspense against a payment this network records as Rejected has nobody
-// left to notice.
+// to a question it asked. The other bank's — sent only on a rejection, and only
+// when that bank had answered ACCP — is what closes a payment it has already
+// written down and, if it is the payer's bank, what makes it give a customer
+// their money back. Sending the informational one first and returning on its
+// error left the refund unattempted, and that is reachable: the send is answered
+// with ErrUnknownBIC during Reset's ForgetBanks/JoinRoster window. A payer whose
+// money is in a suspense against a payment this network records as Rejected has
+// nobody left to notice.
 //
-// So the refund message is attempted first and both are attempted regardless,
-// with the failures joined. Two banks that cannot be addressed produce two
-// errors and one dead letter carrying both, which is more than the caller could
-// have learnt before.
+// So the other bank's message is attempted first and both are attempted
+// regardless, with the failures joined. Two banks that cannot be addressed
+// produce two errors and one dead letter carrying both, which is more than the
+// caller could have learnt before.
 //
-// # How it knows the payer's bank is holding money, now that it cannot see
+// # Which bank the second message is for, and why it is not only the payer's
 //
-// It read p.DebtorLegTx, the id of the transaction the payer's bank posted. That
-// column is the BANK's and is not in this institution's schema — the clearing
-// house posts nothing and holds no book of accounts, so csm/0001_init.sql has no
-// leg columns at all, and on this actor's copy the field is empty for every
-// payment. Read as it stood, no rejected collection would ever reach the payer's
-// bank and every rejected pull would strand a customer's money.
+// It was the payer's bank alone, on the argument that a rejection only creates
+// WORK where money is held — and that argument was about ledgers when the
+// question is rows. Both banks keep a copy of this payment now and neither can
+// read the other's, so a bank that is never told stays Initiated for ever about
+// a payment this network has decided. On a push that is the PAYEE's bank, which
+// accepted the pacs.008 and was then refused by this actor (TM01); its copy has
+// to close, and nothing else will ever close it. Whether the recipient also has
+// money to give back is payment.RejectAtBankTx's branch and not this actor's.
 //
-// What replaces it is the fact the column was standing in for: HAS THE PAYER'S
-// BANK ACCEPTED THIS COLLECTION. A payer's bank posts the debtor leg when it
-// accepts one and not before — that is what accepting one means, and its own
-// funds check (AM04) runs first — so the two are the same question, and the
-// second is one this actor can answer about itself.
+// So the recipient is THE OTHER BANK — the one that is not the submitter — which
+// on a push is the creditor's agent and on a pull the payer's. On both, the
+// submitter is told by the arm below, so a push still sends two messages to two
+// banks and a pull still sends two.
+//
+// # The conjunct that survives: did that bank ever accept
+//
+// A bank that answered RJCT rolled its own row back — AcceptInboundTx and the
+// answer are one unit of work, so there is no copy at that bank to close, and a
+// pacs.002 naming a payment it holds no row for would be a dead letter. A bank
+// that answered ACCP has one.
 //
 // It is passed in rather than derived here, because the two callers WITNESS it
 // differently and neither witness is available to the other:
 //
-//   - receiveStatus has the payer's bank's own pacs.002 in hand. ACCP means the
-//     leg is posted and this actor is the one refusing (see clear, the only path
-//     that turns an acceptance into a rejection); RJCT means the bank refused
-//     itself, before posting.
+//   - receiveStatus has the ANSWERING bank's own pacs.002 in hand. ACCP means
+//     that bank wrote its copy and, on a pull, posted the debtor leg with it;
+//     RJCT means it refused and wrote nothing.
 //   - reject has no message at all — an operator provoked it — and reads its own
-//     copy's status instead. Accepted means the payer's bank has already answered
-//     and posted; Initiated means it has not.
+//     copy's status instead. Accepted means the answering bank has already
+//     answered; Initiated means it has not.
 //
 // The status on this actor's copy cannot serve the first case: clear rejects
 // after AcceptAtCSM has rolled back, so the copy still says Initiated while the
-// bank's leg is posted. That asymmetry is why this is an argument.
+// answering bank's row stands. That asymmetry is why this is an argument.
 //
-// The direction is the other conjunct, and it is what says the payer's bank is
-// not the submitter — so on a push this is one bank and one message, unchanged.
+// This also replaces a read of p.DebtorLegTx, the id of the transaction the
+// payer's bank posted. That column is the BANK's and is not in this
+// institution's schema — the clearing house posts nothing and holds no book of
+// accounts, so csm/0001_init.sql has no leg columns at all, and on this actor's
+// copy the field is empty for every payment. Read as it stood, no rejected
+// collection would ever reach the payer's bank and every rejected pull would
+// strand a customer's money.
+//
 // What no longer has to hold at all is a THIRD thing, that the address is in the
 // roster, because nothing here is looked up any more.
-func (c *csm) tell(ctx context.Context, p payment.Payment, orig payment.OriginalMessage, r payment.TransactionStatusReport, payerAccepted bool) error {
+func (c *csm) tell(ctx context.Context, p payment.Payment, orig payment.OriginalMessage, r payment.TransactionStatusReport, answeringBankAccepted bool) error {
 	scheme, ok := c.ops.Scheme(p.Scheme)
 	if !ok {
 		return fmt.Errorf("mesh: %s decided %s and holds no %q scheme to say who submitted it: %w",
@@ -864,24 +953,29 @@ func (c *csm) tell(ctx context.Context, p payment.Payment, orig payment.Original
 	// reaching into a member's database, twice, on the answer to every payment.
 	// A payment names both agents by BIC and always has; see payment.PartyRef.
 	//
-	// The payer's bank, when it is holding money against a payment that has just
-	// been rejected and is not the bank waiting for the answer. Only a pull
-	// reaches this — on a push the two are one bank and one message.
-	var refunded iso20022.BIC
+	// The bank that ANSWERED, when a rejection leaves it holding a copy it wrote
+	// and cannot close by itself. Which of the two agents that is flips with the
+	// scheme's direction, exactly as the submitter does and always to the other
+	// one; see the note above.
+	var told iso20022.BIC
+	other := p.CreditorDetails.Agent
+	if other == submitter {
+		other = p.DebtorDetails.Agent
+	}
 	if r.Status == iso20022.TransactionStatusRejected &&
-		payerAccepted &&
-		p.DebtorDetails.Agent != submitter {
-		refunded = p.DebtorDetails.Agent
-		if err := c.forward(refunded, orig, r); err != nil {
+		answeringBankAccepted &&
+		other != submitter {
+		told = other
+		if err := c.forward(told, orig, r); err != nil {
 			errs = append(errs, err)
 		}
 	}
 
 	// The bank that submitted, which is always told. The comparison against
-	// `refunded` is what stops a push, where the two are one bank, being sent the
-	// same status twice — a duplicate pacs.002 would be a second acceptance at a
-	// bank that already has one.
-	if submitter != refunded {
+	// `told` is what stops an ON-US payment, where the two agents are one bank,
+	// being sent the same status twice — a duplicate pacs.002 would be a second
+	// acceptance at a bank that already has one.
+	if submitter != told {
 		if err := c.forward(submitter, orig, r); err != nil {
 			errs = append(errs, err)
 		}
@@ -992,11 +1086,12 @@ func (c *csm) reject(ctx context.Context, id payment.PaymentID, code iso20022.St
 
 	// Read BEFORE rejecting, because what tell needs is the status this payment
 	// was at when the operator refused it, and RejectAtCSM overwrites exactly
-	// that. Accepted means the payer's bank has already answered the collection
-	// and posted its debtor leg, which is the money tell has to make sure reaches
-	// somebody; Initiated means it has not. See tell, which took the leg's
-	// transaction id off the payment until that column turned out to be the
-	// bank's and not this institution's.
+	// that. Accepted means the bank that RECEIVED the instruction has already
+	// answered it, so that bank holds a copy of this payment — and on a pull a
+	// posted debtor leg with it, which is the money tell has to make sure reaches
+	// somebody. Initiated means it has not, and there is nothing at that bank to
+	// tell. See tell, which took the leg's transaction id off the payment until
+	// that column turned out to be the bank's and not this institution's.
 	//
 	// Two reads of one row in two units of work, and a status that changed between
 	// them would be another actor rejecting or accepting this payment
@@ -1006,7 +1101,7 @@ func (c *csm) reject(ctx context.Context, id payment.PaymentID, code iso20022.St
 	if err != nil {
 		return payment.Payment{}, err
 	}
-	payerAccepted := before.Status == payment.Accepted
+	answeringBankAccepted := before.Status == payment.Accepted
 
 	p, err := c.ops.RejectAtCSM(ctx, id, code, text)
 	if err != nil {
@@ -1023,7 +1118,7 @@ func (c *csm) reject(ctx context.Context, id payment.PaymentID, code iso20022.St
 	// back BESIDE the error rather than being swallowed — closeCycle's shape, and
 	// the same half-happened outcome: a payment that is Rejected and whose payer
 	// has not been given their money back.
-	if err := c.tell(ctx, p, payment.OriginalMessage{MsgID: notProvided, MsgDefIdr: notProvided}, r, payerAccepted); err != nil {
+	if err := c.tell(ctx, p, payment.OriginalMessage{MsgID: notProvided, MsgDefIdr: notProvided}, r, answeringBankAccepted); err != nil {
 		return p, fmt.Errorf("mesh: %s rejected %s and could not say so: %w", c.bic, p.ID, err)
 	}
 	return p, nil
@@ -1276,10 +1371,10 @@ func (c *csm) receiveSettlementStatus(ctx context.Context, from iso20022.BIC, do
 	return nil
 }
 
-// tellSettled turns one settled CYCLE into per-PAYMENT advices, addressed to the
-// banks that have something to do about each.
+// tellSettled turns one settled CYCLE into per-PAYMENT advices, addressed to
+// BOTH of the payment's banks.
 //
-// # Two recipients, and they are not told the same thing for the same reason
+// # Three reasons to be told, and every payment has two banks with one each
 //
 // The SUBMITTER is waiting for the answer to its instruction: it sent a pacs.008
 // or a pacs.003 naming one payment and has heard ACCP since, and ACSC is what
@@ -1292,13 +1387,24 @@ func (c *csm) receiveSettlementStatus(ctx context.Context, from iso20022.BIC, do
 // suspense, and until Task 15 the central bank did that FOR it, in that bank's
 // own book. This message is what replaces the reach.
 //
-// On a PULL they are the same institution and there is one message: the payee's
-// bank submitted the collection and is also the creditor. On a PUSH they are two,
-// and the second is new. Deduplicating rather than sending twice, because a bank
-// that received the same advice twice would post nothing the second time — the
-// ledger's idempotency key and PostCreditorLegTx's own Settled guard both see to
-// that — but would still be told twice, and a system that says everything twice
-// teaches nothing about who needs to hear what.
+// The bank that is NEITHER — the payer's bank on a pull — has a ROW TO CLOSE,
+// and that is the recipient Task 18d added. Those two reasons were the whole
+// list while one payment was one row: a bank with no leg to post and no answer
+// to hear had nothing left to learn, because the row it read was the row the
+// payee's bank had already written Settled onto. It holds its own copy now and
+// cannot read anybody's. Left out, a payer's bank on a pull would keep a copy
+// saying Initiated for ever about a payment whose reserves have moved — and
+// would then refuse to return it, because a return is an edge from Settled.
+// TestAReturnedCollectionIsSentByThePayersBank is where that surfaced.
+//
+// So the recipient list is the two agents plus the submitter, deduplicated: on a
+// PULL the submitter is the creditor's bank and there are two messages, on a
+// PUSH the submitter is the payer's bank and there are also two. Deduplicating
+// rather than sending twice, because a bank that received the same advice twice
+// would post nothing the second time — the ledger's idempotency key and
+// SettleAtBankTx's own Settled guard both see to that — but would still be told
+// twice, and a system that says everything twice teaches nothing about who needs
+// to hear what.
 //
 // # The central bank could not send these
 //
@@ -1339,15 +1445,20 @@ func (c *csm) tellSettled(ctx context.Context, id payment.CycleID, orig payment.
 		}
 		// The submitter first, so a push's two messages go out in the order the
 		// banks have reason to expect them: the answer to the instruction, then
-		// the advice to act on. On a pull the two ids are equal and there is one.
-		// Both recipients are addresses the payment already carries. They were
+		// the advice to act on. The two agents follow, and whichever of them is
+		// the submitter drops out — so this is two messages either way, and it
+		// would be one for a payment whose banks are the same institution, which
+		// this transport never carries (see payment.ErrOnUsPayment).
+		// All three addresses are ones the payment already carries. They were
 		// participant ids, and each was turned into a BIC by reading that bank's
 		// own row through this institution's roster — a read into a database this
 		// one does not hold, made once per recipient per payment in a settled
 		// cycle. See payment.PartyRef.
 		recipients := []iso20022.BIC{submitterOf(scheme, p.DebtorDetails.Agent, p.CreditorDetails.Agent)}
-		if creditor := p.CreditorDetails.Agent; creditor != recipients[0] {
-			recipients = append(recipients, creditor)
+		for _, agent := range []iso20022.BIC{p.CreditorDetails.Agent, p.DebtorDetails.Agent} {
+			if agent != recipients[0] {
+				recipients = append(recipients, agent)
+			}
 		}
 		for _, recipient := range recipients {
 			if err := c.forward(recipient, orig, payment.TransactionStatusReport{

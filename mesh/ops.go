@@ -209,6 +209,23 @@ type bankOps interface {
 	// is visible from outside a handler.
 	ResolveIdentifier(ctx context.Context, ident deposit.Identifier) (payment.PartyRef, error)
 
+	// This bank's own copy of a payment, which is the only one it has and the
+	// only one it may read. One handler asks for it — bank.returnPayment, which
+	// has to establish there is a SETTLED payment to return before it builds a
+	// pacs.004 — and no other, which is the shape Task 18d left: a handler acting
+	// on what it was told hands the id to the act and lets the act read.
+	//
+	// A GetRosterEntry sat beside it, and it was what told this bank whether a
+	// rejection it was sent is about a payment whose payer banks somewhere else —
+	// a comparison of two BICs, its own against the one the CLEARING HOUSE's
+	// roster held for the payment's payer. It is gone, and so is the comparison
+	// that replaced it: a bank sent a decision about a payment it is no party to
+	// holds no row for it, so the STORE refuses before any BIC is looked at. A
+	// member bank asking the clearing house who its own payment's payer is was a
+	// read across an entity boundary to learn something it had been told; a member
+	// bank asking ITSELF is not a read it needs to make either.
+	GetPayment(ctx context.Context, id payment.PaymentID) (payment.Payment, error)
+
 	// The bank's half of a rejection: record it on this bank's own copy, and give
 	// the payer their money back if this bank is the one holding it.
 	//
@@ -219,23 +236,22 @@ type bankOps interface {
 	// row both banks were reading. Task 18d gives each bank a copy nobody else can
 	// write, so the guard read a row that still said Initiated and refused every
 	// genuine rejection. The decision and the reversal are one act at the
-	// institution that owns both now; see payment.RejectAtBankTx.
+	// institution that owns both now; see payment.RejectAtBankTx, which also says
+	// what this bank can no longer establish at all and where that moved to.
 	//
-	// Scheme is how a bank decides which of the two roles a status makes it play:
-	// the submitter waiting for an answer, or the bank holding money it must
-	// give back. For a push those are one bank and for a pull they are two.
-	//
-	// A GetRosterEntry sat here, and it was what told this bank whether a
-	// rejection it was sent is about a payment whose payer banks somewhere else —
-	// a comparison of two BICs, its own against the one the CLEARING HOUSE's
-	// roster held for the payment's payer. It is gone: the payment carries both
-	// agents' BICs itself, so the comparison is made against a value already in
-	// hand, and a member bank asking the clearing house who its own payment's
-	// payer is was a read across an entity boundary to learn something it had been
-	// told. See payment.PartyRef.
-	GetPayment(ctx context.Context, id payment.PaymentID) (payment.Payment, error)
-	Scheme(id payment.SchemeID) (payment.Scheme, bool)
+	// A Scheme sat here too, and it was how this handler worked out which of the
+	// two roles a status made it play: the submitter waiting for an answer, or the
+	// bank holding money it must give back. The act decides that now, off the
+	// payment and its own identity, so the direction of a scheme is no longer
+	// something a bank's message handler has to know.
 	RejectAtBank(ctx context.Context, id payment.PaymentID, code iso20022.StatusReason, reason string) (payment.Payment, error)
+
+	// The bank's half of an acceptance, and the one of the three that posts
+	// nothing. It is here because a bank that merely READ its ACCP could not
+	// refuse the rejection above: RejectAtBank's guard is this bank's own copy's
+	// status, and only this method ever puts Accepted on it. See
+	// payment.AcceptAtBankTx, and Network.transition for what the state is worth.
+	AcceptAtBank(ctx context.Context, id payment.PaymentID) (payment.Payment, error)
 
 	// The returning bank's message. It takes no context because it reads no
 	// store — the amount's scale comes from the scheme registry, which is a map

@@ -248,17 +248,45 @@ func TestABankRefusesAStatusAboutAnotherBanksPayment(t *testing.T) {
 		h.booksTouchedBy(h.creditorBIC), nil)
 }
 
-// A bank reverses only a payment this network's record calls Rejected.
+// A bank reverses a debit once, and never after the money has moved between
+// banks. Those are the two refusals it still has, and this measures the second.
 //
 // ReverseDebtorLegTx does not load the payment and does not look at its status —
-// its own doc says so, and says the caller establishes the decision. In the mesh
-// the caller is this handler, and a pacs.002 is not on its own a decision: a
-// rejection naming a payment that is on its way to settlement would reverse a
-// live debit, taking the money back off a payee who is going to be paid anyway.
+// its own doc says so, and says the caller establishes the decision. The caller
+// is payment.RejectAtBankTx now, and what it establishes the decision against is
+// THIS BANK's own copy: a rejection of a payment already recorded as Settled or
+// Rejected is refused, because the first would take back a debit that has
+// already funded a reserve movement and the second would reverse a leg that is
+// already reversed.
+//
+// # What this test used to assert, and why it cannot
+//
+// It sent this same injection against an ACCEPTED payment and required the bank
+// to refuse it. That worked while one payment was one row: the row the payer's
+// bank read was the CLEARING HOUSE's row, so "does this network call it
+// rejected" was a question a bank could ask, and the answer was the decider's
+// own record. Task 18d gives each institution a copy nobody else can write, and
+// with it that question stops being answerable — a genuine post-acceptance
+// rejection and a forged one are the same bytes from the same address about a
+// payment in the same state.
+//
+// Refusing on Accepted was tried and is wrong on the domain as well as on the
+// data. A rejection is a pre-SETTLEMENT act, not a pre-acceptance one: a cut-off
+// that finds a participant short of its position rejects payments that have been
+// in a cycle for hours, and a bank that answered "I was already told ACCP" would
+// be refusing the ordinary case. See payment.Network.transition.
+//
+// What replaces it is not here, because it cannot be: a real network answers
+// forgery with the CHANNEL — an authenticated message, non-repudiable, on a
+// closed network — and with reconciliation against the cycle reports afterwards.
+// What this system CAN do it does one hop earlier, at the institution that would
+// have to be lying: the clearing house never sends an RJCT about a payment it has
+// not rejected. See csm.relayRecorded and csm.refuseBulk, and the two tests that
+// hold them to it.
 func TestABankRefusesToReverseAPaymentThatIsNotRejected(t *testing.T) {
 	h := newMeshHarness(t)
-	p := h.submitCreditTransfer(t)
-	h.drain(t)
+	p := h.settledPayment(t)
+	h.rec.reset()
 
 	env, err := payment.StatusMessage(
 		payment.OriginalMessage{MsgID: "orig-1", MsgDefIdr: "pacs.008.001.08"},
@@ -266,7 +294,7 @@ func TestABankRefusesToReverseAPaymentThatIsNotRejected(t *testing.T) {
 			TxID:   string(p.ID),
 			Status: iso20022.TransactionStatusRejected,
 			Code:   iso20022.StatusReasonIncorrectAccountNumber,
-			Text:   "not a decision this network made",
+			Text:   "a decision that arrived after finality",
 		}},
 		payment.MessageContext{From: h.cfg.ClearingHouseBIC, To: h.debtorBIC, MsgID: "sts-y", Now: testTime})
 	if err != nil {
@@ -276,12 +304,22 @@ func TestABankRefusesToReverseAPaymentThatIsNotRejected(t *testing.T) {
 		t.Fatalf("send: %v", err)
 	}
 
-	if err := h.drainErr(t); err == nil {
-		t.Fatal("Drain was clean; the payer's bank reversed the debit of a payment that is still Accepted")
+	err = h.drainErr(t)
+	if err == nil {
+		t.Fatal("Drain was clean; the payer's bank reversed the debit of a payment that has settled")
 	}
-	if bal := h.suspense(t, h.debtorPID); bal != harnessAmount {
-		t.Errorf("payer's clearing suspense = %d, want %d — the debit was reversed anyway", bal, harnessAmount)
+	// Named, and not merely non-nil. The refusal has to be the STATE one and not
+	// the ledger's own refusal to reverse a transaction twice, which would mean
+	// the bank had already reached its customer's account to find out.
+	if !strings.Contains(err.Error(), "records as Settled") || !strings.Contains(err.Error(), string(h.debtorBIC)) {
+		t.Errorf("dead letter %q is not the payer's bank refusing to reverse a settled payment", err)
 	}
+	if bal := h.balance(t, h.debtorPID, h.debtorAcct.ID); bal != harnessFunding-harnessAmount {
+		t.Errorf("payer's balance = %d, want %d — the settled debit was reversed anyway",
+			bal, harnessFunding-harnessAmount)
+	}
+	assertBooksTouched(t, "the payer's bank, refusing a rejection that arrived after finality",
+		h.booksTouchedBy(h.debtorBIC), nil)
 }
 
 // A second copy of a status the clearing house has already acted on is dead-
@@ -322,12 +360,29 @@ func TestARedeliveredAcceptanceIsDeadLetteredAndNotRejected(t *testing.T) {
 // A payment addressed to a bank the mesh cannot route to is RC01, and it is the
 // clearing house that says so — the only party that holds the routing table.
 //
-// The message is a doctored copy of one the payer's bank really sent, so the
-// payment it names has already been accepted; the payer's bank therefore refuses
-// to act on the rejection when it arrives, which is
-// TestABankRefusesToReverseAPaymentThatIsNotRejected doing its job on an
-// injection. What this test asserts is the code the clearing house put on the
-// wire, and that the money did not move.
+// # The message names a payment nobody has seen, and it has to
+//
+// It used to be a doctored copy of one the payer's bank really sent, id and all,
+// which made the RC01 an answer about a payment already ACCEPTED and sitting in
+// an open cycle. That is the shape of the defect the clearing house now refuses
+// to produce: a bank acting on such a status reverses a debit that is funding a
+// settlement, and no state its own copy could be in would let it tell that
+// message from a rejection this network really made (payment.RejectAtBankTx).
+// The replay is refused as a DUPLICATE before anything goes on the wire now —
+// see csm.relayRecorded — so a test that kept the original id would be measuring
+// that refusal instead of the routing table.
+//
+// So the transaction id is doctored too, and the file is then what a forged
+// instruction is: a well-formed pacs.008 for a payment no institution holds. The
+// clearing house records it, cannot route it, answers RC01, and marks ITS OWN
+// copy rejected — which is the property this test gained, because a clearing
+// house whose row said Initiated while its message said RJCT is the same
+// inconsistency one layer up.
+//
+// The payer's bank then dead-letters the answer, and that is correct rather than
+// incidental: it is being told about a payment it never submitted and holds no
+// row for. It is asserted rather than discarded so that a failure anywhere else
+// in the chain cannot hide underneath the assertions below.
 func TestACreditTransferForABankTheMeshCannotRouteToIsRC01(t *testing.T) {
 	h := newMeshHarness(t)
 	p := h.submitCreditTransfer(t)
@@ -338,26 +393,32 @@ func TestACreditTransferForABankTheMeshCannotRouteToIsRC01(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreditTransferMessage: %v", err)
 	}
+	const forged = payment.PaymentID("pay_AURODEFFXXX_9001")
+	tx := &env.Document.(*iso20022.Pacs008).FIToFICstmrCdtTrf.CdtTrfTxInf[0]
+	tx.PmtId.TxId = string(forged)
 	// A BIC no actor answers to.
-	env.Document.(*iso20022.Pacs008).FIToFICstmrCdtTrf.CdtTrfTxInf[0].CdtrAgt =
-		iso20022.BranchAndFinancialInstitution{FinInstnId: iso20022.FinancialInstitutionIdentification{BICFI: "NOSUCHFFXXX"}}
+	tx.CdtrAgt = iso20022.BranchAndFinancialInstitution{
+		FinInstnId: iso20022.FinancialInstitutionIdentification{BICFI: "NOSUCHFFXXX"}}
 	if err := h.mesh.send(h.debtorBIC, h.cfg.ClearingHouseBIC, env); err != nil {
 		t.Fatalf("send: %v", err)
 	}
-	// The dead letter this leaves is asserted rather than discarded, and it has
-	// to be exactly this one: the payer's bank refusing to reverse a payment its
-	// own network records as Accepted. Throwing the drain away would let any
-	// other failure in the chain — the clearing house unable to build its answer,
-	// a send refused — pass unnoticed underneath the assertion below.
 	err = h.drainErr(t)
 	if err == nil {
-		t.Fatal("Drain was clean; the payer's bank acted on a rejection of a payment that is still Accepted")
+		t.Fatal("Drain was clean; the payer's bank acted on a rejection of a payment it never sent")
 	}
-	if !strings.Contains(err.Error(), "records as Accepted") || !strings.Contains(err.Error(), string(h.debtorBIC)) {
-		t.Errorf("dead letter %q is not the payer's bank refusing to reverse an accepted payment", err)
+	if !strings.Contains(err.Error(), string(forged)) || !strings.Contains(err.Error(), string(h.debtorBIC)) {
+		t.Errorf("dead letter %q is not the payer's bank refusing a rejection of a payment it holds no row for", err)
 	}
 
 	h.assertLastStatusTo(t, h.debtorBIC, iso20022.StatusReasonBankIdentifierIncorrect)
+	// The clearing house's own copy says what its message said.
+	if got := h.payment(t, forged); got.Status != payment.Rejected {
+		t.Errorf("the clearing house records the unroutable payment as %v; it answered RC01 about it", got.Status)
+	}
+	// And the real payment, whose id the forgery used to carry, is untouched.
+	if got := h.payment(t, p.ID); got.Status != payment.Accepted {
+		t.Errorf("%s is %v after a forged message about another payment, want Accepted", p.ID, got.Status)
+	}
 	if bal := h.suspense(t, h.debtorPID); bal != harnessAmount {
 		t.Errorf("payer's clearing suspense = %d, want %d", bal, harnessAmount)
 	}
@@ -434,15 +495,7 @@ func TestABulkCreditTransferIsRefusedByTheClearingHouse(t *testing.T) {
 	if err := h.mesh.send(h.debtorBIC, h.cfg.ClearingHouseBIC, env); err != nil {
 		t.Fatalf("send: %v", err)
 	}
-	// The doctored file names a payment that is already Accepted, so the RJCT
-	// travelling back reaches the payer's bank and is refused there — the same
-	// dead letter TestACreditTransferForABankTheMeshCannotRouteToIsRC01 gets,
-	// and for the same reason. It is asserted rather than discarded so that a
-	// failure anywhere else in the chain cannot hide underneath it.
-	err = h.drainErr(t)
-	if err == nil || !strings.Contains(err.Error(), "records as Accepted") {
-		t.Fatalf("Drain = %v, want the payer's bank refusing to reverse an accepted payment", err)
-	}
+	h.drain(t)
 
 	// Answered, not dropped, and the answer says why.
 	status := h.lastStatusTo(t, h.debtorBIC)
@@ -455,6 +508,28 @@ func TestABulkCreditTransferIsRefusedByTheClearingHouse(t *testing.T) {
 	}
 	if !strings.Contains(reports[0].Text, "CdtTrfTxInf carries 2") {
 		t.Fatalf("the refusal reads %q, and does not name the element and the count", reports[0].Text)
+	}
+	// And it names NO TRANSACTION, which is the whole difference between
+	// refusing a file and rejecting a payment.
+	//
+	// The doctored file is the real instruction with its one transaction
+	// duplicated, so quoting that transaction's id — which is what this did —
+	// puts a payment that is Accepted and on its way to settlement into an RJCT.
+	// The payer's bank acts on a status naming a payment it holds, and there is
+	// no state it could be in that would let it tell this message from a
+	// rejection the clearing house really made: it would reverse a live debit
+	// and the payee would be paid out of nothing at the cut-off. See
+	// csm.refuseBulk, and payment.RejectAtBankTx on why the bank cannot be the
+	// one to catch this.
+	//
+	// So the drain above is CLEAN, and that is the assertion: nothing came back
+	// from the payer's bank, because a status naming no transaction is a status
+	// it has nothing to do about.
+	if reports[0].TxID != "" {
+		t.Errorf("the refusal of the file names transaction %q; a file refused whole decides no payment", reports[0].TxID)
+	}
+	if bal := h.suspense(t, h.debtorPID); bal != harnessAmount {
+		t.Errorf("payer's clearing suspense = %d, want %d — the accepted payment's debit was reversed", bal, harnessAmount)
 	}
 	// And nothing was relayed. Refusing the file but forwarding the first
 	// transaction would drop the rest silently, which is the outcome refuseBulk
@@ -502,6 +577,15 @@ func TestABulkCollectionIsRefusedByTheClearingHouse(t *testing.T) {
 	}
 	if !strings.Contains(reports[0].Text, "DrctDbtTxInf carries 2") {
 		t.Fatalf("the refusal reads %q, and does not name the element and the count", reports[0].Text)
+	}
+	// And no transaction, for the push twin's reason — which on a pull is money
+	// at the OTHER bank: the payer's bank posted the debtor leg when it accepted
+	// this collection, and it is the bank that would act on an RJCT naming it.
+	if reports[0].TxID != "" {
+		t.Errorf("the refusal of the file names transaction %q; a file refused whole decides no payment", reports[0].TxID)
+	}
+	if bal := h.suspense(t, h.debtorPID); bal != harnessAmount {
+		t.Errorf("payer's clearing suspense = %d, want %d — the accepted collection's debit was reversed", bal, harnessAmount)
 	}
 	if got := h.messagesSentTo(h.debtorBIC, "pacs.003.001.08"); got != relayedBefore {
 		t.Fatalf("the payer's bank was sent %d pacs.003s, want the original %d", got, relayedBefore)

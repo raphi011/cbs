@@ -566,12 +566,18 @@ func (b *bank) answer(to iso20022.BIC, orig payment.OriginalMessage, ref iso2002
 
 // receiveStatus is a bank learning what became of a payment it is party to.
 //
-// An ACCEPTANCE needs nothing from it, and that is not an omission: an ACCP is
-// the clearing house saying it has taken the payment into a cycle, which is the
-// clearing house's own act and which the clearing house records. No money has
-// moved yet, so there is no second write for this bank to make. What the message
-// buys is that the bank KNOWS — which, before the mesh, it could only learn by
-// reading the return value of the call that did the accepting.
+// An ACCEPTANCE moves no money and is written down anyway. An ACCP is the
+// clearing house saying it has taken the payment into a cycle, which is the
+// clearing house's own act and which the clearing house records on its own copy;
+// nothing about it asks this bank to post. What it asks this bank to do is
+// REMEMBER, because the rejection arm below refuses on this bank's own copy's
+// status and there is no other copy for it to read. A bank that treated the ACCP
+// as news to be dropped would reverse a live debit on the next pacs.002 to name
+// this payment. See payment.AcceptAtBankTx.
+//
+// Only the bank the ACCP is addressed to gets one — the submitter, waiting for
+// the answer to its instruction. The bank that ANSWERED that instruction is not
+// told and keeps a copy that says Initiated until settlement; see csm.tell.
 //
 // A SETTLEMENT COMPLETION is a different status about a different moment, and it
 // is where the payee is finally paid. The reserves have moved at the central
@@ -587,28 +593,32 @@ func (b *bank) answer(to iso20022.BIC, orig payment.OriginalMessage, ref iso2002
 // pull there is one recipient, because the bank that submitted the collection
 // is the creditor's bank. See csm.tellSettled.
 //
-// A REJECTION is where there may be work, and whether there is depends on which
-// bank this is:
+// A REJECTION is a decision both of the payment's banks record, and it is work
+// for at most one of them:
 //
 //   - The PAYER's bank reverses the debit that put its customer's money into its
 //     clearing suspense. That is the only work a rejection ever creates, and only
 //     this bank can do it — ReverseDebtorLegTx posts in the payment's own debtor
 //     bank's book, whoever calls it.
-//   - The bank that SUBMITTED, when that is somebody else, is being told the
-//     answer to its instruction and has nothing to undo. On a pull that is the
-//     payee's bank, which never held the money: its submission posted nothing,
-//     which is exactly what makes a collection a collection.
+//   - The OTHER bank, whichever it is, closes the copy it wrote when it answered
+//     the instruction. On a pull that is the payee's bank, which never held the
+//     money: its submission posted nothing, which is exactly what makes a
+//     collection a collection. On a push it is the payee's bank again — the one
+//     that accepted the pacs.008 and was then refused by the clearing house.
 //
-// For a push those are one bank and one message. For a pull they are two banks,
-// and the clearing house sends to both; see csm.receiveStatus for why the second
-// message exists and when it does not.
+// Two banks and two messages, either way; see csm.tell for when the second is
+// sent and when there is nothing at that bank to send one about.
 //
-// Anything else is REFUSED. A bank that is neither the payer's bank nor the
-// submitter has been sent a decision about a payment that is none of its
-// business, and acting on one would mean reaching into another bank's ledger.
-// Nothing in the flow produces it, because the clearing house addresses a status
-// to those banks and no other; this is what makes the property the receiver's as
-// well as the router's.
+// WHICH of the two this bank is, it does not decide: payment.RejectAtBankTx
+// reads the acting bank off its own network and reverses only if that bank is
+// the payer's. A bank that is party to NEITHER side is refused before the
+// question comes up, and the STORE is what refuses it — an institution that was
+// never sent this payment holds no row for it, so GetPayment below is
+// ErrPaymentNotFound. That is a stronger guard than the BIC comparison that used
+// to stand here, and it is the split doing the work rather than a check: it
+// cannot be got past by a bank that knows the id. See
+// TestABankRefusesAStatusAboutAnotherBanksPayment, which is a real rejection
+// delivered to the wrong member.
 //
 // A status naming no transaction at all is skipped rather than refused. That is
 // the FF01 a clearing house sends when it could not parse a file: it names no
@@ -647,51 +657,45 @@ func (b *bank) receiveStatus(ctx context.Context, doc *iso20022.Pacs002) error {
 			}
 			continue
 		}
-		if r.Status != iso20022.TransactionStatusRejected {
+		if r.Status == iso20022.TransactionStatusAccepted {
+			// ACCP. Recorded and not acted on — see the note above on why a bank
+			// that only READ this would be unable to refuse a rejection later. A
+			// redelivered acceptance is ErrInvalidStateTransition and becomes a
+			// dead letter, which is the same answer the clearing house gives its
+			// own redelivery one hop back.
+			if _, err := b.ops.AcceptAtBank(ctx, payment.PaymentID(r.TxID)); err != nil {
+				return fmt.Errorf("mesh: %s could not record the acceptance of %s: %w", b.bic, r.TxID, err)
+			}
 			continue
 		}
-		p, err := b.ops.GetPayment(ctx, payment.PaymentID(r.TxID))
-		if err != nil {
-			return fmt.Errorf("mesh: %s was told %s was rejected: %w", b.bic, r.TxID, err)
-		}
-		scheme, ok := b.ops.Scheme(p.Scheme)
-		if !ok {
-			return fmt.Errorf("mesh: %s was told %s was rejected and holds no %q scheme: %w",
-				b.bic, p.ID, p.Scheme, payment.ErrSchemeNotFound)
-		}
-		// Is this bank a party to it at all? A bank that acted on a misrouted
-		// rejection would reverse a debit in somebody else's ledger.
-		//
-		// Both addresses are read off the PAYMENT, and they used to be read out of
-		// the clearing house's roster — GetRosterEntry, keyed by the payer's
-		// participant id, which had to read that bank's own row to reach its
-		// address. Both steps are gone: a payment carries each side's agent BIC,
-		// which is the whole of what this comparison needs and is a value this bank
-		// was TOLD rather than one it has to ask another institution for.
-		submitter := submitterOf(scheme, p.DebtorDetails.Agent, p.CreditorDetails.Agent)
-		if p.DebtorDetails.Agent != b.bic && submitter != b.bic {
-			return fmt.Errorf("mesh: %s was sent a rejection of %s, whose payer banks at %s and which %s submitted",
-				b.bic, p.ID, p.DebtorDetails.Agent, submitter)
+		if r.Status != iso20022.TransactionStatusRejected {
+			continue
 		}
 		// The decision goes onto this bank's OWN copy, and the payer's money comes
 		// back in the same unit of work if this bank is the one holding it.
 		//
-		// This handler used to make that judgement itself: read the row, refuse
-		// unless it already said Rejected, then reverse. The check was the whole
-		// safety argument — ReverseDebtorLegTx looks at no status — and it worked
-		// because the CLEARING HOUSE had written Rejected onto the row this bank
-		// was reading. It writes on its own row now, so the guard read Initiated
-		// and refused every genuine rejection. What replaces it is the domain
-		// refusing the transition, which is the same question asked where the
-		// answer and the posting cannot come apart. See payment.RejectAtBankTx.
+		// This handler used to make three judgements before calling anything: it
+		// read the payment, looked its scheme up to work out who had submitted,
+		// refused a bank that was neither that nor the payer's, and refused again
+		// unless the row already said Rejected. All four steps are gone and the
+		// act is one call.
+		//
+		// The last of them was the whole safety argument — ReverseDebtorLegTx looks
+		// at no status — and it worked because the CLEARING HOUSE had written
+		// Rejected onto the row this bank was reading. It writes on its own row
+		// now, so the guard read Initiated and refused every genuine rejection.
+		// What replaces it is the domain refusing the TRANSITION, which is the same
+		// question asked where the answer and the posting cannot come apart, and
+		// asked against the only status this bank can honestly cite: its own. See
+		// payment.RejectAtBankTx.
 		//
 		// What is at stake if it comes apart has not changed: reversing on the
 		// message alone would take a live debit back off a payment on its way to
 		// settlement, and the money would simply be gone from the flow — this
 		// suspense is the PAYER's bank's, so the debit is what funds that bank's
 		// own mirror leg when the cut-off settles.
-		if _, err := b.ops.RejectAtBank(ctx, p.ID, r.Code, rejectionText(r)); err != nil {
-			return fmt.Errorf("mesh: %s could not record the rejection of %s: %w", b.bic, p.ID, err)
+		if _, err := b.ops.RejectAtBank(ctx, payment.PaymentID(r.TxID), r.Code, rejectionText(r)); err != nil {
+			return fmt.Errorf("mesh: %s could not record the rejection of %s: %w", b.bic, r.TxID, err)
 		}
 	}
 	return nil
