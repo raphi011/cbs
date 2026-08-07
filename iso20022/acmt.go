@@ -106,13 +106,10 @@ func (a PostalAddress) validate(element string) error {
 // reads all three, and mesh carries them between the joining bank, the clearing
 // house and the settlement agent.
 //
-// This paragraph said "nothing in this repository sends one yet", which was true
-// when the documents landed a sub-task before their callers and stopped being
-// true the moment those callers existed. Where the docs below say what a reader
-// does with an element they now describe code, and the code is the authority on
-// them; what remains checked HERE is what the tests in acmt_test.go and the
-// xmllint run in xmllint_test.go check, which is the documents' shape and
-// nothing about who acts on them.
+// Where the docs below say what a reader does with an element they describe
+// code, and the code is the authority on them. What is checked HERE is what the
+// tests in acmt_test.go and the xmllint run in xmllint_test.go check, which is
+// the documents' shape and nothing about who acts on them.
 //
 // # This is not how the real thing works
 //
@@ -144,7 +141,7 @@ func (a PostalAddress) validate(element string) error {
 // is the schema's sequence order, in which Acct comes BEFORE the servicer and
 // the owner. Neither the order nor the completeness of that list is asserted by
 // this comment: TestGoldenFilesValidateAgainstTheSchema runs xmllint over
-// testdata/acmt007.xml against acmt.007.001.03.xsd, and that is what checks it.
+// testdata/acmt007.xml against acmt.007.001.03.xsd.
 //
 // Deliberately omitted, and legal in the standard: Fr (the header already says
 // who sent it), CtrctDts and UndrlygMstrAgrmt (there is no account contract to

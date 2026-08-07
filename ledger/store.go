@@ -69,13 +69,10 @@ type Tx interface {
 	// idempotency claim. A non-empty key already held by a different
 	// transaction fails with ErrDuplicateIdempotencyKey.
 	//
-	// That error is a documented answer rather than a broken unit of work: a
-	// caller may handle it and go on using the same Tx. Every sentinel a store
-	// returns from a write carries the same promise, and keeping it is the
-	// store's job however its database behaves — store/pg ran the insert inside
-	// a SAVEPOINT, because in Postgres any error otherwise aborts the whole
-	// transaction; store/sqlite needs nothing, because SQLite rolls back the
-	// failed STATEMENT and leaves the transaction usable.
+	// That error is a documented answer rather than a broken unit of work: a caller
+	// may handle it and go on using the same Tx. Every sentinel a store returns
+	// from a write carries the same promise, and keeping it is the store's job
+	// however its database behaves.
 	//
 	// A Put is an upsert, so re-putting a transaction under a different key
 	// RELEASES the old one: it is free for another transaction to claim.
@@ -107,12 +104,12 @@ type Tx interface {
 	// original. An account with no entries is 0, including one that does not
 	// exist; callers wanting ErrAccountNotFound read the account first.
 	//
-	// An entry with a zero ValueDate is excluded from every bound, not
-	// included in all of them: it has not been assigned economic effect, so it
-	// cannot be said to have taken effect before any date. Book resolves every
-	// entry it posts (Task 1's PostTransaction), so no entry written through
-	// the ledger is ever in this case — it can only arise from a Tx caller
-	// constructing an Entry directly, as store/storetest's fixtures do.
+	// An entry with a zero ValueDate is excluded from every bound, not included in
+	// all of them: it has not been assigned economic effect, so it cannot be said
+	// to have taken effect before any date. Book resolves every entry it posts, so
+	// no entry written through the ledger is ever in this case — it can only arise
+	// from a Tx caller constructing an Entry directly, as store/storetest's
+	// fixtures do.
 	ValueDateBalance(ctx context.Context, book BookID, id AccountID, normal Direction, before time.Time) (Amount, error)
 
 	// ValueDatedSeries returns the balance carried into from, plus the net

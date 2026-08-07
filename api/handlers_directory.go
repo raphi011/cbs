@@ -10,15 +10,10 @@ import (
 // Account addressing: one bank's own directory, and the per-account identifier
 // endpoints that populate it.
 //
-// GET /directory used to be network-scoped, on the grounds that resolving an
-// address is exactly the question "which bank?" and a route that already named
-// the bank would answer nothing. Task 18a retired both halves of that.
-//
-// The question it answered was answerable only by a SWEEP — one bank reading
-// every other bank's register over HTTP — and that is the crossing
-// payment.ResolveIdentifier no longer makes. A bank holds its own register and
-// no other, so what this route can honestly answer is "is this address one of
-// mine", and a route that names the bank is exactly right for it.
+// A bank holds its own register and no other, so what this route can honestly
+// answer is "is this address one of mine" — and a route that names the bank is
+// exactly right for it. Resolving an address across the network would be a
+// SWEEP: one bank reading every other bank's register over HTTP.
 //
 // What the network-wide question needs is a directory SERVICE, which this
 // system does not have and which no bank could assemble out of the others'
@@ -34,16 +29,13 @@ func (s *Server) registerBankIdentifierRoutes(mux *router) {
 // accounts holds the address, plus the identifier that was resolved, echoed
 // back for a client that fired several lookups at once.
 //
-// # It used to carry Name and Asset, and they died with the sweep
+// # It carries no Name and no Asset
 //
-// They were a JOIN on top of the resolution: the handler took the participant
-// the sweep returned, bound that bank's deposit register, and read the account's
-// display name and asset out of it. On a BANK's port — this route is registered
-// there too (api/surface.go) — that was one bank reading another bank's register
-// for the payee's name, over HTTP rather than through a message, which is the
-// crossing Task 14 closed on the payment path and left open here. The web send
-// form called it and displayed the result, so the UI demonstrated the negation
-// of the fact the branch existed to establish.
+// Both would be a JOIN on top of the resolution: bind the resolved bank's
+// deposit register and read the account's display name and asset out of it. On a
+// BANK's port — where this route is registered — that is one bank reading
+// another bank's register for the payee's name, over HTTP rather than through a
+// message.
 //
 // Removing them is not a loss of information the caller was entitled to. A bank
 // resolving its OWN customer has the name and the asset already, from every
@@ -70,12 +62,10 @@ func (s *Server) handleResolveIdentifier(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	ident := deposit.Identifier{Scheme: deposit.IdentifierScheme(scheme), Value: value}
-	// The listener's own bank, and it is the whole of the scope. It is not
-	// passed: this Server's network IS the bank's, so there is no argument here
-	// that could name another one. Registered on a surface with no bank — the
-	// clearing house's, as this route was until Task 18a — it answers
-	// payment.ErrNotThisInstitutionsAct rather than resolving in whichever
-	// register the shared object happened to belong to.
+	// The listener's own bank, and it is the whole of the scope. It is not passed:
+	// this Server's network IS the bank's, so there is no argument here that could
+	// name another one. Registered on a surface with no bank it answers
+	// payment.ErrNotThisInstitutionsAct.
 	ref, err := s.network().ResolveIdentifier(r.Context(), ident)
 	if err != nil {
 		writeError(w, err)

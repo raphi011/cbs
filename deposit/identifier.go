@@ -79,10 +79,9 @@ var ibanSeparators = strings.NewReplacer(" ", "", "-", "")
 //
 // It changes nothing about what is stored or returned. A payment records the
 // address it was quoted, a register keeps the value it was given, and only the
-// COMPARISON is canonical. That is why it is a method here rather than a
-// normalisation at write time: normalising on the way in would replace the
-// readable form the rest of the repository teaches with opaque digits, which is
-// the trade sub-project 5 already refused when it declined mod-97 validation.
+// COMPARISON is canonical. Normalising on the way in would replace the readable
+// form the rest of the repository teaches with opaque digits, which is the same
+// trade that declined mod-97 validation.
 func (i Identifier) MatchValue() string {
 	if i.Scheme != IdentifierIBAN {
 		return i.Value

@@ -27,12 +27,9 @@ import (
 // and one task later.
 //
 // They resolved a settlement's asset settlement -> its CYCLE -> that cycle's
-// scheme, because a settlement carried a CycleID and no asset of its own. The
-// cycle is the CLEARING HOUSE's row and these routes are on the SETTLEMENT
-// AGENT's port, so from Task 18d the GetCycle and the ListCycles were one
-// institution reading another's database and answered "this store's schema
-// holds no such table" — the same crossing the mandate pair made, discovered
-// the same way and closed the same way.
+// scheme. The cycle is the CLEARING HOUSE's row and these routes are on the
+// SETTLEMENT AGENT's port, so that read answers "this store's schema holds no
+// such table". A settlement carries its own asset now.
 //
 // payment.Settlement carries its Asset now, written by SettleCycleTx off the
 // instruction it acted on. The agent always knew it: an instruction whose legs
@@ -72,13 +69,12 @@ func (s *Server) registerPaymentRoutes(mux *router) {
 	mux.HandleFunc("POST /cycles/{cid}/close", s.handleCloseCycle)
 	mux.HandleFunc("POST /cycles/{cid}/settle", s.handleSettleCycle)
 
-	// GET /settlements is NOT here, and it used to be — this function is the
-	// clearing house's router, and a settlement is the SETTLEMENT AGENT's row.
-	// The csm shape has no settlements table, so the route answered 500 with the
-	// store saying so. It lives on the central bank's listener, next to the
-	// reserves it moved; see centralBankRouter. A caller holding a cycle finds
-	// its settlement by matching cycleId there — clearingCycleDTO carries no
-	// settlement id, for the reason set out on it.
+	// GET /settlements is NOT here: this function is the clearing house's router,
+	// and a settlement is the SETTLEMENT AGENT's row. The csm shape has no
+	// settlements table. It lives on the central bank's listener, next to the
+	// reserves it moved; see centralBankRouter. A caller holding a cycle finds its
+	// settlement by matching cycleId there — clearingCycleDTO carries no settlement
+	// id, for the reason set out on it.
 }
 
 func (s *Server) handleCreateMandate(w http.ResponseWriter, r *http.Request) {
@@ -134,13 +130,12 @@ func (s *Server) handleRevokeMandate(w http.ResponseWriter, r *http.Request) {
 // handleInitiatePayment hands a payment instruction to the bank whose act it is,
 // and answers with what that bank did.
 //
-// # What it used to be, and why the status code changed
+// # Why it answers 202 and not 201
 //
-// It used to run all three halves of an initiation — the submitting bank's, the
-// receiving bank's and the clearing house's — in a single unit of work, so that
-// it could answer 201 with an Accepted payment. One process playing three
-// institutions is exactly what the mesh replaces, and this route was the last
-// place it still happened.
+// Running all three halves of an initiation — the submitting bank's, the
+// receiving bank's and the clearing house's — in a single unit of work would be
+// one process playing three institutions, which is exactly what the mesh
+// replaces.
 //
 // It now calls Mesh.Submit, which runs the submitting bank's half and sends. The
 // counterparty's answer and the clearing house's acceptance arrive later, at
@@ -222,10 +217,9 @@ func (s *Server) handleGetPayment(w http.ResponseWriter, r *http.Request) {
 
 // handleRejectPayment declines an in-flight payment on the operator's say-so.
 //
-// It used to run both halves of a rejection — the clearing house's and the
-// payer's bank's — in one unit of work, so that it could answer 200 with a
-// payment whose payer had already been refunded. Two institutions cannot share a
-// transaction, and Mesh.Reject is what that became.
+// Both halves of a rejection — the clearing house's and the payer's bank's —
+// cannot share a transaction: two institutions, two databases. Mesh.Reject is
+// what runs them.
 //
 // So the payment in this response is REJECTED and out of its cycle, which is the
 // clearing house's own half and really has happened. The payer's money is still
@@ -287,14 +281,11 @@ func (s *Server) handleRejectPayment(w http.ResponseWriter, r *http.Request) {
 // # It answers with an identifier and no payment
 //
 // Deliberately, and it is the one response on this surface that carries no
-// resource. Mesh.Return returns no payment either. The reason its doc used to
-// give — that the returning bank's half posts nothing — stopped being true when
-// that bank got a leg of its own; what survives is the reason that matters here,
-// which is that the Payment there is to hand back is one the caller could
-// already read. It is still Settled: the return is not finished until the OTHER
-// bank posts, four hops away. Re-reading the row after the send would be a race
-// dressed up as a result. Ask again with the identifier; that is what 202
-// means here.
+// resource. Mesh.Return returns no payment either: the Payment there is to hand
+// back is one the caller could already read, and it is still Settled, because
+// the return is not finished until the OTHER bank posts, four hops away.
+// Re-reading the row after the send would be a race dressed up as a result. Ask
+// again with the identifier; that is what 202 means here.
 //
 // The reason code is MS03 for handleRejectPayment's reason: this API gives a
 // caller no way to name one, and the free text they did give travels beside it.
@@ -355,15 +346,14 @@ func (s *Server) handleGetCycle(w http.ResponseWriter, r *http.Request) {
 // handleCloseCycle reaches the cut-off, and is the only way a settlement is
 // instructed in this system.
 //
-// It goes through the mesh rather than through the network, and that is the
-// whole of what Task 12 changed here. Netting is the clearing house's own act
-// and moves nothing — every payment in the batch becomes Cleared and the net
-// positions are written onto the cycle — but DISCHARGING those positions moves
-// central-bank reserves, which no clearing house may do. So the second step is a
-// pacs.009 to the central bank, and calling payment.Network.CloseCycle directly
-// from here would close the cycle and instruct nobody. There is no POST
-// /settlements any more; see api/surface.go for why a second way to settle the
-// same cycle was worse than none.
+// It goes through the mesh rather than through the network. Netting is the
+// clearing house's own act and moves nothing — every payment in the batch
+// becomes Cleared and the net positions are written onto the cycle — but
+// DISCHARGING those positions moves central-bank reserves, which no clearing
+// house may do. So the second step is a pacs.009 to the central bank, and
+// calling payment.Network.CloseCycle directly from here would close the cycle
+// and instruct nobody. There is no POST /settlements; see api/surface.go for why
+// a second way to settle the same cycle was worse than none.
 //
 // 200 and the closed cycle, because that is a state the system is really in when
 // this is written: Closed, with net positions on it. What is NOT in the response

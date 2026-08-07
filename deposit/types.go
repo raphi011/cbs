@@ -108,12 +108,10 @@ type Account struct {
 	// LastAccrualDate is the business date accrual has been recomputed through.
 	//
 	// It enforces interest.Recompute's documented precondition: [from, to] must
-	// cover at least one day, and a caller that recomputes an empty window over
-	// a non-zero prior state is told to give the whole record back. That is the
-	// only job it has left. It used to also carry the job of preventing a second
-	// charge for a day already accrued; with a whole-life recompute the same
-	// date produces the same gross and therefore a zero delta, so the same
-	// invariant now has one fewer reason behind it.
+	// cover at least one day, and a caller that recomputes an empty window over a
+	// non-zero prior state is told to give the whole record back. That is the only
+	// job it has: a whole-life recompute makes the same date produce the same gross
+	// and therefore a zero delta, so it is not what prevents a second charge.
 	LastAccrualDate time.Time
 	// InterestGL is this account's own accrued-interest-receivable account, an
 	// Asset. It is created the first time a non-zero rate is set, so an account

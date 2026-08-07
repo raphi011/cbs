@@ -42,10 +42,7 @@ import (
 //
 // The address is the only thing in the operation that can clash, and
 // mesh.Mesh.Admit claims it before anything is written and releases it again if
-// the write fails. So a refusal leaves no row, no actor and nothing to clean up
-// — which is the reverse of the ordering this endpoint used to have, where the
-// participant row was written first and a refused address left a bank in the
-// network that could neither pay nor be paid, with no way back.
+// the write fails. So a refusal leaves no row, no actor and nothing to clean up.
 //
 // An interrupted admission therefore leaves a founded bank rather than an orphan,
 // and calling this again on the same name and BIC RE-DRIVES it: nothing is
@@ -79,12 +76,8 @@ func (s *Server) handleAddParticipant(w http.ResponseWriter, r *http.Request) {
 		// second address would not help; what helps is waiting for the first
 		// application to be answered and reading the bank back.
 		//
-		// The advice is all this adds, and the sentence about the address comes
-		// from the error alone. Saying it here too is how the first version of
-		// this branch came out reading the same thing twice — and, before
-		// mesh.ErrAdmissionInFlight had a type of its own, saying "another actor
-		// already answers to this BIC" underneath, which is the statement the
-		// whole branch exists to stop making.
+		// The advice is all this adds; the sentence about the address comes from the
+		// error alone.
 		if errors.Is(err, mesh.ErrAdmissionInFlight) {
 			writeUnprocessable(w, "nothing has been written for this request; wait for the scheme to answer the "+
 				"application that is already out, then read the bank back: "+err.Error())
@@ -108,11 +101,11 @@ func (s *Server) handleAddParticipant(w http.ResponseWriter, r *http.Request) {
 //
 // # No institution is asked, because none of them knows
 //
-// It called the clearing house's ListBanks until Task 18c, and that read has no
-// answer coming: the csm shape has no banks table. Neither does the central
-// bank's, and the roster is not a substitute — a bank founded and not yet
-// admitted has no roster entry and is precisely the bank this listing exists to
-// show, since participantDTO.Status is what tells "Founded" from "Member" apart.
+// It is the SETTLEMENT AGENT's read and not the clearing house's: the csm shape
+// has no banks table, and the roster is not a substitute — a bank founded and
+// not yet admitted has no roster entry and is precisely the bank this listing
+// exists to show, since participantDTO.Status is what tells "Founded" from
+// "Member" apart.
 //
 // payment.Stores.Banks is the question with an answer: every bank whose DATABASE
 // exists. Its doc says nothing in the domain calls it and nothing should — an
@@ -205,12 +198,10 @@ func (s *Server) handleFundDeposit(w http.ResponseWriter, r *http.Request) {
 //
 // # Why this is a route at all, and why it is on the BANK's port
 //
-// Funding a reserve used to be a side effect of POST /deposits: cash paid in
-// raised the customer's balance and the bank's reserve in one unit of work,
-// because one store held both books. Task 18a splits them, so the second half
-// needs a door of its own — and it is on this port because a lodgement is the
-// BANK's decision about its own liquidity. The clearing house has no business in
-// it, and the central bank does not initiate it.
+// It is on this port because a lodgement is the BANK's decision about its own
+// liquidity. The clearing house has no business in it, and the central bank does
+// not initiate it. Cash paid in over the counter is a separate act — see POST
+// /deposits, which lands it in this bank's vault.
 //
 // # 202 and not 200, and that is the substance
 //
@@ -228,10 +219,8 @@ func (s *Server) handleFundDeposit(w http.ResponseWriter, r *http.Request) {
 // # The refusal a founded bank gets
 //
 // A bank that cannot name its own settlement account is refused with
-// payment.ErrSettlementMemberNotFound and a 422. That refusal used to be given by
-// POST /deposits and was wrong there — it said cash could not be paid in at a
-// bank the scheme had not answered for — and it is right here: a bank with no
-// reserve account has no reserve to lodge into. See
+// payment.ErrSettlementMemberNotFound and a 422: a bank with no reserve account
+// has no reserve to lodge into. Taking cash in is not refused the same way — see
 // TestABankTheSchemeHasNotAnsweredForCanTakeCashAndCannotLodgeIt.
 func (s *Server) handleLodgeReserves(w http.ResponseWriter, r *http.Request) {
 	p, ok := s.participant(w, r)
@@ -277,8 +266,7 @@ func (s *Server) handleListSchemes(w http.ResponseWriter, r *http.Request) {
 // (member, asset), because a reserve in one asset says nothing about a reserve
 // in another and the two must not be added up.
 //
-// The list is the settlement agent's OWN register, and it used to be ListBanks.
-// See reserveRows for what changed with it.
+// The list is the settlement agent's OWN register. See reserveRows.
 func (s *Server) handleListReserves(w http.ResponseWriter, r *http.Request) {
 	members, err := s.network().ListSettlementMembers(r.Context())
 	if err != nil {
@@ -300,10 +288,10 @@ func (s *Server) handleListReserves(w http.ResponseWriter, r *http.Request) {
 // handleGetReserve reports one member's reserves, one row per asset, for the
 // same reason handleListReserves does.
 //
-// The path segment is a BIC and it used to be a participant id. That is what the
-// settlement agent's records are keyed by, and the only name for a bank it is
-// ever told; a bank it holds no account for is the 422 the sentinel already
-// mapped to rather than a 404 about a bank row this institution has no table for.
+// The path segment is a BIC, which is what the settlement agent's records are
+// keyed by and the only name for a bank it is ever told. A bank it holds no
+// account for is the 422 the sentinel already mapped to rather than a 404 about
+// a bank row this institution has no table for.
 func (s *Server) handleGetReserve(w http.ResponseWriter, r *http.Request) {
 	m, err := s.network().GetSettlementMember(r.Context(), iso20022.BIC(r.PathValue("bic")))
 	if err != nil {
@@ -328,22 +316,15 @@ func (s *Server) handleGetReserve(w http.ResponseWriter, r *http.Request) {
 // account per asset, written by the agent when it answered an acmt.007 — so
 // every row this builds is a reserve this institution actually keeps.
 //
-// It used to walk the BANK's assets and swallow two sentinels: the agent holding
-// no member row at all (payment.ErrSettlementMemberNotFound, a founded and
-// unadmitted bank) and the agent holding a row without this asset in it
-// (payment.ErrParticipantAssetNotFound, an admission answered in one currency and
-// not yet the other). Both skips are gone and neither answer changed: a bank with
-// no member row is not in ListSettlementMembers to begin with, and an asset with
-// no account is not in this map. What was a comparison between two institutions'
-// records is the agent's own register read straight, which is the only version of
-// this endpoint the central bank's database can serve — Task 18c leaves it no
-// banks table to compare against.
+// It reads the agent's own register straight, which is the only version of this
+// endpoint the central bank's database can serve: it has no banks table to
+// compare against. A bank with no member row is not in ListSettlementMembers to
+// begin with, and an asset with no account is not in this map.
 //
 // # What that costs, and which stuck bank it was actually about
 //
-// The comparison is what found a half-finished admission, and it is worth naming
-// what is no longer visible from here, because the obvious candidate was never
-// one of them.
+// What is no longer visible from here is worth naming, because the obvious
+// candidate was never one of them.
 //
 // An acmt.007 that never reached the settlement agent — a dead letter on the way
 // out — leaves the agent holding a row without that asset, permanently. An
@@ -367,12 +348,10 @@ func (s *Server) handleGetReserve(w http.ResponseWriter, r *http.Request) {
 // deposit in that asset fails while the operator console cheerfully reports the
 // reserve.
 //
-// Finding any of them therefore needs the bank's own assets beside these rows,
-// which GET /me on that bank's own port carries and which no screen in this
-// repository renders — so it is two reads at two institutions, not something one
-// console can show. That is the split doing its job rather than a regression:
-// the readings are the same readings, and putting them side by side is a
-// reconciliation, which is Task 19's and not this handler's.
+// Finding any of them needs the bank's own assets beside these rows, which GET
+// /me on that bank's own port carries and which no screen in this repository
+// renders — so it is two reads at two institutions, not something one console
+// can show. Putting them side by side is a reconciliation; see payment/recon.
 func (s *Server) reserveRows(r *http.Request, m payment.SettlementMember) ([]reserveDTO, error) {
 	codes := make([]string, 0, len(m.Accounts))
 	for code := range m.Accounts {

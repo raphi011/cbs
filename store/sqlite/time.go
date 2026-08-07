@@ -28,9 +28,8 @@ import "time"
 //     Measured: TestOrderingIsChronologicalWithinOneSecond fails on exactly that
 //     pair and on nothing else.
 //
-// Nullability is unchanged from store/pg: NULL is Go's zero time.Time, which
-// several fields use as "unset". SQLite sorts NULL first in an ASC ordering,
-// which is what the existing NULLS FIRST convention wants.
+// NULL is Go's zero time.Time, which several fields use as "unset". SQLite sorts
+// NULL first in an ASC ordering, which is what the NULLS FIRST convention wants.
 const timeLayout = "2006-01-02T15:04:05.000000000Z07:00"
 
 // formatTime renders an instant for storage. See timeLayout.

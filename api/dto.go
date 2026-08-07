@@ -25,12 +25,10 @@ type auditEventDTO struct {
 	// BookID is which institution's log this event is in, and it is on the wire
 	// because Seq stopped identifying one.
 	//
-	// Seq was a store-GLOBAL sequence, so an event's number was unique across
-	// the whole system and a reader could tell two logs apart without being
-	// told. Each institution has its own database and its own counter since Task
-	// 18d, so every log starts at 1 and "seq 7" names as many events as there
-	// are institutions. The book is what disambiguates them, and a reader
-	// holding pages from several logs has no other way to.
+	// Each institution has its own database and its own counter, so every log
+	// starts at 1 and "seq 7" names as many events as there are institutions. The
+	// book is what disambiguates them, and a reader holding pages from several
+	// logs has no other way to.
 	BookID    string            `json:"bookId"`
 	Scope     string            `json:"scope"`
 	Timestamp time.Time         `json:"timestamp"`

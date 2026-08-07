@@ -14,16 +14,12 @@ func init() {
 // Camt053 is BankToCustomerStatement: an account servicer telling an account
 // holder what happened on an account the holder does not keep.
 //
-// # Why the camt family stopped being deliberately absent
+// # Why the camt family is in scope
 //
-// The package doc recorded the whole family as out of scope, and the reason it
-// gave was true when it was written: no institution in this system needed to be
-// TOLD about a movement on an account it does not hold. Every actor could read
-// every book. Sub-project 8 creates the first institution that cannot — a member
-// bank whose reserve at the central bank moves in the CENTRAL BANK's book, which
-// after the split it may not read — so the movement has to arrive as a message
-// or not at all. The reversal is recorded in doc.go and in the sub-project's
-// design; it is a change of circumstance, not a change of mind.
+// No institution in this system needs to be TOLD about a movement on an account
+// it can read. A member bank's reserve at the central bank is the exception: it
+// moves in the CENTRAL BANK's book, which the member may not read, so the
+// movement has to arrive as a message or not at all.
 //
 // # Why a statement and not a notification
 //
@@ -43,10 +39,10 @@ func init() {
 // pretend otherwise.
 //
 // Deliberately omitted, and legal in the standard: MsgPgntn (this system sends
-// one page), Stmt/ElctrncSeqNb and LglSeqNb (there is no statement series yet —
-// see Task 19), Stmt/FrToDt (a settlement statement covers one cycle, named on
-// the entry, not a date range), TxsSummry, Ntry/NtryDtls and every charge,
-// interest and related-party element. Each is absent rather than empty.
+// one page), Stmt/ElctrncSeqNb and LglSeqNb (there is no statement series),
+// Stmt/FrToDt (a settlement statement covers one cycle, named on the entry, not
+// a date range), TxsSummry, Ntry/NtryDtls and every charge, interest and
+// related-party element. Each is absent rather than empty.
 type Camt053 struct {
 	XMLName       xml.Name                `xml:"urn:iso:std:iso:20022:tech:xsd:camt.053.001.08 Document"`
 	BkToCstmrStmt BankToCustomerStatement `xml:"BkToCstmrStmt"`

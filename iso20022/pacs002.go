@@ -14,12 +14,10 @@ func init() {
 // Pacs002 is FIToFIPaymentStatusReport: what happened to a message that was
 // sent earlier.
 //
-// This is the message that makes clearing ASYNCHRONOUS, and it has no
-// counterpart in the payment package's current model. A bank sends an
+// This is the message that makes clearing ASYNCHRONOUS. A bank sends an
 // instruction and does not learn its fate from the sending; it learns it later,
-// from a separate document that refers back by identifier. Everything about
-// sub-project 7b — the 202 Accepted, the status query, the mesh — follows from
-// this message existing.
+// from a separate document that refers back by identifier. The 202 Accepted, the
+// status query and the mesh all follow from this message existing.
 type Pacs002 struct {
 	XMLName         xml.Name                  `xml:"urn:iso:std:iso:20022:tech:xsd:pacs.002.001.10 Document"`
 	FIToFIPmtStsRpt FIToFIPaymentStatusReport `xml:"FIToFIPmtStsRpt"`

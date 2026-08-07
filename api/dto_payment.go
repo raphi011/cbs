@@ -23,14 +23,12 @@ type participantAccountsDTO struct {
 	// is a real operational queue — money the bank owes somebody it has not yet
 	// identified — and an account nothing renders is one nobody goes looking at.
 	Unclaimed string `json:"unclaimed"`
-	// VaultCash is the cash the bank is holding, and the only account here that
-	// is nobody else's promise. It is exposed for Unclaimed's reason and for a
-	// sharper one: since Task 18a it is the CONTRA LEG OF EVERY DEPOSIT, which is
-	// the most common transaction in this system. A statement renders a
-	// well-known account as a word and an unknown one as an opaque id, so leaving
-	// it out makes every customer's cash-in read as a bare account number — see
-	// buildKnownAccounts in web/src/lib/statement.ts, which is this field's only
-	// consumer and the reason it is on the wire at all.
+	// VaultCash is the cash the bank is holding, and the only account here that is
+	// nobody else's promise. It is the CONTRA LEG OF EVERY DEPOSIT, which is the
+	// most common transaction in this system; a statement renders a well-known
+	// account as a word and an unknown one as an opaque id, so leaving it out makes
+	// every customer's cash-in read as a bare account number — see
+	// buildKnownAccounts in web/src/lib/statement.ts, this field's only consumer.
 	VaultCash  string `json:"vaultCash"`
 	Settlement string `json:"settlement"`
 }
@@ -59,17 +57,11 @@ type participantDTO struct {
 	// can any cut-off it takes part in settle, because the instruction turns net
 	// positions into addresses through a routing directory this bank is not in.
 	//
-	// This used to say the field says whether the bank "can be paid", and that no
-	// clearing house routes to it. Both were measured false, and the correction
-	// belongs in the DTO because a wire contract that names a mechanism is
-	// asserting one: the mesh routes on its ACTOR TABLE, which Mesh.Admit fills at
-	// founding, so a payment addressed to a founded bank is relayed, accepted and
-	// reaches Cleared like any other and the cut-off carrying it is what fails.
-	// payment.FoundBankTx and web/src/lib/types.ts — this DTO's TypeScript twin —
-	// carry the same retraction; mesh/doc.go has the measurement, and records that
-	// no test in THAT package pins it. The narrowing is deliberate: what was
-	// checked is the transport's own suite, and a wider claim about this
-	// repository is not one that comment made.
+	// It does NOT say the bank cannot be paid. The mesh routes on its ACTOR TABLE,
+	// which Mesh.Admit fills at founding, so a payment addressed to a founded bank
+	// is relayed, accepted and reaches Cleared like any other and the cut-off
+	// carrying it is what fails. What refuses it is payment.ErrBankNotAdmitted, at
+	// Mesh.Submit and at the clearing house.
 	//
 	// It became a state a client can SEE when admission became a conversation: POST /members
 	// answers 202 with a founded bank, and the scheme's answer arrives at two
@@ -77,9 +69,8 @@ type participantDTO struct {
 	// every bank a caller could read was a member.
 	//
 	// It is a string of the domain's own values rather than a boolean, because
-	// "not a member" is not one condition — Task 19's reconciliation is what
-	// finds the admissions that stopped halfway, and a bool would have to be
-	// widened on the day it names one.
+	// "not a member" is not one condition: an admission can stop halfway, and a
+	// bool would have to be widened on the day it names one.
 	Status string `json:"status"`
 	// ProductID is the bank's default deposit product, created with its chart
 	// of accounts at onboarding. Every deposit account is opened FROM a
@@ -272,10 +263,8 @@ type mandateDTO struct {
 // mandate can later be presented to any pull scheme that accepts it — so unlike
 // paymentDTO there is no scheme to resolve an asset from.
 //
-// It comes off the ROW. It used to be resolved by the caller, out of the
-// debtor's bank's deposit register, and that read is gone with the field it
-// filled: see payment.Mandate.Asset and the note where mandateAssets used to be
-// in api/handlers_payment.go.
+// It comes off the ROW. Resolving it would read the debtor's bank's deposit
+// register — see payment.Mandate.Asset.
 func toMandateDTO(m payment.Mandate) mandateDTO {
 	return mandateDTO{
 		ID:          string(m.ID),
@@ -299,11 +288,11 @@ type clearingCycleDTO struct {
 	OpenedAt     time.Time        `json:"openedAt"`
 	ClosedAt     time.Time        `json:"closedAt,omitempty"`
 
-	// There is no settlementId, and a client that used to read one is being told
-	// something true by its absence: the settlement's id belongs to the
-	// SETTLEMENT AGENT and the clearing house this DTO is rendered from cannot
-	// learn it. See payment.ClearingCycle, where the field was. Status is what
-	// says a cut-off settled, and GET /settlements is where the settlements are.
+	// There is no settlementId, and a client is being told something true by its
+	// absence: the settlement's id belongs to the SETTLEMENT AGENT and the clearing
+	// house this DTO is rendered from cannot learn it. See payment.ClearingCycle.
+	// Status is what says a cut-off settled, and GET /settlements is where the
+	// settlements are.
 }
 
 // toClearingCycleDTO renders a cycle, including the asset it clears in. A
@@ -352,10 +341,9 @@ type settlementDTO struct {
 
 // toSettlementDTO renders a settlement, including the asset it settles.
 //
-// The asset comes off the ROW. It used to be passed in, resolved by the caller
-// as settlement -> its cycle -> the cycle's scheme, and that chain crosses an
-// institution boundary the settlement agent cannot cross — see the note where
-// settlementAsset used to be, and payment.Settlement.Asset.
+// The asset comes off the ROW. Deriving it as settlement -> its cycle -> the
+// cycle's scheme crosses an institution boundary the settlement agent cannot
+// cross — see payment.Settlement.Asset.
 func toSettlementDTO(s payment.Settlement) settlementDTO {
 	return settlementDTO{
 		ID:           string(s.ID),
@@ -449,19 +437,14 @@ type initiatePaymentRequest struct {
 	//
 	// # The agent fields have been here, then not, and are here again
 	//
-	// They were removed at Task 14 because they were a routing hole: the agent
-	// goes on the wire as CdtrAgt/DbtrAgt and the clearing house routes on it, so
-	// a payer who typed the wrong BIC chose which bank received the payment. The
-	// fix was to DERIVE both from the bank row of the participant the request
-	// names.
-	//
-	// Task 18a put them back, because that row is the counterparty's own and a
-	// bank holds only its own — see payment.SubmitPaymentTx, which sets out why
-	// there is no second source and why the network has no directory service to
-	// be one. What makes an asserted agent safe is the other half of the same
-	// change: a bank resolves an address in its own register only, so a
-	// misdirected payment is refused with AC01 by the bank that was named rather
-	// than silently accepted for another bank's customer.
+	// The agent goes on the wire as CdtrAgt/DbtrAgt and the clearing house routes
+	// on it, so a payer who types the wrong BIC chooses which bank receives the
+	// payment. It is asserted anyway, because the row it could be derived from is
+	// the counterparty's own and a bank holds only its own — see
+	// payment.SubmitPaymentTx. What makes an asserted agent safe is that a bank
+	// resolves an address in its own register only, so a misdirected payment is
+	// refused with AC01 by the bank that was named rather than silently accepted
+	// for another bank's customer.
 	//
 	// The submitting bank's OWN side is still ignored on both fields. A payer
 	// does not rename themselves and does not reroute their own bank; both come

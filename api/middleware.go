@@ -19,14 +19,10 @@ func (s *Server) withMiddleware(h http.Handler) http.Handler {
 // screenRequestTarget refuses a URL whose decoded path or query carries a
 // control character.
 //
-// This is the read half of the rule ledger.ValidateText states for writes, and
-// it survives the same way that one does. It was written for a divergence —
-// %00 in a path is decoded into the path parameter and handed to the store as a
-// lookup key, and store/mem answered "no such row" where store/pg raised
-// SQLSTATE 22021, so `GET /participants/bank%001` was a 404 on one backend and a
-// 500 carrying a raw SQLSTATE on the other. SQLite raises neither; the rule
-// stays, because what a request may name is this system's question and not a
-// database's.
+// This is the read half of the rule ledger.ValidateText states for writes. A %00
+// in a path is decoded into the path parameter and handed to the store as a
+// lookup key, and what a request may name is this system's question rather than
+// a database's.
 //
 // It sits here rather than in the domain because a URL-borne identifier passes
 // through no domain constructor: it is read straight out of the request and used

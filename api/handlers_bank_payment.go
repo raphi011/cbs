@@ -18,8 +18,7 @@ import (
 // received, not just the debits.
 //
 // Compared against the AGENTS, because a payment names each side's bank there
-// and no longer on the ref — see payment.PartyRef. The values are the same ones
-// this comparison always used; what changed is which field holds them.
+// and not on the ref — see payment.PartyRef.
 func (s *Server) isParty(p payment.Payment) bool {
 	return p.DebtorDetails.Agent == s.boundBIC() || p.CreditorDetails.Agent == s.boundBIC()
 }
@@ -82,12 +81,10 @@ type submittedPaymentDTO struct {
 // connection in the real thing either — so submission lands on the bank, and
 // the bank is what forwards it.
 //
-// The answer is 202 with an identifier rather than 201 with the payment, and as
-// of sub-project 7b that is TRUE rather than anticipatory. 6a chose the shape
-// ahead of the behaviour, because a real CSM answers with a pacs.002 later and
-// not by return value; the mesh is what made it so. When this response is
-// written the payment is Initiated, in no cycle, and the counterparty has not
-// seen it. Ask again with the identifier.
+// The answer is 202 with an identifier rather than 201 with the payment,
+// because a real CSM answers with a pacs.002 later and not by return value. When
+// this response is written the payment is Initiated, in no cycle, and the
+// counterparty has not seen it. Ask again with the identifier.
 //
 // # Which failures reach the caller
 //
@@ -135,8 +132,8 @@ func (s *Server) handleSubmitPayment(w http.ResponseWriter, r *http.Request) {
 	if sc.Direction() == payment.Pull {
 		submitter = dom.CreditorDetails.Agent
 	}
-	// An OMITTED submitting agent is the ORDINARY case, and this used to refuse it
-	// as a missing required field.
+	// An OMITTED submitting agent is the ORDINARY case: this bank is the authority
+	// on itself and fills its own side from its own register.
 	//
 	// The field it read was the submitter's own PARTICIPANT, which an instruction
 	// had to name because that is what the payment recorded. A payment records

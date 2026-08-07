@@ -24,8 +24,8 @@ var utf8BOM = []byte{0xEF, 0xBB, 0xBF}
 // anything: a Document Unmarshal could not dispatch back to a concrete type is
 // not a document this codec can round-trip, and Marshal refuses to produce one.
 //
-// Output is indented. These documents are read by people in this repository —
-// they end up in golden files and, in sub-project 7c, on a screen.
+// Output is indented. These documents are read by people in this repository:
+// they end up in golden files and on a screen.
 func Marshal(env Envelope) ([]byte, error) {
 	if env.Document == nil {
 		return nil, fmt.Errorf("%w: Document", ErrMissingElement)
@@ -64,17 +64,15 @@ func Marshal(env Envelope) ([]byte, error) {
 // The sections below are the authority on the exact set; this sentence is a
 // summary and does not promise to be exhaustive.
 //
-// Five checks return a plain error rather than one of this package's
-// sentinels: the root's name, there being only one top-level element, what may
-// follow a closed envelope, a repeated AppHdr or Document, and input that
-// never contained a root element at all. Each says the input is a structurally
-// different document, not a mandatory element that happens to be missing, so
-// naming them ErrMissingElement would misname the problem. A missing Document
-// is deliberately NOT among them — that one really is an absent mandatory
-// element, and reporting it as anything else was a bug once already. Nor is a
+// Five checks return a plain error rather than one of this package's sentinels:
+// the root's name, there being only one top-level element, what may follow a
+// closed envelope, a repeated AppHdr or Document, and input that never contained
+// a root element at all. Each says the input is a structurally different
+// document, not a mandatory element that happens to be missing, so naming them
+// ErrMissingElement would misname the problem. A missing Document is deliberately
+// NOT among them — that one really is an absent mandatory element. Nor is a
 // missing AppHdr: an envelope that opened and closed carrying neither element
-// used to come back as a bare io.EOF, which is the same defect one element
-// over. See the notEOF section below.
+// would otherwise come back as a bare io.EOF. See the notEOF section below.
 //
 // It reads the input as a single stream of tokens from one *xml.Decoder,
 // rather than unmarshalling into a struct and then re-parsing a captured
@@ -150,14 +148,11 @@ func Marshal(env Envelope) ([]byte, error) {
 // io.EOF back, and every other decoder error — from DecodeElement, from Skip,
 // from a mid-stream token — goes through notEOF.
 //
-// io.EOF is the one error a transport layer is idiomatically required to read
-// as "the peer closed cleanly, read more" rather than "this content is bad",
-// and sub-project 7b puts this function behind a network boundary — where a
-// framing bug that truncated a body would otherwise arrive as a clean
-// disconnect. See TestUnmarshalSurvivesHostileInput, which asserts the
-// sentinel class of every hostile case and that none of them is io.EOF, and
-// FuzzUnmarshal, which asserts it for arbitrary bytes — the only way to make a
-// claim quantified over every error into one a test can hold.
+// io.EOF is the one error a transport layer is idiomatically required to read as
+// "the peer closed cleanly, read more" rather than "this content is bad", and
+// this function sits behind a network boundary — where a framing bug that
+// truncated a body would otherwise arrive as a clean disconnect. See
+// TestUnmarshalSurvivesHostileInput and FuzzUnmarshal.
 //
 // The envelope-level guard says nothing about repetition INSIDE one envelope,
 // so both elements this codec dispatches on are guarded where they are
@@ -315,16 +310,12 @@ func Unmarshal(data []byte) (Envelope, error) {
 				rootClosed = true
 			}
 		case xml.CharData:
-			// Depth 0 is OUTSIDE the root element, in either direction: the
-			// prolog before <Envelope> and whatever follows </Envelope> are the
-			// same position as far as the XML grammar is concerned, and XML 1.0
-			// forbids character data in both. The guard used to fire only once
-			// a result existed, which made it a trailing-content rule and left
-			// the prolog open — so "junk<Envelope>…</Envelope>" was accepted
-			// while "<Envelope>…</Envelope>junk" was refused, and a conforming
-			// parser handed the first would reject what this one returned.
-			// encoding/xml is lenient in the prolog and will not raise it for
-			// us, so it is raised here.
+			// Depth 0 is OUTSIDE the root element, in either direction: the prolog
+			// before <Envelope> and whatever follows </Envelope> are the same
+			// position as far as the XML grammar is concerned, and XML 1.0 forbids
+			// character data in both. A guard that fired only once a result existed
+			// would be a trailing-content rule and would leave the prolog open.
+			// encoding/xml is lenient in the prolog and will not raise it for us.
 			//
 			// A leading UTF-8 byte order mark is the one thing at depth 0 that
 			// LOOKS like character data and is not. XML 1.0 §4.3.3 and

@@ -14,8 +14,8 @@ var (
 	// the register.
 	ErrHoldNotFound = errors.New("hold not found")
 
-	// ErrHoldNotActive is returned when attempting to release or capture a
-	// hold that is no longer in the Active state.
+	// ErrHoldNotActive is returned when releasing or capturing a hold that is not
+	// Active.
 	ErrHoldNotActive = errors.New("hold is not active")
 
 	// ErrSnapshotNotFound is returned when no end-of-day snapshot exists for
@@ -65,11 +65,10 @@ var (
 	// account — a withdrawal or a new hold. Credits are permitted and are what
 	// brings such an account back to life, so this is never returned for one.
 	//
-	// It exists because a blocked debit on a dormant account used to fall
-	// through requireActive's default branch and report
-	// ErrInvalidStatusTransition — an error about changing a status, raised by
-	// an operation that was not changing one. Dormancy is an ordinary state with
-	// an ordinary rule, and the error a caller sees should say so.
+	// Dormancy is an ordinary state with an ordinary rule, so a blocked debit on a
+	// dormant account says so rather than reporting ErrInvalidStatusTransition —
+	// an error about changing a status, raised by an operation that is not
+	// changing one.
 	ErrAccountDormant = errors.New("account is dormant")
 
 	// ErrAccountClosed is returned when an operation is attempted on a closed

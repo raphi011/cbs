@@ -71,10 +71,10 @@ func (s *Server) centralBankRouter() *router {
 	// banks a network starts with is one operator's act, and this is that
 	// operator's console.
 	mux.HandleFunc("POST /members", s.handleAddParticipant)
-	// And the read of what that act produced, which moved here from the clearing
-	// house at Task 18c because the clearing house has no banks table — the csm
-	// shape holds a roster and nothing else, and a roster deliberately omits the
-	// founded bank this listing exists to show (see handleListParticipants).
+	// And the read of what that act produced. It is here rather than at the
+	// clearing house because the clearing house has no banks table — the csm shape
+	// holds a roster and nothing else, and a roster deliberately omits the founded
+	// bank this listing exists to show (see handleListParticipants).
 	//
 	// # These two routes are the OPERATOR's, not the settlement agent's
 	//
@@ -85,12 +85,9 @@ func (s *Server) centralBankRouter() *router {
 	// reach past that binding, through s.nets, to institutions that are not this
 	// one.
 	//
-	// It is not a new exception and the POST has been one since it was written: it
-	// founds a bank, which CREATES AND WRITES that bank's entire database — its
-	// book, its chart, its accounts, its product — through the mesh. Naming the
-	// exception once, over the pair, is what this comment is; Server.populate's doc
-	// called itself "the one place in this package where more than one institution
-	// is legitimately in view", and it was already the second.
+	// The POST is an exception to that: it founds a bank, which CREATES AND WRITES
+	// that bank's entire database — its book, its chart, its accounts, its product
+	// — through the mesh.
 	//
 	// What justifies it is the same thing that justifies POST /admin/reset sitting
 	// here: founding the banks a network starts with, listing them, and rebuilding
@@ -99,21 +96,17 @@ func (s *Server) centralBankRouter() *router {
 	// not the claim that the settlement agent is performing them.
 	mux.HandleFunc("GET /members", s.handleListParticipants)
 	// There is no POST here, and its absence is the shape of what the mesh
-	// changed. Settling used to be an operator's act — a human opened the
-	// central bank's console and pressed a button on a cycle somebody else had
-	// closed, with nothing between the two consoles but the operators. A
-	// settlement is now performed on INSTRUCTION: the clearing house reaches a
-	// cut-off, sends a pacs.009, and the central bank's actor answers ACSC or
+	// changed. A settlement is performed on INSTRUCTION: the clearing house reaches
+	// a cut-off, sends a pacs.009, and the central bank's actor answers ACSC or
 	// RJCT/AM04 (mesh.centralBank). A route that let a human do it beside that
 	// would be a second way to settle the same cycle, racing the first.
 	//
-	// So the two reads below are what is left, and they are the whole point of
-	// keeping them: the console no longer drives settlement, it WATCHES it. A
-	// settlement row is this institution's own record of a cut-off it
-	// discharged, and the net positions on it, beside the reserves, are what it
-	// moved.
+	// So the two reads below are what is left, and they are the point of keeping
+	// them: the console does not drive settlement, it WATCHES it. A settlement row
+	// is this institution's own record of a cut-off it discharged, and the net
+	// positions on it, beside the reserves, are what it moved.
 	//
-	// # GET /cycles and GET /cycles/{cid} were here too, and Task 18d took them
+	// # GET /cycles and GET /cycles/{cid} are not here
 	//
 	// There were four reads, and the two on CYCLES were the clearing house's
 	// rows read on this listener — which was invisible while one store held both
@@ -145,15 +138,13 @@ func (s *Server) clearingHouseRouter() *router {
 	// membership is watched from, and watching a bank become a member needs the
 	// banks that are not one yet.
 	//
-	// The argument was right and this institution cannot act on it. Task 18c gives
-	// the clearing house a database with no banks table in it; what it holds is
+	// The clearing house has a database with no banks table in it; what it holds is
 	// roster_entries, written by payment.AdmitMemberTx from the settlement agent's
-	// acknowledgement, and a roster is exactly the list that omits the founded bank
-	// the old comment said the listing was for. So the two halves separated rather
-	// than one being bent into the other: the roster is below, on GET /roster, and
-	// it is this institution's own answer; the bank list is on the central bank's
-	// listener beside the route that founds them, where it is the operator's read
-	// rather than an institution's.
+	// acknowledgement, and a roster is exactly the list that omits a founded bank.
+	// So the two are separate: the roster is below, on GET /roster, and it is this
+	// institution's own answer; the bank list is on the central bank's listener
+	// beside the route that founds them, where it is the operator's read rather
+	// than an institution's.
 	//
 	// This institution's share of admission is unchanged: relay a bank's
 	// application, refuse an address it has already admitted somebody else to, and
@@ -165,25 +156,22 @@ func (s *Server) clearingHouseRouter() *router {
 	// addressed to this member be sent", which is a question about addresses and
 	// not about accounts.
 	//
-	// GET /directory used to be here and is gone. It resolved an IBAN across the
-	// whole network by sweeping every bank's register — a clearing house reading
-	// every member's deposit accounts, which is not a thing this institution holds
-	// and, from Task 18c, not a thing it could reach. The csm shape has no deposit
-	// register at all. What replaced it on a BANK's port is a lookup in that
-	// bank's own register (api/handlers_directory.go); what replaces it here is
-	// this, because the answer a clearing house has always actually had is the
-	// roster.
+	// GET /directory is not here. Resolving an IBAN across the whole network would
+	// sweep every bank's register — a clearing house reading every member's deposit
+	// accounts, which is not a thing this institution holds and, since the csm
+	// shape has no deposit register, not a thing it could reach. The bank's port
+	// has a lookup in that bank's own register (api/handlers_directory.go); what a
+	// clearing house has always actually had is the roster.
 	mux.HandleFunc("GET /roster", s.handleListRoster)
 	mux.HandleFunc("GET /assets", s.handleListAssets)
 	mux.HandleFunc("GET /payments/audit", s.handlePaymentAudit)
-	// The MANDATES are not here and used to be. A mandate is the creditor
-	// bank's own row — in SEPA the creditor holds it, and the bank that checks
-	// one at submission is the creditor's (payment.SDD.ValidateMandate) — so
-	// this console held every member's authorisations over every other member's
-	// customers' accounts, and rendered each one by reading the DEBTOR bank's
-	// deposit register for its asset. The `csm` shape has no deposit register,
-	// so that read had no answer coming. See registerMandateRoutes on the bank's
-	// surface below, and payment.Mandate, which carries its own asset now.
+	// The MANDATES are not here. A mandate is the creditor bank's own row — in
+	// SEPA the creditor holds it, and the bank that checks one at submission is the
+	// creditor's (payment.SDD.ValidateMandate) — so this console would hold every
+	// member's authorisations over every other member's customers' accounts, and
+	// render each by reading the DEBTOR bank's deposit register for its asset. The
+	// csm shape has no deposit register. See registerMandateRoutes on the bank's
+	// surface below, and payment.Mandate, which carries its own asset.
 	s.registerPaymentRoutes(mux)
 	return mux
 }
@@ -195,10 +183,9 @@ func (s *Server) bankRouter() *router {
 	// this listener reads the bound identity instead of the path.
 	mux.HandleFunc("GET /me", s.handleGetParticipant)
 	mux.HandleFunc("GET /assets", s.handleListAssets)
-	// A bank resolving an address in its OWN register. It used to be described
-	// here as "validating a payee's address before accepting an instruction",
-	// which it can no longer do and which was only ever true because the lookup
-	// swept every other bank's register.
+	// A bank resolving an address in its OWN register. It cannot validate a payee's
+	// address before accepting an instruction: that payee is another bank's
+	// customer.
 	//
 	// What is left is a real question and a narrower one: which of this bank's
 	// accounts holds this address. A customer's own IBAN, an on-us payee, an
@@ -208,10 +195,10 @@ func (s *Server) bankRouter() *router {
 	// payment.ResolveIdentifier.
 	mux.HandleFunc("GET /directory", s.handleResolveIdentifier)
 	mux.HandleFunc("POST /deposits", s.handleFundDeposit)
-	// The other half of what POST /deposits used to do in one call. Cash in is one
-	// institution's act and lands in this bank's vault; moving it onto reserve is
-	// a conversation with the central bank, so it is a second request and answers
-	// 202. See handleLodgeReserves.
+	// The other half of taking cash in. Cash in is one institution's act and lands
+	// in this bank's vault; moving it onto reserve is a conversation with the
+	// central bank, so it is a second request and answers 202. See
+	// handleLodgeReserves.
 	mux.HandleFunc("POST /lodgements", s.handleLodgeReserves)
 	mux.HandleFunc("GET /audit", s.handleLedgerAudit)
 	mux.HandleFunc("GET /deposit-audit", s.handleDepositAudit)

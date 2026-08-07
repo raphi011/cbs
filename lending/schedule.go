@@ -40,12 +40,11 @@ import (
 //
 // # The rate is an argument, and that is the point
 //
-// It used to be read off the facility. Taking it explicitly makes visible what
-// was implicit: the schedule is a PLAN PINNED TO THE TERMS IN FORCE AT
-// ACTIVATION. Interest now follows an effective-dated timeline and the schedule
-// does not, which is exactly why repricing a term loan that already has one is
-// refused — see ErrScheduleWouldDiverge. This argument and that error are the
-// same sentence approached from opposite ends.
+// Taking it explicitly rather than reading it off the facility makes visible
+// what would otherwise be implicit: the schedule is a PLAN PINNED TO THE TERMS
+// IN FORCE AT ACTIVATION. Interest follows an effective-dated timeline and the
+// schedule does not, which is why repricing a term loan that already has one is
+// refused — see ErrScheduleWouldDiverge.
 //
 // Returns nil for a revolving line, which has no schedule to generate: it
 // appends one instalment per billing cycle instead, when interest is charged.

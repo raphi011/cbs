@@ -28,18 +28,13 @@ var schemaFS embed.FS
 //
 // # No advisory lock, and none is needed
 //
-// store/pg takes one, because several processes can reach one Postgres server
-// and two of them migrating at once would apply the same file twice. SQLite has
-// no equivalent and the situation does not arise: one writer at a time is the
-// database's own guarantee, so the second migrator waits at the first statement
-// and then finds the applied row already there.
+// No advisory lock: SQLite admits one writer at a time, so a second migrator
+// waits at the first statement and then finds the applied row already there.
 //
 // # Keyed on filename, with no checksum
 //
 // A migration that is edited after it has run stays applied and the edit is
-// never seen. That is the limitation store/pg documents and it is inherited
-// deliberately rather than fixed here: while each shape has one migration the
-// difference is invisible.
+// never seen. While each shape has one migration the difference is invisible.
 //
 // The filename is the key and the shape's directory is NOT part of it, which is
 // safe only because no database is ever migrated as two shapes. A store is

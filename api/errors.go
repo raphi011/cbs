@@ -101,11 +101,10 @@ func errorStatus(err error) int {
 		// on a bank admitted in dollars only, paying in a euro scheme: 422,
 		// "participant does not hold accounts in this asset: EUR in Bank A".
 		//
-		// It no longer reaches a settlement route, because there is none:
-		// settling is performed on instruction now (mesh.centralBank), so that
-		// refusal goes back to the clearing house as a pacs.002. And it no longer
-		// reaches the reserve routes, which report a missing account as a missing
-		// row (see Server.reserveRows).
+		// It does not reach a settlement route, because there is none: settling is
+		// performed on instruction (mesh.centralBank), so that refusal goes back to
+		// the clearing house as a pacs.002. Nor the reserve routes, which report a
+		// missing account as a missing row (see Server.reserveRows).
 		errors.Is(err, payment.ErrParticipantAssetNotFound),
 		// A bank the settlement agent holds no account for is a bank that has
 		// founded itself and not yet joined — a legitimate state since admission
@@ -174,9 +173,9 @@ func errorStatus(err error) int {
 		// on the submission path looks the other side up, so the instruction
 		// must carry it.
 		errors.Is(err, payment.ErrCounterpartyNotNamed),
-		// Its sibling since Task 18a: the counterparty's BIC is asserted rather
-		// than derived, so an instruction can now omit or mangle it. Same
-		// category and same 422 — the caller can fix it by supplying one.
+		// Its sibling: the counterparty's BIC is asserted rather than derived, so an
+		// instruction can omit or mangle it. Same category and same 422 — the caller
+		// can fix it by supplying one.
 		errors.Is(err, payment.ErrCounterpartyAgentNotNamed),
 		// A malformed BIC is well-formed JSON naming a field that is not a
 		// structurally valid ISO 9362 code — the same category as an
@@ -222,8 +221,7 @@ func errorStatus(err error) int {
 	// product.ErrHashMismatch is deliberately NOT mapped, so it falls through to
 	// 500. A published version whose content no longer matches its hash means
 	// stored data was edited behind the system's back: the caller did nothing
-	// wrong, and a 4xx would tell them to fix their request. It is the one
-	// catalogue error that is the server's problem.
+	// wrong, and a 4xx would tell them to fix their request.
 	default:
 		return http.StatusInternalServerError
 	}

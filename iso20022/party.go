@@ -16,10 +16,8 @@ var bicPattern = regexp.MustCompile(`^[A-Z]{6}[A-Z0-9]{2}([A-Z0-9]{3})?$`)
 // BIC is a business identifier code: the address of a financial institution.
 //
 // In pacs.008 it appears as BICFI inside DbtrAgt and CdtrAgt, and it is
-// MANDATORY there — which is why sub-project 7 reopened sub-project 5's
-// decision to defer bank-level addressing. A SEPA payment routes agent first
-// and account second: the BIC says which bank, the IBAN says which account
-// within it.
+// MANDATORY there. A SEPA payment routes agent first and account second: the BIC
+// says which bank, the IBAN says which account within it.
 type BIC string
 
 // Validate reports whether the code is structurally a BIC.
@@ -50,11 +48,10 @@ var ibanSeparators = strings.NewReplacer(" ", "", "-", "")
 //
 // # This type does not verify the check digit, on purpose
 //
-// A real IBAN's third and fourth characters are an ISO 7064 mod-97 checksum
-// over the rest, and this package does not compute it. That is inherited from
-// sub-project 5, which refused mod-97 validation because it would have made the
-// seed's readable SE89-AURORA-1001 illegal and replaced it with opaque digits
-// in every screenshot, worked example and quiz answer in the repository.
+// A real IBAN's third and fourth characters are an ISO 7064 mod-97 checksum over
+// the rest, and this package does not compute it: it would make the seed's
+// readable SE89-AURORA-1001 illegal and replace it with opaque digits in every
+// screenshot, worked example and quiz answer in the repository.
 //
 // The refusal costs nothing here, which is the part worth knowing. The schema
 // constrains an IBAN by PATTERN and not by checksum, so a readable identifier
@@ -69,16 +66,13 @@ var ibanSeparators = strings.NewReplacer(" ", "", "-", "")
 // for readability, so Compact is what turns a stored deposit.Identifier value
 // into the form that goes on the wire.
 //
-// Compaction is NOT reversible: SE89AURORA1001 cannot tell you where the
-// hyphens were. Code matching a received IBAN against a stored identifier must
-// therefore compact BOTH sides and compare, rather than compacting one and
-// hoping. That was left to sub-project 7b, and 7b did it: the repository's
-// account directory compares identifiers in a canonical form rather than
-// literally, so an account opened with the readable form resolves from a message
-// carrying the compact one. The rule is stated on that side, in the layer that
-// owns the comparison; the separator set is duplicated there rather than
-// imported, because this package imports nothing from the repository, and a test
-// on that side pins the two copies together.
+// Compaction is NOT reversible: SE89AURORA1001 cannot tell you where the hyphens
+// were. Code matching a received IBAN against a stored identifier must therefore
+// compact BOTH sides and compare, rather than compacting one and hoping. The
+// rule is stated on the side that owns the comparison —
+// deposit.Identifier.MatchValue — because this package imports nothing from the
+// repository; the separator set is duplicated there and a test on that side pins
+// the two copies together.
 type IBAN string
 
 // Compact returns the IBAN with display separators removed.
@@ -110,9 +104,7 @@ func (i IBAN) Validate() error {
 // for character the same as BICFIDec2014Identifier's.
 // TestAnyBICAndBICFIShareOneLexicalSpace is what checks that, over every XSD in
 // testdata/xsd. It skips on a machine with no schemas and fails there under
-// ISO20022_REQUIRE_SCHEMAS, the same way the golden schema check does — so the
-// claim is checked wherever it can be, rather than asserted everywhere and
-// checked nowhere, which is what this paragraph used to do.
+// ISO20022_REQUIRE_SCHEMAS.
 //
 // The BIC type is therefore the right one here and not merely a convenient one.
 // What differs is the ROLE: BICFI addresses an

@@ -317,39 +317,14 @@ type Bank struct {
 	// ability to read and write the named bank's ledger, so whoever holds it can
 	// reach that bank's book through a method they legitimately have.
 	//
-	// mesh/ops.go's GetParticipant handed one to a counterparty's handler on
-	// every status and every settlement fan-out, and Task 17 closed that: the
-	// mesh asks for a RosterEntry now and no method on any of its three
-	// interfaces returns a handle.
-	//
 	// Network.GetBank still returns one, still bound, and NOT all of its callers
 	// are the bank itself. Five call it, and they are three different readers:
 	//
-	//   - api/server.go, the bank bound to the listener, reading its own row,
-	//     and api/handlers_participant.go, the operator console reading a
-	//     bank's reserves. Neither is another institution.
-	//   - api/handlers_directory.go, on a BANK's port (api/surface.go
-	//     registers GET /directory on the bank router as well as the clearing
-	//     house's), resolving an address and then reading the account holder's
-	//     name out of whichever bank turns out to hold it. That is one bank
-	//     reading another bank's register, it is crossing 2 in the spec's table
-	//     (ResolveIdentifierTx), it is open and Task 18's, and
-	//     mesh/books_test.go measures its mesh-side twin under "The receiving
-	//     bank reaches every bank's book, by design of the directory".
-	//   - api/handlers_payment.go's mandateAssets, on the CLEARING HOUSE's port
-	//     only — GET/POST /mandates is registered by registerPaymentRoutes,
-	//     which no other router calls. So the reader there is the clearing
-	//     house, not a bank, and what it does is bind every debtor bank's
-	//     handles in turn to answer one question about each: which asset a
-	//     mandate's debtor account is denominated in. It reaches those books
-	//     directly off the id on the mandate and resolves nothing, so it is
-	//     neither crossing 2 nor any other row of that table — it is an API
-	//     read path, and the spec says in as many words that both this
-	//     sub-project's instruments are blind to an operation that never
-	//     becomes a message.
-	//
-	// None of the three is closed by this task, and this comment must not read
-	// as though any were.
+	//   - api/server.go, the bank bound to the listener, reading its own row, and
+	//     api/handlers_participant.go, the operator console reading a bank's
+	//     reserves. Neither is another institution.
+	//   - api/handlers_directory.go, on a BANK's port, resolving an address in that
+	//     bank's OWN register. It reaches no other bank's book.
 	//
 	// json:"-" for a second reason: the participant.added audit payload is a
 	// snapshot of the stored row, and a handle is neither data nor meaningful

@@ -151,16 +151,13 @@ func (i ReturnReasonInformation) validate() error {
 // is specifically shaped to express, and a reader comparing this against the
 // real schema would find a hole with no explanation.
 //
-// The two amounts also have DIFFERENT schema types — OrgnlIntrBkSttlmAmt is an
+// The two amounts have DIFFERENT schema types — OrgnlIntrBkSttlmAmt is an
 // ActiveOrHistoricCurrencyAndAmount and RtrdIntrBkSttlmAmt an
 // ActiveCurrencyAndAmount — and this package maps both to one Go type. That is
 // safe rather than sloppy: the two complexTypes' facets are identical (five
-// fraction digits, eighteen total digits, non-negative) and differ only in
-// which currency code list the Ccy attribute draws from, a list this package
-// does not model either way. The distinction the standard is drawing is about
-// whether a currency may be one that no longer exists, which is meaningful for
-// an amount quoted from a past instruction and meaningless for SEPA's
-// EUR-only rulebook.
+// fraction digits, eighteen total digits, non-negative) and differ only in which
+// currency code list the Ccy attribute draws from, a list this package does not
+// model either way.
 //
 // # OrgnlTxRef was absent, and is reversed here — and only here
 //
@@ -172,14 +169,13 @@ func (i ReturnReasonInformation) validate() error {
 // there — a rejection answers a payment the same message flow already carries
 // a record of, so nothing there needs OrgnlTxRef to find its way home.
 //
-// A pacs.004 answers a payment that has already SETTLED, and sub-project 8 is
-// what makes that difference load-bearing: once settlement is split one
-// database per institution, the settlement agent that must reverse a return's
-// two reserve legs holds no payment row to read DbtrAgt/CdtrAgt from. It has
-// only what arrived on the wire. So this package implements the narrow slice
-// of OrgnlTxRef those two agents are — OriginalTransactionReference below,
-// not the twenty-field structure the standard defines — and leaves the rest
-// of the omission exactly as PaymentTransactionStatus describes it.
+// A pacs.004 answers a payment that has already SETTLED, and the settlement
+// agent that must reverse its two reserve legs holds no payment row to read
+// DbtrAgt/CdtrAgt from: it has only what arrived on the wire. So this package
+// implements the narrow slice of OrgnlTxRef those two agents are —
+// OriginalTransactionReference below, not the twenty-field structure the
+// standard defines — and leaves the rest of the omission as
+// PaymentTransactionStatus describes it.
 //
 // The field order is a subsequence of PaymentTransaction112's, which is what
 // the schema requires: RtrId, OrgnlGrpInf, OrgnlEndToEndId, OrgnlTxId,

@@ -1275,8 +1275,8 @@ func (r *Register) CheckWithdrawalTx(ctx context.Context, tx Tx, id AccountID, a
 // status other than Active fails it, dormancy included.
 //
 // Dormant names itself rather than falling through to
-// ErrInvalidStatusTransition, which is what it used to do: that error is about
-// changing a status, and a refused withdrawal is not changing one.
+// ErrInvalidStatusTransition: that error is about changing a status, and a
+// refused withdrawal is not changing one.
 func requireActive(acct Account) error {
 	switch acct.Status {
 	case Active:
@@ -1478,17 +1478,16 @@ func (r *Register) GetSnapshot(ctx context.Context, id AccountID, date time.Time
 // force on that day, the unarranged rate on anything beyond it. Both, and the
 // limit itself, come from the terms row in force on the day being accrued.
 //
-// A gap of several days is therefore exact rather than approximate: every day
-// in the span accrues on the balance that was actually in force on it, which is
-// what a bank does and what a missed end-of-day used to get wrong.
+// A gap of several days is therefore exact rather than approximate: every day in
+// the span accrues on the balance that was actually in force on it, which is
+// what a bank does.
 //
 // # Idempotency, and how a backdated posting is corrected
 //
 // LastAccrualDate never moves backwards, so re-running an end-of-day for a date
 // already covered is a no-op rather than a second charge. It is also a no-op by
-// arithmetic now: the same date over the same history produces the same gross
-// and therefore a zero delta, so the guard has one fewer reason behind it than
-// it used to.
+// arithmetic: the same date over the same history produces the same gross and
+// therefore a zero delta.
 //
 // A posting which arrives backdated is trued up by the NEXT day's run rather
 // than by rewinding this one. Each run recomputes the whole of the account's
@@ -1544,8 +1543,8 @@ func (r *Register) accrueOverdraftAccountTx(ctx context.Context, tx Tx, acct Acc
 	}
 
 	// The whole timeline, in one read, resolved per day in Go below. The three
-	// guards that used to sit here do not survive as a trio, and lumping them
-	// together is how this would acquire a bug:
+	// guards below are separate because lumping them together is how this would
+	// acquire a bug:
 	//
 	//   - Status == Closed is unchanged, above.
 	//   - TermsEffectiveFrom.IsZero() meant "no window", and there is always a

@@ -86,13 +86,11 @@ func (h DirectDebitGroupHeader) validate() error {
 // dispute.
 //
 // Both fields are minOccurs="0" in MandateRelatedInformation14 — the ISO
-// standard requires NEITHER. Both are mandatory in the EPC guidelines: this
-// package keeps that distinction sharp elsewhere on purpose (see CashAccount's
-// doc comment) and it matters here for the same reason — a debtor's bank
-// cannot check a dispute against a mandate identifier or signature date that
-// never arrived. payment.Mandate has CreatedAt and no signature date, so
-// sub-project 7b must either add one or map CreatedAt and document the
-// elision.
+// standard requires NEITHER — and both are mandatory in the EPC guidelines. This
+// package keeps that distinction sharp on purpose (see CashAccount), and it
+// matters here because a debtor's bank cannot check a dispute against a mandate
+// identifier or signature date that never arrived. payment.Mandate has CreatedAt
+// and no signature date.
 type MandateRelatedInformation struct {
 	MndtId    string  `xml:"MndtId"`
 	DtOfSgntr ISODate `xml:"DtOfSgntr"`

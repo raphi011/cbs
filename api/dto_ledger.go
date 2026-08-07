@@ -56,8 +56,7 @@ func toAccountDTO(a ledger.Account) accountDTO {
 //
 // Balance is an integer in the account's minor units, so the asset it is
 // denominated in travels with it — the same rule balanceDTO follows on the
-// deposit layer. This response used to be a bare `{accountId, balance}` map
-// literal; a number with no asset is not an amount.
+// deposit layer. A number with no asset is not an amount.
 type accountBalanceDTO struct {
 	AccountID string `json:"accountId"`
 	Asset     string `json:"asset"`
@@ -93,9 +92,8 @@ type entryDTO struct {
 	// PostTransaction resolves every leg's date before storing it, so no reader
 	// has to fall back to the parent.
 	//
-	// Rendering only the transaction-level date, as this used to, showed one
-	// date for a posting whose legs disagree — the one place the ledger's
-	// per-leg value dating was invisible from outside Go.
+	// Per LEG, because a posting's two legs can take economic effect on different
+	// days: the transaction-level date alone would hide that.
 	ValueDate *time.Time `json:"valueDate,omitempty"`
 }
 
@@ -130,12 +128,10 @@ func entryAccountIDs(txs []ledger.Transaction) []ledger.AccountID {
 	return ids
 }
 
-// entryAssets resolves the asset of every account referenced by any entry
-// across txs, in one Book.GetAccounts call. Rendering a listing of N
-// transactions used to call Book.GetAccount once per entry — one BEGIN…COMMIT
-// each — which made a listing's cost scale with how many transactions it
-// rendered rather than how much work it actually did. Resolving the whole batch's accounts up front, once, is what keeps a
-// listing at one round trip regardless of N.
+// entryAssets resolves the asset of every account referenced by any entry across
+// txs, in one Book.GetAccounts call. One Book.GetAccount per entry would be one
+// BEGIN…COMMIT each, making a listing's cost scale with how many transactions it
+// renders rather than with how much work it does.
 func entryAssets(ctx context.Context, lb *ledger.Book, txs []ledger.Transaction) (map[ledger.AccountID]ledger.AssetCode, error) {
 	ids := entryAccountIDs(txs)
 	accts, err := lb.GetAccounts(ctx, ids)

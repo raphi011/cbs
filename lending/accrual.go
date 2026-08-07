@@ -28,17 +28,16 @@ import (
 // commitment costs the borrower nothing, which is why a facility can sit at
 // Pending accruing zero indefinitely.
 //
-// A gap of several days is therefore exact rather than approximate: every day
-// in the span accrues on the balance that was actually in force on it, which is
-// what a bank does and what a missed end-of-day used to get wrong.
+// A gap of several days is therefore exact rather than approximate: every day in
+// the span accrues on the balance that was actually in force on it, which is
+// what a bank does.
 //
 // # Idempotency, and how a backdated posting is corrected
 //
 // LastAccrualDate never moves backwards, so re-running an end-of-day for a date
 // already covered is a no-op rather than a second day's interest. It is also a
-// no-op by arithmetic now: the same date over the same history produces the same
-// gross and therefore a zero delta, so the guard has one fewer reason behind it
-// than it used to.
+// no-op by arithmetic: the same date over the same history produces the same
+// gross and therefore a zero delta.
 //
 // A posting which arrives backdated is trued up by the NEXT day's run rather
 // than by rewinding this one. Each run recomputes the whole of the facility's
@@ -53,11 +52,8 @@ import (
 // Because the window opens at origination rather than at the first advance or
 // the last repricing, a backdated posting is trued up WHEREVER it lands,
 // including on days before a repricing: each of those days is re-derived at the
-// terms that were actually in force on it, not at today's. Under the
-// mutable-columns model those days were behind the window and were silently
-// never corrected. It is also what charges the span between a full repayment and
-// a re-disbursement, which the window-reopening clamp in DisburseTx used to skip
-// entirely.
+// terms that were actually in force on it, not at today's. It is also what
+// charges the span between a full repayment and a re-disbursement.
 //
 // Returns ErrFacilityNotFound.
 func (p *Portfolio) Accrue(ctx context.Context, id FacilityID, date time.Time) error {
@@ -97,8 +93,8 @@ func (p *Portfolio) accrueFacilityTx(ctx context.Context, tx Tx, f Facility, dat
 	}
 
 	// The whole timeline, in one read, resolved per day in Go below. The three
-	// guards that used to sit here do not survive as a trio, and lumping them
-	// together is how this would acquire a bug:
+	// guards below are separate because lumping them together is how this would
+	// acquire a bug:
 	//
 	//   - Status == Closed is unchanged, above.
 	//   - TermsEffectiveFrom.IsZero() meant "nothing advanced, so no window",

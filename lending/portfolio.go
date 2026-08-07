@@ -202,11 +202,9 @@ func (p *Portfolio) OpenRevolvingLineTx(ctx context.Context, tx Tx, subledger le
 // openTx is the shared body of both openers: validate, create the two GL
 // accounts, write the facility and its opening terms row, record the event.
 //
-// rate and dc are parameters rather than fields on f because they are no longer
-// fields on a Facility at all: they are what the facility's first FacilityTerms
-// row carries. The openers used to set them on the literal they build, and the
-// change from that to this is the whole shape of effective-dated terms in one
-// signature.
+// rate and dc are parameters rather than fields on f because they are not fields
+// on a Facility at all: they are what the facility's first FacilityTerms row
+// carries.
 func (p *Portfolio) openTx(ctx context.Context, tx Tx, f Facility, rate interest.Rate, dc interest.DayCount, subledger ledger.SubledgerID) (Facility, error) {
 	if err := ledger.ValidateText("name", f.Name); err != nil {
 		return Facility{}, err
@@ -258,12 +256,10 @@ func (p *Portfolio) openTx(ctx context.Context, tx Tx, f Facility, rate interest
 	}
 
 	// Every facility gets a terms row from origination, so the recompute window
-	// starts uniform across both credit layers and the timeline answers for
-	// every day the facility has existed. Days before the first advance accrue
-	// zero anyway, because drawn is zero across them — which is why the "first
-	// advance opens the window" state that used to live in DisburseTx and DrawTx
-	// can go: it was an optimisation expressed as a guard, and the series
-	// already gives the right answer.
+	// starts uniform across both credit layers and the timeline answers for every
+	// day the facility has existed. Days before the first advance accrue zero
+	// anyway, because drawn is zero across them, so no "first advance opens the
+	// window" state is needed.
 	opening := FacilityTerms{
 		FacilityID:    f.ID,
 		EffectiveFrom: ledger.DayStart(f.OpenedAt),
@@ -358,14 +354,12 @@ func (p *Portfolio) DisburseTx(ctx context.Context, tx Tx, id FacilityID, counte
 	}
 
 	f.Status = Active
-	// Disbursement no longer opens the accrual window: the window opens at
+	// Disbursement does not open the accrual window: the window opens at
 	// origination and never moves, so there is no boundary for a day to fall
-	// between and no span for a clamp to skip. What the clamp here protected
-	// against — a re-disbursement reopening the window behind a span already
-	// charged, with AccruedGross zeroed, so the next run charged it twice — is
-	// unreachable once neither figure is touched at all. And the span between a
-	// full repayment and a re-disbursement, which the clamp used to skip
-	// entirely, is now charged like any other: it was drawn, so it was owed.
+	// between and no span for a clamp to skip. A re-disbursement therefore cannot
+	// reopen the window behind a span already charged, and the span between a full
+	// repayment and a re-disbursement is charged like any other: it was drawn, so
+	// it was owed.
 	if n := len(schedule); n > 0 {
 		f.MaturityAt = schedule[n-1].DueDate
 	}
@@ -429,12 +423,10 @@ func (p *Portfolio) DrawTx(ctx context.Context, tx Tx, id FacilityID, counterpar
 	}
 
 	if f.Status == Pending {
-		// A line still accrues nothing before its first draw — an undrawn
-		// commitment costs the borrower nothing — but that is now arithmetic
-		// rather than state: the recompute opens at origination and the drawn
-		// series is zero across every day before this posting, so those days
-		// re-derive to zero on their own. The three assignments that used to
-		// open a window here are gone with the window.
+		// A line accrues nothing before its first draw — an undrawn commitment costs
+		// the borrower nothing — but that is arithmetic rather than state: the
+		// recompute opens at origination and the drawn series is zero across every
+		// day before this posting, so those days re-derive to zero on their own.
 		f.Status = Active
 		if err := tx.PutFacility(ctx, p.bookID, f); err != nil {
 			return ledger.Transaction{}, err
@@ -739,10 +731,9 @@ func (p *Portfolio) Drawn(ctx context.Context, id FacilityID) (ledger.Amount, er
 // drawnTx is Drawn against a facility the caller has already loaded.
 //
 // These three helpers name WHICH of a facility's GL accounts answers a question;
-// the ledger decides how to sign it. They used to pass ledger.Debit directly,
-// which was an assertion about an account type made from outside the layer that
-// owns it: correct today, and silently sign-flipped by any change to
-// AccountType.NormalBalance().
+// the ledger decides how to sign it. Passing ledger.Debit directly would be an
+// assertion about an account type made from outside the layer that owns it, and
+// would be silently sign-flipped by any change to AccountType.NormalBalance().
 func (p *Portfolio) drawnTx(ctx context.Context, tx Tx, f Facility) (ledger.Amount, error) {
 	return p.gl.BookBalanceTx(ctx, tx, f.PrincipalGL)
 }

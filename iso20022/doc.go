@@ -2,24 +2,18 @@
 // documents a bank, a clearing house and a settlement agent actually send each
 // other, rather than a Go struct standing in for one.
 //
-// That sentence used to say "the SEPA interbank messages", and it stopped being
-// true. SEPA is a scheme, and the account-management messages a bank's admission
-// depends on carry no payment between banks and were built here from the ISO
-// schema alone, with no European Payments Council guideline consulted for any
-// part of the family. Which messages the scheme does profile has a section of
-// its own below; the reversal is recorded after the message list.
+// The account-management messages a bank's admission depends on carry no payment
+// between banks and were built from the ISO schema alone, with no European
+// Payments Council guideline consulted for any part of the family. Which
+// messages the scheme does profile has a section of its own below.
 //
-// It imports nothing from the rest of this repository — not ledger, not
-// deposit, not payment. That is deliberate and load-bearing: the package's
-// claim is that these are the STANDARD's types, and an import of ledger.Amount
-// would quietly make that false, because the next reader could no longer tell
-// which fields came from ISO 20022 and which came from here. The cost is one
-// conversion boundary, and sub-project 7b paid it: payment/translate.go
-// imports this package, and nothing here imports payment. The boundary belongs
-// on the payment side rather than here — a translator that lived in this
-// package would be the same import, only pointing the other way. The rule is a
-// test rather than a convention: imports_test.go fails on a repository import
-// in any non-test file.
+// It imports nothing from the rest of this repository — not ledger, not deposit,
+// not payment. That is deliberate and load-bearing: the package's claim is that
+// these are the STANDARD's types, and an import of ledger.Amount would quietly
+// make that false, because the next reader could no longer tell which fields
+// came from ISO 20022 and which came from here. The cost is one conversion
+// boundary, and payment/translate.go pays it. imports_test.go fails on a
+// repository import in any non-test file.
 //
 // # The standard and the scheme's profile of it
 //
@@ -125,14 +119,11 @@
 //   - pacs.004.001.09 PmtRtr — a return, the R-transaction.
 //   - pacs.009.001.08 FICdtTrf — a financial institution credit transfer, in
 //     which both parties are banks: the settlement instruction a clearing
-//     house sends its settlement agent when a cycle closes. The other four are
-//     sub-project 7a's; this one is 7b's, which is the sub-project that made
-//     the central bank an actor with something to receive.
+//     house sends its settlement agent when a cycle closes.
 //   - camt.053.001.08 BkToCstmrStmt — a statement: an account servicer telling
 //     an account holder what happened on an account the holder does not keep.
 //     The central bank sends one to each member after a cut-off, for that
-//     member's reserve account. It is sub-project 8's, and it is the message
-//     that reverses the first ruling below.
+//     member's reserve account.
 //   - camt.050.001.05 LqdtyCdtTrf — a liquidity credit transfer: a member bank
 //     asking its central bank to move cash onto the bank's own reserve account.
 //     It is the lodgement, and it is the message that makes funding a reserve a
@@ -154,11 +145,9 @@
 //
 // The three acmt messages are one conversation and are read as one. Acmt007
 // carries the family's documentation, including why this use of eBAM is not how
-// a central-bank account is really opened, and they are the messages that
-// reverse the second ruling below. They have callers now — payment/translate.go
-// builds and reads all three, and mesh carries them between the joining bank,
-// the clearing house and the settlement agent — which the first version of that
-// documentation, written a sub-task before those callers, said they did not.
+// a central-bank account is really opened. payment/translate.go builds and reads
+// all three, and mesh carries them between the joining bank, the clearing house
+// and the settlement agent.
 //
 // Deliberately absent: pain.001 and pain.008 (the customer-to-bank layer),
 // camt.056 recalls and pacs.007 reversals, message signing, and runtime XSD
@@ -169,12 +158,9 @@
 //
 // # A reversed ruling: the camt family
 //
-// The whole camt family was recorded here as deliberately absent, and the reason
-// was true when it was written: no institution in this system needed to be TOLD
-// about a movement on an account it does not hold, because every actor could
-// read every book. Sub-project 8 creates the first institution that cannot — a
-// member bank whose reserve at the central bank moves in the CENTRAL BANK's
-// book — so the movement has to arrive as a message or not at all. See Camt053.
+// The camt family is here because a member bank's reserve at the central bank
+// moves in the CENTRAL BANK's book, which the bank may not read — so the
+// movement has to arrive as a message or not at all. See Camt053.
 //
 // Three of the family are carried now rather than one, and the second and third
 // came for a reason the first had already established rather than a new one.
@@ -193,21 +179,13 @@
 //
 // # A reversed ruling: "the SEPA interbank messages"
 //
-// This file's first sentence used to say the package implements the SEPA
-// interbank messages of the ISO 20022 standard, and the acmt family reversed it.
-// What travels on that family is not a payment between banks, and no EPC
-// Implementation Guideline was consulted for any part of it.
-//
-// The sub-project's design document puts that second half flatly — "the EPC
-// profiles no part of it" — and this file states the weaker thing it can source,
-// for the reason "Which messages the scheme actually profiles" gives: nobody
-// here has verified a negative about a body of guidelines nobody here has read
-// in full. Either wording carries the same consequence. The framing this package
-// is built on, that the standard is a superset and a scheme narrows it, has
-// nothing to say about the messages admission adds, and leaving the old sentence
-// would have implied a scheme behind them that nothing here can point at. That
-// section above is what replaces it, and it is what to read before quoting
-// anything in this package as a fact about SEPA.
+// The acmt family is not SEPA. What travels on it is not a payment between
+// banks, and no EPC Implementation Guideline was consulted for any part of it.
+// Nobody here has verified a negative about a body of guidelines nobody here has
+// read in full, so this states the weaker thing it can source. The framing this
+// package is built on — that the standard is a superset and a scheme narrows it
+// — has nothing to say about the messages admission adds, and the section above
+// is what to read before quoting anything in this package as a fact about SEPA.
 //
 // # Two things encoding/xml cannot do
 //

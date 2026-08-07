@@ -90,14 +90,11 @@ func (s *Server) handleCentralBankAudit(w http.ResponseWriter, r *http.Request) 
 // members it admitted to its roster, the cut-offs it ran, and every payment it
 // relayed and took into one.
 //
-// It used to be "the network's own trail", under one ledger.NetworkBook shared
-// by every institution, and there is no such book and no such trail. Each
-// institution keeps its own payment-scope log in its own database, so this
-// answers for one of them and handleBankPaymentAudit answers for a member.
-// A reader who wants the whole picture reads several and matches them up by the
+// Each institution keeps its own payment-scope log in its own database, so this
+// answers for one of them and handleBankPaymentAudit answers for a member. A
+// reader who wants the whole picture reads several and matches them up by the
 // MESSAGES, which is what an auditor holding four banks' logs actually does —
-// there is no cross-institution order for a route to serve. See
-// payment/audit_test.go's paymentAudit.
+// there is no cross-institution order for a route to serve.
 func (s *Server) handlePaymentAudit(w http.ResponseWriter, r *http.Request) {
 	s.writeAudit(w, r, auditFilter(r, payment.ClearingHouseBook, ledger.ScopePayment))
 }
@@ -107,10 +104,8 @@ func (s *Server) handlePaymentAudit(w http.ResponseWriter, r *http.Request) {
 // side of every payment it is a party to.
 //
 // It is on the bank's surface because those events are in the bank's database
-// and in no other. Before Task 18d they were in the shared network book and the
-// clearing house's route above was the only way to read them; a bank asking that
-// route now gets the clearing house's log, which does not mention its mandates
-// at all.
+// and in no other. A bank asking the clearing house's route above gets the
+// clearing house's log, which does not mention its mandates at all.
 func (s *Server) handleBankPaymentAudit(w http.ResponseWriter, r *http.Request) {
 	p, ok := s.participant(w, r)
 	if !ok {

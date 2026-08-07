@@ -172,14 +172,11 @@ func (t *tx) ListDepositAccounts(ctx context.Context, book ledger.BookID) ([]dep
 // N+1 in two listing endpoints, and a bank with a page of customers would
 // reintroduce it here.
 //
-// store/pg spelled the ordering `ORDER BY scheme COLLATE "C", value COLLATE "C"`,
-// because a bare ORDER BY there sorts under the cluster's collation, which on a
-// typical en_US.UTF-8 install ignores punctuation at the first level — so
-// SE89-AURORA-1001 and SE89AURORA0999 came back in an order that depended on
-// where the database had been created. SQLite's default collation is BINARY,
-// which IS byte order, so the qualifier has nothing to correct here and is left
-// off rather than written as a no-op. storetest orders these ascending by
-// (scheme, value) and two identifiers written out of order are what checks it.
+// No collation qualifier. A database whose default collation ignored punctuation
+// at the first level would sort SE89-AURORA-1001 and SE89AURORA0999 by where it
+// had been created; SQLite's default is BINARY, which IS byte order, so the
+// qualifier would be a no-op. storetest orders these ascending by (scheme,
+// value) and two identifiers written out of order are what checks it.
 func (t *tx) hydrateIdentifiers(ctx context.Context, book ledger.BookID, accounts []deposit.Account) error {
 	if err := t.own(book); err != nil {
 		return err

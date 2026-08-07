@@ -34,11 +34,9 @@ func init() {
 // mechanism this system adds for the sake of realism, it is the only shape
 // available once each institution keeps its own book.
 //
-// The deposit did both at once for as long as one store held every book. That
-// was crossing 6 in sub-project 8's table: a bank posting in the central bank's
-// ledger inside the bank's own unit of work. Splitting it into a vault credit
-// and a lodgement is what closes it, and this message is the half of the
-// lodgement that travels.
+// A bank posting in the central bank's ledger inside the bank's own unit of work
+// is what splitting the two avoids. This message is the half of the lodgement
+// that travels.
 //
 // # This is closer to the real thing than the acmt family is
 //

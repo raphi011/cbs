@@ -14,22 +14,11 @@ import (
 //
 // It was written for a divergence, and it outlived the divergence.
 //
-// While there were two stores, store/mem was a map of Go strings and held any
-// byte sequence at all; Postgres would not — a NUL is SQLSTATE 22021 in a text
-// column and 22P05 inside jsonb, and so is anything that is not valid UTF-8 —
-// so `POST /participants` with `{"name":"Ban\u0000k"}`, legal JSON, created a
-// participant on one store and returned a 500 carrying a raw SQLSTATE on the
-// other. The fix went here rather than into either store.
-//
-// store/sqlite holds every one of those bytes happily, so there is nothing left
-// to diverge, and the rule stays. The divergence was the occasion for it and
-// never the reason: a store is a per-table key/value layer that holds what it is
-// handed, what the system will ACCEPT is a domain question, and a rule that can
-// only be stated by naming a database is not a domain rule. It is the same
-// position the schema takes about the absent UNIQUE (book_id, name) and about
-// parent references — decided once, above the store, where it does not depend on
-// what is underneath. The section below is the wider half, and it was the wider
-// half even when Postgres was the reason anyone looked.
+// A store is a per-table key/value layer that holds what it is handed; what the
+// system will ACCEPT is a domain question, and a rule that can only be stated by
+// naming a database is not a domain rule. It is the same position the schema
+// takes about the absent UNIQUE (book_id, name) and about parent references —
+// decided once, above the store, where it does not depend on what is underneath.
 //
 // # Where the boundary sits
 //
@@ -52,7 +41,7 @@ import (
 // API edge instead — see the api package's middleware — because they never pass
 // through a domain constructor.
 //
-// # Why control characters and not only the two bytes Postgres refused
+// # Why control characters and not only the bytes some databases refuse
 //
 // Rejecting exactly NUL and invalid UTF-8 would have closed the parity gap and
 // nothing else, and it would have left a rule no one can state without naming a

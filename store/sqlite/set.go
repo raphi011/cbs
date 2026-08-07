@@ -190,10 +190,9 @@ func (s *Set) Bank(ctx context.Context, bic iso20022.BIC) (payment.Store, error)
 // # A database is not a bank until something founds one in it
 //
 // So each candidate is ASKED, and this is the one method on the set that reads a
-// row. It used to answer the handles alone, on the rule that the set of banks is
-// the set of databases, and that rule has one exception this process produces
-// itself: Reset empties every database and deletes none, so a reset system holds
-// N bank databases with no bank in any of them.
+// row. The set of banks is the set of databases, with one exception this process
+// produces itself: Reset empties every database and deletes none, so a reset
+// system holds N bank databases with no bank in any of them.
 //
 // Leaving them in the answer is not a small inaccuracy. api's GET /members reads
 // each listed bank's own row and got ErrParticipantNotFound; cmd/server's plan

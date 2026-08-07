@@ -12,13 +12,11 @@
 // databases: zero setup, and every restart starts from the seeded scenario
 // again. With one, -database is a DIRECTORY and the data outlives the process.
 //
-// A DIRECTORY, because there is no longer one database to name. Each institution
-// holds its own — the clearing house's, the central bank's, and one per member
-// bank named by that bank's BIC — so the flag names the place they live rather
-// than the file. The set of banks is the set of files in it, which is why a
-// restart needs no counter and no registry: see store/sqlite.Set. Before Task
-// 18d this was a file path, and before store/sqlite it was a Postgres DSN with a
-// credential in it that the log line had to redact.
+// A DIRECTORY, because there is no one database to name. Each institution holds
+// its own — the clearing house's, the central bank's, and one per member bank
+// named by that bank's BIC — so the flag names the place they live rather than
+// the file. The set of banks is the set of files in it, which is why a restart
+// needs no counter and no registry: see store/sqlite.Set.
 //
 // Neither the server nor the developer needs a database server — nothing in
 // `make dev`, `make run` or `go test ./...` ever did, and now nothing anywhere
@@ -175,12 +173,9 @@ func main() {
 // when dir is empty. OpenSet applies each shape's embedded migrations either
 // way, so a fresh directory is usable straight away.
 //
-// There is nothing to redact from the log line any more, and that is why the
-// function that used to do it is gone. A Postgres DSN routinely arrived from the
-// environment carrying a real credential, and the line recording which database
-// was opened was the easiest place in this process to leak one; a filesystem
-// path carries no secret, so the guard has nothing left to guard and saying so
-// is better than keeping a function nothing needs.
+// There is nothing to redact from the log line: a filesystem path carries no
+// secret, where a database DSN routinely arrives from the environment carrying a
+// real credential.
 func openStores(ctx context.Context, dir string, clock func() time.Time, log *slog.Logger) (*sqlite.Set, error) {
 	set, err := sqlite.OpenSet(ctx, dir, clock)
 	if err != nil {
