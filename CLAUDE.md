@@ -15,11 +15,16 @@ The banking/accounting/payments content is duplicated, by design, across:
 - `web/src/components/hint-content.ts` — distilled from the README.
 - `web/src/lib/quiz/chapters/*.ts` — the 18-chapter quiz.
 - `store/sqlite/schema/{bank,csm,centralbank}/0001_init.sql` — the relational
-  mapping, and the whole schema. There are **three files and one migration
-  apiece**, because Task 18 gave each kind of institution a database of its own:
-  a member bank's, the clearing house's, the settlement agent's. Each is `0001`
-  and nothing is layered on top, because no database is deployed — every one this
-  repository meets is ephemeral or a throwaway file, and both migrate from empty.
+  mapping, and the whole schema.
+
+  **This file said "there is one migration" and that is a reversed ruling, not a
+  stale sentence.** There are **three files and one migration apiece**, because
+  Task 18 gave each kind of institution a database of its own: a member bank's,
+  the clearing house's, the settlement agent's. The original reason survives
+  intact and is why each is still a single `0001` with nothing layered on top —
+  no database is deployed, every one this repository meets is ephemeral or a
+  throwaway file, and both migrate from empty. What changed is not the migration
+  policy but how many schemas it applies to.
 
   Their comments are domain content, not implementation notes: which key is
   composite and why, why no balance is stored, why `entries` needs an ordering

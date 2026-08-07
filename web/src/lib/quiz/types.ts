@@ -16,15 +16,24 @@ export type Difficulty = "intro" | "core" | "challenge";
 export const EXPLORE_ROUTES = [
   // The lobby. "See the ledger" still lands somewhere real: the cast, and a
   // seat to pick.
+  //
+  // It is also where the three MANDATE questions in chapter 12 point, and that
+  // is a decision rather than a fallback. Mandates moved to a BANK's console at
+  // Task 18b — /bank/{pid}/mandates — because a mandate is the creditor's bank's
+  // row and no listing spans them, and a route carrying a pid is one this list
+  // cannot hold: it would name a seeded bank, so the curriculum would depend on
+  // the fixture and a renamed bank would break a question. Leaving the three
+  // questions with no link at all was the other option and is worse — the point
+  // of a deep link is to send a reader to the thing, and "pick a bank, then
+  // Mandates" is one extra click that also happens to TEACH the fact the
+  // question is about: there is no network-wide mandate list to link to,
+  // because a mandate belongs to one bank.
   "/",
   // The central bank's home is the reserves table, which is what the questions
   // naming it mean — so this one did not move.
   "/central-bank",
   "/clearing-house",
   "/clearing-house/payments",
-  // There is no mandates route here any more. It moved to a BANK's console —
-  // /bank/{pid}/mandates — because a mandate is the creditor's bank's row, and
-  // a route with a pid in it is not an operator-level one this list can hold.
   "/clearing-house/cycles",
   "/clearing-house/settlements",
   "/clearing-house/schemes",

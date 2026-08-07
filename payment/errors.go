@@ -428,6 +428,22 @@ var (
 	// return path, and separate from it because that one names the ONE bank a
 	// creditor leg belongs to, where this names a bank that is not either of
 	// two.
+	//
+	// # It is nearly unreachable, and the reason is worth knowing before anyone
+	// deletes it
+	//
+	// A bank that is neither side of a return holds no ROW for the payment —
+	// each institution keeps its own copy and only the parties are ever sent one
+	// — so PostReturnLegTx's read fails with ErrPaymentNotFound before this
+	// comparison is made. What is left for this sentinel to answer is a payment
+	// the bank DOES hold and is not a party to, which needs an instruction
+	// naming agents that disagree with the row.
+	//
+	// That is not a defect and the guard is not redundant. The store is the
+	// STRONGER of the two, because it cannot be got wrong by a comparison, and
+	// this one states the rule the store enforces by accident of where the rows
+	// are. Both stay: a guard that holds only because of how the data happens to
+	// be laid out is a guard nobody is keeping.
 	ErrNotAPartyToThisReturn = errors.New("payment: this bank is neither side of this return")
 
 	// ErrAccountNotInParticipant is returned when a party references an
