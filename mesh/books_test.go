@@ -45,20 +45,19 @@ import (
 // bank's act touch exactly its own book" is the question this file exists to
 // answer.
 //
-// What it lost with the split is the crossing it was invented for — one bank
+// What it CANNOT catch any more is the crossing it was invented for — one bank
 // reading another's ledger through a method it legitimately holds — because
-// there is no longer a database in which that read could succeed. What it kept
-// is everything about attribution: a unit of work reaching two books, an
-// unfiltered audit read, an actor touching a book it has no business in even
-// within its own store.
+// there is no database in which that read could succeed. What it does catch is
+// attribution: a unit of work reaching two books, an unfiltered audit read, an
+// actor touching a book it has no business in even within its own store.
 //
 // It is test-only, and deliberately so. The production boundary is the
 // interfaces plus one store per entity; this is what says the SHAPE of each act
 // is what the flows in doc.go claim.
 //
-// It is the store SET rather than one store because there is no longer one store
-// to wrap. Every handle it hands out shares this value's maps, so "which books
-// did this actor touch" is still one question with one answer.
+// It wraps the store SET rather than one store. Every handle it hands out shares
+// this value's maps, so "which books did this actor touch" is one question with
+// one answer.
 type recordingStores struct {
 	inner payment.Stores
 
@@ -283,14 +282,10 @@ func bookOf(book ledger.BookID) ledger.BookID {
 // the audit log is not per-book — see structCarriedBooks, which is where a
 // method of that shape is now decided rather than overlooked.
 //
-// Almost all of payment.Tx's OWN methods are network-scoped: participants,
-// payments, mandates, cycles and settlements belong to no single bank and live
-// under ledger.NetworkBook. They are correctly absent from the overrides below,
-// and they still leave a trace — not through the row, but through the ID the row
-// needed and the audit event it wrote, both of which are taken under
-// NetworkBook. See the block above the tests, which spells that out for Task 10
-// and pins it with a test, because an earlier version of this comment claimed
-// the exact opposite.
+// A payment.Tx method that writes a row of its institution's own leaves a trace
+// through the ID the row needed and the audit event it wrote, both of which are
+// taken under that institution's book — not through the row itself. See the
+// block above the tests, which spells that out and pins it with a test.
 //
 // The settlement advice is the exception, and it is the first one: it is a
 // member bank's own record of a cut-off it was told about, so it carries that
@@ -633,13 +628,11 @@ type structCarriedBook struct {
 //     ListAudit(ctx, f AuditFilter) selects rows by f.BookID — store/sqlite's
 //     tx_audit.go writes book_id from the event and adds `book_id = ?` to the
 //     filter. The field IS the scope.
-//   - payment.PutBank(ctx, b Bank) writes a network-scoped row
-//     under ledger.NetworkBook whatever b.BookID says. b.BookID is a column on
-//     that row — the name of the book this bank owns — not the book being
-//     written to. Recording it would make a clearing-house handler that admits a
-//     member look like it had reached into that member's ledger, and Task 10's
-//     TestTheCSMTouchesOnlyItsOwnBook would fail on a handler doing exactly
-//     what it should.
+//   - payment.PutBank(ctx, b Bank) writes under this institution's own book
+//     whatever b.BookID says. b.BookID is a column on that row — the name of the
+//     book this bank owns — not the book being written to. Recording it would
+//     make a clearing-house handler that admits a member look like it had reached
+//     into that member's ledger.
 //
 // Those two are indistinguishable from the AST. So the parser's job is to make
 // sure none is FORGOTTEN, and this table's job is to say which is which — the
@@ -696,20 +689,11 @@ var structCarriedBooks = map[string]structCarriedBook{
 // for "bank", "mnd", "cyc", "set" and "pay", and payment/audit.go, which takes an
 // "evt" id under the same book and then appends the event under it.
 //
-// # ledger.NetworkBook is deleted, and every want-list here lost an entry
+// # Each want-list names ONE institution, and the sets do not overlap
 //
-// It named the book those ids and events used to be drawn under: "belongs to no
-// single institution" — one counter and one audit stream shared by everybody, in
-// the one database that held everything. Task 18c is the finding that there was
-// no such thing. Every one of those rows has exactly one owner, each owner has a
-// database, and payment.Network.book is the answer to every "which book?" that
-// used to be NetworkBook.
-//
-// So a set that read [its own book, NetworkBook] reads [its own book], and the
-// clearing house's [NetworkBook] reads [ClearingHouseBook]. That is not the
-// assertion getting weaker. The old second entry was shared ground every actor
-// stood on; there is none left, so each of these lists now names one institution
-// and the sets no longer overlap at all.
+// There is no book belonging to no single institution: every row has exactly one
+// owner, each owner has a database, and payment.Network.book is the answer to
+// every "which book?".
 //
 // A previous version of this note argued at length that a BANK's set could not be
 // [its own book] — "not satisfiable and never was", because a payment's id and
@@ -726,10 +710,9 @@ var structCarriedBooks = map[string]structCarriedBook{
 // csm schema has no ledger tables at all (payment.ClearingHouseBook says so).
 // Clearing posts nothing. Settlement does, in three places: the netting
 // transaction in the CENTRAL BANK's book, the mirror leg in each member's own
-// book, and each creditor leg in the creditor's book. Those are still the
-// postings a cut-off makes; what changed at Task 15b.2 is WHO makes the second,
-// which is the member itself on the statement it was sent. Do not go looking for
-// a posting in the clearing house's book: there is none to find.
+// book, and each creditor leg in the creditor's book — the second and third made
+// by the member itself, on the statement it was sent. Do not go looking for a
+// posting in the clearing house's book: there is none to find.
 //
 // # This is a property of today's domain layer, not a structural invariant
 //
@@ -740,12 +723,6 @@ var structCarriedBooks = map[string]structCarriedBook{
 // that needs both stories: the recorder is not blind to row-writes, but it sees
 // them only through the id and the audit event, so a write must keep its audit
 // event or the recorder cannot see it at all.
-//
-// An earlier version of this note claimed the exact reverse — that the book
-// arrived only through postings — and would have sent Task 10 hunting for a
-// posting that cannot exist. It is left recorded here rather than quietly
-// replaced, because the reason it was wrong is the reason this file distrusts
-// unpinned prose.
 
 // ---------------------------------------------------------------------------
 // What each actor reaches
@@ -764,101 +741,49 @@ func assertBooksTouched(t *testing.T, who string, got, want []ledger.BookID) {
 	}
 }
 
-// TestWhichBooksEachBankActuallyReaches is sub-project 8's specification,
-// measured against the code that now exists.
+// TestWhichBooksEachBankActuallyReaches measures which books a credit transfer
+// reaches, per actor.
 //
 // Under a shared store, nothing stops a handler reading another entity's books;
 // this is what notices. When each entity gets its own store, these assertions
 // become the definition of the split rather than a check on it.
 //
-// It was drafted as TestABankHandlerTouchesOnlyItsOwnBook, and the rename is
-// part of the finding rather than tidying — or was. As first measured, a bank
-// did NOT touch only its own book: both of them below reached a book that was
-// not theirs, for two separate reasons set out further down. Task 14.3 closed
-// one of those two (see "# The creditor's book USED to be in it too" below);
-// the other — the receiving bank's directory sweep — is still live, so the old
-// name is still wrong, just for half the reason it used to be, and this stays
-// TestWhichBooksEachBankActuallyReaches rather than reverting.
+// The name is deliberately a question rather than a claim. An assertion whose
+// name claims more than it measures is worse than no name, because the name is
+// the string a failure prints and a reader greps for.
 //
 // # The submitting bank, and the second entry that is finally gone
 //
-// The draft this test comes from wanted []ledger.BookID{h.debtorBook} alone, and
-// for four tasks that was recorded here as unsatisfiable: every payment id was
-// allocated network-scoped — NextID(ctx, ledger.NetworkBook, "pay") — and
-// submission appended payment.initiated under NetworkBook, so no version of
-// creating a payment avoided either. The draft is what this now asserts. Both
-// writes still happen and both are drawn under s.book(), which for a submitting
-// bank is that bank's own: the payment row is going into that bank's database,
-// so the counter and the log that number and record it are that bank's too.
+// The submitting bank's set is its own book alone. Both the payment's id and its
+// initiated event are drawn under s.book(), which for a submitting bank is that
+// bank's own: the payment row is going into that bank's database, so the counter
+// and the log that number and record it are that bank's too.
 //
-// The set did not shrink because an assertion was relaxed. It shrank because the
-// shared ground under it was found not to exist — see "ledger.NetworkBook is
-// deleted" in the note above.
+// # The creditor's book is NOT in it
 //
-// # The creditor's book USED to be in it too, and Task 14.3 is why it no longer is
+// A pacs.008 names the payee, so building one would otherwise mean reading the
+// payee's deposit account out of the PAYEE'S BANK'S register for the name on it
+// — the submitting bank reading a book that is not its own, on the happy path,
+// every time. A real payer's bank knows the payee's name because the payer typed
+// it in, so InitiatePaymentRequest carries the two counterparty NAMES and
+// CreditTransferMessage takes them from the payment. partiesOf reads nothing at
+// all, and CreditTransferMessage/DirectDebitMessage take neither a context nor a
+// Tx. The counterparty's BIC is asserted on the instruction too — see
+// TestAWrongCounterpartyAgentIsRefusedByTheBankItNames.
 //
-// This was the finding the recorder was built for, and it was NOT predicted.
-// The payer's bank builds the pacs.008 it sends, and a pacs.008 names the
-// payee: payment.partyTx used to read the payee's deposit account out of the
-// PAYEE'S BANK'S register to get the name on it (payment/translate.go,
-// partiesOf — which called itself "the ONLY part of building an outbound
-// message that touches the store"). So the submitting bank read a book that
-// was not its own, on the happy path, every time.
+// # The receiving bank reaches its own book and no other
 //
-// It was asserted rather than papered over because it was true, and because
-// what would close it was named here as a domain change and not a mesh one: a
-// real payer's bank knows the payee's name because the payer typed it in, so
-// InitiatePaymentRequest would have to carry the two counterparty NAMES and
-// CreditTransferMessage take them from the payment instead of from the
-// directory. Task 14.2 did the carrying: Payment gained DebtorDetails and
-// CreditorDetails, filled at submission — the bank's own side from its own
-// register, the counterparty's NAME from the instruction and, AT THE TIME, its
-// BIC from the roster. Task 18a reversed that second half: the BIC comes from
-// the instruction too, because a bank holds only its own row and there is
-// nothing left to derive it from. See
-// TestAWrongCounterpartyAgentIsRefusedByTheBankItNames, which is this
-// paragraph's old pin reversed and is what makes asserting it safe.
-// SubmitPaymentTx refuses an unnamed counterparty either way. Task 14.3 did the
-// taking:
-// partiesOf now reads nothing at all, partyTx is deleted, and
-// CreditTransferMessage/DirectDebitMessage take neither a context nor a Tx —
-// there is no I/O left in either to need one for. The submitting bank's set
-// below lost the creditor's book the same day. What this section predicted
-// would eventually close its own prediction now records that it did.
+// Resolving an address in every member's register would make a receiving bank
+// read every bank's book to answer a question about its own customer. The
+// register searched is the one belonging to this actor's own payment.Network,
+// and there is no argument to pass a different one
+// (payment.ResolveIdentifierTx).
 //
-// # The receiving bank USED to reach every bank's book, and Task 18a is why it
-// no longer does
-//
-// This was the second of the two crossings this test was built to find, and it
-// outlived the first by four tasks. The payee's bank resolves the message BY
-// ADDRESS — which is the point, and what produces AC01 for an IBAN it does not
-// hold — and that resolution was a SWEEP: ResolveIdentifierTx called
-// ListDepositAccountsByIdentifier once per member, so asking "whose IBAN is
-// this" read every member's register, on the happy path, every time.
-//
-// Task 14 narrowed which PARTY was resolved and could not narrow the sweep,
-// because narrowing it needs the bank to know which register is its own and
-// payment.Network had no identity to answer with. Task 18a passed the identity
-// in as an argument rather than waiting for it, and the receiving bank's set
-// dropped to its own book alone. Task 18b is what it was waiting for: the
-// register is the one belonging to this actor's own payment.Network, and there
-// is no argument left (payment.ResolveIdentifierTx).
-//
-// Its set is its own book and the central bank's is absent, and there is no
-// third entry to explain any more. This bank's half writes a payment row, draws
-// its id and appends payment.initiated for it — the same three writes the
-// submitting bank makes, in this bank's own database rather than a shared one.
-// An older version of this sentence explained the absence of NetworkBook by
-// saying the receiving half appends no audit event at all, on the argument that
-// a payment's lifecycle has two facts and not three. It has three logs now, one
-// per institution, and each opens with its own payment.initiated; see
-// payment.AcceptInboundTx.
-//
-// This set no longer rests on a bank being TOLD which register is its own. It
-// did until Task 18b — nothing in payment refused a caller that passed somebody
-// else's id, and the recorder was the only thing that would have seen it, right
-// here. The identity is constructor state now (payment.Identity), so the
-// register a handler can reach is fixed before any message arrives.
+// Its set is its own book and nothing else. This bank's half writes a payment
+// row, draws its id and appends payment.initiated for it — the same three writes
+// the submitting bank makes, in this bank's own database. The identity is
+// constructor state (payment.Identity), so the register a handler can reach is
+// fixed before any message arrives.
 //
 // That does not make this assertion redundant, and the distinction is the one
 // ops.go draws between the two mechanisms. An identity narrows which BANK a
@@ -910,33 +835,20 @@ func TestWhichBooksEachBankActuallyReaches(t *testing.T) {
 //     customer: the payee's account, its asset, its address, and whether it can
 //     take a credit at all.
 //
-// The first of those two used to be a second entry, NetworkBook, and it is gone
-// for the reason the push-side note gives: there is no book belonging to no
-// single institution, because there is no database belonging to no single
-// institution.
-//
-// A third entry used to belong here: the DEBTOR's book, which is not its own,
-// mirroring the genuine crossing TestWhichBooksEachBankActuallyReaches found
-// pointing the other way. Building the pacs.003 named the payer, and
-// payment.partyTx read the payer's deposit account out of the PAYER'S BANK'S
-// register to get the name on it. Same cause, opposite direction, and it closed
-// for the same reason its push-side twin did: Task 14.2 put both counterparty
-// names on the payment at submission and Task 14.3 made partiesOf read nothing,
-// so DirectDebitMessage has had no store call to make this crossing with since.
+// The DEBTOR's book is not in it. Building the pacs.003 names the payer, and
+// reading the payer's deposit account out of the PAYER'S BANK'S register for the
+// name would be the mirror of the push-side crossing. Both counterparty names
+// are on the payment at submission, so DirectDebitMessage has no store call to
+// make it with.
 //
 // # The RECEIVING bank, which here is the payer's, and which POSTS
 //
-// Its own book, and neither NetworkBook nor the central bank's — again the same
-// as the push's receiver, and this one is the more informative half. Its
-// resolution is the same resolution: DirectDebitRequest resolves the DEBTOR —
-// this bank's own customer, the only party a pacs.003 routed here gives it
-// standing over — by address, in this bank's own register.
-//
-// It was every bank's book until Task 18a, for the same reason the push's
-// receiver was: ResolveIdentifierTx asked every member in turn even for that one
-// lookup. See TestWhichBooksEachBankActuallyReaches for the whole of why that
-// took two tasks to close, and payment.DirectDebitRequest for what a wrongly
-// addressed collection now meets instead.
+// Its own book, and neither the network's nor the central bank's — the same as
+// the push's receiver, and this one is the more informative half. Its resolution
+// is the same resolution: DirectDebitRequest resolves the DEBTOR — this bank's
+// own customer, the only party a pacs.003 routed here gives it standing over —
+// by address, in this bank's own register. See payment.DirectDebitRequest for
+// what a wrongly addressed collection meets instead.
 //
 // What is new is that this half MOVES MONEY and the set is still ONE book. The
 // debtor leg is posted here, and every id and audit event that posting needs is
@@ -960,14 +872,12 @@ func TestWhichBooksEachBankActuallyReaches(t *testing.T) {
 // difference matters more than the result:
 //
 //   - Route the submission to the payer's bank and it submits and then answers
-//     itself. Both banks' sets give it away. The payer's union gains NetworkBook,
-//     which only the submitting half ever reaches (the payment's id and its
-//     initiated event), so it comes out [debtor, creditor, network] against a
-//     want of [debtor, creditor]; and the payee's bank comes out empty.
+//     itself. Both banks' sets give it away: the payer's gains the writes only
+//     the submitting half makes, and the payee's bank comes out empty.
 //   - Relay the pacs.003 by CdtrAgt and the payee's bank answers itself. Here the
-//     union really does collide: the payee's set is [debtor, creditor, network],
-//     IDENTICAL to the correct flow, and that assertion passes. What catches it is
-//     the other bank — the payer's never runs, and its set is empty.
+//     payee's set is IDENTICAL to the correct flow and that assertion passes.
+//     What catches it is the other bank — the payer's never runs, and its set is
+//     empty.
 //
 // So there is no single mechanism behind the two. One is caught by a set that no
 // single role produces, the other only by a bank that did nothing at all, and a
@@ -979,13 +889,8 @@ func TestWhichBooksEachBankActuallyReaches(t *testing.T) {
 //
 // # The two-phase version that was tried, and why it is not here
 //
-// An earlier version reset the recorder BETWEEN the submission and the drain to
-// attribute each half separately, on the stated grounds that one combined
-// measurement could not tell the two banks apart. That justification was FALSE —
-// the single-phase measurement had already been watched failing under both
-// mutations, in this task's own first round — and it is recorded rather than
-// quietly dropped, because a false rationale sitting in the test that is supposed
-// to BE the pin is worse than a weak assertion.
+// One combined measurement over the submission AND the drain is enough to tell
+// the two banks apart: it has been watched failing under both mutations above.
 //
 // The split was also unsafe as written. Mesh.Submit sends to the clearing house
 // BEFORE it returns, so the moment submitDirectDebit hands back, the clearing
@@ -1038,16 +943,13 @@ func TestWhichBooksEachBankReachesInAPull(t *testing.T) {
 }
 
 // TestAWrongCounterpartyAgentIsRefusedByTheBankItNames is the ROUTING half of
-// the two measurements above, and it is Task 14's routing test REVERSED.
+// the two measurements above.
 //
-// # What it used to assert, and why that is gone
+// # Two failures an asserted agent could produce
 //
-// It used to be TestAWrongCounterpartyAgentDoesNotMisroute, and what it pinned
-// was a DERIVATION: SubmitPaymentTx read the counterparty's own Bank row for its
-// BIC and discarded whatever the instruction carried, so a payer who typed the
-// wrong bank was overruled rather than obeyed. That was measured against two
-// real failures and both are worth keeping written down, because they are what a
-// reader will expect this test to still be about:
+// The counterparty's BIC is what the payer typed, and it is what the clearing
+// house routes on. Two failures follow, and they are what a reader will expect
+// this test to be about:
 //
 //   - PUSH, with the payee's agent set to the PAYER's own bank. The pacs.008
 //     came back to its sender, which then ANSWERED ITS OWN INSTRUCTION: the
@@ -1057,23 +959,20 @@ func TestWhichBooksEachBankReachesInAPull(t *testing.T) {
 //     collecting bank posted the debit in the PAYER'S BANK'S BOOK, because
 //     AcceptInboundTx posts into the book of the payment's debtor participant.
 //
-// The derivation is gone at Task 18a, and not because the hazard stopped being
-// one. It read `tx.GetBank(counterparty)` — the counterparty's own row, in the
-// counterparty's own store from Task 18c — and a bank that holds only its own
-// row has no answer to give. There is nowhere else to derive it FROM either: the
-// roster is keyed by the BIC being derived and belongs to the clearing house, and
-// this network has no IBAN-to-BIC directory service. So the address on an
-// instruction is an IBAN and a BIC, which is what SEPA was before it went
-// IBAN-only in 2016 and what a cross-border transfer still is today.
+// Nothing derives it instead. A bank holds only its own row, the roster is keyed
+// by the BIC being derived and belongs to the clearing house, and this network
+// has no IBAN-to-BIC directory service. So the address on an instruction is an
+// IBAN and a BIC, which is what SEPA was before it went IBAN-only in 2016 and
+// what a cross-border transfer still is today.
 //
 // # What makes an asserted agent safe, and it is the OTHER change in this commit
 //
 // Both failures above have one mechanism: the bank the message reached could
-// resolve a payee it does not hold. ResolveIdentifierTx swept every member's
-// register, so the wrong bank looked the creditor's IBAN up, found it at the
-// RIGHT bank, and acted on somebody else's customer. Task 18a narrows that sweep
-// to the resolving bank's own register — and the moment it does, a misdirected
-// message has nothing to resolve and the bank that receives it says so.
+// resolve a payee it does not hold. A sweep over every member's register would
+// let the wrong bank look the creditor's IBAN up, find it at the RIGHT bank, and
+// act on somebody else's customer. Resolution is narrowed to the resolving
+// bank's own register — so a misdirected message has nothing to resolve and the
+// bank that receives it says so.
 //
 // So the two subtests below assert the refusal rather than the correction. A
 // payer who names the wrong bank does not get their payment routed for them;
@@ -1084,7 +983,7 @@ func TestWhichBooksEachBankReachesInAPull(t *testing.T) {
 // touch its OWN book and no other. Under the sweep it touched every bank's, which
 // is precisely the crossing that made the misroute dangerous.
 //
-// # The wrong bank is a THIRD one, and it used to be the submitter's own
+// # The wrong bank is a THIRD one
 //
 // Both subtests named the submitter's own bank as the counterparty's, which was
 // the sharpest available misroute while a fixture named one side. Since a
@@ -1188,10 +1087,9 @@ func TestAWrongCounterpartyAgentIsRefusedByTheBankItNames(t *testing.T) {
 		if got.RejectCode != iso20022.StatusReasonIncorrectAccountNumber {
 			t.Errorf("reject code = %q, want AC01 — the named bank holds no such address", got.RejectCode)
 		}
-		// Nothing was collected. On a pull the receiving bank is the one that
-		// posts, so a collection answered by the wrong bank must leave no debit
-		// anywhere — least of all in the payer's bank's book, which is where the
-		// sweep used to put it.
+		// Nothing was collected. On a pull the receiving bank is the one that posts,
+		// so a collection answered by the wrong bank must leave no debit anywhere —
+		// least of all in the payer's bank's book.
 		if bal := h.suspense(t, h.debtorPID); bal != 0 {
 			t.Errorf("the payer's bank's clearing suspense = %d, want 0 — it never saw this collection", bal)
 		}
@@ -1216,10 +1114,8 @@ func TestAWrongCounterpartyAgentIsRefusedByTheBankItNames(t *testing.T) {
 // at all and fail this with an empty set, which is a different bug wearing the
 // same failure.
 //
-// It was TestTheCSMTouchesOnlyTheNetworkBook, and the rename is the book: there
-// is no ledger.NetworkBook and no network for anything to belong to. What each
-// of those rows belongs to is the ONE institution whose database it is in, which
-// for a cycle is this one.
+// Each of those rows belongs to the ONE institution whose database it is in,
+// which for a cycle is this one.
 //
 // Relaying costs it nothing: the pacs.008 hop reads the creditor's agent out of
 // the message and routes on it, with no store read at all. A clearing house that
@@ -1236,24 +1132,14 @@ func TestTheCSMTouchesOnlyItsOwnBook(t *testing.T) {
 }
 
 // TestTheCSMStillTouchesOnlyItsOwnBookWhenItSettles extends the assertion above
-// over the two things Task 12 gave this actor: reaching a cut-off, and the
-// settlement conversation that follows it.
+// over reaching a cut-off and the settlement conversation that follows it.
 //
-// Same set, and that is the finding. The clearing house now nets a batch, builds
-// a pacs.009, reads two members to name them in it, and fans the answer out
-// to the bank that submitted each payment — and none of that leaves this
-// institution's own book, because none of it posts and every row it reads is
-// this institution's own. Reading two members no longer means reading two banks'
-// rows: what it reads is its own roster.
-//
-// The member lookup is the one that could have gone the other way, and until
-// Task 17 it did more than it needed to: GetParticipant returned a value with
-// the named bank's Ledger, Deposit and Catalogue handles attached
-// (Network.bind), so a handler holding it could reach that bank's book through
-// a method it legitimately had. It is GetRosterEntry now and there is no handle
-// on what comes back. This measurement did not move, and that is the point: it
-// was already measuring that this handler took the BIC and nothing else, which
-// is why the narrowing changed no expectation in this file.
+// Same set, and that is the finding. The clearing house nets a batch, builds a
+// pacs.009, reads two members to name them in it, and fans the answer out to the
+// bank that submitted each payment — and none of that leaves this institution's
+// own book, because none of it posts and every row it reads is this
+// institution's own. Reading two members means reading its own ROSTER, and
+// GetRosterEntry hands back an address with no handle on it.
 //
 // That is the whole reason the recorder exists beside the interfaces in ops.go.
 // csmOps could not have expressed this: the method is on it, and must be.
@@ -1270,64 +1156,38 @@ func TestTheCSMStillTouchesOnlyItsOwnBookWhenItSettles(t *testing.T) {
 		h.booksTouchedBy(h.cfg.ClearingHouseBIC), []ledger.BookID{payment.ClearingHouseBook})
 }
 
-// TestWhichBooksTheCentralBankReachesWhenItSettles is the test Task 10 deferred,
-// and the tripwire it left is what this replaces.
-//
-// Task 10 wrote TestClosingACycleSendsNoMessageAndTouchesNoBankBook and said in
-// its own doc that it was written to FAIL the day settlement landed: the moment
-// a closed cycle emits a pacs.009 the message count stops being zero, and the
-// moment the central bank's actor settles, CentralBankBook appears. Both
-// happened, both failures were watched, and this is what stands in its place —
-// the per-actor claim that was not available then, because the cut-off ran on a
-// bare context attributed to no actor and every per-actor set was empty by
-// construction. Now an actor does the work, so the question has an answer.
+// TestWhichBooksTheCentralBankReachesWhenItSettles is the per-actor claim about
+// a cut-off.
 //
 // # The drafted name said the opposite of the measurement
 //
-// Task 10 deferred it as TestTheCentralBankTouchesOnlyTheCentralBankBook. That
-// name is false, and it is renamed here for the reason
-// TestWhichBooksEachBankActuallyReaches was renamed: an assertion whose name
-// claims more than it measures is worse than no name, because the name is the
-// string a failure prints and a reader greps for.
+// The name is a question rather than a claim, for
+// TestWhichBooksEachBankActuallyReaches's reason: the name is the string a
+// failure prints and a reader greps for.
 //
-// The central bank used to reach EVERY book in this network when it settled, and
-// Task 10's own note said why without following the sentence through: settlement
-// posted in three places, and only one of them was the central bank's.
+// A settlement makes three postings and only one of them is the central bank's:
 //
-//   - CentralBankBook, for the netting transaction — the one posting that is
-//     genuinely this institution's own, moving reserves between the members'
-//     settlement accounts in its own chart of accounts.
-//   - Each PARTICIPANT's book, twice over. The mirror leg moves that bank's
+//   - CentralBankBook, for the netting transaction — moving reserves between the
+//     members' settlement accounts in its own chart of accounts.
+//   - each PARTICIPANT's book, twice over: the mirror leg moves that bank's
 //     suspense against its reserve so the suspense returns to zero, and the
 //     creditor leg releases each payee's funds out of its bank's suspense into
-//     the payee's account. Both were postings in a member bank's ledger, made by
-//     the central bank's handler.
-//   - NetworkBook, for the settlement row's id and the audit events — the same
-//     route every row-write takes to the recorder, and never through a posting.
-//     See the note above the tests. That entry is gone too, and not because the
-//     writes are: a settlement is the SETTLEMENT AGENT's row, so its id and its
-//     events are drawn under this institution's own book like everything else.
+//     the payee's account.
 //
 // # BOTH member legs have left, and that is what this set now measures
 //
-// Task 15b.2 turned the mirror leg into a camt.053: the central bank sends each
-// member a statement of its own reserve account, and the member posts its own
-// mirror leg from it (payment.PostSettlementAdviceTx, bank.receiveStatement).
-//
-// Task 15b.3 took the CREDITOR leg the same way. The clearing house's ACSC
-// fan-out now reaches the creditor's bank as well as the submitter, and that
-// bank releases its own customer's funds out of its own suspense
-// (payment.SettleAtBankTx, bank.receiveStatus). So no member's book is in
-// this set at all: SettleCycleTx reads the cycle, the roster and its own book,
-// and no payment.
+// The last two are the MEMBER's own acts. The central bank sends each member a
+// camt.053 statement of its own reserve account and the member posts its own
+// mirror leg from it (payment.PostSettlementAdviceTx, bank.receiveStatement);
+// the clearing house's ACSC fan-out reaches the creditor's bank, which releases
+// its own customer's funds out of its own suspense (payment.SettleAtBankTx,
+// bank.receiveStatus). So no member's book is in this set at all: SettleCycleTx
+// reads the cycle, the roster and its own book, and no payment.
 //
 // # What that measurement is evidence FOR
 //
-// The book that remains is the central bank's own, and it is the only one. The
-// claim that a settlement agent posts in a member's ledger is gone entirely,
-// and it is gone by measurement rather than by assertion — this expectation was
-// written at Task 10 to fail the day it stopped being true, and it did. What
-// stands here now is what a settlement agent is: one institution, one chart of
+// The book that remains is the central bank's own, and it is the only one. What
+// stands here is what a settlement agent is: one institution, one chart of
 // accounts, one register of who banks with it.
 //
 // What it cost is stated at the domain call rather than hidden here: the ledger's
@@ -1361,55 +1221,31 @@ func TestWhichBooksTheCentralBankReachesWhenItSettles(t *testing.T) {
 //
 // TestWhichBooksEachBankActuallyReaches makes a claim about a credit transfer up
 // to acceptance, and TestWhichBooksEachBankReachesInAPull about a collection.
-// Neither could say anything about settlement, because at Task 10 there was
-// none. Now there is, and it is the moment at which reserves actually move — so
-// it is the point in the system's life where a bank reaching into the central
-// bank's book, or into the other bank's, would be least visible and most wrong.
+// Neither says anything about settlement, which is the moment reserves actually
+// move — so it is the point in the system's life where a bank reaching into the
+// central bank's book, or into the other bank's, would be least visible and most
+// wrong.
 //
-// # The claim this used to make, and why it stopped being true
+// # Settlement IS a bank's work
 //
-// It was TestNeitherBankTouchesABookWhileTheCycleSettles, and it asserted the
-// empty set for both banks: "settlement is not a bank's work". That was a true
-// measurement of a system in which the settlement agent posted every member's
-// mirror leg inside its own unit of work — the banks touched nothing because
-// nothing was left for them to do. Task 15b.2 moved the mirror leg to the member
-// that owns the book, so both banks now post, and the old name claims the exact
-// opposite of what this measures. It is renamed rather than adjusted in place for
-// the reason TestWhichBooksEachBankActuallyReaches was renamed: the name is the
-// string a failure prints and a reader greps for, and one that outran its code is
-// worse than no name at all.
+// Both banks post: the member that owns the book books its own mirror leg. The
+// name is a question rather than a claim, for
+// TestWhichBooksEachBankActuallyReaches's reason.
 //
 // # What each bank reaches, and what is ABSENT
 //
 // Its own book, and only its own. The payer's bank posts once, for the mirror
 // leg — suspense against reserve, so the suspense returns to zero. The payee's
-// bank posts that leg too and then a second one: Task 15b.3 made the CREDITOR
-// leg the payee's bank's act, so it also releases its own customer's funds out
-// of that same suspense. Both of them also mark their OWN copy of the payment
-// Settled, which is what payment.SettleAtBankTx made the unconditional half.
+// bank posts that leg too and then a second one, the CREDITOR leg, releasing its
+// own customer's funds out of that same suspense. Both also mark their OWN copy
+// of the payment Settled.
 //
-// The central bank's book is absent from both, which is the claim the old test
-// made most sharply and this one still makes: a member books its own mirror leg
-// from a statement, and never reads the account the statement is about.
+// The central bank's book is absent from both, which is the sharpest claim here:
+// a member books its own mirror leg from a statement, and never reads the
+// account the statement is about.
 //
-// # The asymmetry in NetworkBook was a measurement, and it measured the thing
-// that has now gone
-//
-// NetworkBook was in the payee's bank's set and not the payer's, and the reason
-// was which of them wrote a PAYMENT row: the mirror leg writes a book-scoped
-// advice row and appends no audit event, while the creditor leg transitioned the
-// payment to Settled and appended payment.settled — and a payment was a row
-// belonging to no single institution, so the payee's bank reached NetworkBook
-// through the id that event needed.
-//
-// This note said the asymmetry meant the payment row was still ONE row shared by
-// the whole network, and that Task 18 would make it per-entity, and that both
-// banks would then touch their own and neither that one. That is what these two
-// lines now assert. Both banks write a payment row at a cut-off — each its own,
-// under its own book — so the sets are symmetric and neither has an entry that
-// belongs to nobody. The prediction is kept rather than deleted, because a
-// want-list that shrank for the right reason reads exactly like one somebody
-// relaxed, and this is the record of which it was.
+// Both banks write a payment row at a cut-off — each its own, under its own book
+// — so the sets are symmetric and neither has an entry that belongs to nobody.
 //
 // # What these sets do NOT rule out, measured rather than assumed
 //
@@ -1438,33 +1274,23 @@ func TestEachBankBooksItsOwnSettlementAndNoOtherBooks(t *testing.T) {
 		h.booksTouchedBy(h.creditorBIC), []ledger.BookID{h.creditorBook})
 }
 
-// TestWhichBooksAReturnReaches is the last flow's measurement, and it has just
-// stopped being the most lopsided set in this file.
+// TestWhichBooksAReturnReaches is the last flow's measurement.
 //
 // Measured, then written down. Every sentence below is about the run this test
 // makes and no wider.
 //
-// # It used to say ONE actor reached every book, and that is the reversal
+// # The central bank reaches ONE book
 //
-// The set asserted here was h.allBooks(): the central bank reached all four,
-// two of which were member banks'. That was an accurate measurement of
-// payment.ReturnPaymentTx, which ran the whole return in one unit of work —
-// both customer legs and both reserve mirrors among them — and which Task 16e
-// deleted. What is left at this actor is payment.SettleReturnTx: one posting,
-// reversing the movement between the two members' settlement accounts, in the
-// central bank's own book.
+// payment.SettleReturnTx makes one posting, reversing the movement between the
+// two members' settlement accounts, in the central bank's own book. A return
+// composed in one unit of work would reach all four, two of which are member
+// banks'.
 //
-// # The central bank reaches ONE book, and the absence of NetworkBook is the
-// second measurement
-//
-// [CentralBankBook], and nothing else. NetworkBook is not there and its absence
-// was not predicted — the plan for this task guessed it would be, by analogy
-// with the cut-off, and the measurement says otherwise. It is worth the
-// sentence because the reason is exact: a network-scoped row reaches this
-// recorder through the id its write ALLOCATED and the audit event that write
-// APPENDED, never through a read (see the note above the tests), and
-// SettleReturnTx writes no row and appends no event. It reads the roster by
-// BIC, posts once, and reads two balances back.
+// [CentralBankBook], and nothing else — no second entry for the row it writes,
+// because it writes none. A row reaches this recorder through the id its write
+// ALLOCATED and the audit event that write APPENDED, never through a read (see
+// the note above the tests), and SettleReturnTx writes no row and appends no
+// event. It reads the roster by BIC, posts once, and reads two balances back.
 //
 // TestWhichBooksTheCentralBankReachesWhenItSettles measures the same one book
 // for the cut-off, and the difference the sentence above was drawing is now
@@ -1477,15 +1303,14 @@ func TestEachBankBooksItsOwnSettlementAndNoOtherBooks(t *testing.T) {
 //
 // # The clearing house reaches its OWN book, and that entry is NEW
 //
-// It came out EMPTY until Task 18d, and the empty set was the measurement: it
-// runs TWO handlers over this window and sends THREE messages — it carries the
-// pacs.004 to the settlement agent, addresses the answer back to the bank that
-// asked, and relays the pacs.004 on to the other bank — and touched nothing at
-// all, because it had nothing of its own to write. The three hops still read
-// almost nothing: the first reads no store at all (a return's first destination
-// follows from the message DEFINITION), the third reads none either (the other
-// bank is whichever of OrgnlTxRef's two agents the message did not come from,
-// which is on the message), and the middle one reads the payment and its scheme.
+// The clearing house runs TWO handlers over this window and sends THREE messages
+// — it carries the pacs.004 to the settlement agent, addresses the answer back
+// to the bank that asked, and relays the pacs.004 on to the other bank — and
+// reads almost nothing: the first hop reads no store at all (a return's first
+// destination follows from the message DEFINITION), the third reads none either
+// (the other bank is whichever of OrgnlTxRef's two agents the message did not
+// come from, which is on the message), and the middle one reads the payment and
+// its scheme.
 //
 // What changed is not a read. The clearing house keeps its own copy of every
 // payment it carries now, so being told a return went through is a WRITE it has
@@ -1506,12 +1331,8 @@ func TestEachBankBooksItsOwnSettlementAndNoOtherBooks(t *testing.T) {
 // forwarding the answer comes out holding that BANK's book too and fails the
 // second assertion below.
 //
-// It used to name the book — "comes out [bank_3]" — and that had gone stale
-// twice over: the harness's second bank is numbered differently every time an
-// allocation moves in the network's shared id counter, most recently when
-// admission became four acts. A book id here is a fact about the seed's
-// arithmetic and not about what this test measures, which is WHOSE book was
-// reached.
+// The book is not NAMED here. A book id is a fact about the seed's arithmetic
+// and not about what this test measures, which is WHOSE book was reached.
 //
 // The two banks have moved to TestEachBankBooksItsOwnReturnAndNoOtherBooks,
 // which is where the assertion that they touch nothing turned into an assertion
@@ -1541,7 +1362,7 @@ func TestWhichBooksAReturnReaches(t *testing.T) {
 // measurement above: across a return each member bank reaches its OWN book and
 // no other.
 //
-// # The claim this used to make, and why it stopped being true
+// # Settlement IS a bank's work
 //
 // These two assertions lived inside TestWhichBooksAReturnReaches and said the
 // two banks touched NOTHING: a returning bank posted no leg, and the payer's
@@ -1551,7 +1372,7 @@ func TestWhichBooksAReturnReaches(t *testing.T) {
 // — a name that claims the opposite of its measurement is worse than no test —
 // and it is the second time this package has hit it on the same kind of change.
 //
-// # What each bank reaches, and the entry that used to tell them apart
+// # What each bank reaches
 //
 // Each reaches its own book and nothing else. The PAYEE's bank is the returner
 // on a push: it posts the clawback out of its own customer's account into its
@@ -1563,15 +1384,11 @@ func TestWhichBooksAReturnReaches(t *testing.T) {
 // still makes: a bank moves its own money, and never reads the settlement
 // account the statement is about.
 //
-// The payer's bank used to carry a second entry, NetworkBook, and this note
-// explained it: that bank posts the SECOND customer leg, which is what takes the
-// payment to Returned, and a status transition wrote the shared payment row and
-// appended payment.returned. It said the asymmetry was not a property of being
-// the payer's bank but of posting the finishing leg — true, and on a pull the two
-// are the other way round — and that Task 18 would make the row per-entity, after
-// which neither bank would reach it. That is what these two lines assert. Both
-// banks still write a payment row over this window; each writes its own, under
-// its own book, so there is nothing left for the entry to distinguish.
+// Both banks write a payment row over this window, each its own and under its
+// own book, so the sets are symmetric. On a return the bank that posts the
+// SECOND customer leg is the one that takes the payment to Returned — the
+// payer's bank on a push, the payee's on a pull — and that is a property of
+// posting the finishing leg rather than of which side it is.
 //
 // # What these sets do NOT rule out
 //
@@ -1602,14 +1419,11 @@ func TestEachBankBooksItsOwnReturnAndNoOtherBooks(t *testing.T) {
 // table asks for, and the one measurement in this file whose subject is not a
 // payment.
 //
-// One call used to reach three books: the bank's own, the central bank's and the
-// network's, all inside a single unit of work at a caller that was no
-// institution at all. Three institutions reach three sets now, and the point is
-// not that the total is the same — it is that no actor is in more than one
-// bank's book, and that the two institutions that used to be reached INTO now
-// reach their own.
+// Three institutions reach three sets, and the point is not the total: it is
+// that no actor is in more than one bank's book, and that the two institutions
+// that would otherwise be reached INTO reach their own.
 //
-// # The measured want-lists, and what Task 18c did to them
+// # The measured want-lists
 //
 // Three institutions, one book each:
 //
@@ -1617,16 +1431,9 @@ func TestEachBankBooksItsOwnReturnAndNoOtherBooks(t *testing.T) {
 //	the central bank    [CentralBankBook]
 //	the clearing house  [ClearingHouseBook]
 //
-// Every one of those used to carry ledger.NetworkBook beside it, and the
-// disappearance is the whole of what this task did rather than a loosening of the
-// assertion. NetworkBook meant "belongs to no single institution", and it was
-// where a bank's id, a payment's id, a cycle's id and every network-scoped audit
-// event were drawn — one counter and one audit stream, shared by everybody, in
-// the one database that held everything. Each of those rows turned out to have
-// exactly one owner. So the id and the audit event an act draws now come from the
-// store that act is about to write, which is its own institution's
-// (payment.Network.book), and the second entry in each set collapsed into the
-// first.
+// Each set names one institution and nothing beside it. The id and the audit
+// event an act draws come from the store that act is about to write, which is
+// its own institution's (payment.Network.book).
 //
 // The mechanism the note above the tests describes is UNCHANGED and still the
 // only way a row-write is visible here: through the id it allocated and the audit
@@ -1635,17 +1442,13 @@ func TestEachBankBooksItsOwnReturnAndNoOtherBooks(t *testing.T) {
 // vanish from this measurement, which is the failure that note exists to warn
 // about.
 //
-// The plan for this task predicted [its own book, NetworkBook] for the joining
-// bank and [CentralBankBook] alone for the central bank, and was wrong about the
-// second in the direction the note explains: OpenSettlementAccountTx draws an id
-// before the read its idempotency is decided from (payment.admissionSequenceTx)
-// and appends settlement_account.opened afterwards, so it was [CentralBankBook,
-// NetworkBook]. Neither half is optional — drop the event and the settlement
+// The central bank's list is [CentralBankBook] and not that alone by accident:
+// OpenSettlementAccountTx draws an id before the read its idempotency is decided
+// from (payment.admissionSequenceTx) and appends settlement_account.opened
+// afterwards. Neither half is optional — drop the event and the settlement
 // account exists in no immutable record; drop the id and the act loses the
 // ordering that made its idempotency its own rather than the store's. Both are
-// still drawn. They are drawn in the settlement agent's own book, so the
-// correction and the prediction have arrived at the same list by different
-// routes, and the reasoning is kept because the mechanism it is about survives.
+// drawn in the settlement agent's own book.
 //
 // # What each set says
 //
@@ -1656,8 +1459,7 @@ func TestEachBankBooksItsOwnReturnAndNoOtherBooks(t *testing.T) {
 //
 // The CENTRAL BANK reaches CentralBankBook and never a bank's. It opens a
 // Liability in its own book and writes its own member row; the settlement
-// reference it produces reaches the bank as a MESSAGE, which is the whole of what
-// changed at Task 17.
+// reference it produces reaches the bank as a MESSAGE.
 //
 // The CLEARING HOUSE reaches ClearingHouseBook alone. It writes one roster row
 // and posts nothing, which is what it does on every other flow in this package.
@@ -1708,14 +1510,10 @@ func TestWhichBooksAdmissionReaches(t *testing.T) {
 // TestFundingAReserveReachesTwoBooks, and it is that measurement turned inside
 // out.
 //
-// The old one pinned crossing 6 as a fact: Network.DepositTx posted the funding
-// bank's reserve mirror AND the central bank's matching leg in one unit of work,
-// because a deposit WAS the bank placing cash on reserve, and there was no vault
-// and no lodgement to route it through. It was the one measurement in this file
-// expected to pass then and to fail the day the stores split. Task 18a is where
-// it fails, and it failed on exactly the two assertions that named the crossing —
-// the book set shrank to the bank's own, and no transaction landed in the central
-// bank's book — which is why it is rewritten here rather than edited.
+// It is the pin on the crossing a deposit would otherwise make: posting the
+// funding bank's reserve mirror AND the central bank's matching leg in one unit
+// of work. Cash paid in lands in the bank's own vault, and putting it on reserve
+// is a LODGEMENT.
 //
 // What replaces it asserts the crossing is GONE, and asserts it three ways,
 // because "reaches one book" is a claim two different bugs could satisfy.
@@ -1733,24 +1531,20 @@ func TestWhichBooksAdmissionReaches(t *testing.T) {
 //
 // # Why a book set alone would not be enough
 //
-// A read touches a book exactly as a write does, and the converse trap is the one
-// that matters now: a deposit that posted NOTHING AT ALL would also touch one
+// A read touches a book exactly as a write does, and the converse trap is the
+// one that matters: a deposit that posted NOTHING AT ALL would also touch one
 // book and would also leave the central bank's alone. So the balance is asserted
 // too. Vault cash rising by the amount paid in is what says the money went
-// somewhere, and it is the entry that did not exist before this task — the debit
-// used to be to Reserve at Central Bank.
+// somewhere.
 //
 // The transaction count in the central bank's book stays, with its sense
 // reversed. It is what catches the halfway state where the posting is removed and
-// the READ is not: centralBankAssetsAccountTx used to run a line earlier and
-// would still have put CentralBankBook in the set. It is gone, and a zero here is
-// what says so.
+// the READ is not: a centralBankAssetsAccountTx call would still put
+// CentralBankBook in the set, and a zero here is what says there is none.
 //
-// One unit of work, still, and it now means the opposite of what it used to.
-// There it said the two books move together, and two units would have meant the
-// crossing was already split. Here there is one book to move, and more than one
-// unit of work would mean a deposit had acquired a second act — which is what a
-// LODGEMENT is, and a lodgement is not this call.
+// One unit of work. There is one book to move, and more than one unit of work
+// would mean a deposit had acquired a second act — which is what a LODGEMENT is,
+// and a lodgement is not this call.
 func TestTakingCashInReachesOnlyTheBanksOwnBook(t *testing.T) {
 	h := newMeshHarness(t)
 
@@ -1793,12 +1587,11 @@ func TestTakingCashInReachesOnlyTheBanksOwnBook(t *testing.T) {
 // it is the measurement that says the crossing was CLOSED rather than merely
 // moved.
 //
-// TestTakingCashInReachesOnlyTheBanksOwnBook says the deposit stopped reaching the
+// TestTakingCashInReachesOnlyTheBanksOwnBook says the deposit does not reach the
 // central bank's book. On its own that is satisfied by a system in which reserves
-// can no longer be funded at all, which is not a fix. This is the other side:
-// reserves still get funded, the same two pairs of entries still land in the same
-// two books, and what changed is that they land in TWO UNITS OF WORK with a
-// message between them.
+// cannot be funded at all, which is not a fix. This is the other side: reserves
+// still get funded, the same two pairs of entries still land in the same two
+// books, and they land in TWO UNITS OF WORK with a message between them.
 //
 // # The three assertions, and why each is a different claim
 //
@@ -1917,11 +1710,8 @@ func TestABankCannotLodgeCashItDoesNotHold(t *testing.T) {
 // TestAFoundedBankCanTakeCashBeforeItHasJoinedAnything is the domain half of the
 // same change, and it is a reversal rather than a new rule.
 //
-// DepositTx used to refuse a bank whose settlement reference was empty, with
-// ErrSettlementMemberNotFound and the sentence "is founded and not yet admitted,
-// so it has no reserve to fund". That was an accurate description of the code —
-// the posting it was about named that account — and a false statement about
-// banking. A bank's counter has nothing to do with its central bank account.
+// A bank's counter has nothing to do with its central bank account, so taking
+// cash in is not refused for want of a settlement reference. Lodging it is.
 //
 // So this drives a bank that has been FOUNDED and admitted to nothing, and pays
 // cash in. It is the sharpest form of the claim available: there is no settlement
@@ -1967,10 +1757,10 @@ func TestAFoundedBankCanTakeCashBeforeItHasJoinedAnything(t *testing.T) {
 // It WALKS the interface embedding chain from payment.Tx rather than reading a
 // list of files, for the same reason it parses rather than holding a list of
 // methods: a list is a second copy and a second copy drifts. Wrapping only
-// ledger.Tx was the first version of this test, and it was wrong — deposit,
-// product and lending are book-scoped in exactly the same way, so a handler
-// reading another bank's deposit register passed it. Walking means a fifth layer
-// embedded into payment.Tx tomorrow is covered by this test on the day it lands.
+// ledger.Tx would miss deposit, product and lending, which are book-scoped in
+// exactly the same way, so a handler reading another bank's deposit register
+// would pass. Walking means a fifth layer embedded into payment.Tx tomorrow is
+// covered on the day it lands.
 //
 // It parses THIS file for the other half rather than using reflect, because
 // reflect cannot tell a method a type declares from one it inherits — which is
@@ -2077,24 +1867,19 @@ func TestEveryStructCarriedBookIsDecided(t *testing.T) {
 //
 // # The split makes the second half a refusal, and that is the stronger answer
 //
-// This used to write into one shared store and read the named book back EMPTY,
-// which is as much as a shared store can say: the book existed, it was reachable,
-// and nothing had landed in it. A bank's store answers for exactly one book now,
-// so asking it about another is sqlite.ErrNotThisStoresBook rather than an empty
-// page — "there is nothing of yours here" replaced by "that is not a question
-// this database can be asked". The assertion is on the refusal, because an empty
-// answer is the thing this schema can no longer give and a test still expecting
-// one would pass for the wrong reason.
+// A bank's store answers for exactly one book, so asking it about another is
+// sqlite.ErrNotThisStoresBook rather than an empty page — "that is not a question
+// this database can be asked" rather than "there is nothing of yours here". The
+// assertion is on the refusal, because an empty answer is the thing this schema
+// cannot give and a test still expecting one would pass for the wrong reason.
 //
 // # And Bank.BookID is not a column any more either, which is stronger
 //
-// The last leg used to read the row back and find it still carrying the foreign
-// book, on the argument that a stored field is a column and not a scope. There is
-// no such column: a bank's id IS its BIC and IS its book (payment.AsBank), so
-// store/sqlite writes neither and scanBank derives both from the primary key.
-// A BookID that disagrees is silently NORMALISED — the serialiser's stance on
-// every derived field, with payment.FoundBankTx as the thing that refuses an
-// inconsistent bank — so the round trip comes back naming this bank's own book.
+// A bank's id IS its BIC and IS its book (payment.AsBank), so store/sqlite writes
+// neither and scanBank derives both from the primary key. A BookID that disagrees
+// is silently NORMALISED — the serialiser's stance on every derived field, with
+// payment.FoundBankTx as the thing that refuses an inconsistent bank — so the
+// round trip comes back naming this bank's own book.
 //
 // That is the same claim arriving one step further: the field could not scope the
 // write, and now it cannot even be carried. Both halves are asserted, because
@@ -2238,15 +2023,11 @@ var errProbeDone = errors.New("probe finished")
 // Each method gets its OWN unit of work, and each ends by returning errProbeDone
 // so the work rolls back. That is not tidiness: the arguments are zero values
 // apart from the book, so many of these calls fail, and returning a sentinel of
-// the probe's own means Update hands back exactly the error the callback
-// returned — asserted below — rather than whatever the store made of a bad
-// write. Under store/pg the reason was sharper still, because a failed statement
-// there aborted the transaction and every later one with it; under SQLite the
-// statement rolls back and the transaction survives, so the discipline is now
-// about what this test READS rather than about what it would otherwise break.
-// The store's answer to the call itself is still discarded, on purpose: the book
-// is noted BEFORE the call goes through, which is what makes every method
-// reachable without a fixture apiece.
+// the probe's own means Update hands back exactly the error the callback returned
+// — asserted below — rather than whatever the store made of a bad write. The
+// store's answer to the call itself is discarded on purpose: the book is noted
+// BEFORE the call goes through, which is what makes every method reachable
+// without a fixture apiece.
 //
 // What the recorder saw survives the rollback, because a read that happened and
 // was then rolled back still happened.
@@ -2316,9 +2097,8 @@ func bookArgument(t *testing.T, typ reflect.Type, m bookMethod, book ledger.Book
 //
 // A handler holding a legitimate Tx can call ListAudit with any book's id and
 // read that bank's entire audit trail, Payload included — an auditable history
-// of every account opened, every hold taken, every posting made. Before the
-// override existed this recorded NOTHING, so Task 10's
-// TestWhichBooksEachBankActuallyReaches would have passed over it.
+// of every account opened, every hold taken, every posting made. Without the
+// override this records NOTHING.
 //
 // The second half is the wider crossing still: an AuditFilter with no BookID
 // reads every book at once. That must not look like a clean unit of work either,
@@ -2362,11 +2142,10 @@ func TestACrossBookAuditReadIsRecorded(t *testing.T) {
 // TestWritingANetworkRowRecordsTheNetworkBook pins the note above, which the
 // previous round got backwards.
 //
-// OpenCycle is the smallest network-scoped write there is: one ClearingCycle
-// row, no posting anywhere. If NetworkBook only arrived through postings — as
-// the old note claimed — this would record nothing. It records [network],
-// because the cycle's id comes from NextID under NetworkBook and its audit event
-// is appended under it.
+// OpenCycle is the smallest institution-scoped write there is: one ClearingCycle
+// row, no posting anywhere. It records the clearing house's book, because the
+// cycle's id comes from NextID under it and its audit event is appended under it
+// — which is what says a book arrives through more than postings.
 func TestWritingANetworkRowRecordsTheNetworkBook(t *testing.T) {
 	clock := func() time.Time { return testTime }
 	rec := newRecordingStores(testenv.NewSet(t, clock))
@@ -2469,12 +2248,9 @@ func isAuditEventType(w *chainWalk, pkg *pkgAST, imports map[string]string, typ 
 //
 // # Two books means two DATABASES now, and that is what makes the pair legal
 //
-// The two legs used to be two book ids in one store, which was the only way to
-// have two books and is also the crossing this file exists to catch. Each leg is
-// its own bank's store reaching its own book here, so both are ordinary acts, and
-// what the assertion at the end proves is that ONE recorder aggregates across
-// institutions — which is the property every TestXTouchesOnly… assertion rests
-// on and which no single-store version could have shown.
+// Each leg is its own bank's store reaching its own book, so both are ordinary
+// acts. What the assertion at the end proves is that ONE recorder aggregates
+// across institutions — the property every TestXTouchesOnly… assertion rests on.
 func TestRecordingTxReachesTheStoreUnderneath(t *testing.T) {
 	clock := func() time.Time { return testTime }
 	recs := newRecordingStores(testenv.NewSet(t, clock))
@@ -2541,9 +2317,9 @@ func TestRecordingTxReachesTheStoreUnderneath(t *testing.T) {
 // test above can see.
 //
 // Concurrency, because the mesh runs one goroutine per institution and they all
-// drive the same store: an unlocked map here would be a data race in every flow
-// test from Task 10 on, reported against the flow rather than against this.
-// Under -race, dropping the mutex in note fails this.
+// drive the same recorder: an unlocked map here would be a data race in every
+// flow test, reported against the flow rather than against this. Under -race,
+// dropping the mutex in note fails this.
 //
 // Sorting, because touched() is asserted whole. Five books rather than two, so
 // that an unsorted result cannot pass by landing in order — Go's map iteration
@@ -2617,11 +2393,11 @@ func TestTheRecorderIsSafeForConcurrentActorsAndSortsWhatItSaw(t *testing.T) {
 // the audit trail was unrecorded. Both times the comment said the missing thing
 // was not a thing.
 //
-// So the parser no longer SKIPS what it cannot analyse — it REFUSES it, by name,
+// So the parser REFUSES what it cannot analyse rather than skipping it, by name,
 // with the shape spelled out. The three tests below construct each refusable
 // shape in a throwaway module and assert the refusal, which is the answer to the
 // objection that an unused branch cannot be tested: an unused branch cannot, but
-// an ERRORING branch can, and this is how.
+// an ERRORING branch can.
 //
 // What that buys is not that the parser handles every shape. It is that a shape
 // it does not handle becomes a decision somebody has to make — the same move
@@ -2950,17 +2726,16 @@ type chainWalk struct {
 //     REFUSED. See the three tests above, which construct each shape.
 //
 // Methods carrying no book at all are correctly absent: ledger's Now (the
-// clock), and payment.Tx's readers and its writers for payments, mandates,
-// cycles and settlements, which are network-scoped and live under
-// ledger.NetworkBook.
+// clock), and payment.Tx's readers and writers for payments, mandates, cycles
+// and settlements, which are keyed under their own institution's book.
 //
 // # Why it walks rather than reading a list of files
 //
 // A hand-listed set of files is a second copy of the layering, and it drifts the
-// same way a hand-listed set of methods would: the first version of this test
-// read ledger/store.go alone and therefore called a decorator complete while
-// deposit, product and lending were entirely unrecorded. Walking the chain means
-// the test's idea of "everything payment.Tx can reach" is Go's.
+// same way a hand-listed set of methods would: reading ledger/store.go alone
+// would call a decorator complete while deposit, product and lending were
+// entirely unrecorded. Walking the chain means the test's idea of "everything
+// payment.Tx can reach" is Go's.
 func txBookCandidates(t *testing.T) []bookMethod {
 	t.Helper()
 	return realChainWalk(t).methods
@@ -3265,21 +3040,20 @@ func (w *chainWalk) carriesBook(ref typeRef, visited map[string]bool) bool {
 // cannot scope a store operation from outside its own. The Tx is the choke
 // point; a live handle is a route TO it, not around it.
 //
-// That is a statement about the code as it stands, and sub-project 8 must
-// revisit it rather than inherit it: the moment any entity gets a handle that
-// answers from a cache, a materialised view, or anything else that does not go
-// through the Tx, this exclusion stops holding and a book behind an unexported
-// field becomes reachable without being recorded.
+// That is a statement about the code as it stands: the moment any entity gets a
+// handle that answers from a cache, a materialised view, or anything else that
+// does not go through the Tx, this exclusion stops holding and a book behind an
+// unexported field becomes reachable without being recorded.
 //
 // An EMBEDDED field is always followed, whatever its type's name. Go promotes an
 // unexported embedded type's EXPORTED fields, so `type Outer struct { inner }`
 // with `inner` carrying an exported BookID makes o.BookID readable from any
 // package — the book is reachable even though the thing holding it is not
-// nameable. An earlier version of this function tested the embedded type's own
-// name and therefore skipped that shape silently, which is precisely the failure
-// the refusals exist to end: a category the parser could not see. The recursion
-// applies this same rule to the promoted struct's own fields, so an unexported
-// field one level down is still correctly out of reach.
+// nameable. Testing the embedded type's own name would skip that shape silently,
+// which is precisely the failure the refusals exist to end: a category the parser
+// could not see. The recursion applies this same rule to the promoted struct's
+// own fields, so an unexported field one level down is still correctly out of
+// reach.
 func exportedField(f *ast.Field) bool {
 	if len(f.Names) == 0 {
 		return true
