@@ -297,21 +297,21 @@ passing for the wrong reason, or the refusal is not doing the work claimed.
 
 ## 18e — the reconciliation harness, and the sweep
 
-- [ ] **A test-level harness that opens all N+2 stores** and asserts the network
+- [x] **A test-level harness that opens all N+2 stores** and asserts the network
       balances in aggregate: every bank's suspense, every reserve at the central
       bank, and the clearing house's cycles agreeing about the same payments. It
       is the one thing no entity may do, and it is the direct successor to what
       the recorder was to 7b — the instrument for defects that never become a
       message, which is the class the spec records as invisible to everything
       this sub-project had.
-- [ ] **The documentation sweep.** `README.md` (authoritative), then
+- [x] **The documentation sweep.** `README.md` (authoritative), then
       `hint-content.ts`, quiz chapters **9, 11, 12, 15 and 16**, and the three
       schema files. New domain content none of the layers carries: the clearing
       house has no ledger; the central bank has no customers; a bank has no
       cycles; settlement is final at the central bank and the banks reconcile
       afterwards; the creditor's bank carries the refund risk on a direct debit.
-- [ ] **`CLAUDE.md`**: *there is one migration* becomes one per shape.
-- [ ] **Five rulings are reversed** and each is written as a reversal, per the
+- [x] **`CLAUDE.md`**: *there is one migration* becomes one per shape.
+- [x] **Five rulings are reversed** and each is written as a reversal, per the
       spec's list: the camt family's absence (camt.053 only), `OrgnlTxRef`'s
       absence (pacs.004 only), one migration, `iso20022`'s "SEPA interbank"
       framing, and a bank never existing without its accounts.
