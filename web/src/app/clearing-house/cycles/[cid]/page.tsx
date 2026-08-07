@@ -66,7 +66,7 @@ export default function CycleDetailPage() {
                   }}
                 />
               )}
-              {c.status === "Closed" && !c.settlementId && (
+              {c.status === "Closed" && (
                 <>
                   <p className="max-w-md text-xs text-muted-foreground">
                     Netted and awaiting settlement. Moving reserves is the
@@ -113,15 +113,23 @@ export default function CycleDetailPage() {
                 <div className="text-muted-foreground">Closed</div>
                 <div>{formatDateTime(c.closedAt)}</div>
               </div>
+              {/*
+                * No settlement id, because the clearing house is never told
+                * one: the settlement agent allocates it in its own database and
+                * answers a pacs.002 quoting the CYCLE. Status is what says a
+                * cut-off settled, and it is above; the settlement itself is on
+                * the agent's own console, matched by this cycle's id. See
+                * ClearingCycle in lib/types.ts.
+                */}
               <div>
                 <div className="text-muted-foreground">Settlement</div>
                 <div>
-                  {c.settlementId ? (
+                  {c.status === "Settled" ? (
                     <Link
-                      href={`/clearing-house/settlements/${c.settlementId}`}
-                      className="font-mono underline-offset-2 hover:underline"
+                      href="/clearing-house/settlements"
+                      className="underline-offset-2 hover:underline"
                     >
-                      {c.settlementId}
+                      Discharged — see settlements
                     </Link>
                   ) : (
                     "—"

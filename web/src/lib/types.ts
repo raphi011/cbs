@@ -456,14 +456,21 @@ export interface ClearingCycle {
   netPositions?: Record<string, number>;
   openedAt: string;
   closedAt?: string;
-  settlementId?: string;
+  // There is no settlementId, and its absence says something true. That id is
+  // allocated inside the SETTLEMENT AGENT's own unit of work in its own
+  // database, and no message carries it back — what the clearing house is sent
+  // is a pacs.002 quoting the CYCLE, because the cycle is what it asked about.
+  // So `status` is what says a cut-off settled, and the settlement itself is on
+  // the agent's own console, matched by cycleId. See api's clearingCycleDTO.
 }
 
 export interface Settlement {
   id: string;
   cycleId: string;
-  // Resolved server-side via the settlement's cycle's scheme (see
-  // toSettlementDTO).
+  // What was settled in, recorded on the row by the settlement agent from the
+  // instruction it acted on. It used to be resolved server-side by following
+  // the settlement to its cycle to that cycle's scheme, which is a chain into
+  // another institution's database. See payment.Settlement.Asset.
   asset: string;
   netPositions: Record<string, number>;
   settlementTx: string;

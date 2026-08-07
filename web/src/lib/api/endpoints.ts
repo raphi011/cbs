@@ -60,8 +60,18 @@ import type {
 
 // --- Participants ---------------------------------------------------------
 
+// Every bank in the network, on the CENTRAL BANK's listener beside the route
+// that founds them.
+//
+// It was the clearing house's, on the reading that this is the console
+// membership is watched from. That institution's database has no banks table
+// since Task 18d — what it holds is a ROSTER of addresses, which is exactly the
+// list that omits the founded-and-not-yet-admitted bank this read exists to
+// show. Both routes on the central bank's port are the OPERATOR's rather than
+// the settlement agent's; see the api package's centralBankRouter, which says so
+// at length.
 export function listParticipants(): Promise<Participant[]> {
-  return request("GET", csm("/members"));
+  return request("GET", cb("/members"));
 }
 
 export function getParticipant(pid: string): Promise<Participant> {
@@ -153,14 +163,21 @@ export function centralBankAudit(q: AuditQuery = {}): Promise<AuditEvent[]> {
   return request("GET", cb(`/audit${qs({ ...q })}`));
 }
 
-// The cycles the central bank is asked to settle, read from its own listener.
+// The cycles the central bank is asked to settle.
 //
-// A settlement instruction in the real thing IS a closed cycle and its net
-// positions, so this is part of the act rather than a widening. What the central
-// bank still cannot read is an individual payment — GET /payments is the
-// clearing house's, and a real central bank does not see one.
+// On the CLEARING HOUSE's listener, because a cycle is that institution's row
+// and the settlement agent's database has no cycles table. It was cb("/cycles")
+// while one store served both, which is precisely the mistake the note further
+// down this file warns about — a path that goes stale with nothing on this side
+// of the wire able to notice.
+//
+// What the central bank's own console has instead is its settlements, and a
+// settlement carries the cut-off's id, its net positions and its asset. The one
+// thing that read is FOR and cannot be got from them is a closed cycle with NO
+// settlement against it — an instruction this agent refused — and that is
+// visible here, where the refusal is recorded as a status that never advanced.
 export function centralBankCycles(): Promise<ClearingCycle[]> {
-  return request("GET", cb("/cycles"));
+  return request("GET", csm("/cycles"));
 }
 
 // --- Assets -----------------------------------------------------------
@@ -659,8 +676,27 @@ export function settleCycle(cid: string): Promise<ClearingCycle> {
   return request("POST", csm(`/cycles/${cid}/settle`));
 }
 
+// The settlements, on the SETTLEMENT AGENT's listener — which is the only one
+// that serves them, so this and centralBankSettlements below are now one route
+// under two names. They were two ports until Task 18d: a settlement is that
+// institution's record of its own act, in its own database, and the clearing
+// house has no table for one.
+//
+// What the clearing house learns settlement from instead is its OWN cycle,
+// whose status the agent's ACSC moved. See centralBankCycles.
+//
+// # The clearing house's settlements PAGE is left where it is, and that is a
+// question rather than an answer
+//
+// /clearing-house/settlements still exists and now reads the central bank's
+// port, which is the one thing this file says a console should not do. The
+// alternative is moving the page under /central-bank, and that is a navigation
+// change with a nav manifest, an identity test and two quiz chapters linking at
+// it — an information-architecture decision, not a routing fix. It is written
+// down here so the next reader meets it as a decision that was deferred rather
+// than as an inconsistency nobody noticed.
 export function listSettlements(): Promise<Settlement[]> {
-  return request("GET", csm("/settlements"));
+  return request("GET", cb("/settlements"));
 }
 
 // The settlements the CENTRAL BANK performed, read from its own listener.
@@ -674,7 +710,7 @@ export function centralBankSettlements(): Promise<Settlement[]> {
 }
 
 export function getSettlement(sid: string): Promise<Settlement> {
-  return request("GET", csm(`/settlements/${sid}`));
+  return request("GET", cb(`/settlements/${sid}`));
 }
 
 // --- Operators (Next-side, not a backend route) ----------------------------
