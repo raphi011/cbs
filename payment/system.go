@@ -2571,11 +2571,18 @@ func (s *Network) CloseCycleTx(ctx context.Context, tx Tx, id CycleID) (Clearing
 // # A redelivered instruction posts nothing
 //
 // Which is what makes finality safe to publish over a lossy transport. This
-// refuses a cycle that is not CycleClosed with ErrCycleNotClosed, so a second
-// settlement instruction for a cycle already Settled is a refusal rather than a
-// second batch; and the central bank's posting carries the idempotency key
-// "<cycle>:settle", so even a caller that reached the posting would move
-// nothing twice.
+// refuses a cycle it has ALREADY SETTLED with ErrCycleAlreadySettled, read off
+// its own settlement register, so a second instruction for a discharged cut-off
+// is a refusal rather than a second batch; and the central bank's posting
+// carries the idempotency key "<cycle>:settle", so even a caller that reached
+// the posting would move nothing twice.
+//
+// It used to refuse anything that was not CycleClosed, off the cycle's own
+// status, and that is a row this institution has no table for since Task 18d.
+// The other half of that refusal — a cycle not closed YET — went to the clearing
+// house, which owns the cut-off and will not build an instruction for an open
+// one (mesh/csm.settle). What reaches here from an open cycle is an instruction
+// with no legs, and that is ErrInvalidSettlement. See ErrCycleNotClosed.
 //
 // # Ordering
 //

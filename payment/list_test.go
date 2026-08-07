@@ -7,25 +7,46 @@ import (
 	. "github.com/raphi011/cbs/payment"
 )
 
+// TestListBanksAndLookup is the read narrowed to what an institution can
+// actually answer, and the narrowing is the finding.
+//
+// It asked the clearing house for two banks. A clearing house holds no banks
+// table since Task 18d — it holds a ROSTER of addresses, which is a different
+// claim and says nothing about a bank that has been founded and never admitted
+// — so the read it used to serve is now two reads at two different scopes:
+//
+//   - each bank lists ITSELF, from its own database, and that is the whole of
+//     what a bank knows about who else is on the network.
+//   - the set of banks is the COMPOSITION ROOT's question, answered by
+//     Stores.Banks and by no institution. See allBanks, and auditReaders, which
+//     had the same problem.
 func TestListBanksAndLookup(t *testing.T) {
 	ctx := context.Background()
 	sys := testNetwork(t)
 	a, b, _, _ := setupTwoBanks(t, sys)
 
-	parts, err := sys.ListBanks(ctx)
-	assertNoError(t, err)
-	assertEqual(t, "participant count", len(parts), 2)
+	assertEqual(t, "banks in the system", len(allBanks(t, ctx, sys)), 2)
 
-	got, err := sys.GetBank(ctx, a.ID)
+	// A bank's own list is one long, and it is itself. Bank B is on the same
+	// network and in the same roster, and Bank A cannot see it.
+	own, err := sys.bank(a.BIC).ListBanks(ctx)
+	assertNoError(t, err)
+	assertEqual(t, "banks Bank A can list", len(own), 1)
+	assertEqual(t, "and it is itself", own[0].ID, a.ID)
+
+	got, err := sys.bank(a.BIC).GetBank(ctx, a.ID)
 	assertNoError(t, err)
 	assertEqual(t, "lookup returns Bank A", got.ID, a.ID)
 	// GetBank returns a bound bank, so its Ledger is usable.
 	assertEqual(t, "live ledger reachable", accountsOf(t, got).Reserve, accountsOf(t, a).Reserve)
 
-	_, err = sys.GetBank(ctx, "nope")
+	// Bank B's row is not missing from Bank A's store in the sense of a lookup
+	// that failed; it was never there. Same sentinel either way, and the caller
+	// that needs the difference is asking the wrong institution.
+	_, err = sys.bank(a.BIC).GetBank(ctx, b.ID)
 	assertError(t, err, ErrParticipantNotFound)
-
-	_ = b
+	_, err = sys.bank(a.BIC).GetBank(ctx, "nope")
+	assertError(t, err, ErrParticipantNotFound)
 }
 
 func TestListPaymentsCyclesSettlements(t *testing.T) {
@@ -52,16 +73,21 @@ func TestListPaymentsCyclesSettlements(t *testing.T) {
 	assertNoError(t, err)
 	assertEqual(t, "cycle count", len(cycles), 1)
 
-	settlements, err := sys.ListSettlements(ctx)
+	// The settlements are the SETTLEMENT AGENT's rows and are read on its own
+	// network: a settlement is what that institution did in its own book, and
+	// the clearing house's shape has no table for it. The link back is
+	// Settlement.CycleID, which is the direction it can be kept — see
+	// GetSettlementByCycleID.
+	settlements, err := sys.cb().ListSettlements(ctx)
 	assertNoError(t, err)
 	assertEqual(t, "settlement count", len(settlements), 1)
 	assertEqual(t, "settlement id matches", settlements[0].ID, st.ID)
 
-	gotSt, err := sys.GetSettlement(ctx, st.ID)
+	gotSt, err := sys.cb().GetSettlement(ctx, st.ID)
 	assertNoError(t, err)
 	assertEqual(t, "get settlement id", gotSt.ID, st.ID)
 
-	_, err = sys.GetSettlement(ctx, "nope")
+	_, err = sys.cb().GetSettlement(ctx, "nope")
 	assertError(t, err, ErrSettlementNotFound)
 
 	// Both SEPA schemes are registered.

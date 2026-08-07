@@ -1065,7 +1065,9 @@ func TestCreditTransferRequestRefusesAnAddressTwoOfItsOwnAccountsClaim(t *testin
 	// Written straight through the store, past the register's write-time check,
 	// because that is the only way it arises — see
 	// TestResolveIdentifierRefusesAWithinBankCollision.
-	verde, err := n.GetBank(ctx, ParticipantID(p.CreditorDetails.Agent))
+	// Through the receiving bank's OWN network: a bank row is in the bank shape
+	// and the clearing house's has no such table.
+	verde, err := n.bank(p.CreditorDetails.Agent).GetBank(ctx, ParticipantID(p.CreditorDetails.Agent))
 	assertNoError(t, err)
 	impostor := openCustomer(t, ctx, verde, "Impostor", "IT60-VERDE-9999")
 	assertNoError(t, verde.Deposit.Store().Update(ctx, func(ctx context.Context, tx deposit.Tx) error {
@@ -1108,7 +1110,12 @@ func TestCreditTransferRequestDoesNotBlameTheCounterpartyForAStoreFailure(t *tes
 	}
 
 	dropped := errors.New("connection reset by peer")
-	broken := NewNetwork(failingStore{Store: n.Store(), err: dropped},
+	// The store that is made to fail is the RECEIVING BANK's, because that is
+	// the one this act reads: it resolves the payee in that bank's own register.
+	// Wrapping the clearing house's store instead reported a missing table
+	// rather than the injected failure, which is a true statement about the
+	// wrong institution.
+	broken := NewNetwork(failingStore{Store: n.bank(p.CreditorDetails.Agent).Store(), err: dropped},
 		func() time.Time { return fixedTime }, AsBank(ParticipantID(p.CreditorDetails.Agent)))
 
 	_, err = broken.CreditTransferRequest(ctx, env.Document.(*iso20022.Pacs008))

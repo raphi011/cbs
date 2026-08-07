@@ -1319,7 +1319,7 @@ func TestSettleCycleRollsBackEveryLayer(t *testing.T) {
 	// funded. Retrying it is not this layer's act: in the mesh the clearing
 	// house re-sends the pacs.009 (POST /cycles/{cid}/settle, mesh.csm.settle),
 	// and SettleCycleTx's CycleClosed guard is what makes asking twice safe.
-	settlements, err := net.ListSettlements(ctx)
+	settlements, err := net.cb().ListSettlements(ctx)
 	assertNoError(t, err)
 	assertEqual(t, "settlements recorded", len(settlements), 0)
 
@@ -1491,10 +1491,28 @@ func TestStateMachineGuards(t *testing.T) {
 		return p, cyc.ID
 	}
 
+	// # Both settlement guards changed hands at Task 18d, and neither is gone
+	//
+	// They were one refusal, ErrCycleNotClosed, made by SettleCycleTx off the
+	// cycle's status. The settlement agent holds no cycles table now — it settles
+	// what it was INSTRUCTED, and the instruction is a list of legs — so it can
+	// make neither statement out of a row it cannot read.
+	//
+	// "Not closed" went to the CLEARING HOUSE, which is whose cut-off it is: it
+	// will not build an instruction for a cycle that is still open, and
+	// mesh/csm.settle is where that lives and where it is measured. What the
+	// agent sees of an open cycle is an instruction with NO LEGS, because an
+	// open cycle has no net positions to render — and refusing a batch it cannot
+	// read as one is a statement it can make about the message in front of it.
+	//
+	// "Already settled" stayed with the agent and changed its evidence: from the
+	// cycle's status to its OWN settlement register, which is its record of
+	// having done the work. That one had to stay — a redelivered pacs.009 reaches
+	// the agent directly and no clearing-house guard is between them.
 	t.Run("settle before close", func(t *testing.T) {
 		_, cyc := mkPayment()
 		_, _, err := sys.settleCycle(ctx, cyc)
-		assertError(t, err, ErrCycleNotClosed)
+		assertError(t, err, ErrInvalidSettlement)
 		_, _ = sys.CloseCycle(ctx, cyc)
 		_, _, _ = sys.settleCycle(ctx, cyc)
 	})
@@ -1506,7 +1524,7 @@ func TestStateMachineGuards(t *testing.T) {
 		_, _, err = sys.settleCycle(ctx, cyc)
 		assertNoError(t, err)
 		_, _, err = sys.settleCycle(ctx, cyc)
-		assertError(t, err, ErrCycleNotClosed)
+		assertError(t, err, ErrCycleAlreadySettled)
 	})
 
 	t.Run("return before settle", func(t *testing.T) {
@@ -2519,7 +2537,7 @@ func TestSettleCycleFailsWhenParticipantLacksTheAsset(t *testing.T) {
 	// And nothing was posted: the batch fails whole, exactly as it does for a
 	// member that cannot cover its position. The payer's money is still in its
 	// bank's suspense, where the debtor leg left it.
-	settlements, err := sys.ListSettlements(ctx)
+	settlements, err := sys.cb().ListSettlements(ctx)
 	assertNoError(t, err)
 	assertEqual(t, "settlements recorded", len(settlements), 0)
 
