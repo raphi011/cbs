@@ -411,42 +411,35 @@ func (m *Mesh) addActor(bic iso20022.BIC, name string, h handler) error {
 // addActors registers a batch of actors under their BICs — all of them or none
 // — and, if the mesh is already running, starts their goroutines at once.
 //
-// Registering into a running mesh is the normal case, not a convenience: a bank
-// admitted over HTTP joins a mesh whose other actors are already reading their
-// inboxes, and it has to be reachable before it can send its own application —
-// which is the first message of the flow that admits it. See
-// TestAnActorAddedAfterStartReceives and Mesh.Admit.
+// Registering into a running mesh is the normal case: a bank admitted over HTTP
+// joins a mesh whose other actors are already reading their inboxes, and it has
+// to be reachable before it can send its own application. See Mesh.Admit.
 //
-// All or none, because the batch is a roster. A registration that failed
-// halfway would leave the mesh holding some banks and not others, unstarted,
-// and a caller that fixed the roster and retried would then collide with the
-// actors the failed attempt had itself created. See
-// TestStartRefusesTwoParticipantsWithOneBIC, which asserts the mesh is
-// unchanged after the refusal.
+// All or none, because the batch is a roster. A half-registered batch would
+// leave the mesh holding some banks and not others, unstarted, and a caller that
+// fixed the roster and retried would collide with the actors the failed attempt
+// created. See TestStartRefusesTwoParticipantsWithOneBIC.
 //
 // Two actors under one BIC is refused, whether the clash is with an actor
-// already registered or between two members of the same batch. The map would
-// keep the second and drop the first, and the dropped one's goroutine would
-// read an inbox nothing could ever address.
+// already registered or between two members of one batch: the map would keep the
+// second and drop the first, whose goroutine would then read an inbox nothing
+// could address.
 //
-// A mesh that is stopping or stopped refuses. The obvious case is the stopped
-// one: its actors' goroutines have returned, so a new actor would have an open
-// inbox and nobody reading it — a send to it would report success, count a
-// message in flight, and hang the next Drain out to its deadline. A black hole
-// that answers "sent" is worse than a refusal.
+// A mesh that is STOPPED refuses, because its actors' goroutines have returned —
+// a new actor would have an open inbox and nobody reading it, so a send would
+// report success, count a message in flight, and hang the next Drain out to its
+// deadline. A black hole that answers "sent" is worse than a refusal.
 //
-// The case that actually bit is the one in between. Stop takes a snapshot of
-// the actors and closes their inboxes, then joins them; an actor registered
-// after that snapshot is in neither list, so its inbox is never closed and its
-// goroutine is never joined — a permanent leak, plus the same black hole. It is
-// not hypothetical: a bank admitted over HTTP registers into a running mesh (see
-// Mesh.Admit), so that is the normal path, and a shutdown racing an admission is
-// an ordinary thing to get wrong. Refusing from the moment Stop begins, and
-// setting that flag under the same lock Stop takes its snapshot under, closes
-// the window rather than narrowing it.
-// A BIC an admission has RESERVED is refused too, and for the same reason a
-// registered one is: an address claimed by an admission whose bank is being
-// written is an address a second registration cannot have. See Mesh.reserved.
+// A mesh that is STOPPING refuses for a sharper reason. Stop snapshots the
+// actors and closes their inboxes, then joins them; an actor registered after
+// that snapshot is in neither list, so its inbox is never closed and its
+// goroutine never joined — a permanent leak plus the same black hole. Refusing
+// from the moment Stop begins, under the lock Stop takes its snapshot under,
+// closes the window rather than narrowing it.
+//
+// A BIC an admission has RESERVED is refused too: an address claimed by an
+// admission whose bank is being written is one a second registration cannot
+// have. See Mesh.reserved.
 func (m *Mesh) addActors(specs ...actorSpec) error {
 	for _, s := range specs {
 		if err := s.bic.Validate(); err != nil {
@@ -524,65 +517,44 @@ func (m *Mesh) Start(ctx context.Context) error {
 // joinRoster gives every bank the CLEARING HOUSE routes to an actor, in one
 // batch.
 //
-// # It reads the roster and not the banks, and that is a behaviour change
+// # It reads the roster and nothing else
 //
-// The roster is what says who is a member. A bank that has been founded and not
-// admitted has a row of its own and no entry there, and after a restart it gets
-// no actor — so this transport cannot reach it at all, which is a stronger thing
-// than a refusal and a narrower one: it is true of a restarted mesh and false in
-// the process that admitted the bank, where Mesh.Admit registers the actor at
-// founding so the applicant can receive its own acknowledgement.
+// The roster is what says who is a member, so a bank founded and not admitted
+// gets no actor after a restart and this transport cannot reach it. That is not
+// what stops it being paid — payment.ErrBankNotAdmitted is, at Mesh.Submit and
+// again at the clearing house — and it is not true in the process that admitted
+// it, where Mesh.Admit registers the actor at founding so the applicant can
+// receive its own acknowledgement.
 //
-// What is true of such a bank in both cases is that it cannot pay and cannot be
-// paid, and that is a REFUSAL and not a consequence of this read:
-// payment.ErrBankNotAdmitted, made at Mesh.Submit and again by the clearing
-// house. This paragraph asserted it as a property of the missing actor for two
-// tasks, and it was measurably false in-process for both of them. The state
-// itself is the truth about such a bank rather than a limitation — it has a
-// licence, a book and customers, and no scheme has admitted it — and the way in
-// is Mesh.Admit.
+// No bank row is read: the id IS the address, and the clearing house's schema
+// has no banks table anyway. So the actor is named by its address rather than by
+// the bank's legal NAME, which a roster entry does not carry (an acmt.010 names
+// nobody — see payment.RosterEntry). The name lives on the bank's own row, which
+// is where an operator asking about a bank reads it.
 //
-// It reads the roster and NOTHING ELSE. The id IS the address, so there is
-// nothing to look up, and the clearing house's schema has no banks table to
-// look it up in.
+// The read happens OUTSIDE m.mu, because it is store I/O and nothing else may be
+// blocked on the mesh while it runs. The whole roster is then registered in one
+// batch, so a bank the mesh cannot route to leaves the mesh as it found it — see
+// addActors.
 //
-// What is lost with the second read is the bank's NAME, which the actor carried
-// for the operator console. A roster entry does not have one — an acmt.010 names
-// nobody, see payment.RosterEntry — so the actor registered here is named by its
-// address. The name lives on the bank's own row, in the bank's own database,
-// which is where an operator asking about a bank now reads it.
+// # It MERGES into the bank index rather than assigning it
 //
-// The read happens OUTSIDE m.mu, because it is store I/O and nothing else
-// may be blocked on the mesh while it runs. The whole roster is then registered
-// in one batch, so a bank the mesh cannot route to leaves the mesh as it found
-// it — see addActors on why all-or-none is the roster's shape and not a
-// convenience.
+// Both callers run against an empty index — Start on a new mesh, JoinRoster on
+// one ForgetBanks has just emptied — so on any sequential path the two are the
+// same. What differs is a bank admitted CONCURRENTLY: it commits its actor and
+// its index entry between the read above and this write, and an assignment would
+// drop that entry while leaving its actor running — an actor no index names,
+// which nothing can reach and nothing can remove.
 //
-// It MERGES into the bank index rather than assigning it, which matters for one
-// interleaving and not for the ordinary case. Both callers run against an empty
-// index — Start on a new mesh, JoinRoster on one ForgetBanks has just emptied —
-// so on any sequential path the two are the same. What they are not the same
-// about is a bank admitted CONCURRENTLY: an admission commits its actor and its
-// index entry between the reads above and this write, and an assignment would
-// silently drop that entry while leaving its actor running. The result was an
-// actor no index named, which nothing could then reach and — before ForgetBanks
-// stopped forgetting by index — nothing could remove either.
+// The same window exists here and cannot be closed: addActors and the copy below
+// are two critical sections, so between them an actor exists that the index does
+// not name. admitBank closes it for the admission path; a batch that registered
+// and indexed under one lock would hold m.mu across every bank in the roster.
 //
-// This call is itself the other half of that shape, and it is why forgetting by
-// index is still wrong: addActors above and the copy below are two separate
-// critical sections, so between them an actor exists that the index does not
-// name. admitBank closes that window for the admission path and cannot close it
-// here, because a batch that registered and indexed under one lock would hold
-// m.mu across every bank in the roster.
-//
-// Nothing else is protected by the merge, and it is worth being exact: a reset
-// racing an admission is still a mess, and can still refuse the admission (its
-// BIC is taken by the roster read) or fail this call (the roster now holds a BIC
-// the admission already registered). What the merge removes is the SILENT
-// outcome — a bank that answers every read and carries no payment, with nothing
-// anywhere saying so. api.Server.resetMu does not cover POST /members, and
-// making it do so would serialise admission behind every reset for a race this
-// closes.
+// Nothing else is protected by the merge. A reset racing an admission is still a
+// mess and can still refuse the admission or fail this call; what the merge
+// removes is the SILENT outcome — a bank that answers every read and carries no
+// payment, with nothing anywhere saying so.
 func (m *Mesh) joinRoster(ctx context.Context) error {
 	if m.nets == nil {
 		return nil
@@ -655,71 +627,56 @@ func (m *Mesh) CentralBankBIC() iso20022.BIC { return m.cfg.CentralBankBIC }
 // ForgetBanks removes every BANK's actor — every one in the index, which after
 // an in-process Admit includes a bank the scheme has not answered for yet:
 // closes its inbox, waits for its goroutine to return, and drops it from the
-// routing table and the bank index.
-// The two institutions are untouched.
+// routing table and the bank index. The two institutions are untouched.
 //
 // # Why a mesh needs this at all
 //
 // Because the store can be replaced underneath it. api.Server.Reset truncates
-// every table and rebuilds the sample dataset, and the mesh survives that — it
-// is not restarted, and Start is never run again. Without this the actor table
-// keeps describing the roster that was there before: a BIC the operator can
-// never admit again, because an actor already answers to it, and an entry in the
-// bank index pointing at a goroutine whose bank has been deleted. That is not
-// hypothetical — it was reachable over HTTP by admitting a bank, resetting, and
-// admitting the same BIC again.
+// every table and rebuilds the sample dataset, and the mesh is not restarted.
+// Without this the actor table keeps describing the roster that was there
+// before: a BIC the operator can never admit again, and an index entry pointing
+// at a goroutine whose bank has been deleted. Reachable over HTTP by admitting a
+// bank, resetting, and admitting the same BIC again.
 //
-// It is the counterpart of JoinRoster and is called immediately before the
-// truncate, so that between the two the mesh routes to no member bank at all
-// rather than to the wrong one. A submission during that window is refused —
-// "no bank actor" — which is the truth: the network is being replaced.
+// It is called immediately before the truncate, so that between the two the mesh
+// routes to no member bank at all rather than to the wrong one. A submission in
+// that window is refused — "no bank actor" — which is the truth.
 //
 // # It expects a quiet mesh, and says so rather than assuming it
 //
 // Closing an inbox does not discard what is in it: pop hands over everything
-// already queued before it reports the queue closed, so a message in flight here
-// would still be HANDLED, against a store that is about to be truncated. Its
-// caller drains first, which is the same ordering Stop's doc demands and for the
-// same reason. The wait for each goroutine is what makes "forgotten" mean "no
-// handler is still running" rather than "no more messages will be picked up".
+// already queued before it reports the queue closed, so a message in flight
+// would still be HANDLED against a store about to be truncated. Its caller
+// drains first, the same ordering Stop demands. The wait for each goroutine is
+// what makes "forgotten" mean "no handler is still running".
 //
-// It is not itself a Drain and does not take the dead letters. Anything a
-// handler could not deal with on the way out stays on the mesh for the next
-// Drain, which is where a dead letter belongs and how it stops being attributed
-// to whatever happened to collect it.
+// It is not itself a Drain and does not take the dead letters: anything a
+// handler could not deal with on the way out stays for the next Drain, which is
+// where a dead letter belongs.
 //
-// # Which actors it forgets, and why not the bank index
+// # It forgets by ACTOR TABLE, not by bank index
 //
-// Every actor that is not one of the two INSTITUTIONS. The obvious reading —
-// walk the bank index — is wrong in a way that took a reset to show: an actor
-// whose index entry is missing would be unforgettable, so its address would be
-// taken for the life of the process and every later reset would fail on it. That
-// state is reachable, because joinRoster writes the actors and the index entries
-// under separate locks and a bank can be admitted between the two. AddBank does
-// both under one lock and cannot produce it; joinRoster cannot use that, because
-// a batch registered and indexed under one lock would hold m.mu across a whole
-// roster. Reading the actor
-// table instead makes "forgotten" total: after this, m.actors holds exactly the
-// central bank and the clearing house, whatever the index said.
-//
-// The two institutions are excluded by identity rather than by kind, because
-// that is the only durable distinction here: they are the configuration, they
-// have no participant row, and a reset does not touch them.
+// Walking the index is wrong in a way a reset shows: an actor whose index entry
+// is missing would be unforgettable, so its address would be taken for the life
+// of the process and every later reset would fail on it. That state is reachable
+// because joinRoster writes the actors and the index entries under separate
+// locks. Reading the actor table makes "forgotten" total: afterwards m.actors
+// holds exactly the two institutions, whatever the index said. They are excluded
+// by identity rather than by kind, because that is the durable distinction —
+// they are configuration, they have no participant row, and a reset does not
+// touch them.
 //
 // # A timeout leaves the actors joinable
 //
-// The deletions happen AFTER every goroutine has returned, never before, and
-// that ordering is the whole of what a timeout costs. Stop takes its snapshot
-// from m.actors, so an actor deleted before it was joined would be a goroutine
-// nothing could ever wait for — a permanent leak in a process that is otherwise
-// still running, and, if the caller retried its reset, a store truncated
-// underneath a live handler.
+// The deletions happen AFTER every goroutine has returned. Stop takes its
+// snapshot from m.actors, so an actor deleted before it was joined would be a
+// goroutine nothing could ever wait for — a permanent leak, and, if the caller
+// retried its reset, a store truncated underneath a live handler.
 //
-// So a ForgetBanks that times out leaves the mesh exactly as Stop leaves one
-// that times out: the inboxes are closed, the actors are still in the table, and
-// the mesh is not half torn down. Its caller may retry — closing a closed queue
-// is a no-op and a retry only re-joins — or give up and Stop, which will find
-// them. See TestForgetBanksThatTimesOutLeavesTheActorsForStopToJoin.
+// So a ForgetBanks that times out leaves the mesh as Stop leaves one that times
+// out: inboxes closed, actors still in the table, nothing half torn down. Its
+// caller may retry — closing a closed queue is a no-op — or give up and Stop.
+// See TestForgetBanksThatTimesOutLeavesTheActorsForStopToJoin.
 func (m *Mesh) ForgetBanks(ctx context.Context) error {
 	m.mu.Lock()
 	if m.stopping || m.stopped {
@@ -820,58 +777,45 @@ func (m *Mesh) AddBank(ctx context.Context, p *payment.Bank) error {
 // Stop closes every inbox, waits for the actors to finish what they are already
 // doing, and returns the dead letters they produced, joined.
 //
-// It waits, rather than cancelling and returning, because its caller's next
-// move is typically to tear the store down: a handler still inside a unit of
-// work when the tables are truncated is the shutdown bug this ordering exists
-// to prevent. A handler that will not return therefore times out and is NAMED,
-// the same as in Drain.
+// It waits rather than cancelling, because its caller's next move is typically
+// to tear the store down: a handler still inside a unit of work when the tables
+// are truncated is the shutdown bug this ordering prevents. A handler that will
+// not return times out and is NAMED, as in Drain.
 //
-// # Queued messages are delivered; chains are cut, and Stop says so
+// # Queued messages are delivered; chains are cut
 //
-// Nothing already queued is lost. Closing an inbox stops it accepting NEW
-// messages, and pop hands over everything already in it before it reports the
-// queue closed (see queue.pop, where that is deliberate), so every message
-// enqueued before Stop was called is still handled.
+// Nothing already queued is lost: closing an inbox stops it accepting NEW
+// messages, and pop hands over everything already in it (see queue.pop).
 //
 // Chains, though, are CUT. Every inbox is closed in ONE step — under m.mu,
-// together with the snapshot of who the actors are — before any actor is
-// joined, so a handler still running during shutdown cannot reach anybody at
-// all, not even an actor that has not been joined yet. Its send is refused, the
-// refusal becomes that handler's error, and the error becomes a dead letter.
+// together with the snapshot of who the actors are — before any actor is joined,
+// so a handler still running during shutdown cannot reach anybody at all. Its
+// send is refused, and the refusal becomes a dead letter.
 //
-// Which is why Stop returns them. A shutdown that ended a conversation and said
-// nothing would be the silent failure Drain's dead letters exist to prevent,
-// reintroduced one method over. Stop's contract is Drain's: what handlers could
-// not deal with comes back to the caller. See
+// Which is why Stop returns them: a shutdown that ended a conversation and said
+// nothing would be the silent failure Drain's dead letters exist to prevent. See
 // TestStopReportsWhatAHandlerCouldNotDoDuringShutdown.
 //
 // # The deadline, and why every caller must Drain first
 //
-// The context given here bounds the handler in flight PLUS the whole depth of
-// every inbox at the moment of the close. It is not a bound on one handler.
-// Nothing further can be enqueued, because by then every inbox is closed.
+// The context bounds the handler in flight PLUS the whole depth of every inbox
+// at the moment of the close. It is not a bound on one handler.
 //
-// Drain first, then Stop — and not merely to make the deadline predictable.
-// It is the ONLY way a chain that is in flight completes at all. Stop cuts
-// whatever is mid-conversation, so a shutdown or a reset that has not drained
-// first ends payments halfway: the debtor's bank debited and the pacs.002 that
-// would have told it so never sent. Draining leaves Stop nothing to do but
-// join.
-//
-// Both callers in this repository do it. api.Server.Reset drains before it
-// truncates, so no handler is left writing into a store the reset has emptied;
-// cmd/server drains before it stops, so a payment in flight when the process is
-// interrupted still reaches its end. Neither discards what comes back.
+// Drain first, then Stop — and not merely to make the deadline predictable. It
+// is the ONLY way a chain in flight completes at all: Stop cuts whatever is
+// mid-conversation, so a shutdown or reset that has not drained ends payments
+// halfway, with the debtor's bank debited and the pacs.002 that would have told
+// it so never sent. Both callers here do it, and neither discards what comes
+// back.
 //
 // # A Stop that times out leaves the mesh running
 //
-// It names the actor that would not let go, hands back the dead letters it has
-// so far, and deliberately does NOT cancel the mesh context or mark the mesh
-// stopped: goroutines are still using both, and a half-torn-down mesh is worse
-// than one that plainly refused to stop. Call it again once the handler has
-// come back — the inboxes are already closed, so a retry only re-joins — and
-// the second call finishes the job. Start keeps refusing throughout, and so
-// does addActor. See TestStopCanBeRetriedAfterATimeout.
+// It names the actor that would not let go, hands back the dead letters it has,
+// and deliberately does NOT cancel the mesh context or mark the mesh stopped:
+// goroutines are still using both, and a half-torn-down mesh is worse than one
+// that plainly refused to stop. Call it again once the handler has come back —
+// the inboxes are already closed, so a retry only re-joins. See
+// TestStopCanBeRetriedAfterATimeout.
 func (m *Mesh) Stop(ctx context.Context) error {
 	m.mu.Lock()
 	if !m.started {
@@ -1116,52 +1060,39 @@ func (m *Mesh) stuck() string {
 // send is the single choke point. Every message in this system passes through
 // here.
 //
-// It is one function and not a Transport interface deliberately. The roadmap's
-// objection to a one-implementor abstraction stands, and one function answers
-// it just as well: swapping this body for an HTTP POST is a contained change,
-// and until someone wants that, there is nothing for an interface to abstract
-// over.
+// It is one function and not a Transport interface: swapping this body for an
+// HTTP POST is a contained change, and until someone wants that there is nothing
+// for an interface to abstract over.
 //
 // It enqueues BYTES. Structs never cross an actor boundary — if two actors
-// exchanged *Pacs008 the message format would be decoration on a function
-// call, malformed input would stop being a reachable failure mode, and the
-// FF01 path would be untestable.
+// exchanged *Pacs008 the message format would be decoration on a function call,
+// malformed input would stop being a reachable failure mode, and the FF01 path
+// would be untestable.
 //
 // It never blocks, because the inbox it pushes into is unbounded. That is what
-// lets two actors message each other: the CSM sends to a bank while that bank
-// is sending to the CSM, and with any fixed buffer between them that pair
-// wedges. See TestMutuallyMessagingActorsDoNotDeadlock.
+// lets two actors message each other: the CSM sends to a bank while that bank is
+// sending to the CSM, and any fixed buffer between them wedges that pair. See
+// TestMutuallyMessagingActorsDoNotDeadlock.
 //
 // # Counting in and enqueueing are one step
 //
-// The lookup, the increment and the push are one critical section. What that
-// buys is not an ordering; it is that the intermediate state is UNOBSERVABLE.
-// Everything else that touches the counter — leaveLocked, Drain,
-// takeDeadLetters — must take m.mu, so while it is held nobody can see a queue
-// holding a message the counter does not, or a counter holding one the queue
-// does not, whichever way round the two statements happen to be written. A
-// later edit that swapped them would still be correct, and that is the point:
-// the invariant does not rest on anyone remembering which line comes first.
+// The lookup, the increment and the push are one critical section, and what that
+// buys is not an ordering but that the intermediate state is UNOBSERVABLE.
+// Everything else that touches the counter takes m.mu, so nobody can see a queue
+// holding a message the counter does not, whichever way round the two statements
+// are written. A later edit that swapped them would still be correct, which is
+// the point: the invariant does not rest on anyone remembering the order.
 //
-// The increment-before-push order is kept anyway, and it is worth being
-// straight about why it is not what makes this safe: that order is sufficient
-// on its own, even with the two steps separately locked. quiet is open exactly
-// while inFlight > 0; a message reaches a queue only after its own increment,
-// and is decremented only after it has been popped; so at every instant a
-// message sits in a queue, inFlight >= 1 and any Drain blocks. The single lock
-// is belt and braces over a correct ordering, not the thing that rescues a
-// broken one.
+// The increment-before-push order is kept anyway, and it is sufficient on its
+// own: quiet is open exactly while inFlight > 0, a message reaches a queue only
+// after its own increment, and is decremented only after it has been popped.
 //
-// The inversion — push, then increment — IS broken, and no test in this package
-// catches it, even with a delay planted in the gap. That is worth understanding
-// rather than filing as a hole in the suite: every message in this system is
-// sent from inside a handler whose own message is still counted in flight, and
-// send returns, increment done, before that handler returns. The parent's count
-// covers the child's gap unconditionally. What is left uncovered is a send from
-// a goroutine that no in-flight message covers, racing a concurrent Drain —
-// which is exactly the case Drain's own doc declines to promise anything about.
-// A test-only hook to force that window would buy nothing the lock has not
-// already bought.
+// The inversion IS broken, and no test here catches it even with a delay planted
+// in the gap — every message is sent from inside a handler whose own message is
+// still counted in flight, and send returns before that handler does, so the
+// parent's count covers the child's gap. What is left uncovered is a send from a
+// goroutine no in-flight message covers, racing a concurrent Drain, which is
+// exactly the case Drain's own doc declines to promise anything about.
 func (m *Mesh) send(from, to iso20022.BIC, env iso20022.Envelope) error {
 	raw, err := iso20022.Marshal(env)
 	if err != nil {
@@ -1266,40 +1197,27 @@ func (m *Mesh) takeDeadLetters() error {
 // while holding a transaction would schedule work against uncommitted state, or
 // against state a rollback removed — and because the queue is unbounded it would
 // not even deadlock, it would just be wrong. TestARolledBackSubmitSendsNothing
-// pins it.
-//
-// What that test can actually see is worth being exact about, because the claim
-// above is wider than the check. It provokes a submission that fails inside its
-// unit of work and asserts the mesh carried nothing, which falsifies any
-// arrangement that sends on a path the store rolled back. It does NOT
-// distinguish this ordering from an enqueue INSIDE the transaction, and cannot:
-// SubmitPaymentTx has no failure after the point at which a message could be
-// built, so there is no way to reach "sent, then rolled back" at all. The
+// pins it, though only to the extent of falsifying any arrangement that sends on
+// a path the store rolled back: SubmitPaymentTx has no failure after the point a
+// message could be built, so "sent, then rolled back" is unreachable. The
 // ordering here is what keeps it that way as the submitting half grows.
 //
 // Synchronously, because the caller has an error to answer with. A customer
-// whose instruction fails their own bank's checks — no funds, an account that is
-// not theirs, a duplicate reference — is told so, then and there. What they are
-// NOT told is what the far side thinks: this returns an Initiated payment and
-// nothing more, and the fate of that payment arrives later, at another actor, as
-// a message. That is the whole difference the mesh makes, and it is why api
-// answers this with 202 Accepted rather than 201 Created.
+// whose instruction fails their own bank's checks is told so, then and there.
+// What they are NOT told is what the far side thinks: this returns an Initiated
+// payment and nothing more, which is why api answers 202 rather than 201.
 //
-// It runs on the CALLER's goroutine, not the bank actor's, and that is not a
-// shortcut: an actor's goroutine handles what arrives in its inbox, and a
-// customer instruction does not arrive in an inbox — it comes in from outside
-// the mesh entirely. The work is still the bank's, and it is marked as the
-// bank's, so the recorder attributes every book it touches to the bank and not
-// to whoever called in.
+// It runs on the CALLER's goroutine and not the bank actor's: an actor handles
+// what arrives in its inbox, and a customer instruction comes in from outside
+// the mesh. The work is still marked as the bank's, so the recorder attributes
+// every book it touches to the bank rather than to whoever called in.
 //
 // # Which bank is handed the instruction
 //
-// The scheme's DIRECTION decides, and it is asked here rather than assumed. A
-// credit transfer is handed to the payer's bank, because the payer is
-// instructing their own bank to push. A direct debit is handed to the PAYEE's
-// bank, because a collection is the payee asking for money it is owed: the
-// payer's bank is the counterparty on that one and hears about it as a message
-// like any other counterparty does.
+// The scheme's DIRECTION decides, and it is asked rather than assumed. A credit
+// transfer goes to the payer's bank, because the payer is instructing their own
+// bank to push; a direct debit goes to the PAYEE's bank, because a collection is
+// the payee asking for money it is owed.
 //
 // Taking the debtor unconditionally is the wrong bank for every direct debit,
 // and it is invisible until a pull exists: the payment goes through, the books
@@ -1308,22 +1226,18 @@ func (m *Mesh) takeDeadLetters() error {
 // layer up.
 //
 // It reads the network to ask, so like Mesh.now it exists only on a mesh that
-// has one. A mesh built over no network has no participant roster and therefore
-// no bank actors, so every submission to it was already an error; this makes
-// that a precondition instead of an outcome.
+// has one.
 //
 // # And which payments there is no bank to hand it to at all
 //
-// An ON-US payment — one bank at both ends — is refused before any of that. It
-// is not a clearing payment: nothing leaves the institution, so no reserves
-// move, no position nets and no settlement agent has anything to settle. See
-// ErrOnUsPayment. That refusal is this system declining a ROUTE and not the
-// payment; a book transfer between two customers of one bank is a real product
-// and a task of its own.
+// An ON-US payment — one bank at both ends — is refused before any of that.
+// Nothing leaves the institution, so no reserves move, no position nets and no
+// settlement agent has anything to settle. That refusal is this system declining
+// a ROUTE and not the payment; a book transfer between two customers of one bank
+// is a real product and a task of its own. See ErrOnUsPayment.
 //
 // A payment to or from a bank the scheme has NOT ADMITTED is refused in the same
-// place and for the same kind of reason — see payment.ErrBankNotAdmitted, which
-// records what it stops and why the clearing house refuses it a second time.
+// place — see payment.ErrBankNotAdmitted.
 func (m *Mesh) Submit(ctx context.Context, req payment.InitiatePaymentRequest) (payment.Payment, error) {
 	scheme, ok := m.clearingHouse.Scheme(req.Scheme)
 	if !ok {
@@ -1462,12 +1376,10 @@ func (m *Mesh) Submit(ctx context.Context, req payment.InitiatePaymentRequest) (
 // Admit brings a bank into being and applies to the scheme for it.
 //
 // Its synchronous half is Mesh.Submit's: the bank's own work, on the caller's
-// goroutine, marked as the bank's so the recorder attributes it correctly, and
-// committed before anything is sent. What it does NOT answer is whether the
-// scheme accepted — that arrives later, at two other actors, as a message. The
-// bank it returns is Founded, which is a working bank that can open customer
-// accounts and take cash in, and cannot lodge it. See "A founded bank can neither pay nor be paid
-// is a REFUSAL now" in doc.go for where that is enforced, and why not here.
+// goroutine, marked as the bank's, committed before anything is sent. What it
+// does NOT answer is whether the scheme accepted — that arrives later, at two
+// other actors, as a message. The bank it returns is Founded, which is a working
+// bank that can open customer accounts and take cash in, and cannot lodge it.
 //
 // # The address is reserved first, and that is the orphan defect's fix
 //
@@ -1475,8 +1387,7 @@ func (m *Mesh) Submit(ctx context.Context, req payment.InitiatePaymentRequest) (
 // FIRST. The address is claimed before the bank's unit of work runs and released
 // again if that unit of work fails, because an in-memory rollback is reliable
 // and a rollback of a committed transaction is not. See Mesh.reserved, and
-// TestNothingIsWrittenWhenTheAddressIsRefused, which makes the ordering
-// falsifiable.
+// TestNothingIsWrittenWhenTheAddressIsRefused.
 //
 // # A taken address is two situations
 //
@@ -1488,73 +1399,51 @@ func (m *Mesh) Submit(ctx context.Context, req payment.InitiatePaymentRequest) (
 // founded bank can never join, accept the second and admission overwrites an
 // institution.
 //
-// The roster is read for that decision and the actor table decides it, which is
-// the two authorities in one function: the roster is the DOMAIN's truth about
-// who holds an address, the actor table is the TRANSPORT's. They can disagree
-// only in one direction here — a bank in the roster with no actor is a mesh that
-// has not read the roster since it was admitted — and the lock is what makes the
-// answer one answer.
+// The roster is read for that decision and the actor table decides it: the
+// roster is the DOMAIN's truth about who holds an address, the actor table is
+// the TRANSPORT's, and the lock is what makes the answer one answer.
 //
 // # A re-drive asks for the assets the bank actually has
 //
 // One acmt.007 asks for one currency, so this sends one per asset the bank
-// operates in, in asset order. For a new bank that is exactly what the caller
-// named (with payment's joining default applied); for a RE-DRIVE it is the
-// bank's own chart of accounts, and the caller's list is ignored — the bank
-// exists and its internal accounts are what they are, and asking for a
-// settlement account in an asset it holds none of would produce a reference it
-// has nowhere to record.
+// operates in, in asset order. For a new bank that is what the caller named
+// (with payment's joining default applied); for a RE-DRIVE it is the bank's own
+// chart of accounts, and the caller's list is ignored — asking for a settlement
+// account in an asset it holds none of would produce a reference it has nowhere
+// to record.
 //
-// # It mints a new process id every time, including on a re-drive
-//
-// Refs/PrcId is the conversation's only correlator, and a re-drive gets a fresh
-// one rather than reusing what the interrupted attempt quoted. That is safe
-// exactly because a re-drive is only allowed when the roster has NO entry for
-// the address: the clearing house's refusal compares the request's reference
-// with the one on the entry it already holds, and there is none. The bank's own
-// row is in the same position — payment.Bank.AdmissionRef is empty until an
-// acknowledgement is recorded, so a bank that never got one has nothing to
-// disagree with.
+// It mints a NEW process id every time, including on a re-drive. That is safe
+// exactly because a re-drive is allowed only when the roster has no entry for
+// the address, so the clearing house has no reference to compare against — and
+// payment.Bank.AdmissionRef is empty until an acknowledgement is recorded.
 //
 // # A PARTLY admitted bank cannot be re-driven, and that is a gap with an owner
 //
-// The two conditions above are the same condition seen twice, and there is a
-// state that fails both: a bank that recorded a membership in one asset and
-// whose second asset's acknowledgement never arrived. It is a Member, so its row
-// carries a reference; it is in the roster, so this call refuses the address
-// outright — and a fresh admission would be refused by the clearing house and by
-// the bank alike, correctly, since it really is a different admission.
+// A bank that recorded a membership in one asset and whose second asset's
+// acknowledgement never arrived fails both conditions: it is a Member, so its
+// row carries a reference, and it is in the roster, so this call refuses the
+// address outright. A fresh admission would be refused by the clearing house and
+// by the bank alike, correctly, since it really is a different admission.
 //
 // So there is no door. The bank clears in one asset and holds a settlement
-// account at the central bank in a second that it does not know the number of,
-// which is the inconsistency RecordMembershipTx's own doc describes: a deposit
-// in that asset fails while the operator console reports the reserve, because
-// the console reads the central bank's row.
+// account at the central bank in a second that it does not know the number of —
+// a deposit in that asset fails while the operator console reports the reserve,
+// because the console reads the central bank's row. It is reachable only from a
+// dead letter, since this transport carries every message exactly once.
 //
-// It is reachable only from a dead letter — every message of an admission is
-// carried exactly once and in order by this transport, so the acknowledgement
-// goes missing only if a handler could not act on it.
+// The obvious reconciliation does not find it. "A bank whose assets and the
+// agent's accounts for its BIC do not match" MATCHES here: measured by parking
+// the second acmt.010 before the bank, both are {EUR, USD}, because the agent
+// opens the account before it acknowledges — what went missing is the bank's
+// NOTE of the number and not the account. The discriminator is the one
+// api.Server.reserveRows uses: an EMPTY settlement reference on the bank's own
+// row in an asset, TOGETHER WITH a reserve row the agent answers for in that
+// same asset. The same empty reference with NO reserve row is the other
+// half-finished admission, which the mismatch comparison does find.
 //
-// That task's reconciliation is what has to FIND it, and the obvious comparison
-// does not. "A bank whose assets and the settlement agent's accounts for its BIC
-// do not match" is what this said, and in this state they MATCH: measured by
-// parking the second acmt.010 of a two-asset admission before the bank, the
-// bank's assets are {EUR, USD} and the agent's accounts for its BIC are
-// {EUR, USD}. They match for the reason the gap exists at all — the settlement
-// agent opens the account before it acknowledges (centralBank.receiveAdmission),
-// so what went missing is the bank's NOTE of the number and not the account.
-//
-// The discriminator is the one api.Server.reserveRows uses: an EMPTY settlement
-// reference on the bank's own row in an asset, TOGETHER WITH a reserve row the
-// agent answers for in that same asset. The same empty reference with NO reserve
-// row is the other half-finished admission — an acmt.007 that never arrived, or
-// one the agent refused — and the mismatch comparison does find THAT one, which
-// is the whole of why it looked right for this one. Closing
-// it needs a way to re-drive one asset of an existing admission, which means
-// quoting the reference the bank already recorded rather than minting one, and
-// that is a decision about the flow rather than about this function.
-// csm.relayReturn and centralBank.advise record their own version of the same
-// class of gap.
+// Closing it needs a way to re-drive ONE asset of an existing admission, quoting
+// the reference the bank already recorded rather than minting one — a decision
+// about the flow rather than about this function.
 func (m *Mesh) Admit(ctx context.Context, name string, bic iso20022.BIC, assets []ledger.AssetCode) (*payment.Bank, error) {
 	if m.nets == nil {
 		return nil, errors.New("mesh: no network, so there is no bank to admit")
@@ -1758,42 +1647,35 @@ func (m *Mesh) Settle(ctx context.Context, id payment.CycleID) (payment.Clearing
 // operator's say-so rather than on a counterparty's.
 //
 // Every other rejection in this system is DECIDED by an actor that was sent a
-// message: the payee's bank cannot apply a credit, the payer's bank has no
-// funds, the clearing house has no open cycle. This one comes in from outside
-// the mesh, exactly as Submit, CloseCycle and Return do, and for the same
-// reason: an operator instructing is not a message arriving.
+// message. This one comes in from outside the mesh, exactly as Submit,
+// CloseCycle and Return do: an operator instructing is not a message arriving.
 //
 // # It is half of a rejection, and the other half is another actor's
 //
 // What runs here is the clearing house's own unit of work — the payment moves to
 // Rejected and leaves its cycle — and that is what the caller is told about,
-// synchronously, because it is what an operator can be answered about. The
-// payer's money is still in their own bank's clearing suspense at that point.
-// Giving it back is the PAYER's BANK's act, in its own book, and it happens
-// later: the pacs.002 this sends is what tells that bank to do it, and
-// bank.receiveStatus is what does it. A caller that wants to see the refund
-// reads the payer's balance after the conversation has finished; a test drains.
+// synchronously. The payer's money is still in their own bank's clearing
+// suspense at that point. Giving it back is the PAYER's BANK's act, in its own
+// book, and the pacs.002 this sends is what tells that bank to do it
+// (bank.receiveStatus). A caller that wants to see the refund reads the payer's
+// balance after the conversation has finished; a test drains.
 //
-// That seam is the one RejectAtCSMTx's doc names and says the mesh is where it
-// stops being hidden. Before this, api ran both halves in one transaction — see
-// the deleted rejectWholePayment — so a reversal that failed took the rejection
-// down with it, which is an outcome two separate institutions cannot produce. It
-// now fails the way it really would: the rejection stands, the refund does not
-// happen, and the mesh reports a dead letter rather than nothing.
+// That seam is the one RejectAtCSMTx names. It fails the way it really would:
+// the rejection stands, the refund does not happen, and the mesh reports a dead
+// letter rather than nothing.
 //
 // # The message it refers back to
 //
 // A pacs.002 says which message it is about, and there ISN'T one — no bank sent
-// anything that provoked this. So the original message is named as unavailable,
-// by the same NOTPROVIDED convention answerUnreadable uses and for the same
-// honest reason: inventing a message id the payer's bank never sent would be
-// worse than saying there was none. Nothing downstream needs it — a bank matches
-// a status to a payment by the transaction reference, which is real here.
+// anything that provoked this. So the original is named as unavailable, by the
+// NOTPROVIDED convention answerUnreadable uses: inventing a message id the
+// payer's bank never sent would be worse than saying there was none. Nothing
+// downstream needs it, because a bank matches a status to a payment by the
+// transaction reference.
 //
 // Like CloseCycle it refuses on a mesh with no network rather than
-// dereferencing, and for CloseCycle's reason: it reaches the clearing house's
-// handler directly, so there is no map lookup on the way in that would have
-// caught it. See Mesh.Return for the other half of that asymmetry.
+// dereferencing: it reaches the clearing house's handler directly, so there is
+// no map lookup on the way in that would have caught it.
 func (m *Mesh) Reject(ctx context.Context, id payment.PaymentID, code iso20022.StatusReason, text string) (payment.Payment, error) {
 	if m.csm == nil {
 		return payment.Payment{}, errors.New("mesh: no network, so there is no payment to reject")
@@ -1806,49 +1688,40 @@ func (m *Mesh) Reject(ctx context.Context, id payment.PaymentID, code iso20022.S
 //
 // It is Submit's and CloseCycle's third sibling — synchronous, on the caller's
 // goroutine, sending only after the returning bank's half has POSTED — because a
-// return arrives from outside the mesh in the same way both of those do. An
-// operator (or api's POST /payments/{payid}/return) asks for it; no inbox is
-// involved. See bank.returnPayment.
-// has POSTED, not merely after it has checked; see bank.returnPayment.
+// return arrives from outside the mesh in the same way both of those do. See
+// bank.returnPayment.
 //
 // # Which bank is handed the instruction
 //
 // The bank that RECEIVED the original instruction, which is never the one that
 // submitted it. On a push that is the payee's bank, which was credited and has
-// discovered it cannot apply the money — a closed account, an account that
-// cannot take a credit. On a pull it is the payer's bank, whose customer
-// disputes the collection. Both are the far side of the message that started
-// the payment, which is what makes a return the only flow here that begins at
-// the bank that answered. See returnerOf.
+// discovered it cannot apply the money; on a pull it is the payer's bank, whose
+// customer disputes the collection. Both are the far side of the message that
+// started the payment, which is what makes a return the only flow here that
+// begins at the bank that answered. See returnerOf.
 //
 // # It answers with an error and nothing else
 //
-// Not with a payment. The returning bank's half posts its own customer leg
-// before the message exists and can refuse there, which is why an error is the
-// whole of what a caller needs: on a push a payee who has spent the money comes
-// back AM04 and nothing was sent.
+// The returning bank's half posts its own customer leg before the message exists
+// and can refuse there, which is why an error is the whole of what a caller
+// needs: on a push a payee who has spent the money comes back AM04 and nothing
+// was sent.
 //
-// What survives is the reason a PAYMENT would be no use. The row the caller
-// could read is still Settled — one leg is posted, and a return is not finished
-// until the other bank posts, which happens at another actor after this call has
-// returned — so handing it back would say less than the caller already knows.
-// Submit returns an Initiated payment because it CREATED one; there is no such
-// value here, and inventing one by re-reading the row after the send would be a
-// race dressed up as a result.
+// A PAYMENT would be no use. The row the caller could read is still Settled —
+// one leg is posted, and a return is not finished until the other bank posts at
+// another actor after this call has returned — so handing it back would say less
+// than the caller already knows, and re-reading the row after the send would be
+// a race dressed up as a result.
 //
-// It follows that a send that fails after the leg is posted comes back as an
-// error alone rather than with the payment beside it, which is where this
-// differs from bank.submit. The half-happened state is real and is recorded on
-// the payment row — this bank's leg id, with the status still Settled — and
-// nothing above this reads a Payment it could be carried in. See
-// bank.returnPayment.
+// So a send that fails after the leg is posted comes back as an error alone. The
+// half-happened state is real and is recorded on the payment row — this bank's
+// leg id, with the status still Settled — and nothing above this reads a Payment
+// it could be carried in.
 //
-// Like Mesh.Submit it reads the network, so it exists only on a mesh that has
-// one — and like Submit it DEREFERENCES rather than checking: a mesh with no
-// network has no participant roster and therefore no bank actors, so every
-// return to it was already an error. Mesh.CloseCycle refuses explicitly
-// instead, and the difference is not inconsistency: it has no map lookup on the
-// way in that would have caught the case, and this does.
+// Like Mesh.Submit it DEREFERENCES the network rather than checking, because a
+// mesh with no network has no bank actors and every return to it was already an
+// error. Mesh.CloseCycle refuses explicitly instead, because it has no map
+// lookup on the way in that would have caught the case.
 func (m *Mesh) Return(ctx context.Context, id payment.PaymentID, reason iso20022.ReturnReason, text string) error {
 	// The routing question, and only that: which bank's instruction is this?
 	// It is asked here rather than inside the bank for the reason Submit asks
