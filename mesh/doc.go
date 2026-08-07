@@ -157,76 +157,40 @@
 // A statement is not an instruction, so it is ANSWERED BY NOTHING: the central
 // bank has already settled, and there is nothing left to accept or refuse. A
 // member that cannot book what it was told produces a dead letter and NO advice
-// row: payment.PostSettlementAdviceTx writes the row and posts the mirror leg in
-// one unit of work, so a failure takes both. The unreconciled position is
-// therefore a clearing suspense that has not returned to zero with no advice row
-// against the cycle — which looks the same in the store as never having been
-// told.
+// row, because the row commits with the leg — so the unreconciled position is a
+// clearing suspense that has not returned to zero with no advice row against the
+// cycle, which looks the same in the store as never having been told.
 //
-// It goes out BEFORE the answer, and that ordering is load-bearing. The CREDITOR
-// leg is posted from the clearing house's
-// ACSC fan-out, which is derived from the answer, so sending the statement first
-// puts it in the member's inbox before the ACSC is even built — a happens-before
-// chain rather than a race, because a send pushes onto the target's queue
-// synchronously and one goroutine pops each queue in order.
-//
-// It bears on a NET RECEIVER: that bank's mirror leg credits the clearing
-// suspense its creditor legs then draw on. A net payer's mirror leg debits its
-// suspense instead, and a member whose position nets to zero is sent no
-// statement at all; in both of those the suspense was funded by its own
-// customers' debtor legs. Get the order wrong for a net receiver and it pays its
-// customer out of a suspense the cut-off has not yet credited — legal, because
-// suspense is a Liability and the ledger does not guard those, and wrong,
-// because for that interval the bank's books say it lent its own customer the
-// money. Asserted by mesh's TestTheMessagesACutOffPutsOnTheWire; see
-// centralBank.advise.
-//
-// A RETURN has the identical requirement one hop longer, and the same order
-// satisfies it. The bank receiving the reserves back is a net receiver of a
-// batch of one, and the leg that draws on the suspense its statement credits is
-// its own customer leg — posted from the pacs.004 the clearing house relays out
-// of the handler of the settlement agent's answer. So the statement must again
-// be pushed before the answer, and TestTheMessagesAReturnPutsOnTheWire asserts
-// the same pair. Both tests record the same trap: swapping the two leaves a
-// race the central bank usually wins, so only a swap PLUS a delay inverts it.
-//
+// It goes out BEFORE the answer, and that ordering is load-bearing: the CREDITOR
+// leg is posted from the clearing house's ACSC fan-out, which is derived from
+// the answer, so sending the statement first puts it in the member's inbox
+// before the ACSC is even built. It is a happens-before chain rather than a
+// race, because a send pushes onto the target's queue synchronously and one
+// goroutine pops each queue in order. A RETURN has the identical requirement one
+// hop longer. See centralBank.advise for which bank it bears on and what the
+// other order would say about that bank's balance sheet, and
+// TestTheMessagesACutOffPutsOnTheWire and TestTheMessagesAReturnPutsOnTheWire,
+// which assert the pairs.
 // # What an undelivered statement suppresses
-//
 // centralBank.advise returns on the FIRST send it cannot make, and the cost is
-// wider than the bank it could not reach:
-//
-//   - that member is never advised, and has no advice row at all — which is
-//     exactly what the store shows for a member that WAS told and could not
-//     book, since the row commits with the leg;
-//   - every member AFTER it in the statement order is never advised either;
-//   - the ACSC is never sent, so the clearing house never fans the per-payment
-//     statuses out, and EVERY bank in the cycle — including the ones that were
-//     advised — is left holding an instruction it believes outstanding on a
-//     payment the domain has already marked Settled.
-//
-// A RETURN reaches the same three, because a return advises the same way, and
-// the third costs more there. The clearing house's answer is what releases the
-// pacs.004 it is holding for the OTHER bank, so an answer never sent is a
-// customer leg never posted: the reserves are final, one bank has moved its
-// customer's money and the other never will, and the payment stays Settled for
-// ever with half a return standing in one book. On the cut-off path the third
-// item leaves banks with stale expectations; on this one it reaches an account.
-// Same defect, second route to it, recorded rather than fixed here for the
-// reason below.
+// wider than the bank it could not reach: that member is never advised, every
+// member after it in the statement order is never advised either, and the ACSC
+// is never sent — so EVERY bank in the cycle, including the ones that were
+// advised, is left holding an instruction it believes outstanding on a payment
+// already marked Settled. On a RETURN the third costs more, because the clearing
+// house's answer is what releases the pacs.004 it is holding for the other bank:
+// a customer leg never posted, against reserves that are final.
 //
 // None of it is reachable here, for the reason "What this mesh is not" gives
 // below: delivery is exactly-once and in order, and a send to a live actor
 // always succeeds. It becomes reachable in any transport that can lose a
-// message. The settlement is FINAL in all these cases — the reserves moved and
-// the cycle or the return is discharged — so nothing may be unsaid, and there is
-// deliberately no retry here rather than untested machinery for an unreachable
-// failure. What is missing is the ability to NOTICE: an absent advice row against
-// a clearing suspense that has not returned to zero, and a cycle Settled whose
-// banks were never told, are the same shape in the store, which is why noticing
-// needs the CLOSING BALANCE the statement carried rather than the row's status.
-//
-// A member's settlement account at the central bank is a Liability, which the
-// ledger does not guard, so SettleCycleTx checks each net payer's reserve itself
+// message. The settlement is FINAL in all these cases, so nothing may be unsaid,
+// and there is deliberately no retry rather than untested machinery for an
+// unreachable failure. What is missing is the ability to NOTICE: an absent
+// advice row against a suspense that has not returned to zero, and a cycle
+// Settled whose banks were never told, are the same shape in the store — which
+// is why noticing needs the CLOSING BALANCE the statement carried rather than
+// the row's status. See centralBank.advise, which enumerates the three.
 // and answers AM04. That is the central bank declining to extend uncollateralised
 // intraday credit, which is the decision a settlement agent exists to make.
 //
@@ -393,57 +357,45 @@
 // accounts and a product, able to open customer accounts and unable to FUND one
 // — and what the scheme thinks arrives later, at two other actors, as a message.
 //
-// # "A founded bank can neither pay nor be paid" is a REFUSAL now, and this
+// # "A founded bank can neither pay nor be paid" is a REFUSAL, and this
 // transport is not what makes it
 //
 // Routing here is the ACTOR TABLE, not the roster: m.send looks a BIC up in
 // m.actors, and Admit registers the actor at founding so that the bank can
 // receive its own acknowledgement. So a founded bank is perfectly REACHABLE, and
-// nothing about this transport says otherwise. It was reachable in both
-// directions and refused in neither: a payment addressed to a founded bank was
-// relayed, accepted by that bank, taken into the cycle and reached Cleared, and a
-// founded bank's own submission did the same — DepositTx refuses to fund its
-// customers, but an arranged overdraft and a loan disbursement do not, and
-// FoundBankTx gives it internal accounts in every asset so no posting refused it
-// either. Both ended at the CUT-OFF and both failed wide: csm.settlementLegs
-// turns each net position into a BIC through the roster, so a non-member in the
-// batch means the pacs.009 cannot be built at all — "no member is routed to
-// under this BIC" — and the whole cycle stayed Closed with no settlement against
-// it, every other member's payments included.
+// nothing about this transport says otherwise — a payment addressed to one is
+// relayed, accepted, taken into a cycle and reaches Cleared. Where it fails is
+// the CUT-OFF, and it fails wide: csm.settlementLegs turns each net position
+// into a BIC through the roster, so a non-member in the batch means the pacs.009
+// cannot be built at all and the whole cycle stays Closed with no settlement
+// against it, every other member's payments included.
 //
 // What refuses it is payment.ErrBankNotAdmitted, in two places. Mesh.Submit
-// refuses at the door, beside ErrOnUsPayment and for that guard's stated reason:
-// Submit is synchronous, so a refusal any later has a committed debtor leg to
-// unwind. AcceptAtCSMTx refuses again from the clearing house's own roster row,
-// which is the institution whose judgement it is. Both are pinned —
-// TestAFoundedBankCanNeitherPayNorBePaid here, which also asserts that the other
-// member's payment in the same cycle settles, and
+// refuses at the door, beside ErrOnUsPayment and for that guard's reason: Submit
+// is synchronous, so a refusal any later has a committed debtor leg to unwind.
+// AcceptAtCSMTx refuses again from the clearing house's own roster row, which is
+// the institution whose judgement it is. Both are pinned —
+// TestAFoundedBankCanNeitherPayNorBePaid here, and
 // TestTheClearingHouseWillNotClearForANonMember in payment.
 //
-// Measured with the door guard removed, the clearing house's refusal alone is not
-// enough for the PAYING direction: it rejects the payment, and csm.tell addresses
-// the pacs.002 through the roster too, so the answer that would reverse the
-// debtor leg dead-letters at the bank that has no roster row. The money stays in
-// its clearing suspense. That is the whole argument for refusing at the door as
-// well, and it is why "one refusal closes both" was true of the directions and
-// not of the remedies.
+// The clearing house's refusal alone is not enough for the PAYING direction,
+// measured with the door guard removed: it rejects the payment, and csm.tell
+// addresses the pacs.002 through the roster too, so the answer that would
+// reverse the debtor leg dead-letters at the bank that has no roster row and the
+// money stays in its clearing suspense. That is the argument for refusing at the
+// door as well.
 //
-// What actually makes a founded bank unreachable is losing its actor, which a
-// restart does: joinRoster builds actors from the ROSTER, so a bank that was
-// founded and never admitted comes back with none
+// What makes a founded bank unreachable is losing its actor, which a restart
+// does: joinRoster builds actors from the ROSTER
 // (TestAFoundedBankIsNotAdmittedByARestart). That is a property of this
-// transport rather than a refusal any institution makes, which is the whole
+// transport rather than a refusal any institution makes, which is the
 // distinction this section exists to draw.
 //
-// Founded and not a member is a legitimate state and not half of one, which is
-// what makes the orphan-participant defect go away rather than move. That defect
-// was an ORDERING: the participant row was written and the mesh was asked for
-// the address afterwards, so the irreversible step ran first and the refusable
-// step second. Admit claims the address before the unit of work runs and gives
-// it back if the unit of work fails, because an in-memory rollback is reliable
-// and a rollback of a committed transaction is not. An interrupted admission
-// therefore leaves a bank that exists and has not joined, and calling Admit again
-// re-drives it: nothing is founded twice.
+// Founded and not a member is a legitimate state and not half of one. Admit
+// claims the address before the unit of work runs and gives it back if that unit
+// of work fails, because an in-memory rollback is reliable and a rollback of a
+// committed transaction is not — so an interrupted admission leaves a bank that
+// exists and has not joined, and calling Admit again re-drives it.
 //
 // # The CLEARING HOUSE refuses, relays, and holds almost nothing
 //
