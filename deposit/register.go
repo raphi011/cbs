@@ -1462,47 +1462,38 @@ func (r *Register) GetSnapshot(ctx context.Context, id AccountID, date time.Time
 //	day 3   exact 6.1644   rounded 6   post 2
 //
 // A day on which the rounding does not tick posts nothing at all, which is why
-// this returns no transaction: most days there is one, some days there is not,
-// and a caller that had to distinguish them would learn nothing useful.
+// this returns no transaction.
 //
 // Income is recognized daily rather than at capitalization because accrued
 // interest is a real asset, and one that existed only on this record between
-// charge dates would understate both assets and income on every date in
-// between.
+// charge dates would understate both assets and income on every date between.
 //
 // # The accrual base
 //
 // The overdrawn magnitude of each day's own VALUE-DATED book balance — not the
 // available balance, and not today's balance applied backwards. A hold is not
-// borrowed money. The base is tiered: the arranged rate up to the limit in
-// force on that day, the unarranged rate on anything beyond it. Both, and the
-// limit itself, come from the terms row in force on the day being accrued.
-//
-// A gap of several days is therefore exact rather than approximate: every day in
-// the span accrues on the balance that was actually in force on it, which is
-// what a bank does.
+// borrowed money. The base is tiered: the arranged rate up to the limit in force
+// on that day, the unarranged rate beyond it. Both, and the limit, come from the
+// terms row in force on the day being accrued, so a gap of several days is exact
+// rather than approximate.
 //
 // # Idempotency, and how a backdated posting is corrected
 //
 // LastAccrualDate never moves backwards, so re-running an end-of-day for a date
-// already covered is a no-op rather than a second charge. It is also a no-op by
-// arithmetic: the same date over the same history produces the same gross and
-// therefore a zero delta.
+// already covered is a no-op — and it is a no-op by arithmetic too, since the
+// same date over the same history produces the same gross and a zero delta.
 //
 // A posting which arrives backdated is trued up by the NEXT day's run rather
 // than by rewinding this one. Each run recomputes the whole of the account's
-// LIFE from the value-dated balance — the window opens at the account's opening
-// terms row — so the days the posting takes effect over are re-derived with it
-// in place; the difference between the new total and the old one is what gets
-// posted. Interest that turns out never to have been owed comes back as a
-// correction — a new event, not a reversal: the original accrual was a correct
-// statement of what the ledger knew then.
+// LIFE from the value-dated balance, so the days the posting takes effect over
+// are re-derived with it in place and the difference is what gets posted.
+// Interest that turns out never to have been owed comes back as a correction — a
+// new event, not a reversal: the original accrual was a correct statement of
+// what the ledger knew then.
 //
-// Because the window opens at inception rather than at the last repricing, a
-// backdated posting is trued up WHEREVER it lands, including on days before a
-// repricing: each of those days is re-derived at the terms that were actually
-// in force on it, not at today's. Under the mutable-columns model those days
-// were behind the window and were silently never corrected.
+// Because the window opens at inception rather than at the last repricing, that
+// holds WHEREVER the posting lands, including on days before a repricing: each
+// is re-derived at the terms that were actually in force on it.
 //
 // Returns ErrAccountNotFound.
 func (r *Register) AccrueOverdraft(ctx context.Context, id AccountID, date time.Time) error {

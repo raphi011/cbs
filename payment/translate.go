@@ -265,49 +265,33 @@ var reasonTable = []reasonMapping{
 
 	// --- The admission refusals, which are answered off this code set ---
 	//
-	// The rows below it are empty for a different reason from the block above,
-	// and the difference matters because a refusal here CAN reach a counterparty
-	// where nothing classified above ever does. An admission refusal travels as
-	// an acmt.011, whose reason is RjctnRsn: Max350Text, repeated, free prose. It is not a code, and the codes in this
-	// table are the pacs.002's external set — so there is nothing here for any of
-	// them to map to, and an entry with a code would put a payment status on an
-	// account-opening refusal. See iso20022.AccountRejectionReferences, which
-	// records that the standard itself makes this rejection prose where it makes
-	// a payment rejection a code.
+	// These rows are empty for a different reason from the block above, and the
+	// difference matters because a refusal here CAN reach a counterparty where
+	// nothing classified above ever does. An admission refusal travels as an
+	// acmt.011, whose reason is RjctnRsn: Max350Text, repeated, free prose. The
+	// codes in this table are the pacs.002's external set, so there is nothing
+	// here for any of them to map to and an entry with a code would put a payment
+	// status on an account-opening refusal. See
+	// iso20022.AccountRejectionReferences.
 	//
 	// What reaches a counterparty is what the CLEARING HOUSE refuses, because it
-	// refuses a request while its sender is still waiting: mesh.csm.relayAdmission
-	// turns each into an acmt.011 carrying the words of the error itself, because
-	// RjctnRsn is where a reason goes on that message and it is prose.
-	// ErrBICAlreadyAdmitted is answered to the applicant. ErrNotThisBanksAdmission
-	// is answered to the SENDER when that actor makes it, which is the one message
-	// on the path addressed to somebody other than the applicant — the applicant
-	// named by an impostor's request never asked for anything.
+	// refuses a request while its sender is still waiting: csm.relayAdmission
+	// turns each into an acmt.011 carrying the words of the error itself.
+	// ErrBICAlreadyAdmitted is answered to the applicant; ErrNotThisBanksAdmission
+	// is answered to the SENDER, which is the one message on this path addressed
+	// to somebody other than the applicant — the applicant named by an impostor's
+	// request never asked for anything.
 	//
-	// Everything the BANK refuses is never answered at all, whatever the code
-	// set, because a bank is the LAST hop of an admission and has nobody to tell:
-	// each becomes a dead letter. Those that say the message is not this bank's
-	// business — ErrNotThisBanksAdmission again, about which bank, and
-	// ErrBankAlreadyAdmitted about which admission — are a defect in the ROUTING
-	// rather than a judgement the sender can act on, and they take
-	// ErrStatementNotForThisBank's classification for its reason. The rest are
-	// refusals a sender COULD act on, and go unanswered for the same structural
-	// reason: the counterparty who could be told is the applicant, and the
-	// applicant is this bank. So one sentinel here is answered at one institution
-	// and dead-lettered at the other, which the empty code accommodates and a
-	// code would not.
+	// Everything the BANK refuses is never answered at all, because a bank is the
+	// LAST hop of an admission and has nobody to tell: each becomes a dead letter.
+	// So one sentinel here is answered at one institution and dead-lettered at the
+	// other, which the empty code accommodates and a code would not.
 	//
-	// No paragraph here says how many rows there are, deliberately. The
-	// phrasings this block has already retired were each falsified by a
-	// different kind of edit: "These three" was written with three rows in
-	// fc1a703 and went wrong at 55c6245, which REMOVED ErrBankNotFounded; "The
-	// bank's three" was written with three in 4dab4b7 and went wrong at 2c12dbb,
-	// which ADDED ErrAdmissionNotIdentified. So it is not additions a count has
-	// to survive. Any change to the thing counted falsifies it, in either
-	// direction, and the deletion is the one nobody rereads the prose for. The
-	// ROWS have a guard against exactly that — errors.go declares a sentinel,
-	// translate_test.go requires a row for it and refuses a row naming anything
-	// else — and the prose about them has none, so it describes instead.
+	// No paragraph here says how many rows there are. Any change to the thing
+	// counted falsifies a count, in either direction, and a removal is the one
+	// nobody rereads the prose for. The ROWS have a guard — errors.go declares a
+	// sentinel, translate_test.go requires a row for it and refuses a row naming
+	// anything else — and the prose about them has none.
 	{ErrBICAlreadyAdmitted, "ErrBICAlreadyAdmitted", ""},
 	{ErrBankAlreadyAdmitted, "ErrBankAlreadyAdmitted", ""},
 	{ErrAdmissionNotIdentified, "ErrAdmissionNotIdentified", ""},
@@ -506,57 +490,49 @@ func agentRef(b iso20022.BIC) *iso20022.BranchAndFinancialInstitution {
 
 // amountOf converts a ledger amount to the standard's decimal representation.
 //
-// The scale comes from the asset definition rather than from a constant,
-// because this repository's ledger is multi-asset and a two-decimal assumption
-// would be wrong the first time a scheme in another asset arrives.
+// The scale comes from the asset definition rather than from a constant, because
+// this repository's ledger is multi-asset and a two-decimal assumption would be
+// wrong the first time a scheme in another asset arrives.
 //
 // The rendered amount is then checked, and the check ASKS THE CODEC rather than
-// deciding for itself. That framing is the whole of it: this function does not
-// know what ISO 20022 permits and does not try to, it asks iso20022 whether
-// iso20022 can carry the value, and refuses early if not. So the bound below is
-// a description of that package's Validate at the time of writing, and if
-// Validate is ever tightened or loosened this function needs no change.
+// deciding for itself: this function does not know what ISO 20022 permits and
+// does not try to. So the bound below describes iso20022's Validate at the time
+// of writing, and a Validate that tightened or loosened needs no change here.
 //
-// Two ways an amount this ledger holds is refused, one large and one small:
+// Two ways an amount this ledger holds is refused:
 //
 //   - FRACTION DIGITS. The standard caps ActiveCurrencyAndAmount at five for any
-//     currency, so an asset scaled finer than that has no representation on the
-//     wire at all. Bitcoin, at eight, is one — and it is in this repository's
-//     asset table today, so this is a live limit rather than a hypothetical.
-//     ErrAmountScale. See TestSettlementMessageTakesItsScaleFromTheAsset.
+//     currency, so an asset scaled finer has no representation on the wire at
+//     all. Bitcoin, at eight, is in this repository's asset table today, so this
+//     is a live limit. ErrAmountScale.
 //
-//   - MAGNITUDE, and the honest bound is not the standard's eighteen-total-digit
-//     ceiling. iso20022's Validate implements its shape check by calling
-//     Minor(5), which zero-pads the fraction to five places and parses the result
-//     as an int64, so the real bound is MaxInt64 / 10^(5-scale) — for a
-//     two-decimal asset, 9,223,372,036,854,775 minor units, at SIXTEEN rendered
+//   - MAGNITUDE, and the honest bound is not the standard's eighteen-digit
+//     ceiling. Validate calls Minor(5), which zero-pads the fraction to five
+//     places and parses as an int64, so the real bound is MaxInt64/10^(5-scale)
+//     — for a two-decimal asset, 9,223,372,036,854,775 minor units at SIXTEEN
 //     digits. Below scale 5 it bites too hard, refusing legal seventeen- and
 //     eighteen-digit values; AT scale 5 the padding is a no-op and the check
 //     degenerates to "fits in an int64", which ADMITS nineteen-digit values the
-//     schema's totalDigits="18" forbids. The gap is inert only because no asset
-//     in ledger.Assets() is scaled to 5, and nothing enforces that. See
+//     schema forbids. The gap is inert only because no asset in ledger.Assets()
+//     is scaled to 5, and nothing enforces that. See
 //     TestValidateAdmitsNineteenDigitsAtScaleFive in iso20022.
 //
-//     It is recorded rather than worked around because a workaround here would
-//     be this package second-guessing the codec, which is exactly what "ask the
-//     codec" avoids. Enforcing the standard's actual ceiling belongs in
-//     iso20022.ActiveCurrencyAndAmount.Validate, which is where the bound would
-//     then also be testable. The sentinel is ErrAmountFormat, which is the wrong
-//     one for a well-formed number and is part of the same artifact. Both edges
-//     of the scale-2 bound are pinned by TestSettlementMessageAmountBound.
+//     It is recorded rather than worked around, because a workaround here would
+//     be this package second-guessing the codec. Enforcing the standard's actual
+//     ceiling belongs in iso20022.ActiveCurrencyAndAmount.Validate, where the
+//     bound would then also be testable. The sentinel is ErrAmountFormat, which
+//     is the wrong one for a well-formed number and is part of the same artifact.
 //
-// Neither was found by FuzzTranslate, and that is worth recording rather than
-// hiding. Two and a half million executions did not reach either, because the
-// target fuzzes the AMOUNT and holds the asset at EUR, and a large amount only
-// produces a message at all once the fuzzer has also assembled two valid IBANs
-// and two non-empty names. A hand-written probe over ledger.Assets and the
-// int64 boundaries found both in one run. A fuzz target explores the inputs it
-// was given and no others, which is the honest limit of the technique.
+// Neither was found by FuzzTranslate: the target fuzzes the AMOUNT and holds the
+// asset at EUR, and a large amount only produces a message once the fuzzer has
+// also assembled two valid IBANs and two non-empty names. A hand-written probe
+// over ledger.Assets and the int64 boundaries found both in one run. A fuzz
+// target explores the inputs it was given and no others.
 //
-// Refusing here rather than at Marshal is the same choice ibanOf makes. Both
-// errors are correct; only the one raised here names the payment rather than an
-// element inside a document, and only that one can be turned into a pacs.002 a
-// customer can read.
+// Refusing here rather than at Marshal is the same choice ibanOf makes: both
+// errors are correct, and only this one names the payment rather than an element
+// inside a document, so only this one can be turned into a pacs.002 a customer
+// can read.
 func amountOf(amt ledger.Amount, asset ledger.AssetCode) (iso20022.ActiveCurrencyAndAmount, error) {
 	def, err := ledger.LookupAsset(asset)
 	if err != nil {
@@ -1183,47 +1159,40 @@ func (s *Network) ReturnMessage(p Payment, reason iso20022.ReturnReason, text st
 // can act on.
 //
 // A pacs.008 travels FROM the debtor's bank, routed by CdtrAgt, so the bank
-// reading this message SHOULD be the CREDITOR's — that is what routed the
-// message here — and the creditor is the only party it has any standing to
-// resolve. It is resolved by ADDRESS — Network.ResolveIdentifierTx against the
-// IBAN the message carries, IN THIS BANK'S OWN REGISTER — and never by an
-// internal account id, because the message has no element for one. That is also
-// why an unresolvable creditor IBAN comes back as ErrAccountNotInParticipant and
-// becomes AC01 on the wire: from the receiver's side, an address it cannot
-// resolve for its own customer IS an incorrect account number.
+// reading it SHOULD be the CREDITOR's, and the creditor is the only party it has
+// any standing to resolve. It is resolved by ADDRESS — ResolveIdentifierTx
+// against the IBAN the message carries, IN THIS BANK'S OWN REGISTER — and never
+// by an internal account id, because the message has no element for one. Which
+// is why an unresolvable creditor IBAN is ErrAccountNotInParticipant and becomes
+// AC01: from the receiver's side, an address it cannot resolve for its own
+// customer IS an incorrect account number.
 //
-// SHOULD, because CdtrAgt is what the SENDING bank asserted and nothing between
-// here and there checked it against a register — nor could it, once each bank
-// holds only its own row. A payer who names the wrong bank has the message
-// delivered to that bank, and this function is what refuses it. Own-register
-// resolution is the guard: a sweep would have found the payee at the RIGHT bank
-// and gone on to act on somebody else's customer. See mesh's
+// SHOULD, because CdtrAgt is what the SENDING bank asserted and nothing checked
+// it against a register — nor could it, once each bank holds only its own row. A
+// payer who names the wrong bank has the message delivered to that bank, and
+// this function is what refuses it. Own-register resolution is the guard: a
+// sweep would have found the payee at the RIGHT bank and gone on to act on
+// somebody else's customer. See mesh's
 // TestAWrongCounterpartyAgentIsRefusedByTheBankItNames.
 //
 // The bank reading the message is this network's own identity, which is what
 // makes "its own register" a property of the handle rather than of what the
 // caller passed. A clearing house's network cannot read a pacs.008 into a
-// request at all — it has no register — and that is ErrNotThisInstitutionsAct
-// rather than a resolution that quietly finds nothing.
+// request at all, and that is ErrNotThisInstitutionsAct rather than a resolution
+// that quietly finds nothing.
 //
-// The DEBTOR is not resolved at all. It is the sending bank's customer, this
-// bank's directory has no standing authority over whether that account exists,
-// and sweeping the network for it produced a refusal — AC01 for a debtor IBAN
-// nobody in this network holds — that was never this bank's to make. What comes
-// back for the debtor is what the message itself says: the address it quoted,
-// on Debtor, and the agent and name it asserted, on DebtorDetails. See
-// localPartyIn.
+// The DEBTOR is not resolved: it is the sending bank's customer, and this bank
+// has no standing over whether that account exists. What comes back for it is
+// what the message says — the address it quoted, on Debtor, and the agent and
+// name it asserted, on DebtorDetails. See localPartyIn.
 //
-// The scheme is the MESSAGE's, and it takes two elements to name it rather than
-// one. Being a pacs.008 says the payment is a PUSH; the currency says which
-// asset it settles in; and this network has one scheme for that pair or it
-// refuses the message. Reading SchemeSEPACT off the message definition alone was
-// right while SEPA's was the only push scheme registered, and wrong the moment a
-// second one is — see schemeSettling, which is also where the refusal lives. What
-// the message does NOT get to decide is that it is settled at all: a currency no
-// push scheme settles in is refused rather than reinterpreted, because a receiver
-// that took the sender's currency and some scheme's scale would book a number
-// neither bank wrote down.
+// The scheme is the MESSAGE's, and it takes two elements to name it. Being a
+// pacs.008 says the payment is a PUSH; the currency says which asset it settles
+// in; and this network has one scheme for that pair or it refuses the message
+// (schemeSettling). What the message does NOT get to decide is that it is
+// settled at all: a currency no push scheme settles in is refused rather than
+// reinterpreted, because a receiver that took the sender's currency and some
+// scheme's scale would book a number neither bank wrote down.
 //
 // It returns a REQUEST and not a Payment: nothing here is accepted, deduplicated
 // or posted. That is AcceptInboundTx's job, and the separation is what lets the
