@@ -18,9 +18,13 @@ import (
 // agent — payment/doc.go already records that returns settle immediately rather
 // than through a later R-cycle, so a return genuinely is a settlement act here.
 //
-// The clearing house's empty book set is the other half, and it says MORE than
-// it used to: this actor now runs three hops on this flow rather than two, and
-// still posts nothing. See TestWhichBooksAReturnReaches.
+// The clearing house's book set is the other half, and it is still the assertion
+// that this actor POSTS nothing on a flow it runs three hops of. It was empty
+// until Task 18d and holds its own book now, because being told a return went
+// through is a fact it records on its own copy of the payment
+// (payment.CompleteReturnTx) — and ClearingHouseBook is a row-book with no
+// accounts in it, so an entry here is not a posting. See
+// TestWhichBooksAReturnReaches, which sets the difference out.
 func TestAReturnIsExecutedByTheCentralBank(t *testing.T) {
 	h := newMeshHarness(t)
 	p := h.settledPayment(t)
@@ -33,7 +37,8 @@ func TestAReturnIsExecutedByTheCentralBank(t *testing.T) {
 	if got.Status != payment.Returned {
 		t.Fatalf("status = %v, want Returned", got.Status)
 	}
-	assertBooksTouched(t, "the clearing house, carrying a return", h.booksTouchedBy(h.cfg.ClearingHouseBIC), nil)
+	assertBooksTouched(t, "the clearing house, carrying a return",
+		h.booksTouchedBy(h.cfg.ClearingHouseBIC), []ledger.BookID{payment.ClearingHouseBook})
 }
 
 // TestTheMessagesAReturnPutsOnTheWire names the conversation, the way
