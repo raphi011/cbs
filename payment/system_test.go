@@ -965,9 +965,13 @@ func TestInitiateValueDatesTheCustomerLegToTheDebit(t *testing.T) {
 		DebtorDetails:   PartyDetails{Agent: a.BIC}})
 	assertNoError(t, err)
 
-	posted, err := a.Ledger.GetTransaction(ctx, p.DebtorLegTx)
+	// The leg is on the PAYER'S BANK's copy and on no other: it is that bank's
+	// own posting, in that bank's own book, and the clearing house's row — which
+	// is what initiate returns — has no leg columns at all. See mustGetPaymentAt.
+	atA := mustGetPaymentAt(t, ctx, sys.bank(a.BIC), p.ID)
+	posted, err := a.Ledger.GetTransaction(ctx, atA.DebtorLegTx)
 	assertNoError(t, err)
-	assertEqual(t, "transaction value date is the settlement date", posted.ValueDate, p.ValueDate)
+	assertEqual(t, "transaction value date is the settlement date", posted.ValueDate, atA.ValueDate)
 
 	debtorAcct, err := a.Deposit.GetAccount(ctx, alice)
 	assertNoError(t, err)
@@ -1758,6 +1762,21 @@ func allBanks(t *testing.T, ctx context.Context, sys *testSystem) []*Bank {
 		out = append(out, b)
 	}
 	return out
+}
+
+// mustGetPaymentAt is one named institution's copy of a payment.
+//
+// It is a helper rather than an inline GetPayment because a payment is THREE
+// rows since Task 18d and they legitimately disagree: the submitting bank
+// back-fills its own side, the receiving bank back-fills its own, and the
+// clearing house holds the message's values and back-fills nothing, because it
+// holds no register to back-fill from. Every assertion about a party ref has to
+// say whose copy it is reading, and this is where it says so.
+func mustGetPaymentAt(t *testing.T, ctx context.Context, net *Network, id PaymentID) Payment {
+	t.Helper()
+	p, err := net.GetPayment(ctx, id)
+	assertNoError(t, err)
+	return p
 }
 
 // mustGetBank re-reads a bank from ITS OWN store, so an assertion is about what
@@ -3128,13 +3147,21 @@ func TestInitiateRefusesAnAccountWithNoIdentifierInTheSchemesScheme(t *testing.T
 // identifiers on the account the REF named, and the two disagreed. That
 // comparison ran at the receiving bank, on a ref the SUBMITTING bank wrote.
 //
-// Since Task 18a the receiving bank resolves its own party FROM the address
-// (AcceptInboundTx, resolveOwnPartyTx), so the account and the address cannot
-// disagree on the far leg — the account is whichever one holds the address.
-// What is left is the case underneath: an address this bank does not hold,
-// which is ErrAccountNotInParticipant and AC01 on the wire. That is the answer
-// a real receiving bank gives, and the mismatch it replaces was only ever
-// reachable because the ref was taken on trust.
+// Since Task 18a the receiving bank resolves its own party FROM the address, so
+// the account and the address cannot disagree on the far leg — the account is
+// whichever one holds the address. What is left is the case underneath: an
+// address this bank does not hold, which is ErrAccountNotInParticipant and AC01
+// on the wire. That is the answer a real receiving bank gives, and the mismatch
+// it replaces was only ever reachable because the ref was taken on trust.
+//
+// Task 18d moved WHERE that is true without changing that it is. resolveOwnPartyTx
+// is deleted: there is no foreign row for the receiving bank to correct, because
+// each institution writes its own from the message, and the message carries an
+// address and no account id. So "cannot disagree" is now a property of what a
+// pacs.008 contains rather than of a correction AcceptInboundTx makes — which is
+// why the request below quotes an address and leaves the far leg's account
+// empty. A fixture that filled it in would be giving the receiving bank a fact
+// no message could deliver.
 //
 // ErrIdentifierMismatch is not dead. It still fires on the SUBMITTING bank's OWN
 // leg, where the ref is that bank's own and the quoted address is the payer's
@@ -3152,14 +3179,17 @@ func TestTheFarLegsAddressAndAccountCannotDisagree(t *testing.T) {
 	fundAccount(t, ctx, net, aurora, alice, 100_00)
 	bruno := openCustomer(t, ctx, verde, "Bruno", "IT60-VERDE-2001")
 
+	// The far leg is an ADDRESS and no account, which is what a pacs.008 carries
+	// and therefore all the receiving bank is given. Naming Bruno's account here
+	// would be the fixture handing Verde an answer no message could have brought
+	// it — see relayedFrom — and it would be refused a leg earlier, by the
+	// address-against-account comparison rather than by the resolution.
+	//
+	// The address is Alice's, which Verde does not hold.
 	_, err := initiate(ctx, net, InitiatePaymentRequest{
 		Scheme: SchemeSEPACT,
 		Debtor: PartyRef{Account: alice.ID},
 		Creditor: PartyRef{
-			Account: bruno.ID,
-			// Somebody else's address, pointing at Bruno's account. Verde does
-			// not hold it, and that — not the disagreement with the ref — is what
-			// it answers about.
 			Identifier: deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "SE89-AURORA-1001"},
 		},
 		Amount:          10_00,
@@ -3194,7 +3224,7 @@ func TestInitiateRefusesAQuotedIdentifierOnTheDebtorLeg(t *testing.T) {
 		Creditor:        PartyRef{Account: bruno.ID},
 		Amount:          10_00,
 		CreditorDetails: PartyDetails{Agent: verde.BIC, Name: bruno.Name},
-	})
+		DebtorDetails:   PartyDetails{Agent: aurora.BIC}})
 	if !errors.Is(err, ErrIdentifierMismatch) {
 		t.Fatalf("initiation = %v, want ErrIdentifierMismatch", err)
 	}
@@ -3266,9 +3296,12 @@ func TestInitiateRefusesAnAddressFromAnotherIdentifierScheme(t *testing.T) {
 			DebtorDetails:   PartyDetails{Agent: aurora.BIC}})
 		assertNoError(t, err)
 	})
-	assertEqual(t, "back-filled debtor address", pay.Debtor.Identifier,
+	// Each on the copy that makes it; see TestInitiateBackFillsTheAddressOnBothLegs.
+	assertEqual(t, "back-filled debtor address",
+		mustGetPaymentAt(t, ctx, net.bank(aurora.BIC), pay.ID).Debtor.Identifier,
 		deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "SE89-AURORA-1001"})
-	assertEqual(t, "back-filled creditor address", pay.Creditor.Identifier,
+	assertEqual(t, "back-filled creditor address",
+		mustGetPaymentAt(t, ctx, net.bank(verde.BIC), pay.ID).Creditor.Identifier,
 		deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "IT60-VERDE-2001"})
 }
 
@@ -3277,6 +3310,22 @@ func TestInitiateRefusesAnAddressFromAnotherIdentifierScheme(t *testing.T) {
 // storage, so the documented property — "a payment records the address it was
 // sent to" — held only for callers who volunteered it, which the API's own
 // tests never did.
+//
+// # "Both legs" is now two institutions, and that is the finding
+//
+// It used to be one row, so one assertion pair read both back-fills. Since Task
+// 18d a bank fills in ITS OWN side and no other: SubmitPaymentTx runs
+// debtorSideTx on a push and writes DebtorDetails from its own register,
+// AcceptInboundTx runs creditorSideTx at the OTHER bank, and neither can reach
+// the other's account to address it. So the debtor's IBAN is on Aurora's copy,
+// the creditor's is on Verde's, and the clearing house's copy — which is what
+// the initiate helper returns — carries what the message said and back-fills
+// nothing, because a clearing house holds no register.
+//
+// The property survives intact. Every address that can be filled in is filled
+// in by the one institution that could know it. What is gone is the single row
+// that held both at once, and asserting against it was asserting against a
+// value no institution in the running system can produce.
 func TestInitiateBackFillsTheAddressOnBothLegs(t *testing.T) {
 	ctx := context.Background()
 	net := testNetwork(t)
@@ -3300,17 +3349,24 @@ func TestInitiateBackFillsTheAddressOnBothLegs(t *testing.T) {
 		assertNoError(t, err)
 	})
 
-	assertEqual(t, "back-filled debtor address", pay.Debtor.Identifier,
-		deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "SE89-AURORA-1001"})
-	assertEqual(t, "back-filled creditor address", pay.Creditor.Identifier,
-		deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "IT60-VERDE-2001"})
+	alicesIBAN := deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "SE89-AURORA-1001"}
+	brunosIBAN := deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "IT60-VERDE-2001"}
 
-	// And the address that reached storage is the same one, not just the one
-	// the call returned.
-	stored, err := net.GetPayment(ctx, pay.ID)
-	assertNoError(t, err)
-	assertEqual(t, "stored debtor address", stored.Debtor.Identifier, pay.Debtor.Identifier)
-	assertEqual(t, "stored creditor address", stored.Creditor.Identifier, pay.Creditor.Identifier)
+	// Each bank's own leg, on that bank's own copy, read back out of storage
+	// rather than taken from the value a call returned.
+	atAurora := mustGetPaymentAt(t, ctx, net.bank(aurora.BIC), pay.ID)
+	assertEqual(t, "the debtor address on the payer's bank's copy", atAurora.Debtor.Identifier, alicesIBAN)
+	atVerde := mustGetPaymentAt(t, ctx, net.bank(verde.BIC), pay.ID)
+	assertEqual(t, "the creditor address on the payee's bank's copy", atVerde.Creditor.Identifier, brunosIBAN)
+
+	// The payer's back-fill travels: it was made before the instruction went out,
+	// so it is on the message and therefore on both downstream copies. The
+	// payee's does not — it is made on arrival, by the last institution the
+	// message reaches, and nothing carries it back upstream.
+	assertEqual(t, "the debtor address on the payee's bank's copy", atVerde.Debtor.Identifier, alicesIBAN)
+	assertEqual(t, "the debtor address on the clearing house's copy", pay.Debtor.Identifier, alicesIBAN)
+	assertEqual(t, "the creditor address on the payer's bank's copy", atAurora.Creditor.Identifier, deposit.Identifier{})
+	assertEqual(t, "the creditor address on the clearing house's copy", pay.Creditor.Identifier, deposit.Identifier{})
 }
 
 // Back-filling stops where choosing would start. Two IBANs on one account and
@@ -3354,9 +3410,15 @@ func TestInitiateRefusesToChooseBetweenTwoAddresses(t *testing.T) {
 			Creditor:        PartyRef{Account: bruno.ID},
 			Amount:          10_00,
 			CreditorDetails: PartyDetails{Agent: verde.BIC, Name: bruno.Name},
-		})
+			DebtorDetails:   PartyDetails{Agent: aurora.BIC}})
 		assertNoError(t, err)
-		assertEqual(t, "chosen debtor address", pay.Debtor.Identifier,
+		// The payer's bank's own copy, because the choice is that bank's own
+		// act: the clearing house's row carries what the message said, and the
+		// message was built after this back-fill, so both agree here — but only
+		// one of them is where the fact is made. See
+		// TestInitiateBackFillsTheAddressOnBothLegs.
+		assertEqual(t, "chosen debtor address",
+			mustGetPaymentAt(t, ctx, net.bank(aurora.BIC), pay.ID).Debtor.Identifier,
 			deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "SE89-AURORA-1002"})
 	})
 }
