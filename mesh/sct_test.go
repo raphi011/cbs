@@ -152,11 +152,9 @@ func TestARolledBackSubmitSendsNothing(t *testing.T) {
 
 // A message type an actor has no handler for is a dead letter and not a shrug.
 //
-// It used to be a pacs.004 sent to a bank, because a bank SENT returns and was
-// never sent one: the settlement agent made every posting a return needed,
-// including the refund into the payer's bank's own book. Task 16e gave that bank
-// the arm — the pacs.004 travels to it after finality and it posts its own leg —
-// so the message that was the example is now the one flow this test cannot use.
+// A pacs.004 is not usable as the example: it travels to a bank after finality
+// and that bank posts its own leg from it, so it is a message every bank in this
+// system has a handler for.
 //
 // A pacs.009 takes its place, and it is the same kind of thing rather than a
 // substitute chosen for convenience. A settlement instruction is addressed to
@@ -259,16 +257,12 @@ func TestABankRefusesAStatusAboutAnotherBanksPayment(t *testing.T) {
 // already funded a reserve movement and the second would reverse a leg that is
 // already reversed.
 //
-// # What this test used to assert, and why it cannot
+// # A forged rejection cannot be told from a real one
 //
-// It sent this same injection against an ACCEPTED payment and required the bank
-// to refuse it. That worked while one payment was one row: the row the payer's
-// bank read was the CLEARING HOUSE's row, so "does this network call it
-// rejected" was a question a bank could ask, and the answer was the decider's
-// own record. Task 18d gives each institution a copy nobody else can write, and
-// with it that question stops being answerable — a genuine post-acceptance
-// rejection and a forged one are the same bytes from the same address about a
-// payment in the same state.
+// Each institution holds a copy nobody else can write, so "does this network
+// call it rejected" is not a question a bank can ask — the decider's own record
+// is in another database. A genuine post-acceptance rejection and a forged one
+// are the same bytes from the same address about a payment in the same state.
 //
 // Refusing on Accepted was tried and is wrong on the domain as well as on the
 // data. A rejection is a pre-SETTLEMENT act, not a pre-acceptance one: a cut-off
@@ -362,15 +356,15 @@ func TestARedeliveredAcceptanceIsDeadLetteredAndNotRejected(t *testing.T) {
 //
 // # The message names a payment nobody has seen, and it has to
 //
-// It used to be a doctored copy of one the payer's bank really sent, id and all,
-// which made the RC01 an answer about a payment already ACCEPTED and sitting in
-// an open cycle. That is the shape of the defect the clearing house now refuses
-// to produce: a bank acting on such a status reverses a debit that is funding a
-// settlement, and no state its own copy could be in would let it tell that
-// message from a rejection this network really made (payment.RejectAtBankTx).
-// The replay is refused as a DUPLICATE before anything goes on the wire now —
-// see csm.relayRecorded — so a test that kept the original id would be measuring
-// that refusal instead of the routing table.
+// A doctored copy of a status the payer's bank really sent, id and all, would
+// make the RC01 an answer about a payment already ACCEPTED and sitting in an open
+// cycle — the shape of defect the clearing house refuses to produce, because a
+// bank acting on such a status reverses a debit that is funding a settlement and
+// no state its own copy could be in would let it tell that message from a
+// rejection this network really made (payment.RejectAtBankTx). The replay is
+// refused as a DUPLICATE before anything goes on the wire — see
+// csm.relayRecorded — so keeping the original id would measure that refusal
+// instead of the routing table.
 //
 // So the transaction id is doctored too, and the file is then what a forged
 // instruction is: a well-formed pacs.008 for a payment no institution holds. The
@@ -415,7 +409,7 @@ func TestACreditTransferForABankTheMeshCannotRouteToIsRC01(t *testing.T) {
 	if got := h.payment(t, forged); got.Status != payment.Rejected {
 		t.Errorf("the clearing house records the unroutable payment as %v; it answered RC01 about it", got.Status)
 	}
-	// And the real payment, whose id the forgery used to carry, is untouched.
+	// And the real payment, whose id the forgery is derived from, is untouched.
 	if got := h.payment(t, p.ID); got.Status != payment.Accepted {
 		t.Errorf("%s is %v after a forged message about another payment, want Accepted", p.ID, got.Status)
 	}
@@ -606,16 +600,16 @@ func TestABulkCollectionIsRefusedByTheClearingHouse(t *testing.T) {
 // one: the payer's bank recognises the beneficiary as its own and books the
 // transfer internally.
 //
-// This system did see them, and each of the three institutions did something
-// incoherent with the result. The clearing house netted a position of zero and
-// dropped the payment out of the settlement instruction, so a cycle holding
-// nothing but an on-us payment stranded at Cleared for ever. The settlement
-// agent's return path sent the SAME bank two camt.053s about the SAME account
-// under the same reference, differing only in sign, and the second was swallowed
-// by the advice row the first wrote — so that bank's reserve mirror moved by the
-// full amount while the central bank's record of it did not, and its clearing
-// suspense went permanently negative. The returning bank was both parties, so it
-// held both legs and refused its own customer's unconditional refund.
+// Each of the three institutions does something incoherent with an on-us
+// payment. The clearing house nets a position of zero and drops the payment out
+// of the settlement instruction, so a cycle holding nothing but an on-us payment
+// strands at Cleared for ever. The settlement agent's return path sends the SAME
+// bank two camt.053s about the SAME account under the same reference, differing
+// only in sign, and the second is swallowed by the advice row the first wrote —
+// so that bank's reserve mirror moves by the full amount while the central
+// bank's record of it does not, and its clearing suspense goes permanently
+// negative. The returning bank is both parties, so it holds both legs and
+// refuses its own customer's unconditional refund.
 //
 // Every one of those is a symptom of a payment that should never have been
 // submitted to clearing, which is why the refusal is here — at the one door

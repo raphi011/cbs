@@ -380,7 +380,7 @@ func TestCaptureHold_PostsGLTransaction(t *testing.T) {
 	got, _ := reg.GetHold(ctx, h.ID)
 	assertEqual(t, "hold captured", got.Status, HoldCaptured)
 
-	// Book balance moved: 10000 - 2500 = 7500. Hold no longer active.
+	// Book balance moved: 10000 - 2500 = 7500. The hold is not Active.
 	bal, _ := reg.GetBalance(ctx, alice.ID)
 	assertEqual(t, "book after capture", bal.Book, ledger.Amount(7500))
 	assertEqual(t, "holds after capture", bal.Holds, ledger.Amount(0))
@@ -1206,8 +1206,7 @@ func TestClose_RefusesAStrandedReceivable(t *testing.T) {
 		assertNoError(t, reg.AccrueOverdraft(ctx, acct.ID, start.AddDate(0, 0, i)))
 	}
 
-	// The customer account's own balance is back to zero, which is everything
-	// the old guard checked.
+	// The customer account's own balance is back to zero.
 	fundBy(t, book, sub, acct, 5_000)
 	balance, err := reg.GetBalance(ctx, acct.ID)
 	assertNoError(t, err)
@@ -1249,9 +1248,9 @@ func TestClose_RefusesAStrandedReceivable(t *testing.T) {
 //	1_825 × 100_000 × 1 / 365 = 500_000 micro-minor-units, exactly half a cent.
 //
 // Minor(500_000) = 1, so charging capitalizes 1 cent and leaves the record at
-// 500_000 − 1_000_000 = −500_000. Minor(−500_000) = −1: the old guard's test
-// is nonzero, but the receivable — credited by the same 1 cent that was
-// debited into it during accrual — is back to zero.
+// 500_000 − 1_000_000 = −500_000. Minor(−500_000) = −1, which is nonzero — and
+// the receivable, credited by the same 1 cent that was debited into it during
+// accrual, is back to zero. The guard reads the receivable and not the record.
 func TestClose_SucceedsOnAnExactHalfMinorUnitResidue(t *testing.T) {
 	ctx := context.Background()
 	reg, book, sub, prd := newTestRegister(t)
@@ -1291,9 +1290,8 @@ func TestClose_SucceedsOnAnExactHalfMinorUnitResidue(t *testing.T) {
 	assertNoError(t, err)
 	assertEqual(t, "book balance before closing", balance.Book, ledger.Amount(0))
 
-	// The old guard (Accrued.Minor() != 0) would refuse this close forever.
-	// The fixed guard reads the receivable's own ledger balance instead, which
-	// is zero, and lets it through.
+	// A guard on Accrued.Minor() != 0 would refuse this close forever. Reading the
+	// receivable's own ledger balance instead gives zero, and lets it through.
 	assertNoError(t, reg.Close(ctx, acct.ID))
 }
 
@@ -1567,14 +1565,9 @@ func TestOverdraftAccrualIgnoresAForwardValueDatedDebit(t *testing.T) {
 // TestSettingOverdraftTermsAccruesAndResetsNothing pins what a repricing costs
 // the accrual state: nothing at all.
 //
-// This test used to be TestOverdraftAccrualFreezesPriorAccrualOnARepricing, and
-// it asserted the opposite of one line: that AccruedGross was reset to ZERO,
-// because a repricing started a fresh recompute window and prior accrual had to
-// be frozen out of reach of it. That reset is exactly what effective-dated
-// terms removed. There is no window boundary to protect any more — every day is
-// re-derived at the terms that were in force on it — so the run this call used
-// to make, the gross it used to discard and the LastAccrualDate it used to move
-// have all gone with it. Appending a row is now a pure write.
+// Appending a terms row is a PURE WRITE: it runs no accrual, discards no gross
+// and moves no LastAccrualDate. There is no window boundary to protect, because
+// every day is re-derived at the terms that were in force on it.
 //
 // The surviving half of the old claim is the important one and is still here:
 // prior accrual is not rewritten by entering a repricing.
@@ -1678,15 +1671,13 @@ func TestOverdraftCorrectionRefundsWhatTheReceivableCannotAbsorb(t *testing.T) {
 	}
 }
 
-// TestARepricingPricesItsOwnEffectiveDay is what used to be
-// TestOverdraftRepricingChargesTheOutgoingTermsFirst, and it now pins the
-// opposite answer at the boundary — deliberately.
+// TestARepricingPricesItsOwnEffectiveDay pins the answer at the boundary.
 //
-// The old test guarded a day a moving window could swallow: freezing the old
-// window and opening the new one at the same instant left the span since the
-// last end-of-day belonging to neither, so SetOverdraftTerms pre-accrued it at
-// the OUTGOING terms before moving the boundary. There is no boundary now, so
-// there is nothing to fall between and nothing to pre-accrue.
+// A moving window would swallow a day: freezing the old window and opening the
+// new one at the same instant leaves the span since the last end-of-day
+// belonging to neither, so it would have to be pre-accrued at the OUTGOING terms
+// before the boundary moved. There is no boundary, so there is nothing to fall
+// between and nothing to pre-accrue.
 //
 // What remains is a question the old design never had to answer cleanly: which
 // day does a row effective from day 10 first price? A day is named by the date
@@ -1718,8 +1709,8 @@ func TestARepricingPricesItsOwnEffectiveDay(t *testing.T) {
 
 	entered, err := reg.GetAccount(ctx, acct.ID)
 	assertNoError(t, err)
-	// Entering the row posts nothing. It used to pre-accrue the outgoing span
-	// here, landing on 82_191_780 before any run had asked for day 10.
+	// Entering the row posts nothing. Pre-accruing the outgoing span here would
+	// land on 82_191_780 before any run had asked for day 10.
 	assertEqual(t, "accrued when the row is merely entered", entered.Accrued, interest.Accrued(73_972_602))
 
 	// The next run adds day 10. Three outcomes are distinguishable, which is
@@ -1907,9 +1898,9 @@ func TestCheckCredit_RefusesOnlyAClosedAccount(t *testing.T) {
 }
 
 // TestCheckWithdrawal_NamesDormancy pins the error a blocked debit on a dormant
-// account reports. It used to fall through requireActive's default branch and
-// come back as ErrInvalidStatusTransition — an error about changing a status,
-// raised by an operation that was not changing one.
+// account reports. Falling through requireActive's default branch would give
+// ErrInvalidStatusTransition — an error about changing a status, raised by an
+// operation that is not changing one.
 func TestCheckWithdrawal_NamesDormancy(t *testing.T) {
 	ctx := context.Background()
 	reg, book, deposits, prd := newTestRegister(t)

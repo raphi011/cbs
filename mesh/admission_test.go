@@ -160,14 +160,14 @@ func TestAnAdmittedBankCanPayAndBePaid(t *testing.T) {
 //
 // # What was wrong
 //
-// One acmt.007 asks for ONE currency — the schema makes Acct/Ccy
-// minOccurs="1" maxOccurs="1" — so a bank joining in two assets is answered
-// twice. RecordMembershipTx used to take only a bank that was still Founded, so
-// the FIRST acknowledgement took it to Member and the second was refused. The
-// bank ended a Member with a dollar settlement reference it had never learned,
-// while the central bank held a dollar reserve for it: a dollar deposit failed
-// against a reserve the operator console reported perfectly well, because the
-// console reads the central bank's row and the deposit reads the bank's.
+// One acmt.007 asks for ONE currency — the schema makes Acct/Ccy minOccurs="1"
+// maxOccurs="1" — so a bank joining in two assets is answered twice.
+// RecordMembershipTx has to EXTEND rather than refuse: taking only a bank that
+// is still Founded would leave it a Member with a dollar settlement reference it
+// had never learned, while the central bank held a dollar reserve for it — and a
+// dollar deposit would fail against a reserve the operator console reported
+// perfectly well, because the console reads the central bank's row and the
+// deposit reads the bank's.
 //
 // # What it asserts
 //
@@ -259,9 +259,9 @@ func TestATwoAssetAdmissionRecordsBothSettlementAccounts(t *testing.T) {
 //
 // It is the only thing that stops such a message reaching this bank in the
 // shipped system, and it is made from the ROSTER — a row this institution does
-// not own and which Task 18 moves to another database. A guard that lives only
-// there is a guard the split removes. This one is a bank comparing a message
-// against its own memory of what it accepted, and it needs nobody else's store.
+// not own and which lives in another database. A guard that lives only there is
+// no guard here. This one is a bank comparing a message against its own memory
+// of what it accepted, and it needs nobody else's store.
 //
 // So the message is INJECTED, straight into the bank's inbox, which is what the
 // clearing house's refusal being one hop earlier looks like from here — and what
@@ -319,10 +319,9 @@ func TestAMemberRefusesAnAcknowledgementOfAnotherAdmission(t *testing.T) {
 	}
 }
 
-// TestARefusedAdmissionLeavesAFoundedBank is the orphan defect, inverted. What
-// used to be left behind was a roster row for a bank that could neither pay nor
-// be paid, with no way back. What is left behind now is a bank that exists and
-// has not joined — which is a true state, and which re-calling Admit re-drives.
+// TestARefusedAdmissionLeavesAFoundedBank: what is left behind is a bank that
+// exists and has not joined — a true state, which re-calling Admit re-drives —
+// rather than a roster row for a bank that could neither pay nor be paid.
 //
 // # The refusal is INJECTED, and that is a finding rather than a shortcut
 //
@@ -1008,9 +1007,9 @@ func TestAFoundedBankCanNeitherPayNorBePaid(t *testing.T) {
 			ctx := context.Background()
 			b, acct := found(t, h)
 
-			// One healthy payment between two members, submitted BEFORE the
-			// refused one so that it is in the same open cycle. It is the other
-			// member whose money used to stop.
+			// One healthy payment between two members, submitted BEFORE the refused
+			// one so that it is in the same open cycle. It is the other member whose
+			// money a wide failure would stop.
 			healthy := h.submitCreditTransfer(t)
 			h.drain(t)
 
@@ -1033,9 +1032,9 @@ func TestAFoundedBankCanNeitherPayNorBePaid(t *testing.T) {
 				t.Errorf("the refusal says %q and does not name the %s", err, tc.want)
 			}
 
-			// Refused at the door means refused before the submitting bank's
-			// half ran, so no debtor leg was posted. Task 16's on-us guard is in
-			// the same place for the same reason.
+			// Refused at the door means refused before the submitting bank's half ran,
+			// so no debtor leg was posted. The on-us guard is in the same place for the
+			// same reason.
 			after, err := payer.Ledger.BookBalance(ctx, payer.Assets["EUR"].Suspense)
 			if err != nil {
 				t.Fatalf("reading the payer's clearing suspense: %v", err)

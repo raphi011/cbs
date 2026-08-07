@@ -39,9 +39,7 @@ func rosterNetwork(t *testing.T, bics map[string]iso20022.BIC) *payment.Networks
 
 // The mesh is N+2: one actor per member bank, plus the clearing house and the
 // central bank. The banks come from the CLEARING HOUSE's roster, which is the
-// store, which is why this is the one test in the package that needs one. It
-// used to run a second time against store/pg when TEST_DATABASE_URL was set;
-// there is one store now and one run.
+// store, which is why this is the one test in the package that needs one.
 //
 // The roster and not the bank rows, and TestStartGivesAFoundedBankNoActor is the
 // other half of that: a bank that exists and has not been admitted gets nothing
@@ -74,12 +72,11 @@ func TestStartGivesEveryParticipantAnActor(t *testing.T) {
 	// the banks and drain: its goroutine has to be the thing that produces the
 	// dead letter, because nothing else runs a handler.
 	//
-	// A REJECTION, and of a payment that does not exist. Since Task 10 a bank's
-	// handler is the real one, and an acceptance is a message a payer's bank has
-	// nothing to do about — it would be handled successfully and leave no trace
-	// at all. A rejection naming a payment this network has never issued is work
-	// the handler cannot complete, which is what makes the actor's own goroutine
-	// the visible source of the failure.
+	// A REJECTION, and of a payment that does not exist. An acceptance is a message
+	// a payer's bank has nothing to do about — it would be handled successfully and
+	// leave no trace at all. A rejection naming a payment this network has never
+	// issued is work the handler cannot complete, which is what makes the actor's
+	// own goroutine the visible source of the failure.
 	if err := m.send(testConfig.ClearingHouseBIC, "AURODEFFXXX",
 		testRejection(testConfig.ClearingHouseBIC, "AURODEFFXXX", "x")); err != nil {
 		t.Fatalf("send: %v", err)
@@ -168,12 +165,11 @@ func TestStartGivesAFoundedBankNoActor(t *testing.T) {
 // (payment.AdmitMemberTx extends rather than refusing). Start read the bank rows
 // to turn the roster's ids into addresses, so it saw the pair and had to choose.
 //
-// Neither half of that survives Task 18. A bank's database is NAMED by its
-// address (store/sqlite.Set), so founding a second bank on a taken BIC opens the
-// first one's database and renames it — there is no pair of rows to have. And
-// joinRoster reads the roster and NOTHING else, because a participant's id IS
-// its address now, so there is no bank row left in that path to disagree with
-// the roster about. The fixture that used to build the clash builds one bank.
+// A bank's database is NAMED by its address (store/sqlite.Set), so founding a
+// second bank on a taken BIC opens the first one's database and renames it —
+// there is no pair of rows to have. And joinRoster reads the roster and NOTHING
+// else, because a participant's id IS its address, so there is no bank row in
+// that path to disagree with the roster about.
 //
 // The GUARD is untouched and is still the only thing standing between this mesh
 // and an unreachable actor, so it is provoked where it lives instead. Its other

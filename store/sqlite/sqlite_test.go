@@ -138,18 +138,17 @@ func TestPragmasReachEveryPooledConnection(t *testing.T) {
 //
 // The sentinel mapping depends on it. SQLite names no index in a constraint
 // error, so a unique conflict is identified by the extended code alone
-// (SQLITE_CONSTRAINT_UNIQUE) rather than by matching an index name the way
-// store/pg does. That is exactly as targeted as the name — and only while the
-// idempotency index is the only unique index in the database the conflict came
-// from. Add a second and the mapping silently starts answering
+// (SQLITE_CONSTRAINT_UNIQUE) — which is exactly as targeted as an index name,
+// and only while the idempotency index is the only unique index in the database
+// the conflict came from. Add a second and the mapping silently starts answering
 // ErrDuplicateIdempotencyKey to an unrelated collision.
 //
-// It is PER SHAPE since Task 18c, and the interesting number is the csm's. The
-// clearing house keeps no book of accounts, so it has no transactions table and
-// therefore no idempotency index — which means SQLITE_CONSTRAINT_UNIQUE is
-// UNRAISABLE in that database. That is worth asserting rather than leaving
-// implied: a unique index added there would have no mapping at all, and the
-// first conflict on it would surface as a driver string.
+// It is PER SHAPE, and the interesting number is the csm's. The clearing house
+// keeps no book of accounts, so it has no transactions table and therefore no
+// idempotency index — which means SQLITE_CONSTRAINT_UNIQUE is UNRAISABLE in that
+// database. Worth asserting rather than leaving implied: a unique index added
+// there would have no mapping at all, and the first conflict on it would surface
+// as a driver string.
 //
 // sqlite_autoindex_* entries are excluded: those are the indexes SQLite creates
 // for PRIMARY KEY and UNIQUE column constraints, they raise
@@ -207,9 +206,8 @@ func TestExactlyOneUniqueIndexPerShapeThatHasABook(t *testing.T) {
 // The arguments in the schema reach a schema dump.
 //
 // This is the property CLAUDE.md protects — the reasoning is recorded in the
-// database, because a missing constraint is invisible in a schema dump — and
-// under Postgres it was free, because COMMENT ON is stored. Here it holds only
-// for comments inside a statement's parentheses, and a comment moved above its
+// database, because a missing constraint is invisible in a schema dump. It holds
+// only for comments inside a statement's parentheses: one moved above its
 // statement is dropped silently, so it is worth a test rather than a convention
 // nobody checks.
 //
@@ -219,12 +217,12 @@ func TestExactlyOneUniqueIndexPerShapeThatHasABook(t *testing.T) {
 // index's column list, and a COMMENT ON COLUMN's successor. Any of them moved
 // back to column 0 fails this and nothing else in the repository.
 //
-// One case per SHAPE since Task 18c, because there are three schema files and a
-// comment that slid to column 0 in one of them is invisible to a check on
-// another. The csm's two are the ones worth naming: it is the shape with no book
-// of accounts, so its arguments are all about tables the other two do not have
-// or foreign keys that cross into another institution's database — the class of
-// argument that has no column to hang on and would otherwise live nowhere.
+// One case per SHAPE, because there are three schema files and a comment that
+// slid to column 0 in one of them is invisible to a check on another. The csm's
+// two are the ones worth naming: it is the shape with no book of accounts, so
+// its arguments are all about tables the other two do not have or foreign keys
+// that cross into another institution's database — the class of argument that
+// has no column to hang on and would otherwise live nowhere.
 func TestSchemaArgumentsReachSqliteMaster(t *testing.T) {
 	for _, c := range []struct {
 		shape Shape
@@ -235,7 +233,7 @@ func TestSchemaArgumentsReachSqliteMaster(t *testing.T) {
 			// An absent table constraint. Nothing else records that the missing
 			// UNIQUE is a decision.
 			{"ledgers", "A note on what is NOT here: UNIQUE (book_id, name)"},
-			// An absent CHECK, which under Postgres was a COMMENT ON COLUMN.
+			// An absent CHECK, which has no column to hang a comment from.
 			{"accounts", "There is deliberately no CHECK restricting it to the known codes"},
 			// An index's own reasoning, inside its column list.
 			{"transactions_idempotency_key_idx", "the ONLY unique index in this schema"},
@@ -359,11 +357,10 @@ func TestOrderingIsChronologicalWithinOneSecond(t *testing.T) {
 // A read-then-write race is refused by the domain's own guard, not by a lock
 // error, because Update retries the unit of work.
 //
-// This is the case the spec got wrong. busy_timeout does not cover a transaction
-// that holds a read and needs to upgrade — it cannot succeed by waiting — so
-// without a retry the loser gets SQLITE_BUSY where what it is owed is the
-// domain's refusal, which is what store/mem and store/pg both answered. With
-// isTransient stubbed to false this fails five runs out of five.
+// busy_timeout does not cover a transaction that holds a read and needs to
+// upgrade — it cannot succeed by waiting — so without a retry the loser gets
+// SQLITE_BUSY where what it is owed is the domain's refusal. With isTransient
+// stubbed to false this fails five runs out of five.
 //
 // What it pins is the retry, not its BACKOFF: on the ephemeral store a retry's
 // read blocks until the winner commits, so removing the delay changes nothing

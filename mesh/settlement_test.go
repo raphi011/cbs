@@ -79,10 +79,9 @@ func TestARefusedSettlementCanBeInstructedAgain(t *testing.T) {
 	// The stuck state, in the four places it shows.
 	//
 	// Whether a cut-off settled is read off the CYCLE's status and, at the
-	// settlement agent, off whether it holds a settlement for that cycle. The
-	// cycle used to name the settlement's id and no longer can: that id is the
-	// agent's own row number and nothing on the wire carries it back. See
-	// payment.ClearingCycle.
+	// settlement agent, off whether it holds a settlement for that cycle. The cycle
+	// cannot name the settlement's id: that id is the agent's own row number and
+	// nothing on the wire carries it back. See payment.ClearingCycle.
 	stuck := h.creditTransferCycle(t)
 	if stuck.Status != payment.CycleClosed {
 		t.Fatalf("cycle %s is %v, want Closed", stuck.ID, stuck.Status)
@@ -100,14 +99,12 @@ func TestARefusedSettlementCanBeInstructedAgain(t *testing.T) {
 		t.Fatalf("the payee holds %d, want 0 — nothing has settled", got)
 	}
 
-	// The operator's remedy: fund the short member, which since Task 18a is TWO
-	// acts rather than one.
-	//
-	// A deposit raises the customer's balance and leaves the bank holding vault
-	// cash. It no longer raises the reserve, so on its own it would not unstick
-	// this cycle at all — the central bank's book is what settlement reads, and a
-	// deposit never reaches it. The lodgement is what puts the reserve behind the
-	// bank, and it is a real camt.050/camt.025 round trip.
+	// The operator's remedy: fund the short member, which is TWO acts. A deposit
+	// raises the customer's balance and leaves the bank holding vault cash; it does
+	// not raise the reserve, so on its own it would not unstick this cycle at all —
+	// the central bank's book is what settlement reads, and a deposit never reaches
+	// it. The lodgement is what puts the reserve behind the bank, and it is a real
+	// camt.050/camt.025 round trip.
 	//
 	// That the remedy needs both is the point rather than a detail of the fixture.
 	// A bank cannot settle out of cash in its own drawer; it settles out of central
@@ -372,16 +369,12 @@ func TestOneSettlementInstructionPerAsset(t *testing.T) {
 // actually paid, and this message is what tells it to pay its own customer, so
 // it closes the thing it started and starts the last posting the payment needs.
 //
-// # ONE message to the payee's bank and one to the payer's, and the second one
-// is Task 18d's
+// # ONE message to the payee's bank and one to the payer's
 //
-// The fan-out used to address two ROLES — the bank that submitted, and the
-// CREDITOR's bank, which has the leg to post — so on a pull, where those are one
-// institution, it sent a single message and the payer's bank was told nothing at
-// all. This note asserted that absence and argued for it: the payer's bank
-// answered the collection long ago and has nothing outstanding, and a system
-// that announced settlement to every party would be one where "who is waiting
-// for this" had stopped meaning anything.
+// Addressing two ROLES — the bank that submitted, and the CREDITOR's bank, which
+// has the leg to post — would send a single message on a pull, where those are
+// one institution, and tell the payer's bank nothing at all. It holds its own
+// copy of the payment and cannot read anybody's, so it has a row to close.
 //
 // The argument was about WAITING and the message is not only for waiting. Each
 // institution holds its own copy of this payment now and nobody can write
@@ -609,13 +602,12 @@ func TestARefusedSettlementLeavesTheCycleClosedAndThePaymentsCleared(t *testing.
 //
 // # It is a SET, plus the three orderings that are actually forced
 //
-// The three messages this used to assert formed a chain — each was sent by the
-// handler of the one before, so their whole order was forced. The statements are
-// not in that chain: they go to other actors' inboxes, and those goroutines run
-// concurrently with the clearing house's. The tap fires in Mesh.dispatch, on the
-// RECEIVING actor's goroutine, so what this test observes is handling order and
-// not send order, and a positional assertion over all six would be flaky rather
-// than strict.
+// The three messages of the chain are each sent by the handler of the one
+// before, so their whole order is forced. The statements are not in that chain:
+// they go to other actors' inboxes, and those goroutines run concurrently with
+// the clearing house's. The tap fires in Mesh.dispatch, on the RECEIVING actor's
+// goroutine, so what this test observes is handling order and not send order,
+// and a positional assertion over all six would be flaky rather than strict.
 //
 // Three relations survive that, and all three are asserted because "it is a set"
 // would give away more than the concurrency takes:
@@ -804,14 +796,10 @@ func TestASettlementInstructionNamingTwoCyclesIsRefused(t *testing.T) {
 //
 // # It was a REFUSAL and it is a BRANCH, and the change is not a weakening
 //
-// This used to assert ErrNotThisBanksPayment back to the payer's bank, because
-// being the payee's bank was the precondition of the whole act: the clearing
-// house had already written Settled onto the row both banks read, so a bank with
-// no creditor leg had nothing left to do and was turned away. Each institution
-// holds its own copy now and only its owner can write it, so BOTH banks have a
-// row to advance and only one has a leg. payment.SettleAtBankTx is where the
-// status became the unconditional half and the posting became the conditional
-// one, which is the reverse of how it read.
+// Each institution holds its own copy and only its owner can write it, so BOTH
+// banks have a row to advance and only one has a leg. payment.SettleAtBankTx is
+// where the status is the unconditional half and the posting the conditional
+// one; a bank with no creditor leg is not turned away.
 //
 // So the claim moves from the return value to the LEDGER, which is where it was
 // always really about: the payer's bank ends the cut-off having posted nothing

@@ -1,14 +1,13 @@
 // The shared suites, run against store/sqlite.
 //
 // Almost nothing is written here. What tests this store is store/storetest, and
-// this file is one line per suite. That division was a conformance argument once
-// — three implementations, one set of answers — and it survives it: the suites
-// are written against the Store and Tx interfaces and name no table, so what
-// they pin is the CONTRACT, and Task 18 runs the same file against each of its
-// three store shapes. What is NOT here is as deliberate: the refusals this
-// package owns (ErrReadOnly, ErrNestedTransaction) and the guards on the driver
-// and the schema are in sqlite_test.go, which is an internal test package
-// because it reads sqlite_master and drives the retry directly.
+// this file is one line per suite. Those suites are written against the Store
+// and Tx interfaces and name no table, so what they pin is the CONTRACT, and the
+// same file runs against each of the three store shapes. What is NOT here is as
+// deliberate: the refusals this package owns (ErrReadOnly, ErrNestedTransaction)
+// and the guards on the driver and the schema are in sqlite_test.go, which is an
+// internal test package because it reads sqlite_master and drives the retry
+// directly.
 //
 // It is an external test package for the ordinary reason: store/testenv imports
 // this package, so a test file inside it that imported testenv back would be a
@@ -38,13 +37,12 @@ func frozen() time.Time { return time.Unix(0, 0).UTC() }
 
 // newBank opens an ephemeral BANK store of its own answering for the given book,
 // migrated and empty, discarded when the test ends. No skip and no environment
-// variable: needing no setup is the property store/mem existed for, and this
-// store having it is what let store/mem go.
+// variable: this store needs no setup.
 //
-// It takes the book because a store answers for exactly ONE of them since Task
-// 18c, so a suite wanting two books asks for two stores — see storetest's bookA
-// and bookB. The shape is the bank's because it is the only one of the three
-// that holds every table these five suites reach.
+// It takes the book because a store answers for exactly ONE of them, so a suite
+// wanting two books asks for two stores — see storetest's bookA and bookB. The
+// shape is the bank's because it is the only one of the three that holds every
+// table these five suites reach.
 func newBank(t *testing.T, book ledger.BookID) *sqlite.Store {
 	t.Helper()
 	s, err := sqlite.Open(context.Background(), sqlite.Bank, book, "", frozen)
@@ -67,8 +65,8 @@ func newStore(t *testing.T) *sqlite.Store {
 }
 
 // TestConformance runs all five shared suites against SQLite. Anything a store
-// could plausibly get wrong belongs in storetest rather than here, because these
-// are the cases Task 18's three shapes will each have to pass.
+// could plausibly get wrong belongs in storetest rather than here, because those
+// are the cases all three shapes have to pass.
 func TestConformance(t *testing.T) {
 	storetest.RunLedger(t, func(t *testing.T, b ledger.BookID) ledger.Store { return newBank(t, b) })
 	storetest.RunDeposit(t, func(t *testing.T, b ledger.BookID) deposit.Store { return newBank(t, b).Deposit() })
@@ -86,13 +84,10 @@ func TestConformance(t *testing.T) {
 // TestRaces runs the race suite that needs only concurrent units of work.
 //
 // Each case pins that exactly one racer wins and that every loser lost for the
-// DOCUMENTED reason. What is worth knowing about them here is measured and is
-// recorded where the orderings are: with payment.admissionSequenceTx made to
-// return nil, all four cases still pass ten runs out of ten, because SQLite
-// admits one writer and Store.Update re-runs a loser against the winner's
-// committed row. They are regression guards on an ordering this store no longer
-// needs, kept because Task 18 removes the book their counter is drawn from and
-// this is what would notice if the replacement stopped ordering anything.
+// DOCUMENTED reason. With payment.admissionSequenceTx made to return nil, all
+// four still pass ten runs out of ten, because SQLite admits one writer and
+// Store.Update re-runs a loser against the winner's committed row. They are
+// regression guards on an ordering this store does not need.
 func TestRaces(t *testing.T) {
 	storetest.RunSystemRaces(t, func(t *testing.T) payment.Stores { return testenv.NewSet(t, frozen) })
 	storetest.RunClearingHouseRaces(t, func(t *testing.T) payment.Store {
@@ -131,8 +126,7 @@ func openShape(t *testing.T, shape sqlite.Shape, book ledger.BookID) *sqlite.Sto
 //
 // Two of the nine cases do not bite on a single run —
 // ConcurrentAdmissionsAgreeOnOneCentralBank in TestRaces and
-// ConcurrentMarkReversedOnlyOneWins here each passed one run on store/pg with
-// their guard removed and failed within ten. A single green run of either is not
+// ConcurrentMarkReversedOnlyOneWins here. A single green run of either is not
 // evidence about them; use -count=10 for anything that rests on one.
 func TestConcurrentTxRaces(t *testing.T) {
 	storetest.RunConcurrentTxRaces(t, func(t *testing.T) storetest.Store { return newStore(t) })
@@ -142,10 +136,9 @@ func TestConcurrentTxRaces(t *testing.T) {
 //
 // Without the guard the nested Update takes a SECOND connection and runs a
 // SEPARATE transaction, so its writes would commit even when the outer ones roll
-// back — and worse than that under SQLite, because the inner transaction then
-// contends with the outer one for the write lock and the pair can wedge. It is
-// refused outright, which is what store/mem and store/pg did too, so the single
-// most likely mistake in this codebase has never depended on the backend.
+// back — and worse under SQLite, because the inner transaction then contends
+// with the outer one for the write lock and the pair can wedge. It is refused
+// outright.
 //
 // All five shapes are driven, not just ledger's, because each is a separate
 // Update method on a separate adapter type and the guard is per method.
@@ -202,7 +195,7 @@ func TestNestedUnitOfWorkIsRefused(t *testing.T) {
 
 // View opens a read-only transaction, so a write through its Tx cannot be part
 // of anything that commits. It is refused with a named sentinel rather than left
-// to the driver, which is what store/mem and store/pg did too.
+// to the driver.
 func TestViewRejectsWrites(t *testing.T) {
 	s := newStore(t)
 

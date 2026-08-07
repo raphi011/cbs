@@ -210,9 +210,7 @@ func TestDirectDebitWithNoOpenCycleIsTM01(t *testing.T) {
 // now equally unreachable on this path, and Reset's ForgetBanks/JoinRoster window
 // — which is exactly what removing the actor reproduces.
 //
-// It is a narrower provocation than the one it replaces and it is the honest one:
-// the clearing house can no longer fail to KNOW where a bank is, only fail to
-// REACH it.
+// The clearing house cannot fail to KNOW where a bank is, only fail to REACH it.
 func TestTheRefundIsAttemptedEvenWhenTheSubmitterCannotBeAddressed(t *testing.T) {
 	h := newMeshHarness(t)
 	p := h.submitDirectDebit(t)
@@ -281,11 +279,9 @@ func TestTheRefundIsAttemptedEvenWhenTheSubmitterCannotBeAddressed(t *testing.T)
 	}
 }
 
-// The `unaddressable` stub stood here: a clearing house's view of the network in
-// which one participant's roster entry could not be read. It is deleted with the
-// lookup it faked. csmOps has no GetRosterEntry any more — a status is addressed
-// from the payment's own agent BICs — so there is nothing on that interface a
-// stub could fail, and the failure the test is about is the SEND. See
+// There is no stub for a roster entry that cannot be read: csmOps has no
+// GetRosterEntry, because a status is addressed from the payment's own agent
+// BICs. The failure this test is about is the SEND. See
 // TestTheRefundIsAttemptedEvenWhenTheSubmitterCannotBeAddressed.
 
 // A second copy of a collection the debtor's bank has already answered is

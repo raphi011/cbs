@@ -15,9 +15,8 @@ import (
 	"github.com/raphi011/cbs/store/storetest"
 )
 
-// The two entry points Task 14 needed and no message provokes: an operator
-// rejecting a payment the clearing house is holding, and a bank joining a mesh
-// that is already running.
+// The two entry points no message provokes: an operator rejecting a payment the
+// clearing house is holding, and a bank joining a mesh that is already running.
 //
 // Both are the shape Mesh.Submit, Mesh.CloseCycle and Mesh.Return already have —
 // synchronous, on the caller's goroutine, an error the caller can be answered
@@ -74,12 +73,10 @@ func TestAnOperatorRejectionRefundsThePayerOnlyOnceTheMessageArrives(t *testing.
 	// The refund was posted by the payer's BANK and by nobody else. The clearing
 	// house reached the network book, where a payment row lives, and no bank's.
 	//
-	// What that catches, exactly: a clearing house that WROTE in a member's
-	// book. That used to be one method away — GetParticipant's live handles,
-	// the hole ops.go named — and Task 17 closed that particular door; what it
-	// did not close, and what no interface can, is that any posting method
-	// takes its book as an ordinary argument. Adding a write to the payer's
-	// bank in csm.reject fails this line with [bank_1 network].
+	// What that catches, exactly: a clearing house that WROTE in a member's book.
+	// No interface can close that, because any posting method takes its book as an
+	// ordinary argument. Adding a write to the payer's bank in csm.reject fails
+	// this line.
 	//
 	// What it does not catch is a reject that forgot withActor. The clearing
 	// house's own goroutine has already written the network book carrying this
@@ -158,7 +155,7 @@ func TestABankAdmittedAfterStartCanPayAndBePaid(t *testing.T) {
 		Amount:      harnessAmount,
 		Description: "invoice 44",
 		// Push: the creditor is the counterparty, so the request must name it —
-		// name and BIC both, as everywhere else since Task 18a.
+		// name and BIC both, as everywhere else.
 		CreditorDetails: payment.PartyDetails{Agent: h.creditorBIC, Name: h.creditorAcct.Name},
 		DebtorDetails:   payment.PartyDetails{Agent: joiner.BIC}}
 
@@ -212,29 +209,22 @@ func TestABankAdmittedAfterStartCanPayAndBePaid(t *testing.T) {
 func TestAddingABankOnAnotherBanksBICIsRefusedAndChangesNothing(t *testing.T) {
 	h := newMeshHarness(t)
 
-	// The clashing bank is a VALUE and it used to be founded through the domain.
-	// It cannot be founded any more, and the reason is the refusal this test is
-	// about arriving one layer down: a bank's database is NAMED by its address
-	// (store/sqlite.Set), so "a second bank on this BIC" is not a thing the store
-	// can hold — founding on a taken address opens the first bank's own database
-	// and would rename it rather than making a rival.
+	// The clashing bank is a VALUE rather than a founded one, because a bank's
+	// database is NAMED by its address (store/sqlite.Set): "a second bank on this
+	// BIC" is not a thing the store can hold, and founding on a taken address would
+	// open the first bank's own database rather than making a rival.
 	//
 	// That leaves the mesh's own refusal as the thing under test, which is what it
 	// always was: AddBank takes a *payment.Bank and asks whether an actor already
-	// answers to its address. Handing it a value skips a founding this test never
-	// wanted — the old fixture said as much, "a founded bank is all AddBank needs"
-	// — and no longer pretends the domain would have allowed one.
+	// answers to its address.
 	clash := &payment.Bank{ID: payment.ParticipantID(h.debtorBIC), Name: "Aurora Bank (again)", BIC: h.debtorBIC}
 
 	// The incumbent's entry, taken before. What the index has to be left holding
 	// is THIS handler and not the newcomer's.
 	//
-	// It used to be enough to ask whether the clashing bank was in the index at
-	// all, because the index was keyed by ParticipantID and the two banks had
-	// different ids under one address. Task 18 made a bank's id BE its address,
-	// so the clash's key is the incumbent's key and "is it indexed" is answered
-	// yes by the bank that was always there. The claim survives; what identifies
-	// it changed, so it is asserted on the handler the key points at.
+	// Asking whether the clashing bank is in the index at all is answered yes by
+	// the incumbent: a bank's id IS its address, so the clash's key is the
+	// incumbent's key. So the claim is asserted on the handler the key points at.
 	h.mesh.mu.Lock()
 	incumbent := h.mesh.banks[h.debtorBIC]
 	h.mesh.mu.Unlock()
@@ -441,10 +431,9 @@ func TestForgetBanksRefusesAMeshThatIsStopping(t *testing.T) {
 
 // A ForgetBanks that times out leaves the actors where Stop can still find them.
 //
-// This is the property the first version of this method got backwards. It
-// deleted from the actor table before the join, so a timeout left goroutines
-// nobody could ever wait for: Stop snapshots m.actors, so what is not in it is
-// not joined, and a caller that retried its reset would truncate the store
+// Deleting from the actor table before the join would leave goroutines nobody
+// could ever wait for: Stop snapshots m.actors, so what is not in it is not
+// joined, and a caller that retried its reset would truncate the store
 // underneath a handler still running against it.
 //
 // Stop's own timeout does the opposite and says so at length; this is the same

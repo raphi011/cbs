@@ -391,10 +391,9 @@ func TestStopWaitsForARunningHandler(t *testing.T) {
 // Stop does not throw away what is already queued. Closing an inbox stops it
 // taking NEW messages; everything in it when Stop was called is still handled.
 //
-// This is the property Stop's deadline has to be sized against, and the one its
-// doc comment used to state backwards — it said queued messages were discarded,
-// which would have made a shutdown lose work silently and made a caller size a
-// context for one handler when it is really sizing it for the whole queue.
+// This is the property Stop's deadline has to be sized against: queued messages
+// are NOT discarded, so a caller is sizing a context for the whole queue rather
+// than for one handler.
 func TestStopDeliversWhatIsAlreadyQueued(t *testing.T) {
 	m := newTestMesh(t)
 	entered := make(chan struct{})
@@ -421,11 +420,10 @@ func TestStopDeliversWhatIsAlreadyQueued(t *testing.T) {
 		t.Fatalf("send: %v", err)
 	}
 
-	// Closing the inboxes is Stop's first act, and it is done here directly so
-	// that it cannot race the handler waking up. Called from a goroutine beside
-	// close(release) it did race, and the earlier version of this test passed
-	// with the queue reporting closed-before-drained — it was asserting which
-	// of the two won, not what Stop guarantees.
+	// Closing the inboxes is Stop's first act, and it is done here directly so that
+	// it cannot race the handler waking up. From a goroutine beside close(release)
+	// it does race, and a test written that way asserts which of the two won rather
+	// than what Stop guarantees.
 	for _, a := range m.actors {
 		a.q.close()
 	}
@@ -738,8 +736,8 @@ func TestDrainThatTimesOutStillReportsTheDeadLetters(t *testing.T) {
 //
 // The clearing house is the one addressed here because newTestMesh builds its
 // mesh over NO network, and a clearing house with no payments to clear keeps the
-// placeholder — see unhandled. On a mesh that has one, Task 10 gave it a real
-// handler; the central bank keeps the placeholder either way until Task 12.
+// placeholder — see unhandled. On a mesh that has one, every actor has a real
+// handler.
 func TestAMessageToAnActorWithNoHandlerIsADeadLetter(t *testing.T) {
 	m := newTestMesh(t)
 	if err := m.Start(context.Background()); err != nil {
