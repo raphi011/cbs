@@ -53,15 +53,14 @@ func bank(s *Server, pid string) http.Handler {
 // for the sample dataset — and is called once now, as the process would at boot,
 // and again on every reset. Pass nil for a server that resets to an empty system.
 //
-// The mesh is not optional and every test here gets one, because since
-// sub-project 7b it is what carries a payment past the bank it was handed to.
-// Started BEFORE populate, which is the order cmd/server uses: a reseed admits
-// its banks through the mesh's own door, so the institutions that answer an
-// application have to be running first. mesh.Start's roster read therefore finds
-// nothing, and every bank in these tests — the reseed's and the ones admitted
-// later through POST /members — gets its actor from Mesh.Admit. That is why two
-// banks in one test may not share a BIC: two actors on one address is a routing
-// table with one entry, and the mesh refuses it at admission.
+// The mesh is not optional and every test here gets one, because it is what
+// carries a payment past the bank it was handed to. Started BEFORE populate,
+// which is the order cmd/server uses: a reseed admits its banks through the
+// mesh's own door, so the institutions that answer an application have to be
+// running first. mesh.Start's roster read therefore finds nothing, and every
+// bank in these tests gets its actor from Mesh.Admit. That is why two banks in
+// one test may not share a BIC: two actors on one address is a routing table
+// with one entry, and the mesh refuses it at admission.
 //
 // Drain FIRST, then Stop, at cleanup, and both errors are reported. See
 // newAPIHarness in mesh_test.go, which says why at length.
@@ -114,13 +113,12 @@ func newServerOverStore(t *testing.T, gate *gatedStores,
 // admitForPopulate is what a reseed here uses to make a bank: the mesh's own
 // door, then a wait for the scheme to answer.
 //
-// Every one of these baselines used to call storetest.Admit, which plays the four
-// acts in one goroutine and writes the member row itself. That is no longer
-// enough for a RESEED. api.Server.Reset forgets every bank actor before it
-// truncates and no longer re-registers them afterwards, so a reseed that wrote
-// its rows directly would rebuild a network whose banks answer every read and
-// carry no payment. Going through Admit is what gives each one its actor in the
-// same call that founds it.
+// Each baseline admits through Mesh.Admit rather than writing the member row
+// itself. api.Server.Reset forgets every bank actor before it truncates and does
+// not re-register them afterwards, so a reseed that wrote its rows directly
+// would rebuild a network whose banks answer every read and carry no payment.
+// Going through Admit is what gives each one its actor in the same call that
+// founds it.
 //
 // It drains per bank, for the reason seed.builder.admit gives: network ids come
 // from one counter, and a conversation still running while the next bank is
@@ -144,9 +142,9 @@ func admitForPopulate(ctx context.Context, nets *payment.Networks, msh *mesh.Mes
 
 // drainServer waits for the mesh behind a Server built by newServer to go quiet.
 //
-// It exists because a payment is no longer finished when POST /payments answers:
-// the counterparty's acceptance and the clearing house's are two more actors and
-// two more messages. Every test below that submits a payment and then asserts on
+// It exists because a payment is not finished when POST /payments answers: the
+// counterparty's acceptance and the clearing house's are two more actors and two
+// more messages. Every test below that submits a payment and then asserts on
 // what became of it calls this in between, and none of them waits for a duration
 // to do it.
 func drainServer(t *testing.T, s *Server) {
@@ -180,9 +178,9 @@ func admitMember(t *testing.T, s *Server, body string, want int) map[string]any 
 // fundAndLodge gives a bank's customer a balance AND puts the cash on reserve,
 // over HTTP, which is what a fixture needs before anything it submits can settle.
 //
-// Two requests since Task 18a, and this helper is the two of them. POST /deposits
-// raises the customer's balance and leaves the bank holding vault cash; a bank
-// settles out of central-bank money, and POST /lodgements is how it gets some.
+// Two requests, and this helper is the two of them. POST /deposits raises the
+// customer's balance and leaves the bank holding vault cash; a bank settles out
+// of central-bank money, and POST /lodgements is how it gets some.
 //
 // It drains, because the lodgement answers 202: the reserve credit is the central
 // bank's to make, on a camt.050 still on the wire, so a fixture that did not drain
@@ -480,9 +478,9 @@ func TestCreateParticipantBICIsValidatedAndRendered(t *testing.T) {
 // two applications, answered in two commits. Between them the settlement agent
 // holds a euro account and no dollar one while the bank's own row says it
 // operates in both — and every two-asset admission passes through that window.
-// It used to answer 422 for the dollar row, which took the whole LIST route down
-// with it: one applicant mid-conversation and the central bank's console could
-// not report the reserves of any bank at all.
+// Answering 422 for the dollar row would take the whole LIST route down with it:
+// one applicant mid-conversation and the central bank's console could not report
+// the reserves of any bank at all.
 //
 // # The state is written rather than raced for
 //
@@ -610,13 +608,11 @@ func TestAdmittingABICWithAnAdmissionInFlightSaysToWait(t *testing.T) {
 	}
 	// What it must NOT say, and the third of these is the one that got through.
 	//
-	// The first version of this test forbade the other branch's two phrases, and
-	// the body did not contain them and was wrong anyway: mesh.ErrAdmissionInFlight
-	// was fmt.Errorf("%w: …", ErrAddressTaken), so Error() carried the PARENT's
-	// sentence — "another actor already answers to this BIC" — into a message
-	// whose entire purpose is that nobody else answers to it. A test that lists
-	// the phrases of the branch it is not in cannot see that. This lists the claim
-	// itself, from whichever layer it arrives.
+	// It lists the CLAIM rather than the phrases of the branch it is not in.
+	// mesh.ErrAdmissionInFlight wraps ErrAddressTaken, so a test written the other
+	// way could not see the parent's sentence — "another actor already answers to
+	// this BIC" — leaking into a message whose entire purpose is that nobody else
+	// answers to it.
 	for _, forbidden := range []string{"another institution", "address of its own", "another actor"} {
 		if strings.Contains(msg, forbidden) {
 			t.Errorf("the refusal says %q about an address nobody else holds: %s", forbidden, msg)
@@ -750,12 +746,12 @@ func TestAccountResponseIncludesAsset(t *testing.T) {
 	}
 }
 
-// TestBalanceEndpointReportsTheValueDatedBalance pins Task 8: the balance
-// endpoint now reports the value-dated balance alongside the book balance,
-// and the two diverge whenever a posting's value date is forward of its
-// booking date. Two movements land on the same account — one value-dated
-// today, one three days out — so the book balance carries both but the
-// value-dated balance, read back with ?asOf=today, carries only the first.
+// TestBalanceEndpointReportsTheValueDatedBalance: the balance endpoint reports
+// the value-dated balance alongside the book balance, and the two diverge
+// whenever a posting's value date is forward of its booking date. Two movements
+// land on the same account — one value-dated today, one three days out — so the
+// book balance carries both but the value-dated balance, read back with
+// ?asOf=today, carries only the first.
 func TestBalanceEndpointReportsTheValueDatedBalance(t *testing.T) {
 	h := newServer(t, nil)
 	pid := admitMember(t, h, `{"bic":"BNKADEFFXXX","name":"Bank A"}`, http.StatusAccepted)["id"].(string)
@@ -887,16 +883,14 @@ func TestCreateParticipantDefaultsToEuroForEmptyAndAbsentAssets(t *testing.T) {
 	}
 }
 
-// TestCrossAssetPaymentReturns422 is the HTTP-layer half of Task 5's
-// payment.ErrAssetMismatch mapping: initiating a payment through a scheme
-// whose asset does not match the debtor account's asset must answer 422, not
-// 500. A bank joined with USD only has no EUR account to collide with
-// sepa.ct's EUR, so the mismatch is reached without needing to fund anything
-// or open a cycle — checkPartyTx and the asset check both run before either
-// would matter, PROVIDED the request clears the counterparty guard first: that
-// guard runs before either, so the request must name a valid creditor or the
-// 422 it gets is ErrCounterpartyNotNamed's and never reaches this test's
-// subject at all.
+// TestCrossAssetPaymentReturns422 is the HTTP-layer half of
+// payment.ErrAssetMismatch's mapping: initiating a payment through a scheme whose
+// asset does not match the debtor account's must answer 422, not 500. A bank
+// joined with USD only has no EUR account to collide with sepa.ct's EUR, so the
+// mismatch is reached without funding anything or opening a cycle — PROVIDED the
+// request clears the counterparty guard first, which runs before either, so the
+// request must name a valid creditor or the 422 it gets is
+// ErrCounterpartyNotNamed's.
 func TestCrossAssetPaymentReturns422(t *testing.T) {
 	h := newServer(t, nil)
 	a := admitMember(t, h, `{"bic":"BNKADEFFXXX","name":"Bank A","assets":["USD"]}`, http.StatusAccepted)["id"].(string)
@@ -913,12 +907,9 @@ func TestCrossAssetPaymentReturns422(t *testing.T) {
 	}`, http.StatusUnprocessableEntity)
 }
 
-// TestPaymentDTOsCarryAsset pins the fix for the gap flagged in task-7's web
-// review: mandateDTO, clearingCycleDTO, settlementDTO and schemeDTO used to
-// carry no asset at all, which forced the frontend to hardcode "EUR"
-// constants with nothing to notice when that stopped being true (see
-// api/dto_payment.go's toMandateDTO/toClearingCycleDTO/toSettlementDTO/
-// toSchemeDTO). Each now carries its asset, resolved server-side.
+// TestPaymentDTOsCarryAsset: mandateDTO, clearingCycleDTO, settlementDTO and
+// schemeDTO each carry their asset, resolved server-side. Without it the frontend
+// hardcodes an "EUR" constant with nothing to notice when that stops being true.
 //
 // The mandate case is asserted against a USD debtor, not EUR, specifically to
 // prove the value is genuinely derived from the debtor's own deposit account
@@ -1025,11 +1016,9 @@ func TestPaymentDTOsCarryAsset(t *testing.T) {
 // it out of band, and it is gone, because a human settling a cycle beside the
 // instruction would be a second way to settle the same one.
 //
-// The Server does not hold a mesh yet — Task 14 is what puts one behind these
-// handlers — so a test that needs a SETTLED cycle to read reaches past the API
-// to the network the API is over. Every test that used this used the route for
-// the same reason: to reach the state, not to exercise the button.
-// settlementOfCycle is the settlement a cut-off produced, found at the
+// A test that needs a SETTLED cycle to read reaches past the API to the network
+// the API is over: the route is used to reach the state, not to exercise the
+// button. settlementOfCycle is the settlement a cut-off produced, found at the
 // SETTLEMENT AGENT by the cycle it names.
 //
 // It replaced a helper that CALLED SettleCycle. Nothing may do that any more:
@@ -1064,12 +1053,12 @@ func settlementOfCycle(t *testing.T, h *Server, cid string) string {
 // TestNoRouteSettlesACycle is the pin on the deleted route, and on the
 // difference between the one that replaced it and the one that was deleted.
 //
-// It is worth a test of its own because nothing else would notice: the console
-// that called it addressed a path built from a STRING, so deleting the route
-// left every compiler and linter on both sides of the wire perfectly happy and
-// the screen 404ing at runtime. A status code asserted here is what makes the
-// deletion a decision rather than an accident, on the surface that used to serve
-// it and on the two that never did.
+// It is worth a test of its own because nothing else would notice: a console
+// addresses a path built from a STRING, so deleting a route leaves every compiler
+// and linter on both sides of the wire perfectly happy and the screen 404ing at
+// runtime. A status code asserted here is what makes a deletion a decision rather
+// than an accident, on the surface that used to serve it and on the two that
+// never did.
 //
 // It was TestSettlementIsNoLongerAnHTTPAction, and the rename is the finding.
 // There IS a POST that leads to a settlement again — POST /cycles/{cid}/settle
@@ -1086,11 +1075,10 @@ func TestNoRouteSettlesACycle(t *testing.T) {
 	// so the PATH exists and the METHOD does not. That is exactly what "keep the
 	// reads, drop the action" means, said in a status code.
 	assertStatus(t, cb(h), "POST", "/settlements", `{"cycleId":"`+cid+`"}`, http.StatusMethodNotAllowed)
-	// On the CLEARING HOUSE the path is gone entirely, which is Task 18d rather
-	// than this deletion: a settlement is the settlement agent's row and that
-	// institution's database has no table for one. So there is nothing to say
-	//405 about, and 404 is the true answer — the console reads settlements on
-	// the operator whose book they are in.
+	// On the CLEARING HOUSE the path is gone entirely: a settlement is the
+	// settlement agent's row and that institution's database has no table for one.
+	// So there is nothing to say 405 about, and 404 is the true answer — the
+	// console reads settlements on the operator whose book they are in.
 	assertStatus(t, csm(h), "POST", "/settlements", `{"cycleId":"`+cid+`"}`, http.StatusNotFound)
 	assertStatus(t, csm(h), "GET", "/settlements", "", http.StatusNotFound)
 	// The central bank has no settle route at all: instructing is the clearing
@@ -1111,10 +1099,9 @@ func TestNoRouteSettlesACycle(t *testing.T) {
 	// The reads it left behind still answer, each on the operator whose rows they
 	// are. They are what the console watches settlement with now.
 	//
-	// The CYCLES are the clearing house's, and the central bank's listener no
-	// longer serves them: that institution's database has no cycles table, so
-	// the route it used to carry answered a missing table rather than a list.
-	// See centralBankRouter.
+	// The CYCLES are the clearing house's, and the central bank's listener does not
+	// serve them: that institution's database has no cycles table. See
+	// centralBankRouter.
 	var cycles []clearingCycleDTO
 	getJSON(t, csm(h), "/cycles", &cycles)
 	if len(cycles) != 1 || cycles[0].ID != cid {
@@ -1188,11 +1175,11 @@ func TestARefusedSettlementIsRecoverableOverHTTP(t *testing.T) {
 	// The remedy: fund the short member, then ask the clearing house to instruct
 	// settlement again.
 	//
-	// Funding is TWO requests since Task 18a. POST /deposits reaches this bank's
-	// own vault and no institution but this one, so on its own it would not unstick
-	// the cycle at all — settlement reads the central bank's book. POST /lodgements
-	// is what puts the reserve there, and it is a real camt.050/camt.025 round trip
-	// with a drain behind it. See fundAndLodge.
+	// Funding is TWO requests. POST /deposits reaches this bank's own vault and no
+	// institution but this one, so on its own it would not unstick the cycle at all
+	// — settlement reads the central bank's book. POST /lodgements is what puts the
+	// reserve there, and it is a real camt.050/camt.025 round trip with a drain
+	// behind it. See fundAndLodge.
 	fundAndLodge(t, h, a, alice, 25000)
 	assertStatus(t, csm(h), "POST", "/cycles/"+cyc+"/settle", "", http.StatusAccepted)
 	drainServer(t, h)
@@ -1232,10 +1219,10 @@ func TestErrorMapping(t *testing.T) {
 
 	// 404: unknown participant.
 	//
-	// A well-formed address nobody founded, not the string "nope". Binding a
-	// bank's surface OPENS that bank's database since Task 18d, and an address
-	// that is not a BIC has no database to open — so the fixture panicked in the
-	// harness instead of reaching the handler whose status code is under test.
+	// A well-formed address nobody founded, not the string "nope". Binding a bank's
+	// surface OPENS that bank's database, and an address that is not a BIC has no
+	// database to open — so the fixture would panic in the harness instead of
+	// reaching the handler whose status code is under test.
 	assertStatus(t, bank(h, "NOSUCHBKXXX"), "GET", "/me", "", http.StatusNotFound)
 
 	// 422: withdrawal hold exceeding available balance (account has no funds).
@@ -1301,9 +1288,9 @@ func TestAuditEndpointIncludesPayloadAndSeq(t *testing.T) {
 	// (ledger + subledgers + accounts), so no further setup is needed.
 	pid := admitMember(t, h, `{"bic":"BNKADEFFXXX","name":"Bank A"}`, http.StatusAccepted)["id"].(string)
 
-	// The id the admission answered with, rather than the literal "bank_1". A
-	// bank's ParticipantID is its BIC since Task 18 and its database is opened by
-	// it, so a hard-coded sequence id has no store behind it.
+	// The id the admission answered with, rather than a literal. A bank's
+	// ParticipantID is its BIC and its database is opened by it, so a hard-coded
+	// sequence id has no store behind it.
 	rec := do(t, bank(h, pid), "GET", "/audit", "")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("GET audit: got status %d, want %d (body: %s)", rec.Code, http.StatusOK, rec.Body.String())
@@ -1358,11 +1345,10 @@ func TestAdminReset(t *testing.T) {
 // way — so the server here reseeds a known baseline. A reset that only swapped
 // the network would leave "Temp" in the store and the test would see it.
 func TestResetEmptiesState(t *testing.T) {
-	// The tests' sample dataset: one bank with one customer. Idempotent, like
-	// the real one, so booting and resetting are the same call — and it asks
-	// "has anything been built here already" of the DEPLOYMENT rather than of an
-	// institution, which is Dataset.Populate's own shape and the only one that
-	// works: no institution holds a list of banks since Task 18d.
+	// The tests' sample dataset: one bank with one customer. Idempotent, like the
+	// real one, so booting and resetting are the same call — and it asks "has
+	// anything been built here already" of the DEPLOYMENT rather than of an
+	// institution, because no institution holds a list of banks.
 	baseline := func(ctx context.Context, nets *payment.Networks, msh *mesh.Mesh) error {
 		existing, err := nets.Stores().Banks(ctx)
 		if err != nil {
@@ -1422,9 +1408,8 @@ func TestResetEmptiesState(t *testing.T) {
 // outlive the process — so a client that hangs up in between leaves a
 // permanently half-seeded store, and seed.Populate's own idempotency probe then
 // sees participants and declines to repair it, so a second reset does not help
-// either. Under store/mem's old pointer swap that was impossible; durability is
-// what makes it stick. The handler therefore detaches the work from the
-// request's cancellation.
+// either. The handler therefore detaches the work from the request's
+// cancellation.
 //
 // A pre-cancelled request context is the deterministic form of "the client went
 // away": it is the same signal a disconnect delivers, arriving at the earliest
@@ -1546,13 +1531,9 @@ func TestConcurrentResetsLeaveExactlyOneDataset(t *testing.T) {
 // TestControlCharactersAreRefusedNotStored pins ledger.ValidateText at the level
 // a client can actually reach it.
 //
-// `{"name":"Ban\u0000k"}` is legal JSON. store/mem stored it and answered 201;
-// store/pg could not (a NUL is SQLSTATE 22021 in a text column and 22P05 inside
-// jsonb) and answered 500 with the raw SQLSTATE in the body. store/sqlite would
-// store it as happily as store/mem did, so nothing below the API refuses it any
-// more and the answer is 400 because the domain says so — which is the point:
-// the divergence that prompted the rule went with the stores that had it, and
-// the rule stays because it was never either store's to state.
+// `{"name":"Ban\u0000k"}` is legal JSON and the store below would hold it
+// happily, so the 400 comes from the domain. What a request may name is this
+// system's question rather than a database's — see ledger.ValidateText.
 func TestControlCharactersAreRefusedNotStored(t *testing.T) {
 	h := newServer(t, nil)
 
@@ -1619,12 +1600,11 @@ func TestControlCharactersAreRefusedNotStored(t *testing.T) {
 	assertEqual(t, "deposit accounts after the refusals", len(accounts), 1)
 }
 
-// TestControlCharactersInAPathAreRefused pins the read half of the same rule.
-// A URL-encoded NUL is decoded into the path parameter and handed straight to
-// the store as a lookup key, which store/mem answered with a 404 and store/pg
-// with a 500 carrying a raw SQLSTATE. Identifiers here are system-generated and
-// never contain a control character, so such a request cannot name anything and
-// is refused at the edge rather than left to whatever the store makes of it.
+// TestControlCharactersInAPathAreRefused pins the read half of the same rule. A
+// URL-encoded NUL is decoded into the path parameter and handed straight to the
+// store as a lookup key. Identifiers here are system-generated and never contain
+// a control character, so such a request cannot name anything and is refused at
+// the edge rather than left to whatever the store makes of it.
 func TestControlCharactersInAPathAreRefused(t *testing.T) {
 	h := newServer(t, nil)
 
@@ -1851,9 +1831,7 @@ func TestRejectPaymentRendersItsCode(t *testing.T) {
 // that is not the clearing house's: the payer's bank reverses the leg it
 // posted.
 //
-// It is a different half from the one it used to be. The route ran both in one
-// unit of work, so the money was back before the response was written; the
-// refund is now the payer's bank's own act, in its own book, and it happens when
+// The refund is the payer's bank's own act, in its own book, and it happens when
 // the pacs.002 gets there. The reading after the drain is what says so, and
 // without this test the whole debtor-bank half could go missing and every other
 // api assertion would still pass: the payment DTO the handler answers with is
@@ -1892,12 +1870,9 @@ func TestRejectPaymentGivesThePayerTheirMoneyBack(t *testing.T) {
 // TestARejectionWhoseRefundFailsStandsAndIsDeadLettered pins what replaced the
 // route's composite, and it is the opposite property.
 //
-// api used to run both halves of a rejection on ONE transaction, so a reversal
-// that failed took the clearing house's transition down with it and no caller
-// could read a Rejected payment whose money was still in suspense. Two
-// institutions cannot share a transaction. The clearing house rejects in its own
-// unit of work and the payer's bank reverses in its own, an actor and a message
-// later — so the half-happened outcome RejectAtCSMTx's doc describes is now
+// Two institutions cannot share a transaction. The clearing house rejects in its
+// own unit of work and the payer's bank reverses in its own, an actor and a
+// message later — so the half-happened outcome RejectAtCSMTx's doc describes is
 // REACHABLE, which is the honest shape and the thing to pin.
 //
 // What must not happen is that it passes quietly. Nobody is left to answer: the
@@ -2020,12 +1995,10 @@ func TestAuditRoutesAreScoped(t *testing.T) {
 	// central bank's are all ledger-scoped, so a route that served the wrong
 	// BOOK would still pass the loop above. Every pair of logs must be disjoint.
 	//
-	// Disjoint BY BOOK, and it used to be by Seq. Seq was a store-GLOBAL sequence
-	// while there was one store, so two events sharing one meant two routes
-	// serving one log; since Task 18d each institution has its own database and
-	// its own counter, and seq 1 is in every one of these logs by construction.
-	// The book is what a route can get wrong and is what identifies the log. See
-	// payment/audit_test.go's paymentAudit, which lost the same total order.
+	// Disjoint BY BOOK. Each institution has its own database and its own counter,
+	// so seq 1 is in every one of these logs by construction; the book is what a
+	// route can get wrong and is what identifies the log. See payment/audit_test.go's
+	// paymentAudit.
 	logs := map[string][]auditEventDTO{}
 	// Keyed by a name rather than by the path, because "/audit" now names three
 	// different logs depending on which operator you ask.
@@ -2192,7 +2165,7 @@ func TestAuditLimitIsCapped(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Lending and overdraft credit (Task 16)
+// Lending and overdraft credit
 // ---------------------------------------------------------------------------
 
 // openTermLoan opens a EUR term loan at 6% ACT/365, annuity method, over
@@ -3055,10 +3028,9 @@ func TestInterestRefundsPayableIsEmptyForAnOrdinaryBank(t *testing.T) {
 // TestFundingRespectsAccountStatus pins the status matrix from the receiving
 // side, over HTTP, and closes a hole that stranded money.
 //
-// Funding a CLOSED account used to return 200. Close requires a zero balance, so
-// the credit landed in an account no withdrawal could reach (they report
-// ErrAccountClosed), that closing again could not clear (Closed is terminal),
-// and that contradicted the very invariant Close had just enforced.
+// Funding a CLOSED account must not return 200. Close requires a zero balance, so
+// the credit would land in an account no withdrawal could reach (they report
+// ErrAccountClosed) and that closing again could not clear (Closed is terminal).
 //
 // Dormant and Frozen still accept credits, deliberately. An incoming payment is
 // what revives a dormant account, and a freeze here is a DEBIT block — the
@@ -3239,16 +3211,13 @@ func anotherAccountAtSameBank(t *testing.T, h *Server, pid string) string {
 // TestDirectoryResolvesItsOwnCustomer pins GET /directory's happy path on the
 // surface it survives on: a BANK's, resolving an address in its own register.
 //
-// It used to be TestDirectoryResolvesAnIBAN and it used to run against the
-// CLEARING HOUSE's port, because the route was there and the resolution was a
-// sweep over every bank's register. Task 18a took both away — see
-// api/handlers_directory.go and payment.ResolveIdentifier — so the question is
-// asked of the bank that can answer it.
+// The question is asked of the bank that can answer it: a bank resolves an
+// address in its own register and no other.
 //
-// The response names the participant and the account and nothing else. Name and
-// asset went with the sweep: they were a join into whichever bank turned out to
-// hold the address, which on a bank's port was one bank reading another's
-// register for the payee's name.
+// The response names the participant and the account and nothing else. A name
+// and an asset would be a join into whichever bank turns out to hold the
+// address, which on a bank's port is one bank reading another's register for the
+// payee's name.
 func TestDirectoryResolvesItsOwnCustomer(t *testing.T) {
 	var pid payment.ParticipantID
 	srv := newServer(t, func(ctx context.Context, nets *payment.Networks, msh *mesh.Mesh) error {
@@ -3262,9 +3231,9 @@ func TestDirectoryResolvesItsOwnCustomer(t *testing.T) {
 		return err
 	})
 
-	// The response names the bank as an AGENT and no longer as a participant: a
-	// resolved party is an account plus the address of the bank holding it, and
-	// the two fields were one value written twice. See api.directoryEntryDTO.
+	// The response names the bank as an AGENT and not as a participant: a resolved
+	// party is an account plus the address of the bank holding it. See
+	// api.directoryEntryDTO.
 	var got struct {
 		Agent   string `json:"agent"`
 		Account string `json:"account"`
@@ -3290,11 +3259,9 @@ func TestDirectoryUnknownIBANIs404(t *testing.T) {
 // TestDirectoryDoesNotAnswerForAnotherBanksCustomer is the narrowing itself, on
 // the wire, and it is the assertion the old sweep would have failed.
 //
-// A real address, really held, at a bank that is not the one being asked. Under
-// the sweep this answered 200 with the other bank's participant, account, name
-// and asset — a bank learning another bank's customer's name over HTTP, which is
-// the crossing GET /directory carried after Task 14 closed its twin on the
-// payment path.
+// A real address, really held, at a bank that is not the one being asked. A
+// sweep would answer 200 with the other bank's participant, account, name and
+// asset — a bank learning another bank's customer's name over HTTP.
 func TestDirectoryDoesNotAnswerForAnotherBanksCustomer(t *testing.T) {
 	var asker payment.ParticipantID
 	srv := newServer(t, func(ctx context.Context, nets *payment.Networks, msh *mesh.Mesh) error {
@@ -3358,7 +3325,7 @@ func TestAddAndRemoveIdentifierEndpoints(t *testing.T) {
 // tidying the 409 arm into the 404 arm would break a client's retry logic
 // silently.
 //
-// # It used to be TWO BANKS, and that is no longer reachable
+// # TWO BANKS is not reachable here
 //
 // Two banks issuing one value was the only way in, because per-bank uniqueness
 // cannot see across banks and the sweep refused rather than picking. The sweep
@@ -3425,11 +3392,11 @@ func TestDirectoryAmbiguousIdentifierIs409(t *testing.T) {
 // # Which cases carry a balance check, and which does not
 //
 // Four of the five refusals are followed by assertAliceUntouched. The
-// ErrAmbiguousAddress case at the end is NOT, and that is stated rather than
-// left to be counted: it runs after the happy case, so the opening balance the
-// helper asserts is no longer the right number. It is covered by the aggregate
-// below instead — exactly one of the six requests moved money, and the network
-// holds exactly one payment row.
+// ErrAmbiguousAddress case at the end is NOT, and that is stated rather than left
+// to be counted: it runs after the happy case, so the opening balance the helper
+// asserts is no longer the right number. It is covered by the aggregate below
+// instead — exactly one of the six requests moved money, and the network holds
+// exactly one payment row.
 //
 // Weaker per-case, and it is the case that needs it least. addressFor raises
 // ErrAmbiguousAddress inside debtorSideTx (payment/system.go:2114), which
@@ -3548,9 +3515,7 @@ func TestPaymentAddressingRefusalsAre422(t *testing.T) {
 	assertEqual(t, "back-filled debtor address",
 		pay["debtor"].(map[string]any)["identifier"].(map[string]any)["value"].(string), "SE89-ADDR-ALICE-0001")
 	// A drain first, because the clearing house's own copy is written when the
-	// instruction reaches it and the 202 is answered before that. The paragraph
-	// above said no drain was needed and it was right while one row served every
-	// institution; since Task 18d the read below is of a row the relay creates.
+	// instruction reaches it and the 202 is answered before that.
 	drainServer(t, h)
 	// On the PAYER'S BANK's copy, which is the row the request was persisted
 	// into. The clearing house's carries the address as the MESSAGE spelt it,
@@ -3608,12 +3573,9 @@ func TestPaymentAddressingRefusalsAre422(t *testing.T) {
 //
 // # What this table has been, twice
 //
-// It had four rows over two fields, then one row over one, and it is two rows
-// over two again. The movement tracks a ruling that reversed rather than churn:
-// Task 14 DERIVED the counterparty's agent from its own bank row, so the field
-// left this DTO and three of the four rows were asking about something that no
-// longer existed; Task 18a put it back, because that row is the counterparty's
-// and a bank under Task 18c holds only its own.
+// Two rows over two fields: the counterparty's name and its agent are both the
+// caller's to supply, because the row either could be derived from is the
+// counterparty's own and a bank holds only its own.
 //
 // The row that is NOT coming back is the pair that left creditorAgent empty and
 // stayed 422 with the guard deleted, because an empty BIC failed
@@ -3646,10 +3608,8 @@ func TestPostPaymentRequiresTheCounterpartyName(t *testing.T) {
 
 	// No creditorAgent here: it is the field three of the four cases below are
 	// about, so it belongs in each case's own body rather than in the shared
-	// prefix. It used to be safe here because the ref carried the counterparty's
-	// PARTICIPANT and the agent was derived; Task 18 deleted that field and
-	// Task 18a stopped deriving, so the shared prefix was silently supplying the
-	// value the "no agent" case exists to withhold.
+	// prefix, which would otherwise silently supply the value the "no agent" case
+	// exists to withhold.
 	parties := `"debtorAgent":"` + a + `","debtor":{"account":"` + alice + `"},` +
 		`"creditor":{"account":"` + bob + `","identifier":{"scheme":"IBAN","value":"SE89-CPTY-BOB-0001"}},`
 
@@ -3692,12 +3652,10 @@ func TestDepositAccountDTOCarriesIdentifiers(t *testing.T) {
 
 // bicOf answers which address a bank is at.
 //
-// It exists because Task 18a made the counterparty's BIC something the
-// INSTRUCTION carries: SubmitPaymentTx used to derive it from the
-// counterparty's own bank row, and that row is the counterparty's, so a bank
-// under Task 18c's stores has no way to read it. Every submission body below
-// therefore names a creditorAgent (or a debtorAgent on a pull), exactly as the
-// payer would.
+// It exists because the counterparty's BIC is something the INSTRUCTION carries:
+// deriving it would read the counterparty's own bank row, which a bank does not
+// hold. Every submission body below therefore names a creditorAgent (or a
+// debtorAgent on a pull), exactly as the payer would.
 //
 // The test asking the server for it is the fixture standing in for an invoice.
 // A real payer reads the BIC off one; there is no invoice here, so this is where
@@ -3705,11 +3663,10 @@ func TestDepositAccountDTOCarriesIdentifiers(t *testing.T) {
 // BANK does, which is the whole point of the change.
 // bicOf is the identity function and is kept for what it says at its call sites.
 //
-// A bank's ParticipantID IS its BIC since Task 18 (see payment.AsBank), so there
-// is nothing to look up — and the lookup it used to do went through the clearing
-// house, which holds no banks table. What the name still buys is the reader
-// knowing that the value in a creditorAgent field is an ADDRESS, at the four call
-// sites where the same string is also being used as an id.
+// A bank's ParticipantID IS its BIC (see payment.AsBank), so there is nothing to
+// look up. What the name buys is the reader knowing that the value in a
+// creditorAgent field is an ADDRESS, at the four call sites where the same string
+// is also being used as an id.
 func bicOf(t *testing.T, h *Server, pid string) string {
 	t.Helper()
 	return pid

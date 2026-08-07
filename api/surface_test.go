@@ -90,17 +90,10 @@ func TestEveryRouteLandsSomewhere(t *testing.T) {
 // movedTo maps a pre-split pattern to the operator that serves it now and the
 // pattern it became.
 //
-// EVERY pattern lands somewhere, which was not true while the split was in
-// progress and is not a coincidence now. This used to answer with an empty
-// operator for two kinds of route — one a later task had not moved yet, and one
-// that was deleted outright — and the caller skipped those. Both kinds are
-// gone: the last unmoved route landed with the operator split, and
-// POST /cycles/{cid}/settle is back on the clearing house with a different act
-// behind the same path. So the skip is gone too, rather than left as a branch
-// nothing can reach. A route that is deliberately deleted in future needs it
-// back, and needs the arm that says so — with the skip, an arm returning "" is
-// silent, and without it the route fails against an operator named "" that
-// serves nothing. Loud is the right way round for a case nobody has decided on.
+// EVERY pattern lands somewhere, and no arm returns "". A route deliberately
+// deleted in future needs an arm that says so: an empty operator would be silent,
+// where a route with no arm fails loudly against an operator named "" that serves
+// nothing. Loud is the right way round for a case nobody has decided on.
 //
 // Returning the operator as well as the pattern matters: a bank's audit log and
 // the central bank's both become "GET /audit", so a flat set of landed patterns
@@ -131,11 +124,9 @@ func movedTo(old string) (operator, pattern string) {
 		return "central-bank", method + " /" + strings.TrimPrefix(path, "/central-bank/")
 
 	case path == "/cycles" || path == "/cycles/{cid}":
-		// The cycles are the CLEARING HOUSE's rows and are served there alone.
-		// The pre-split server had one store, so the central bank's console
-		// carried the same two reads; since Task 18d that institution's database
-		// has no cycles table and the routes answered a missing table rather
-		// than a list. See centralBankRouter.
+		// The cycles are the CLEARING HOUSE's rows and are served there alone. The
+		// central bank's database has no cycles table, so a route it carried would
+		// answer a missing table rather than a list. See centralBankRouter.
 		return "clearing-house", old
 	case path == "/settlements" || path == "/settlements/{sid}":
 		// And the mirror of it: a settlement is the SETTLEMENT AGENT's row, so
@@ -160,8 +151,8 @@ func movedTo(old string) (operator, pattern string) {
 		return "clearing-house", old
 
 	case strings.HasPrefix(path, "/mandates"):
-		// It MOVED, and the move is the second of Task 18's two directory-shaped
-		// corrections — the first being /directory below.
+		// It is the BANK's, not the clearing house's: a bank resolves an address in
+		// its own register.
 		//
 		// The one server put mandates with payments and cycles, on the reading
 		// that a mandate is network infrastructure. It is not: in SEPA the
@@ -181,8 +172,7 @@ func movedTo(old string) (operator, pattern string) {
 		return "bank", old
 
 	case path == "/directory":
-		// It MOVED, rather than staying where the pre-split server had it, and
-		// the move is the whole of Task 18a's directory change.
+		// It is the BANK's own, for the reason /directory below is.
 		//
 		// The one server answered "who holds this IBAN" by sweeping every bank's
 		// register, which is why the route sat with payments and cycles on the
@@ -332,13 +322,10 @@ func TestABankCannotNameAnotherBank(t *testing.T) {
 // available: no route settles, so there is no HTTP act left to attribute to
 // anybody. TestNoRouteSettlesACycle is where that is pinned.
 //
-// It then became TestTheClearingHouseReadsTheSettlementItDidNotPerform, on the
-// READ: this institution closed the cycle and sent the instruction, so it has to
-// be able to find out whether the central bank discharged it. That is still
-// exactly right and the ROUTE it used is gone — a settlement is the settlement
-// agent's row and Task 18d gives the clearing house a database with no
-// settlements table in it, so GET /settlements on this listener answered a
-// missing table.
+// TestTheClearingHouseReadsTheSettlementItDidNotPerform is about the READ: this
+// institution closed the cycle and sent the instruction, so it has to be able to
+// find out whether the central bank discharged it. It reads it at the SETTLEMENT
+// AGENT, because the clearing house's database has no settlements table.
 //
 // What it finds out with instead is its OWN cycle, whose status the agent's ACSC
 // moved. That is a better shape than the borrowed read was: the clearing house
@@ -417,10 +404,8 @@ func TestTheCentralBankCanReadTheCycleItSettles(t *testing.T) {
 // closed — and, because the cut-off is what instructs settlement, discharged by
 // the central bank once the conversation has finished.
 //
-// It was called closedCycle, and the rename is the change rather than tidying.
-// Closing used to leave a Closed cycle and nothing else, and a second console
-// button settled it. There is no such button: the cut-off sends the pacs.009,
-// and after the drain below this cycle is Settled.
+// After the drain below this cycle is Settled: the cut-off sends the pacs.009,
+// and there is no second console button that discharges it.
 func settledCycle(t *testing.T, h *Server) string {
 	t.Helper()
 	a := admitMember(t, h, `{"bic":"BNKADEFFXXX","name":"Bank A"}`, http.StatusAccepted)["id"].(string)
@@ -654,10 +639,8 @@ func TestAnUnknownSchemeIsRefusedAsAnUnknownScheme(t *testing.T) {
 // the creditor's on a push, the debtor's on a pull. A message that said
 // "debtor" for both would be wrong for every collection.
 //
-// It used to be the counterparty's PARTICIPANT, a field on the party ref. Task
-// 18 deleted it: a ref names no bank any more, because a bank's id became its
-// BIC and the agent beside the ref already carried it (see payment.PartyRef).
-// The refusal is the same refusal about the value that survived.
+// The counterparty is named by its AGENT: a ref names no bank, because a bank's
+// id is its BIC and the agent beside the ref carries it (see payment.PartyRef).
 func TestAnInstructionWithNoParticipantIsRefusedAsAMissingField(t *testing.T) {
 	h := newServer(t, nil)
 	a, b, _ := threeBanks(t, h)
@@ -717,16 +700,12 @@ func TestABankRefusesAnInstructionItIsNotTheDebtorFor(t *testing.T) {
 }
 
 // TestEachListenerActsAsItsOwnInstitution is the direct statement of the ruling
-// Task 18b's api half turns on, and the reason that half exists at all.
+// api's per-listener networks turn on.
 //
-// Until this task api held ONE *payment.Network for the whole process and told
-// its bank listeners apart with boundPID alone. That was correct exactly while a
-// bank's identity travelled as an argument: two ports, one object, two
-// participants passed in. The moment payment.Network gained an identity it
-// stopped being correct, because one shared object has one register — and
-// GET /directory on two banks' ports would then resolve in the same one, which
-// is the crossing Task 18a closed reappearing one layer up, where the recorder
-// in mesh/books_test.go cannot see it because api is not an actor.
+// One shared *payment.Network has one register, so GET /directory on two banks'
+// ports would resolve in the same one — one bank reading another bank's
+// customers, one layer above where the recorder in mesh/books_test.go can see it,
+// because api is not an actor.
 //
 // So each surface binds its own institution. This reads that back off the
 // Servers the three surface methods build, rather than off a response, because
@@ -771,11 +750,11 @@ func TestEachListenerActsAsItsOwnInstitution(t *testing.T) {
 
 // testBankBIC is the address the surface tests bind a bank's listener to.
 //
-// It is a BIC and no longer "bank_1", because a bank's ParticipantID IS its BIC
-// (payment.AsBank) and binding a listener now opens the database named by it.
-// Nothing about these tests depends on the bank existing — a router's patterns
-// are the same whether the database behind it holds a bank row or not — but the
-// value has to be a well-formed address, because that is what names a file.
+// It is a BIC, because a bank's ParticipantID IS its BIC (payment.AsBank) and
+// binding a listener opens the database named by it. Nothing about these tests
+// depends on the bank existing — a router's patterns are the same whether the
+// database behind it holds a bank row or not — but the value has to be a
+// well-formed address, because that is what names a file.
 const testBankBIC payment.ParticipantID = "BNKADEFFXXX"
 
 // mustForBank binds a bank's surface, failing the test if its database will not

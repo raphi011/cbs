@@ -26,19 +26,18 @@ import (
 //
 // Everything else in api's suite drives a Server over a store. These tests drive
 // one over a store AND a running mesh, because what they are about is the thing
-// that is no longer synchronous: a request returns while three other actors are
-// still working, and the answer to "what happened" arrives at a different actor
+// that is not synchronous: a request returns while three other actors are still
+// working, and the answer to "what happened" arrives at a different actor
 // afterwards. No test here waits for a duration to find out. mesh.Drain blocks
 // until nothing is in flight, and that is the only way any of them looks.
 
 // newAPIHarness is a seeded Server with a mesh running over the same network.
 //
-// Seeded, because the mesh routes by participant and BIC: a payment needs two
-// banks that can address each other, an open cut-off window for its scheme, and
-// a payer with money. seed.Populate is the dataset the running system serves, so
-// these tests exercise the same rows a reader will see in the app. They name
-// them by IBAN rather than by id — see seededParty, which says why the ids are
-// no longer written down.
+// Seeded, because the mesh routes by BIC: a payment needs two banks that can
+// address each other, an open cut-off window for its scheme, and a payer with
+// money. seed.Populate is the dataset the running system serves, so these tests
+// exercise the same rows a reader will see in the app. They name them by IBAN
+// rather than by id — see seededParty.
 //
 // The mesh is started BEFORE the seed, which is the order cmd/server uses and
 // for the same reason: the seed admits its banks through the mesh's own door, so
@@ -97,10 +96,9 @@ func newAPIHarness(t *testing.T) (*Server, *mesh.Mesh) {
 		t.Fatalf("populate: %v", err)
 	}
 	// Bound to the CLEARING HOUSE, which is what makes s.network() answer at all:
-	// NewServer returns an unbound Server since Task 18b, and the reads these
-	// tests make of it — payments, cycles, bank rows — are the network-scoped
-	// ones. A test that wants a bank's surface calls s.forBank, exactly as
-	// BankRoutes does.
+	// NewServer returns an unbound Server, and the reads these tests make of it —
+	// payments, cycles, bank rows — are that institution's. A test that wants a
+	// bank's surface calls s.forBank, exactly as BankRoutes does.
 	return NewServer(nets, msh, data.Populate, log).as(nets.ClearingHouse()), msh
 }
 
@@ -202,29 +200,25 @@ var testMeshConfig = mesh.Config{
 
 // seededParty is the participant and account behind one of the seed's IBANs.
 //
-// The ids used to be written down here — bank_1 and dep_22 for Alice — on the
-// grounds that the store's id sequences start from nothing and the seed builds
-// the same things in the same order every time. Both of those are still true,
-// and the numbers were still wrong twice in one task: every network id comes
-// from one counter, so an act that allocates one more than it used to moves
-// every id after it. Admission became three acts and then a conversation, and
-// each change shifted the whole sequence.
+// The ids are not written down. Every id in a book comes from one counter, so an
+// act that allocates one more than it used to moves every id after it — and the
+// seed builds the same things in the same order only for as long as nobody adds
+// an act.
 //
 // An IBAN is the seed's own stable name for a customer and is what these tests
 // ask by. It is stable for a reason that will outlast this task: the seed CHOSE
 // it, where an id is whatever the counter had reached.
 //
-// It SWEEPS, and since Task 18a it has to do the sweeping itself: no bank can
-// answer "whose IBAN is this" any more (payment.ResolveIdentifier), so this
-// helper asks each bank about its own register in turn. That is the test harness
-// standing outside the network and looking at all of it, which is a thing a test
-// may do and no institution may — the same standing Task 18e's reconciliation
-// harness is built on.
+// It SWEEPS, and it has to do the sweeping itself: no bank can answer "whose
+// IBAN is this" (payment.ResolveIdentifier), so this helper asks each bank about
+// its own register in turn. That is the test harness standing outside the network
+// and looking at all of it, which is a thing a test may do and no institution
+// may — the same standing payment/recon is built on.
 //
-// It returns the BANK as well as the ref, because a payment.PartyRef stopped
-// naming one at Task 18 (see payment.PartyRef) and every caller here needs both:
-// the account to quote on an instruction, and the address to bind a listener to
-// or to put in an agent field. The sweep already knows which bank answered.
+// It returns the BANK as well as the ref, because a payment.PartyRef names none
+// (see payment.PartyRef) and every caller here needs both: the account to quote
+// on an instruction, and the address to bind a listener to or to put in an agent
+// field. The sweep already knows which bank answered.
 func seededParty(t *testing.T, s *Server, iban string) (iso20022.BIC, payment.PartyRef) {
 	t.Helper()
 	ctx := context.Background()
@@ -284,14 +278,13 @@ func validSubmission(t *testing.T, s *Server) string {
 	t.Helper()
 	payerBIC, payer := seededParty(t, s, aliceIBAN)
 	payeeBIC, payee := seededParty(t, s, bellaIBAN)
-	// creditorAgent, because since Task 18a the instruction carries the routing
-	// element — see api's initiatePaymentRequest and payment.SubmitPaymentTx.
-	// The fixture reads it off the payee's bank the way a payer reads it off an
-	// invoice; nothing on the submitting path looks it up.
+	// creditorAgent, because the instruction carries the routing element — see
+	// api's initiatePaymentRequest and payment.SubmitPaymentTx. The fixture reads
+	// it off the payee's bank the way a payer reads it off an invoice; nothing on
+	// the submitting path looks it up.
 	//
-	// A party object carries no "participant" any more: which bank a side is at
-	// is the agent, and the two used to be the same value written twice. See
-	// api.partyRefDTO.
+	// A party object carries no "participant": which bank a side is at is the
+	// agent. See api.partyRefDTO.
 	return fmt.Sprintf(`{
 		"scheme":"sepa.ct",
 		"debtor":{"account":%q,"identifier":{"scheme":"IBAN","value":%q}},
@@ -415,14 +408,13 @@ func TestResetDrainsBeforeTruncating(t *testing.T) {
 // the settlement account, which is the central bank's to open, is EMPTY in that
 // answer and filled in once the conversation has finished.
 //
-// The reserves routes are the other half of the same moment, and they are what
-// used to fail outright: a founded bank has no settlement account, so
-// ReserveBalance answers ErrSettlementMemberNotFound and the handler returned it
-// for the whole participant — a 500 for a bank in the state this system now
-// creates on every admission. It reports NO ROW instead. Not a zero: zero is a
-// balance, and there is no account to have one.
+// The reserves routes are the other half of the same moment. A founded bank has
+// no settlement account, so ReserveBalance answers ErrSettlementMemberNotFound —
+// and returning that for the whole participant would be a 500 for a bank in the
+// state this system creates on every admission. It reports NO ROW instead. Not a
+// zero: zero is a balance, and there is no account to have one.
 //
-// # It HOLDS the bank in Founded, and the first version of it did not
+// # It HOLDS the bank in Founded
 //
 // That version read the reserves straight after the 202 and depended on three
 // actor goroutines not having finished yet. It passed almost always and it was
@@ -461,12 +453,11 @@ func TestAdmissionAnswers202WithAFoundedBank(t *testing.T) {
 
 	// Nothing to report about it, and a 422 saying so rather than an empty list.
 	//
-	// The empty list was the old answer and it was a claim this institution
-	// cannot make: it presumed the settlement agent knew of a bank and held no
-	// accounts for it. Since Task 18d the agent's own register is the whole of
-	// what it knows — there is no banks table for it to look the applicant up
-	// in — so a BIC it has admitted nobody at is not a member with zero reserves
-	// but a member it has never heard of. See handleGetReserve.
+	// An empty list would be a claim this institution cannot make: it presumes the
+	// settlement agent knows of a bank and holds no accounts for it. The agent's own
+	// register is the whole of what it knows — there is no banks table for it to
+	// look the applicant up in — so a BIC it has admitted nobody at is not a member
+	// with zero reserves but a member it has never heard of. See handleGetReserve.
 	assertStatus(t, cb(srv), "GET", "/reserves/"+pid, "", http.StatusUnprocessableEntity)
 	// And the list carries the members it has, with no row and no failure for
 	// the applicant.
@@ -524,11 +515,9 @@ func reserveRows(t *testing.T, s *Server, pid string) []map[string]any {
 // settlement account had nowhere for the second leg to land, and the refusal
 // named membership rather than coming back 404 about the customer's account.
 //
-// The 422 was right about the code and wrong about banking. A bank's counter has
-// nothing to do with its central bank account: a bank that has founded itself and
-// joined no scheme can open its doors and take money, and it holds that money as
-// vault cash. Task 18a splits the two acts, and the refusal moves to the one it
-// was always true about.
+// A bank's counter has nothing to do with its central bank account: a bank that
+// has founded itself and joined no scheme can open its doors and take money, and
+// it holds that money as vault cash. The refusal belongs on the LODGEMENT.
 //
 // So this asserts BOTH halves at once, which is what makes it a reversal and not
 // two tests:
@@ -675,22 +664,13 @@ func TestAFoundedBankIsRefusedAsAPaymentPartyInEitherDirection(t *testing.T) {
 // Mesh.Submit's membership guard changed on its way past, kept because nothing
 // else holds it.
 //
-// A payment naming a bank that HAS NO ROW is a different request from the one
-// the test above is about: that bank is founded and waiting for a scheme, this
-// one was never founded and the id is a typo. Nothing on this route looked such
-// an id up before Task 17 — the first thing to notice was Mesh.Submit's
-// bank-actor map, whose miss is a bare error with no case in errorStatus, so the
-// answer was 500. The membership read asks first, and it used to ask through a
-// roster lookup keyed by PARTICIPANT — which read the bank's own row before the
-// roster, so no row was payment.ErrParticipantNotFound and errorStatus mapped it
-// to 404.
+// A payment naming a bank that HAS NO ROW is a different request from the one the
+// test above is about: that bank is founded and waiting for a scheme, this one
+// was never founded and the id is a typo.
 //
-// # The answer is 422 now, and the 404 was the clearing house reading a bank's row
-//
-// Task 18 made a bank's id its BIC, so a request names its parties by the very
-// key the roster is keyed by and there is no bank row in the way — see
-// payment.Network.GetRosterEntryByBIC. An address nobody has been admitted on is
-// ErrBankNotAdmitted, which is a 422.
+// A request names its parties by the very key the roster is keyed by, so there is
+// no bank row in the way — see payment.Network.GetRosterEntryByBIC. An address
+// nobody has been admitted on is ErrBankNotAdmitted, which is a 422.
 //
 // That is the more honest of the two answers rather than a regression. The
 // clearing house has never been able to tell "no such institution" from "an
@@ -720,13 +700,12 @@ func TestAPaymentNamingABankNoSchemeHasAdmittedIsUnprocessable(t *testing.T) {
 // TestAReseededNetworkCanStillBePaidThrough is the guarantee that moved when
 // Reset stopped calling JoinRoster.
 //
-// A reset forgets every bank actor, truncates and reseeds. The actors used to be
-// put back in a step of the reset's own — read the roster, register it whole —
-// and now they are not: the reseed admits its banks through the mesh, so each
-// one gets its actor in the call that founds it. That is a better division of
-// labour and a weaker guarantee, because nothing in api can check that a reseed
-// did it. This is what checks it, from the outside, in the only way that
-// matters: a payment between two reseeded banks reaches the far side.
+// A reset forgets every bank actor, truncates and reseeds. The actors are not put
+// back in a step of the reset's own: the reseed admits its banks through the mesh,
+// so each one gets its actor in the call that founds it. That is a better division
+// of labour and a weaker guarantee, because nothing in api can check that a reseed
+// did it. This is what checks it, from the outside, in the only way that matters:
+// a payment between two reseeded banks reaches the far side.
 //
 // A row with no actor answers every read, so an assertion on the participant
 // list would pass over exactly the failure this exists to catch. It has to be a
@@ -813,16 +792,11 @@ func TestResetRebuildsTheMeshSoAReadmittedBankCanPay(t *testing.T) {
 		t.Fatalf("a payment between two re-admitted banks is %q, want Accepted", got["status"])
 	}
 
-	// And the refusal that is still reachable — a third bank on an address one
-	// of these already answers to — says what is actually true of it, which is
-	// the OPPOSITE of what it used to say.
-	//
-	// It used to report a half-happened admission: the row exists, the mesh gave
-	// it no actor, admit it somewhere else. Nothing is half-happened now. The
-	// address is claimed before anything is written, so a clash costs one error
-	// and no row, and the message says so. The remedy survives the reversal —
-	// pick an address of your own — because it is the real-world fix as much as
-	// this system's.
+	// And the refusal that is reachable — a third bank on an address one of these
+	// already answers to — says what is true of it. Nothing is half-happened: the
+	// address is claimed before anything is written, so a clash costs one error and
+	// no row. The remedy is to pick an address of your own, which is the real-world
+	// fix as much as this system's.
 	before := len(participants(t, h))
 	rec := do(t, cb(h), "POST", "/members", `{"bic":"BNKADEFFXXX","name":"Bank A yet again"}`)
 	if rec.Code != http.StatusUnprocessableEntity {
@@ -852,11 +826,9 @@ func TestResetRebuildsTheMeshSoAReadmittedBankCanPay(t *testing.T) {
 // refusals are still worth telling apart — for a reason that has changed under
 // them.
 //
-// It used to be about advice. Both branches left a participant row whose bank
-// had no actor, so the invariant half of the message was true in both and only
-// the advice differed: "admit it on a BIC no other bank answers to" is the fix
-// for a clash and was actively harmful here, because the operator who followed
-// it got the same refusal and a second orphaned row.
+// The advice matters as much as the refusal: "admit it on a BIC no other bank
+// answers to" is the fix for a clash and is actively harmful here, because the
+// operator who follows it gets the same refusal.
 //
 // Neither branch leaves anything behind now. The address is claimed before the
 // bank is written, so a shutdown refuses before there is anything to orphan —
@@ -885,8 +857,8 @@ func TestAdmissionDuringAShutdownIsRefusedWithoutTheRemedy(t *testing.T) {
 	if strings.Contains(msg, "address of its own") {
 		t.Errorf("the refusal reads %q; that advice is for a clashing address and there is none here", msg)
 	}
-	// And nothing was written, which is the half that used to be false in both
-	// branches: an admission the mesh refuses never reaches the store.
+	// And nothing was written: an admission the mesh refuses never reaches the
+	// store.
 	if n := len(participants(t, h)); n != 0 {
 		t.Errorf("a refused admission left %d bank row(s) behind", n)
 	}
@@ -972,10 +944,9 @@ func TestWhichRefusalsReachTheCallerAndWhichDoNot(t *testing.T) {
 
 // The cut-off instructs settlement, and the console can reach it.
 //
-// Closing a cycle used to be a call into payment.Network that netted the batch
-// and told nobody; POST /settlements was the second console button that
-// discharged it, and it is gone. What closes a cycle now sends a pacs.009, and
-// that is the whole of what "the mesh is wired into api" buys.
+// Closing a cycle sends a pacs.009. There is no second console button that
+// discharges it, and that is the whole of what "the mesh is wired into api"
+// buys.
 //
 // What this test asserts, exactly: 200 with a Closed cycle carrying no
 // settlement, then a drain, then — through the CENTRAL BANK's surface and only
@@ -1028,15 +999,11 @@ func TestClosingACycleThroughTheAPIInstructsSettlement(t *testing.T) {
 	// And the settlement is found at the SETTLEMENT AGENT, by the cycle it names
 	// rather than by an id the cycle names.
 	//
-	// The cycle used to carry settlementId and the assertions above used to read
-	// it — one before the drain, expecting empty, one after, expecting an id, and
-	// then a GET on that id. It cannot: the settlement's id is allocated inside
+	// The cycle carries no settlementId: the settlement's id is allocated inside
 	// the settlement agent's own unit of work in its own database, and what comes
-	// back to the clearing house is a pacs.002 quoting the CYCLE. So the field is
-	// gone from the DTO and from payment.ClearingCycle, and the link is asserted
-	// from the end that can hold it. What the pre-drain assertion was really
-	// about — that closing a cycle does not settle it — is the Status above and
-	// the empty listing below.
+	// back to the clearing house is a pacs.002 quoting the CYCLE. So the link is
+	// asserted from the end that can hold it. That closing a cycle does not settle
+	// it is the Status above and the empty listing below.
 	var settlements []settlementDTO
 	getJSON(t, cb(srv), "/settlements", &settlements)
 	var found settlementDTO
@@ -1058,20 +1025,19 @@ func TestClosingACycleThroughTheAPIInstructsSettlement(t *testing.T) {
 // An operator's rejection is the clearing house's half and the payer's bank's
 // half, and only the first one is in the response.
 //
-// api used to run both in one transaction, so the 200 it wrote described a payer
-// who had already been refunded. It cannot any more: the refund is another
-// institution's act in another institution's book, and it happens when the
-// pacs.002 gets there.
+// The refund is another institution's act in another institution's book, and it
+// happens when the pacs.002 gets there — so the 200 cannot describe a payer who
+// has already been refunded.
 //
 // What this test can honestly assert is the RESPONSE — which describes the
 // clearing house's half and only that — and the balance after the drain. It
 // deliberately does not read the balance in between: the payer's bank actor runs
-// concurrently with this goroutine, so "not yet refunded" would be a race
-// dressed up as an assertion. mesh's own
+// concurrently with this goroutine, so "not yet refunded" would be a race dressed
+// up as an assertion. mesh's own
 // TestAnOperatorRejectionRefundsThePayerOnlyOnceTheMessageArrives measures which
 // actor posted the refund, without a clock, and
 // TestARejectionWhoseRefundFailsStandsAndIsDeadLettered pins that the two halves
-// are no longer one unit of work.
+// are not one unit of work.
 func TestRejectingThroughTheAPIRefundsThePayerOnlyAfterTheMessageArrives(t *testing.T) {
 	srv, msh := newAPIHarness(t)
 
@@ -1102,14 +1068,13 @@ func TestRejectingThroughTheAPIRefundsThePayerOnlyAfterTheMessageArrives(t *test
 // visible from here.
 //
 // The distinction this pins is not "did the money come back" — a synchronous
-// domain call would do that too, which is what this handler used to make. It is
-// WHO did it and WITH WHAT. Mesh.Return hands the instruction to the bank that
-// RECEIVED the original — the payee's bank on a push — which posts its own
-// clawback and sends a pacs.004; the refund asserted below is a DIFFERENT bank's
-// posting, made from that same message after the settlement agent has reversed
-// the reserves, and the reason travels the whole way as a code and a text. The
-// refund's own description in the payer's ledger is where both surface, and it
-// is the one thing a synchronous call could not produce.
+// domain call would do that too. It is WHO did it and WITH WHAT. Mesh.Return
+// hands the instruction to the bank that RECEIVED the original — the payee's bank
+// on a push — which posts its own clawback and sends a pacs.004; the refund
+// asserted below is a DIFFERENT bank's posting, made from that same message after
+// the settlement agent has reversed the reserves, and the reason travels the
+// whole way as a code and a text. The refund's own description in the payer's
+// ledger is where both surface.
 //
 // The payment is a SETTLED one out of the seeded dataset, because finality is a
 // return's precondition: PostReturnLegTx refuses anything else, and the
