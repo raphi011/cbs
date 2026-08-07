@@ -1,14 +1,9 @@
 // Package testenv opens the stores every test suite in this repository runs
 // against.
 //
-// It used to CHOOSE one. While store/pg existed it also owned a Postgres
-// schema-per-test lifecycle and read TEST_DATABASE_URL, because "no database
-// needed" and "a real BEGIN/COMMIT" were two different runs and only one of them
-// could be the default; while store/mem existed alongside store/sqlite it named
-// which of the two was the default. Both of those are gone. There is one store,
-// it needs no setup and it has real transactions, so what is left is opening it
-// and closing it again — which is worth a package because every domain suite
-// wants the same four lines.
+// There is one store, it needs no setup and it has real transactions, so what is
+// left is opening it and closing it again — which is worth a package because
+// every domain suite wants the same four lines.
 //
 // # There are two entry points because there are two kinds of suite
 //
@@ -20,8 +15,8 @@
 // NewSet opens the whole system — the clearing house's database, the central
 // bank's, and one per member bank on demand. That is what payment, mesh, api,
 // seed and cmd/server want, because every one of them drives more than one
-// institution and the point of Task 18 is that no two of them share a database.
-// The set is what payment.Networks is built over.
+// institution and no two of them share a database. The set is what
+// payment.Networks is built over.
 //
 // It is an ordinary package rather than a set of _test.go files because the
 // domain suites all import it, and a _test.go file in an implementation package
@@ -62,10 +57,9 @@ var (
 //
 // Every suite that takes a single store posts in a book of this name already —
 // ledger, deposit, product and lending all say ledger.NewBook(store, "bank", …)
-// — and since Task 18c a store answers for exactly ONE book and refuses the
-// rest. So the value is not a default those suites could differ from: it is the
-// book, and a suite naming another one is asking a bank's database about
-// somebody else's rows.
+// — and a store answers for exactly ONE book and refuses the rest. So the value
+// is not a default those suites could differ from: it is the book, and a suite
+// naming another one is asking a bank's database about somebody else's rows.
 //
 // A real bank's book is its BIC. This one is not, and does not need to be: the
 // four layers above have no idea what an institution is, and dressing their
@@ -76,13 +70,11 @@ const BankBook ledger.BookID = "bank"
 // New opens ONE member bank's ephemeral SQLite store, migrated and empty, closed
 // when the test ends.
 //
-// It returns the concrete type rather than Store, and that is a consequence of
-// there being one implementation rather than an oversight. Store names four
-// layers and not five — lending's suites reach for Lending(), which is not on
-// it — so while two implementations existed the interface was the ceiling and
-// lending/portfolio_test.go opened store/mem by hand to get above it. There is
-// nothing left for an interface here to abstract over, and callers that want one
-// (ledger/book_test.go embeds it to count calls) still have Store.
+// It returns the concrete type rather than Store, because there is one
+// implementation and nothing for an interface to abstract over. Store names four
+// layers and not five — lending's suites reach for Lending(), which is not on it
+// — and callers that want an interface (ledger/book_test.go embeds it to count
+// calls) still have Store.
 //
 // There is no naming scheme in this package, and that is the answer to Task
 // 18's question rather than an omission. An in-memory SQLite database is named,
@@ -93,10 +85,9 @@ const BankBook ledger.BookID = "bank"
 // each of which gets a name of its own; a per-test scheme would have had to learn
 // to count.
 //
-// It replaces OpenInFreshSchema, which created a Postgres schema per test and
-// dropped it afterwards, because truncation would have made every test depend on
-// the order tables are emptied in. An ephemeral database is that isolation for
-// free: there is nothing to create and nothing to drop.
+// An ephemeral database is isolation for free: there is nothing to create and
+// nothing to drop, and truncation would have made every test depend on the order
+// tables are emptied in.
 func New(t *testing.T, clock func() time.Time) *sqlite.Store {
 	t.Helper()
 	store, err := sqlite.Open(context.Background(), sqlite.Bank, BankBook, "", clock)
@@ -120,10 +111,9 @@ func New(t *testing.T, clock func() time.Time) *sqlite.Store {
 // Every one of them is separate and in-memory, so a suite running against this
 // sees exactly what N+2 processes would: no statement spans two institutions, a
 // bank reading another bank's rows finds nothing, and a method reaching for a
-// table its institution's schema does not create is refused by name. That is the
-// whole of what makes Task 18's split measurable in a test rather than merely
-// intended, and it is why the payment, mesh, api and seed suites take this and
-// not New.
+// table its institution's schema does not create is refused by name. That is
+// what makes the split measurable in a test rather than merely intended, and it
+// is why the payment, mesh, api and seed suites take this and not New.
 func NewSet(t *testing.T, clock func() time.Time) *sqlite.Set {
 	t.Helper()
 	set, err := sqlite.OpenSet(context.Background(), "", clock)

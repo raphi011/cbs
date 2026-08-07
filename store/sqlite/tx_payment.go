@@ -19,10 +19,8 @@ import (
 // BEGIN … COMMIT post across every participant's book and the central bank's and
 // record the network's own rows beside them.
 //
-// SettleCycle used to be the example of that and is not any more: a cut-off is
-// three institutions' units of work now, and the settlement agent's touches only
-// its own book. The honest example is seed.builder.settle, which is the one
-// caller that legitimately plays all three at once — because the seed is not an
+// The honest example is seed.builder.settle, which is the one caller that
+// legitimately plays all three institutions at once — because the seed is not an
 // institution — and which needs exactly this to do it.
 //
 // Almost every entity here is network-scoped: a payment belongs to no single
@@ -40,8 +38,8 @@ var _ payment.Tx = (*tx)(nil)
 //
 // One table per institution, plus a child table wherever a row holds something
 // per asset. They are separate tables and not one wide one because each has a
-// single writer and each moves into a different database at Task 18 — see the
-// schema, which is where that argument is written down in full.
+// single writer and each lives in a different database — see the schema, which
+// is where that argument is written down in full.
 
 // PutBank stores a bank and the set of internal accounts it holds per asset.
 // Its Ledger and Deposit fields are simply not written: they are live handles
@@ -50,10 +48,10 @@ var _ payment.Tx = (*tx)(nil)
 // BankRoundTripsAndDropsLiveHandles is what says a bank must come back with them
 // dropped and with Status intact.
 //
-// The child rows are deleted and rewritten rather than upserted. An upsert
-// alone would leave behind a row for an asset the bank no longer holds, and a
-// stale row here is not a cosmetic problem: settlement would resolve an account
-// the bank has given up.
+// The child rows are deleted and rewritten rather than upserted. An upsert alone
+// would leave behind a row for an asset the bank no longer holds, and a stale row
+// here is not cosmetic: settlement would resolve an account the bank has given
+// up.
 func (t *tx) PutBank(ctx context.Context, b payment.Bank) error {
 	if err := t.inShape("banks"); err != nil {
 		return err
@@ -745,11 +743,9 @@ func (t *tx) PutMandate(ctx context.Context, m payment.Mandate) error {
 		return err
 	}
 	// The values and the placeholders are counted from ONE list, which is not
-	// tidiness: the hand-written "?,?,?…" here was one short from the moment
-	// debtor_agent was added at Task 18b, and nothing noticed until the shapes
-	// split, because the case that would have caught it wrote a mandate through
-	// a path that never reached this statement. See paymentSharedColumns for the
-	// same treatment applied for the same reason.
+	// tidiness: a hand-written "?,?,?…" here was one short for a whole task and
+	// nothing noticed, because the case that would have caught it wrote a mandate
+	// through a path that never reached this statement. See paymentSharedColumns.
 	vals := []any{
 		string(m.ID),
 		string(m.DebtorAgent), string(m.Debtor.Account), string(m.Debtor.Identifier.Scheme), m.Debtor.Identifier.Value,
@@ -886,10 +882,9 @@ func (t *tx) GetCycle(ctx context.Context, id payment.CycleID) (payment.Clearing
 // open per scheme; the earliest wins if that invariant is ever broken, which is
 // payment.Store's documented answer rather than this query's accident.
 //
-// The scheme and the status are each bound twice rather than once. store/pg
-// wrote $1 and $2 in both the outer predicate and the subquery; a positional
-// placeholder cannot be reused, so the argument is passed again — the same
-// query, spelled for a driver that counts rather than numbers.
+// The scheme and the status are each bound twice rather than once: a positional
+// placeholder cannot be reused, so the argument is passed again for the
+// subquery.
 func (t *tx) GetOpenCycle(ctx context.Context, scheme payment.SchemeID) (payment.ClearingCycle, error) {
 	if err := t.inShape("cycles"); err != nil {
 		return payment.ClearingCycle{}, err

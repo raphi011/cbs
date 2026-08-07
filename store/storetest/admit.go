@@ -21,12 +21,10 @@ import (
 // package races the acts themselves. A helper each would be one copy per suite
 // of a composition that must not drift.
 //
-// It moved here from store/testenv at Task 17.0, and the reason is a constraint
-// rather than a preference: RunRaces needs it, and this package must not import
-// an implementation, because the implementation's tests import this package.
-// Nothing about the composition itself is backend-specific — it takes a
-// payment.Networks and never names a store — which is why the move was a move
-// and not a rewrite.
+// It lives here rather than in store/testenv because RunRaces needs it and this
+// package must not import an implementation, since the implementation's tests
+// import this package. Nothing about the composition is backend-specific: it
+// takes a payment.Networks and never names a store.
 //
 // The conversation itself is tested where it happens, in mesh: mesh's harness
 // drives Mesh.Admit and drains, and the tests in mesh/admission_test.go are what
@@ -41,9 +39,8 @@ import (
 // the order the messages would produce, on one goroutine, with no mesh at all.
 // A test that needs the conversation must not use this.
 //
-// It is also the reason the payment suites still read as they did: every test
-// that used to say "add a participant" says this instead, and what it gets back
-// is the same Member bank the atomic call produced.
+// Every test that wants "a bank in the scheme" says this, and what it gets back
+// is a Member bank.
 //
 // # The admission reference
 //
@@ -53,22 +50,17 @@ import (
 // banks on one address look like one admission, which is exactly the case
 // payment.ErrBICAlreadyAdmitted exists for. A caller that wants two banks to
 // clash on one address gets the refusal, which is the truth about that request.
-// # It names which institution performs each act, and Task 18b is why
 //
-// One *payment.Network used to play all four. It cannot now: opening a reserve
-// account needs the central bank's book and recording a membership needs the
-// joining bank's own register, and neither is reachable from the other's
-// network. So the acts below are spelled against the institution whose act each
-// is — which is what the four MESSAGES say too, and the closest this stand-in
-// gets to being honest about the conversation it is standing in for.
+// # It names which institution performs each act
 //
-// Founding used to be the exception, and it is not one any more. It ran through
-// the CLEARING HOUSE's network — because a bank with a counter-derived id had no
-// handle of its own until the id existed — and that was a crossing carried here
-// and on mesh.Mesh.Admit with "same fate at 18c" against it. The fate arrived: a
-// bank's id is its BIC, so the applicant's own network can be minted from the
-// address the caller already passed in, and every one of the four acts below is
-// now performed by the institution whose act it is.
+// One *payment.Network cannot play all four: opening a reserve account needs the
+// central bank's book and recording a membership needs the joining bank's own
+// register, and neither is reachable from the other's network. So the acts below
+// are spelled against the institution whose act each is — which is what the four
+// MESSAGES say too.
+//
+// Founding is no exception. A bank's id is its BIC, so the applicant's own
+// network is minted from the address the caller already passed in.
 func Admit(ctx context.Context, nets *payment.Networks, name string, bic iso20022.BIC,
 	assets []ledger.AssetCode) (*payment.Bank, error) {
 

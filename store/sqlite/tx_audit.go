@@ -55,10 +55,9 @@ func (t *tx) AppendAudit(ctx context.Context, e ledger.AuditEvent) error {
 // took the oldest matches — would return short or empty pages that look like
 // end-of-data.
 func (t *tx) ListAudit(ctx context.Context, f ledger.AuditFilter) ([]ledger.AuditEvent, error) {
-	// An EMPTY BookID is "no filter" and stays legal, which after Task 18 means
-	// "this institution's whole log" rather than "everybody's" — there is nothing
-	// else in the database. A NON-EMPTY one naming somebody else's book is
-	// refused rather than answered with the empty page it would otherwise
+	// An EMPTY BookID is "no filter", which means "this institution's whole log" —
+	// there is nothing else in the database. A NON-EMPTY one naming somebody else's
+	// book is refused rather than answered with the empty page it would otherwise
 	// produce, which is precisely the silent not-found this guard exists for: a
 	// caller asking the wrong store gets a page that looks like end-of-data.
 	if f.BookID != "" {
@@ -147,12 +146,10 @@ func (t *tx) ListAudit(ctx context.Context, f ledger.AuditFilter) ([]ledger.Audi
 // nullTime carries an instant in and out of a TEXT timestamp column, rendering
 // Go's zero time as SQL NULL.
 //
-// store/pg needed two helpers for this — nullTime on the way in, readTime and a
-// *time.Time on the way out — because pgx maps a timestamptz to time.Time
-// itself and only the NULL had to be handled. Here the column is text, so the
-// conversion is this store's either way, and one type that is both a Valuer and
-// a Scanner is what keeps the two directions from drifting: a format used for
-// writing and not for reading is a bug that only shows up in a listing's order.
+// The column is text, so the conversion is this store's in both directions, and
+// one type that is both a Valuer and a Scanner is what keeps the two from
+// drifting: a format used for writing and not for reading is a bug that only
+// shows up in a listing's order.
 //
 // Absence is stored as absence. Several fields use the zero time as "unset" — a
 // hold that never expires, a cycle that has not closed — and IsZero() must still
@@ -198,11 +195,9 @@ func (n *nullTime) Scan(src any) error {
 // document to SQL NULL so that "no payload" round-trips as nil rather than as
 // null-the-JSON.
 //
-// A string and not a []byte, and that is the one conversion in this file that a
-// statement-for-statement port gets wrong. store/pg returned []byte, which pgx
-// wrote into JSONB; here a []byte is a BLOB, and a STRICT TEXT column refuses
-// one outright — "cannot store BLOB value in TEXT column", every row carrying a
-// payload.
+// A string and not a []byte: a []byte is a BLOB, and a STRICT TEXT column
+// refuses one outright — "cannot store BLOB value in TEXT column", every row
+// carrying a payload.
 func jsonParam(raw json.RawMessage) any {
 	if raw == nil {
 		return nil

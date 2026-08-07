@@ -46,11 +46,11 @@ func (t *tx) write() error {
 // FIRST in every method that takes one — before the read-only check, before the
 // books row is ensured, before any statement runs.
 //
-// The ordering is the whole value of it. A foreign book used to produce a silent
-// not-found: the statement ran, matched nothing, and the caller got an empty
-// listing or a "ledger not found" several layers away from the institution that
-// had no business asking. Putting the guard after anything at all leaves a path
-// on which that still happens — after write(), a View still sweeps another
+// The ordering is the whole value of it. A foreign book otherwise produces a
+// silent not-found: the statement runs, matches nothing, and the caller gets an
+// empty listing or a "ledger not found" several layers away from the institution
+// that had no business asking. Putting the guard after anything at all leaves a
+// path on which that still happens — after write(), a View still sweeps another
 // institution's book; after ensureBook, the store has already INSERTED a row for
 // it, which is a foreign book being created rather than refused.
 //
@@ -103,7 +103,6 @@ func (t *tx) ensureBook(ctx context.Context, book ledger.BookID) error {
 
 // nextRowSeq is the expression every INSERT uses for its `seq` column.
 //
-// Postgres declared those columns BIGSERIAL and left them out of the statement.
 // SQLite's only automatic counter rides on an INTEGER PRIMARY KEY, and seq is
 // not the key on any book-scoped table, so the allocation is explicit — and
 // explicit is what the schema wanted anyway: MAX+1 inside the writing
@@ -123,9 +122,9 @@ func nextRowSeq(table string) string {
 
 // placeholders renders "?, ?, ?" for an IN list.
 //
-// Postgres passed a text array and said `= ANY($1)`. SQLite has no array type,
-// so an IN list is built to fit the argument count. Every caller here builds it
-// from a slice it owns rather than from anything a request supplied.
+// SQLite has no array type, so an IN list is built to fit the argument count.
+// Every caller here builds it from a slice it owns rather than from anything a
+// request supplied.
 func placeholders(n int) string {
 	return strings.TrimSuffix(strings.Repeat("?, ", n), ", ")
 }
@@ -139,9 +138,7 @@ func placeholders(n int) string {
 // The counter is an ordinary row, so the allocation rolls back with the caller's
 // transaction. It is also the serialization point several comments in the schema
 // point at: writing it makes this transaction the database's writer, so a second
-// allocator waits here — the same ordering store/pg gets from a row lock,
-// arrived at because SQLite admits one writer rather than because this row is
-// locked.
+// allocator waits here.
 func (t *tx) nextSeq(ctx context.Context, book ledger.BookID, name string) (int64, error) {
 	if err := t.own(book); err != nil {
 		return 0, err
@@ -453,16 +450,13 @@ func (t *tx) ListAccounts(ctx context.Context, book ledger.BookID) ([]ledger.Acc
 	return out, rows.Err()
 }
 
-// LockAccounts is a no-op, and it is not the same no-op store/mem had.
+// LockAccounts is a no-op.
 //
 // ledger.Store asks that after this returns, the balance check and the posting
-// that depends on it are one serialized step. store/pg bought that with
-// SELECT … FOR UPDATE, ordered by id so two transactions over overlapping
-// account sets could not each hold the row the other needed. store/mem got it
-// from a process-wide mutex that was already held before the call — a no-op
-// standing in for exclusion nothing in the store had arranged for THIS pair.
-// Here it is neither bought nor already held: it is a property of the unit of
-// work.
+// that depends on it are one serialized step. Here that is a property of the
+// unit of work rather than something to buy: SQLite admits one writer, so the
+// exclusion a SELECT … FOR UPDATE would arrange is already in force for the
+// whole transaction.
 //
 // SQLite admits one writer, and a transaction that read at one snapshot and then
 // tries to write after somebody else has committed is REFUSED rather than
@@ -533,11 +527,9 @@ const transactionColumns = `
 //
 // # No savepoint, and none is needed
 //
-// store/pg wrapped this one statement in a SAVEPOINT, because Postgres aborts
-// the whole transaction on any error and a caller who catches the sentinel is
-// entitled to carry on. That was a Postgres problem, not a domain one: SQLite
-// rolls back the failed STATEMENT and leaves the transaction usable, so the cost
-// the savepoint was equalising is not charged here and the helper has no port.
+// One statement and no savepoint: SQLite rolls back the failed STATEMENT and
+// leaves the transaction usable, so a caller who catches the sentinel can carry
+// on. A database that aborted the whole transaction on any error would need one.
 //
 // The cost the rule was really about does reappear one level up, at the unit of
 // work — see isTransient and Store.inUpdate, where a retry pays it.
@@ -855,11 +847,9 @@ func (t *tx) ValueDateBalance(ctx context.Context, book ledger.BookID, id ledger
 // ledger.Tx for the contract.
 //
 // The day is the first ten characters of the stored timestamp, and that is the
-// whole of the date arithmetic. store/pg needed date_trunc over an explicit
-// AT TIME ZONE 'UTC', because a timestamptz has no fixed rendering; here the
-// column is already UTC and fixed-width by store/sqlite/time.go, so its first
-// ten characters ARE its UTC day. It is the same property the schema chose TEXT
-// timestamps for, used a second time.
+// whole of the date arithmetic: the column is already UTC and fixed-width by
+// store/sqlite/time.go, so its first ten characters ARE its UTC day. It is the
+// same property the schema chose TEXT timestamps for, used a second time.
 //
 // A zero ValueDate is stored as NULL, and substr(NULL) is NULL, so such an entry
 // falls out of every group rather than landing in one for year 1. That is the

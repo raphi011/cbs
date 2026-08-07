@@ -70,9 +70,8 @@ func RunDeposit(t *testing.T, newStore func(*testing.T, ledger.BookID) deposit.S
 		s := openDeposit(t, newStore, bookA)
 
 		// The same deposit account ID in two books is two different accounts,
-		// exactly as in the ledger — and since Task 18c the two books are two
-		// banks' DATABASES, so what would once have handed one bank another
-		// bank's customer is a store answering about a book it does not hold.
+		// exactly as in the ledger — and the two books are two banks' DATABASES, so
+		// this is a store answering about a book it does not hold.
 		const shared deposit.AccountID = "dep_1"
 		other := openDeposit(t, newStore, bookB)
 		updateDeposit(t, s, func(ctx context.Context, tx deposit.Tx) error {
@@ -142,12 +141,10 @@ func RunDeposit(t *testing.T, newStore func(*testing.T, ledger.BookID) deposit.S
 	// uniqueness check would pass against a store that had silently dropped
 	// the very rows it was checking.
 	//
-	// TWO identifiers, written out of order: a set of one round-trips through
-	// any ordering rule at all, which is how store/pg's `ORDER BY scheme, value`
-	// and store/mem's insertion order looked identical for the whole of a branch.
-	// The order is ascending by (scheme, value) — a stated rule rather than
-	// whatever the store's index happens to give, which is what makes it
-	// checkable.
+	// TWO identifiers, written out of order: a set of one round-trips through any
+	// ordering rule at all. The order is ascending by (scheme, value) — a stated
+	// rule rather than whatever the store's index happens to give, which is what
+	// makes it checkable.
 	t.Run("IdentifiersSurviveAccountRead", func(t *testing.T) {
 		s := openDeposit(t, newStore, bookA)
 		aa := deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "AA-AURORA-0001"}
@@ -258,10 +255,8 @@ func RunDeposit(t *testing.T, newStore func(*testing.T, ledger.BookID) deposit.S
 	})
 
 	// A read hands back a COPY: mutating what a reader was given must not reach
-	// stored state. A SQL store cannot be mutated through its return values at
-	// all, which is exactly why the rule needs saying — it is free here and was
-	// not in store/mem, whose rollback snapshot was one level deep precisely on
-	// this promise.
+	// stored state. A SQL store cannot be mutated through its return values at all,
+	// which is exactly why the rule needs saying.
 	t.Run("MutatingReadIdentifiersDoesNotReachTheStore", func(t *testing.T) {
 		s := openDeposit(t, newStore, bookA)
 		iban := deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "SE89-AURORA-1001"}
@@ -358,11 +353,9 @@ func RunDeposit(t *testing.T, newStore func(*testing.T, ledger.BookID) deposit.S
 	// by book like every other method here. Two banks holding the same value is
 	// a legal state, and each book sees only its own.
 	//
-	// The value half is matched under the scheme's own rule, which for an IBAN
-	// is not literal — see
-	// ListDepositAccountsByIdentifierMatchesAnIBANThroughItsSeparators, which is
-	// where that half lives. This case was called …IsExactAndBookScoped until
-	// the value stopped being matched exactly.
+	// The value half is matched under the scheme's own rule, which for an IBAN is
+	// not literal — see
+	// ListDepositAccountsByIdentifierMatchesAnIBANThroughItsSeparators.
 	t.Run("ListDepositAccountsByIdentifierMatchesTheSchemeExactlyAndIsBookScoped", func(t *testing.T) {
 		s := openDeposit(t, newStore, bookA)
 		iban := deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "SHARED-0001"}
@@ -810,7 +803,7 @@ func RunDeposit(t *testing.T, newStore func(*testing.T, ledger.BookID) deposit.S
 				// Counted: active, and either never expiring or expiring later.
 				hold("hld_1", "dep_1", 100, deposit.HoldActive, early, time.Time{}),
 				hold("hld_2", "dep_1", 200, deposit.HoldActive, early, tomorrow),
-				// Not counted: no longer active.
+
 				hold("hld_3", "dep_1", 400, deposit.HoldReleased, early, time.Time{}),
 				hold("hld_4", "dep_1", 800, deposit.HoldCaptured, early, time.Time{}),
 				// Not counted: expired before now.
@@ -1067,9 +1060,9 @@ func RunDeposit(t *testing.T, newStore func(*testing.T, ledger.BookID) deposit.S
 	// this suite writes them, and an accrual that silently starts from zero
 	// every day looks like a working system that charges no interest.
 	//
-	// The credit terms are no longer among them — they are rows in their own
-	// table now, covered by OverdraftTermsTimeline below. What is left on the
-	// account is what an accrual carries FORWARD rather than what prices it.
+	// The credit terms are not among them — they are rows in their own table,
+	// covered by OverdraftTermsTimeline below. What is left on the account is what
+	// an accrual carries FORWARD rather than what prices it.
 	t.Run("AccrualStateRoundTrip", func(t *testing.T) {
 		s := openDeposit(t, newStore, bookA)
 

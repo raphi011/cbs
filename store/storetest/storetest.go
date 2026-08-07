@@ -2,39 +2,27 @@
 // ledger layer, RunDeposit for the deposit layer, RunPayment for the payment
 // layer, and RunProduct and RunLending for theirs.
 //
-// It is NOT a conformance suite any more, and saying so is the point of this
-// paragraph. It was written to hold two implementations to identical answers,
-// and until Task 17.3 that is what it did: store/mem was the reference, store/pg
-// and then store/sqlite had to match it, and a case that either accepted or
-// refused differently was the defect. There is one implementation now, so
-// nothing here cross-checks anything.
+// It is NOT a conformance suite: there is one implementation, so nothing here
+// cross-checks anything.
 //
-// What survives the loss is the reason the cases were written the way they were.
-// This file, deposit.go, payment.go, product.go and lending.go talk only to the
-// Store and Tx interfaces — never to ledger.Book, deposit.Register or
-// payment.Network — and they name no table and no dialect, so what each case
-// pins is the CONTRACT: identity allocation, ordering, idempotency, the balance
-// aggregate, the audit log, rollback. That is a suite an implementation can be
-// held to without a second implementation to compare it against, and it is what
-// Task 18 needs: three store shapes — bank, csm, centralbank — each running this
-// file. Cross-SHAPE, where it used to be cross-implementation.
+// What each case pins is the CONTRACT. This file, deposit.go, payment.go,
+// product.go and lending.go talk only to the Store and Tx interfaces — never to
+// ledger.Book, deposit.Register or payment.Network — and they name no table and
+// no dialect: identity allocation, ordering, idempotency, the balance aggregate,
+// the audit log, rollback. Three store shapes — bank, csm, centralbank — each
+// run this file.
 //
-// Two of the older arguments are worth reading with that in mind rather than
-// deleting. Where a case says a constraint would make one store refuse what
-// another accepts, the divergence is history and the decision is re-justified in
-// store/sqlite/schema/bank/0001_init.sql, on accounts.asset. And where a case records
-// what store/mem could not show, it is recording why the case exists: store/mem
-// serialized every unit of work on one mutex, so the concurrency cases were
-// blind there, and that is the shape of blindness the ephemeral store still has
-// for anything about read-then-write ordering — see races.go.
+// Where a case records what a store CANNOT show, it is recording why the case
+// exists: the ephemeral store serialises writers, so it is blind to anything
+// about read-then-write ordering — see races.go.
 //
-// races.go does not observe the interface boundary, and Task 17.0 crossed it on
-// purpose. Its cases drive payment.Network, because the defect they exist for is
-// an ordering the ACTS choose and the store cannot express — and the synthetic
-// stand-in written to respect the boundary, ConcurrentReadThenWriteOnOneKeyAgrees
-// below, was blind to three money defects of exactly that shape. Admit is here
-// for the same reason: races.go needs it and this package may not import an
-// implementation, because the implementation's tests import this package.
+// races.go does not observe the interface boundary, on purpose. Its cases drive
+// payment.Network, because the defect they exist for is an ordering the ACTS
+// choose and the store cannot express — and the synthetic stand-in written to
+// respect the boundary, ConcurrentReadThenWriteOnOneKeyAgrees below, was blind
+// to three money defects of exactly that shape. Admit is here for the same
+// reason: races.go needs it and this package may not import an implementation,
+// because the implementation's tests import this package.
 //
 // # Ordering
 //
@@ -67,9 +55,9 @@ import (
 // implementation that leaks state across books.
 //
 // bookA is the book the store handed to a suite ANSWERS FOR, and every case
-// that names one names it. Since Task 18c a store answers for exactly one book
-// and refuses the rest, so a case wanting a second book asks the factory for a
-// second STORE — which is what a second book is: another institution's database.
+// that names one names it. A store answers for exactly one book and refuses the
+// rest, so a case wanting a second book asks the factory for a second STORE —
+// which is what a second book is: another institution's database.
 //
 // bookB is that second store's book. It is used by the handful of cases about
 // isolation, and what each of them now demonstrates is stronger than what it did
@@ -325,13 +313,10 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Sto
 	t.Run("SameIDsInDifferentBooks", func(t *testing.T) {
 		// TWO STORES, and this is the case where the change says the most.
 		//
-		// The claim is unchanged: chart-of-accounts IDs are unique within a
-		// book, not globally, so two banks may both hold an account numbered
-		// 200.100.001. What used to demonstrate it was two books in one
-		// database, which was the weaker half of the truth — the ids did not
-		// collide because the primary key was composite. Now the two banks are
-		// two databases that cannot see each other, which is why the ids cannot
-		// collide in the first place.
+		// The claim: chart-of-accounts IDs are unique within a book, not globally,
+		// so two banks may both hold an account numbered 200.100.001. Here the two
+		// banks are two databases that cannot see each other, which is why the ids
+		// cannot collide in the first place.
 		s := open(t, newStore, bookA)
 		other := open(t, newStore, bookB)
 
@@ -440,12 +425,9 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Sto
 			return nil
 		})
 
-		// The same IDs in ANOTHER STORE are equally not found. This used to be
-		// the same store and a second book, and the failure it was written for
-		// was a lookup that forgot to scope by book. That defect is a table's
-		// primary key away from impossible now, and the one it catches instead
-		// is bigger: a second bank's database answering with the first bank's
-		// rows, which is what the whole split is for.
+		// The same IDs in ANOTHER STORE are equally not found. What this catches is
+		// a second bank's database answering with the first bank's rows, which is
+		// what the whole split is for.
 		other := open(t, newStore, bookB)
 		view(t, other, func(ctx context.Context, tx ledger.Tx) error {
 			_, err := tx.GetLedger(ctx, bookB, "ldg_1")
@@ -498,12 +480,10 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Sto
 		// it fires as a foreign-key violation where the domain would have said
 		// ErrLedgerNotFound. See subledgers in store/sqlite/schema/bank/0001_init.sql.
 		//
-		// It is written from the failure it prevents: store/pg shipped a
-		// composite FK on subledgers(book_id, ledger_id), which turned the first
-		// write below into SQLSTATE 23503 while store/mem returned nil — and with
-		// foreign_keys on in the DSN, store/sqlite would answer as store/pg did.
-		// No other fixture in this suite writes a dangling LedgerID, so nothing
-		// caught it.
+		// It is written from the failure it prevents: a composite FK on
+		// subledgers(book_id, ledger_id) turns the first write below into a
+		// constraint violation, and no other fixture in this suite writes a dangling
+		// LedgerID.
 		update(t, s, func(ctx context.Context, tx ledger.Tx) error {
 			// A subledger under a ledger that does not exist.
 			if err := tx.PutSubledger(ctx, bookA, ledger.Subledger{
@@ -761,13 +741,10 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Sto
 	t.Run("RePuttingATransactionReleasesItsOldIdempotencyKey", func(t *testing.T) {
 		s := open(t, newStore, bookA)
 
-		// PutTransaction is an upsert, and an upsert may change the key. The
-		// old claim has to go with it. A store that only ever adds to its
-		// idempotency index keeps resolving a key the transaction no longer
-		// carries — and then refuses the next transaction that legitimately
-		// claims it, which the other store accepts. That is the same parity
-		// rule as everywhere else in this suite, pointing the other way: mem
-		// refusing a write pg allows is exactly as wrong as the reverse.
+		// PutTransaction is an upsert, and an upsert may change the key. A store
+		// that only ever adds to its idempotency index keeps resolving a key the
+		// transaction no longer carries — and then refuses the next transaction that
+		// legitimately claims it.
 		update(t, s, func(ctx context.Context, tx ledger.Tx) error {
 			return tx.PutTransaction(ctx, bookA, transaction("tx_1", "key-1"))
 		})
@@ -821,16 +798,14 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Sto
 	t.Run("HandledDuplicateKeyLeavesTheUnitOfWorkUsable", func(t *testing.T) {
 		s := open(t, newStore, bookA)
 
-		// ErrDuplicateIdempotencyKey is a domain sentinel, which means a caller
-		// is entitled to handle it and carry on — retry under a fresh key, fall
-		// back to the existing transaction, record the collision. That is only
-		// true if the failed statement did not take the whole unit of work with
-		// it, and whether it does is the database's answer rather than the
-		// domain's. In Postgres any error aborts the transaction and every later
-		// statement fails with SQLSTATE 25P02, so store/pg ran this one inside a
-		// SAVEPOINT; SQLite rolls back the failed STATEMENT and leaves the
-		// transaction usable, so store/sqlite does nothing. This subtest is what
-		// says the promise is kept either way.
+		// ErrDuplicateIdempotencyKey is a domain sentinel, which means a caller is
+		// entitled to handle it and carry on — retry under a fresh key, fall back to
+		// the existing transaction, record the collision. That is only true if the
+		// failed statement did not take the whole unit of work with it, and whether
+		// it does is the database's answer rather than the domain's. SQLite rolls
+		// back the failed STATEMENT and leaves the transaction usable; a database
+		// that aborted the whole transaction would need a savepoint here. This
+		// subtest is what says the promise is kept either way.
 		update(t, s, func(ctx context.Context, tx ledger.Tx) error {
 			return tx.PutTransaction(ctx, bookA, transaction("tx_1", "key-1"))
 		})
@@ -904,13 +879,11 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Sto
 		// to hand it — because the domain is the only validator, so a store that
 		// refuses what the domain accepted refuses it with nobody to say why.
 		//
-		// Postgres could not hold a NUL in a text column (SQLSTATE 22021) or in a
-		// jsonb string (22P05), nor a byte sequence that is not valid UTF-8;
-		// store/mem and store/sqlite both hold all of them. That gap is closed in
-		// ledger.ValidateText rather than here, so the corpus below is filtered
-		// through it: anything the domain rejects never reaches a store, and
-		// everything else has to survive the trip. Loosening ValidateText widens
-		// this corpus, which is what makes this subtest bite.
+		// A store must hold every byte sequence the domain lets through, so the
+		// corpus below is filtered through ledger.ValidateText: anything the domain
+		// rejects never reaches a store, and everything else has to survive the trip.
+		// Loosening ValidateText widens this corpus, which is what makes this subtest
+		// bite.
 		corpus := []string{
 			"Aurora Bank",
 			"Crédit Soleil",
@@ -1330,9 +1303,8 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Sto
 	//
 	// A SQL store gets it free — a zero value date is stored as NULL, and NULL
 	// falls out of a day grouping, so there is no row to bucket. An in-Go one has
-	// to skip it explicitly or it buckets the entry onto time.Time{}'s day, year
-	// 1, and emits a movement for it. That skip was the most divergence-prone
-	// line on store/mem's path; what this pins now is that no movement for year 1
+	// to skip it explicitly or it buckets the entry onto time.Time{}'s day, year 1,
+	// and emits a movement for it. What this pins is that no movement for year 1
 	// ever appears, however the buckets are built.
 	t.Run("ValueDatedSeriesExcludesZeroValueDateEntries", func(t *testing.T) {
 		s := open(t, newStore, bookA)
@@ -1467,10 +1439,8 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Sto
 	t.Run("AuditFilterByScopeTypeEntityAndBefore", func(t *testing.T) {
 		s := open(t, newStore, bookA)
 
-		// Every event is this store's own book, because a store answers for one
-		// and refuses the rest. The fourth used to be book-b's and carried the
-		// "BookID narrows" dimension; what replaces that dimension is the
-		// refusal below, which is a stronger claim about the same filter.
+		// Every event is this store's own book, because a store answers for one and
+		// refuses the rest — which is what the refusal below asserts.
 		update(t, s, func(ctx context.Context, tx ledger.Tx) error {
 			for _, e := range []ledger.AuditEvent{
 				{ID: "evt_1", BookID: bookA, Scope: ledger.ScopeLedger, Type: ledger.EventLedgerCreated, EntityID: "ldg_1"},
@@ -1485,9 +1455,8 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Sto
 			return nil
 		})
 
-		// No filter: everything, every scope. It used to say "every book" as
-		// well, and there is one — this institution's own log is the whole of
-		// what a store holds now.
+		// No filter: everything, every scope. This institution's own log is the
+		// whole of what a store holds.
 		assertEqual(t, "unfiltered", len(audit(t, s, ledger.AuditFilter{})), 4)
 
 		// BookID naming THIS store's book still narrows, which on a one-book
@@ -1825,18 +1794,15 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Sto
 		// This suite's only case with two units of work running AT ONCE, and
 		// the gap it closes is the reason it exists.
 		//
-		// Everything else here is single-threaded, so the suite could say nothing
-		// at all about a rule the APPLICATION makes by reading and then writing.
-		// That was the class store/mem could not show and store/pg could: one
-		// process-wide mutex made a read-then-write atomic there whatever the
-		// caller did, while READ COMMITTED let two transactions both read "not
-		// there" and both write.
+		// Everything else here is single-threaded, so the suite would otherwise say
+		// nothing at all about a rule the APPLICATION makes by reading and then
+		// writing.
 		//
-		// races.go does the same job on payment's acts, which is where the rule
-		// this stands in for actually lives, and it was written at Task 17.0
-		// because the stand-in was blind to three money defects of this shape.
-		// What is left for this one is the shape stated at the store interface
-		// with no act to hang it on, which is what a store implementer reads.
+		// races.go does the same job on payment's acts, which is where the rule this
+		// stands in for actually lives; the stand-in here was blind to three money
+		// defects of that shape. What is left for this one is the shape stated at the
+		// store interface with no act to hang it on, which is what a store
+		// implementer reads.
 		//
 		// What it encodes is the shape payment.SubmitPaymentTx uses to refuse a
 		// duplicate client reference: allocate an id, THEN read the key, THEN
@@ -1851,19 +1817,14 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Sto
 		// touches anything, which is this same ordering under a different name.
 		//
 		// The claim is exactly that and no wider. It does NOT say a store makes
-		// read-then-write atomic on its own; it says this ORDERING admits one
-		// writer, whatever is underneath — which is what a caller reading before
-		// it allocates did not get, with eight concurrent submissions of one
-		// reference accepted eight times on store/pg and once on store/mem, and
-		// the payer debited eight times.
+		// read-then-write atomic on its own; it says this ORDERING admits one writer,
+		// whatever is underneath.
 		//
-		// On store/sqlite the ordering is no longer the only thing holding it:
-		// the store admits one writer and Store.Update re-runs a loser against
-		// the winner's committed row, measured at ten runs out of ten with the
-		// ordering removed. See payment.admissionSequenceTx. The case stays
-		// because Task 18 removes ledger.NetworkBook, whose counter is what every
-		// caller of this shape allocates from, and this is the case that states
-		// the shape a replacement has to keep.
+		// On store/sqlite the ordering is not the only thing holding it: the store
+		// admits one writer and Store.Update re-runs a loser against the winner's
+		// committed row, measured at ten runs out of ten with the ordering removed.
+		// See payment.admissionSequenceTx. The case stays as the statement of the
+		// shape a replacement has to keep.
 		//
 		// The read is on a NON-key attribute (the account's name) because that
 		// is the shape of the rule: a store cannot enforce it with a primary
@@ -1940,10 +1901,9 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Sto
 
 // errTaken is the losers' answer in ConcurrentReadThenWriteOnOneKeyAgrees: the
 // name was already claimed. It stands in for payment.ErrDuplicateEndToEndID
-// rather than naming it, and since Task 17.0 that is a choice rather than a
-// constraint: races.go names payment's sentinels directly, on the acts
-// themselves. What this case is worth beside those is the shape stated once at
-// the store interface, for rules the acts have not made yet.
+// rather than naming it — races.go names payment's sentinels directly, on the
+// acts themselves. What this case is worth beside those is the shape stated once
+// at the store interface, for rules the acts have not made yet.
 var errTaken = errors.New("storetest: the name is already claimed")
 
 // ---------------------------------------------------------------------------

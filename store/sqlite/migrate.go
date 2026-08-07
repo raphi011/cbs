@@ -17,14 +17,11 @@ var schemaFS embed.FS
 //
 // # One migration per shape, which is where CLAUDE.md's rule went
 //
-// There was one migration, edited in place, and the rationale was that no
-// database is deployed: every database this repository meets is ephemeral or a
-// throwaway file, both of which migrate from empty, so there is no history for
-// anyone to replay and a second file would be ceremony. That rationale survives
-// Task 18 exactly as it was. What did not survive is the sentence, because the
-// boundary between institutions is now in the DDL: there are three schemas
-// because there are three kinds of database, not because anything was layered
-// on top of anything.
+// One migration per schema, edited in place, because no database is deployed:
+// every database this repository meets is ephemeral or a throwaway file, both of
+// which migrate from empty, so there is no history for anyone to replay and a
+// second file would be ceremony. There are three schemas because there are three
+// kinds of database, not because anything was layered on top of anything.
 //
 // So a shape names a DIRECTORY and the files in it are that shape's history.
 // Each still has exactly one, and each is still edited in place.

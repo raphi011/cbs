@@ -3,13 +3,10 @@
 // SQLite transpiled to Go, so the module gains Go dependencies and loses every
 // external one. No server, no Docker, no C toolchain.
 //
-// It is the only implementation, and it was certified against two that are
-// gone. store/pg and store/mem were the oracles this port had: store/storetest
-// held all three to the same answers at Task 17.1, and 17.2 and 17.3 deleted
-// them. Nothing cross-checks the SQL now, which is why the two guards in
-// sqlite_test.go — foreign keys are really enforced, and there is exactly one
-// non-primary-key unique index — exist at all: both are failures that change no
-// other test's outcome.
+// Nothing cross-checks the SQL: this is the only implementation. That is why the
+// two guards in sqlite_test.go — foreign keys are really enforced, and there is
+// exactly one non-primary-key unique index — exist at all: both are failures
+// that change no other test's outcome.
 //
 // # Everything the connection needs rides in the DSN
 //
@@ -104,10 +101,9 @@ import (
 // A shape is a SCHEMA and not a second driver. There is one implementation of
 // every Store and Tx method in this package and it is shared by all three; what
 // differs is which tables are underneath it, which is enough to make a crossing
-// a table that is not there rather than a row nobody should have read. That was
-// the point of putting the boundary in the DDL: "the clearing house has no
-// ledger" was true before Task 18 and was asserted by exactly one test, and it
-// is now a fact about the database.
+// a table that is not there rather than a row nobody should have read. Putting
+// the boundary in the DDL is what makes "the clearing house has no ledger" a
+// fact about the database rather than a claim one test asserts.
 //
 // The three values are the three actors in mesh/ops.go — bankOps, csmOps,
 // settlementOps — and there is no fourth. In particular there is no shape
@@ -207,22 +203,20 @@ func (s Shape) withPaymentCycle() Shape { s.paymentCycle = true; return s }
 // guard, and that ordering is deliberate. A View is a legitimate thing to open
 // on any store; asking the clearing house to list its cycles inside one is
 // legitimate too; asking it to list its BANKS is not, and it is not more
-// legitimate for being a read. The class of defect this ordering avoids is the
-// one Task 18b's own review found twice: a guard placed after an early return
-// that leaves its "does not apply" path open.
+// legitimate for being a read. The class of defect this avoids is a guard placed
+// after an early return that leaves its "does not apply" path open.
 var ErrNotInThisShape = errors.New("sqlite: this store's schema holds no such table")
 
 // ErrNotThisStoresBook is returned when a method is handed a BookID this store
 // does not answer for.
 //
 // EACH STORE OWNS EXACTLY ONE BookID, and this is the guard that makes that more
-// than a convention. It is the central new refusal of Task 18 and what it turns
-// a crossing into is a loud error: before it, a bank's network reaching into the
-// central bank's book got a silent not-found — an empty listing, a zero balance,
-// a "ledger not found" three layers away — and the only instrument that could
-// see it was the book recorder in mesh/books_test.go, which watches mesh actors
-// and is therefore blind to anything that never becomes a message. Two of the
-// six crossings this sub-project found were of exactly that kind.
+// than a convention. What it turns a crossing into is a loud error: without it,
+// a bank's network reaching into the central bank's book gets a silent not-found
+// — an empty listing, a zero balance, a "ledger not found" three layers away —
+// and the only instrument that could see it is the book recorder in
+// mesh/books_test.go, which watches mesh actors and is therefore blind to
+// anything that never becomes a message.
 //
 // It does not replace the recorder and the recorder gets STRONGER beside it. The
 // two answer different questions: this one says a store was asked about a book
@@ -238,21 +232,16 @@ var ErrNotThisStoresBook = errors.New("sqlite: this store does not answer for th
 // The transaction is opened read-only as well, so the database would refuse the
 // write anyway; failing in Go first is what makes the answer a named sentinel a
 // caller can match on rather than a driver error whose text is the driver's to
-// change. store/mem and store/pg both answered the same way, for the same
-// reason.
+// change.
 var ErrReadOnly = errors.New("sqlite: write attempted in a read-only transaction")
 
 // ErrNestedTransaction is returned when a unit of work is opened inside another
 // one on the same store.
 //
-// The hazard is the one store/pg had: a nested Update takes a SECOND connection
-// and runs a SEPARATE transaction, so the inner writes commit even when the
-// outer ones roll back. Under SQLite it is worse than under Postgres, because
+// A nested Update takes a SECOND connection and runs a SEPARATE transaction, so
+// the inner writes commit even when the outer ones roll back — and under SQLite
 // the inner transaction then contends with the outer one for the write lock and
-// the pair can wedge — a hang rather than an error. store/mem refused it too,
-// there because its mutex was not reentrant, so the single most likely mistake
-// in this codebase has answered the same way under every store this repository
-// has had.
+// the pair can wedge, which is a hang rather than an error.
 var ErrNestedTransaction = errors.New("sqlite: a unit of work is already open on this store (call the …Tx method, not its Update-wrapping sibling)")
 
 // inUnitOfWork is the context key Update and View stamp into the context they
@@ -296,8 +285,7 @@ const (
 // unrunnable, since that suite holds every racer at a barrier INSIDE an open
 // transaction and a second racer would never get a connection to arrive on. It
 // would not FAIL the suite; it would stop in it. Concurrency this store cannot
-// express is concurrency its tests cannot check, and store/mem was exactly that
-// store — one process-wide mutex, every race invisible.
+// express is concurrency its tests cannot check.
 //
 // It is not unbounded either: SQLite admits one writer, so connections past the
 // handful that are reading only queue up to contend for the same lock.
@@ -334,16 +322,14 @@ type Store struct {
 // migrations and returns a store reading time from clock.
 //
 // shape is which schema goes in and book is the one BookID the result answers
-// for; see Shape and ErrNotThisStoresBook. Both are required, and the pair is
-// what a store IS after Task 18 — a database with no institution attached is the
-// thing that was removed, so there is no way to ask for one.
+// for; see Shape and ErrNotThisStoresBook. Both are required: a database with no
+// institution attached is not a thing this system has.
 //
 // An empty path means an ephemeral in-memory database of its own: the name is
 // random, so two stores opened with an empty path never see each other's rows.
 // That is what a test suite wants and it is what `cmd/server` with no -database
-// means — ephemeral, and needing no setup, which is the property store/mem
-// existed for. It matters more than it did: a test now opens N+2 of these, and
-// two banks sharing rows would be the split silently not happening.
+// means — ephemeral, and needing no setup. A test opens N+2 of these, and two
+// banks sharing rows would be the split silently not happening.
 func Open(ctx context.Context, shape Shape, book ledger.BookID, path string, clock func() time.Time) (*Store, error) {
 	if shape.holds == nil {
 		return nil, fmt.Errorf("sqlite: open: no shape; a database with no institution attached is what Task 18 removed")
@@ -506,11 +492,9 @@ func (s *Store) inUpdate(ctx context.Context, fn func(context.Context, *sql.Tx) 
 // backoff waits before the next attempt, and it is the difference between a
 // retry loop that works and one that does not.
 //
-// store/pg retried with no delay and was right to: Postgres detects a deadlock
-// after deadlock_timeout, about a second, so its retries were spaced by the
-// database whether the caller thinks about it or not. SQLite answers
-// immediately, so five undelayed attempts all finish inside the winner's commit
-// window and the loser exhausts them without ever seeing the winner's write.
+// The retries are DELAYED. SQLite answers a lock conflict immediately, so five
+// undelayed attempts would all finish inside the winner's commit window and the
+// loser would exhaust them without ever seeing the winner's write.
 //
 // The delay is what a file needs. Measured on two racers reading and then
 // writing one row under WAL: with the sleep removed one racer won on its first
@@ -631,12 +615,9 @@ func (s *Store) Close() error {
 // Without the retry the money is still right — one writer wins — but the loser
 // is told the database is locked, where what it is owed is the domain's own
 // refusal: a caller that catches ErrInsufficientBalance does not catch a lock
-// error. store/mem and store/pg both answered with the sentinel, the first
-// because its mutex made the loser read after the winner had committed and the
-// second because it retried too. The retry re-runs the callback, which reads
-// again and reaches the domain's guard. That is what store/storetest's
-// RunConcurrentTxRaces asserts: not that somebody lost, but that the loser lost
-// for the documented reason.
+// error. The retry re-runs the callback, which reads again and reaches the
+// domain's guard. That is what store/storetest's RunConcurrentTxRaces asserts:
+// not that somebody lost, but that the loser lost for the documented reason.
 //
 // The primary code is what is matched. SQLite's extended codes carry the primary
 // one in their low byte, so SQLITE_BUSY_SNAPSHOT and SQLITE_LOCKED_SHAREDCACHE
@@ -660,12 +641,10 @@ func isTransient(err error) bool {
 
 // isUniqueViolation reports whether err is a conflict on a unique INDEX.
 //
-// store/pg asked isUniqueViolationOn(err, "transactions_idempotency_key_idx"),
-// because SQLSTATE 23505 carries the constraint's name. SQLite names nothing, so
-// what identifies the index here is the extended code alone:
-// SQLITE_CONSTRAINT_UNIQUE (2067) for a unique index, and
-// SQLITE_CONSTRAINT_PRIMARYKEY (1555) for a primary key, which is a different
-// answer and stays out.
+// SQLite names no constraint in its errors, so what identifies the index here is
+// the extended code alone: SQLITE_CONSTRAINT_UNIQUE (2067) for a unique index,
+// and SQLITE_CONSTRAINT_PRIMARYKEY (1555) for a primary key, which is a
+// different answer and stays out.
 //
 // That is exactly as targeted as matching the name, and it is targeted for a
 // reason outside this function: the idempotency index is the only non-primary-key
@@ -688,20 +667,18 @@ func isUniqueViolation(err error) bool {
 // Reset discards all state, so a reset store behaves exactly like a freshly
 // migrated one.
 //
-// What it empties is this SHAPE's tables and nothing else, which is not a
-// narrowing so much as the only thing it could now mean: there is one list per
+// What it empties is this SHAPE's tables and nothing else. There is one list per
 // schema and it is Shape.holds, so a table added to a schema and forgotten here
-// is no longer possible. The single list this replaces had all 31 tables in it
-// and would have started failing on whichever shape it reached first.
+// is not possible.
 //
 // The order is irrelevant: every REFERENCES in every schema is ON DELETE
 // CASCADE, so a parent takes its children with it and a child emptied first is a
 // no-op when its parent follows.
 //
-// store/pg needed TRUNCATE … RESTART IDENTITY to put its BIGSERIALs back to 1.
-// Nothing here does: every seq is allocated MAX(seq)+1 over the table it belongs
-// to (see nextRowSeq), so a table with no rows starts at 1 again on its own. The
-// counters in id_sequences are ordinary rows and go with the delete.
+// Nothing has to reset a sequence: every seq is allocated MAX(seq)+1 over the
+// table it belongs to (see nextRowSeq), so a table with no rows starts at 1
+// again on its own. The counters in id_sequences are ordinary rows and go with
+// the delete.
 //
 // The schema itself survives; only rows are removed.
 func (s *Store) Reset(ctx context.Context) error {
