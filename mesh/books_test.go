@@ -25,6 +25,7 @@ import (
 	"github.com/raphi011/cbs/lending"
 	"github.com/raphi011/cbs/payment"
 	"github.com/raphi011/cbs/product"
+	"github.com/raphi011/cbs/store/sqlite"
 	"github.com/raphi011/cbs/store/testenv"
 )
 
@@ -653,9 +654,11 @@ var structCarriedBooks = map[string]structCarriedBook{
 	"ListAudit":   {Scoping: true},
 	"PutBank": {
 		Scoping: false,
-		Why: "payment/store.go: banks are network-scoped and stored under ledger.NetworkBook. " +
-			"Bank.BookID names the book the bank owns; it does not scope this write. " +
-			"TestWritingAParticipantTouchesNoBankBook is the evidence. " +
+		Why: "payment/store.go: a bank's row is its own bank's, in its own database, keyed by id alone. " +
+			"Bank.BookID names the book the bank owns; it does not scope this write, and since Task 18c " +
+			"it is not even stored — a bank's id IS its BIC and IS its book (payment.AsBank), so " +
+			"store/sqlite derives the field on the way out and normalises whatever it was written with. " +
+			"TestWritingAParticipantTouchesNoBankBook is the evidence for both halves. " +
 			"The other two rows admission writes are not candidates at all and that is worth knowing " +
 			"rather than rediscovering: SettlementMember and RosterEntry carry no BookID, because " +
 			"neither the settlement agent nor the clearing house holds a book of the bank's.",
@@ -673,81 +676,72 @@ var structCarriedBooks = map[string]structCarriedBook{
 }
 
 // ---------------------------------------------------------------------------
-// READ THIS BEFORE WRITING TestTheCSMTouchesOnlyTheNetworkBook (Task 10)
+// READ THIS BEFORE CHANGING ANY WANT-LIST BELOW
 // ---------------------------------------------------------------------------
 //
-// ledger.NetworkBook reaches touched() through ID ALLOCATION and AUDIT, never
-// through a posting.
+// A ROW-WRITE reaches touched() through ID ALLOCATION and AUDIT, never through a
+// posting.
 //
-// The Put* methods for network-scoped rows — PutPayment, PutCycle,
+// The Put* methods for the payment layer's own rows — PutPayment, PutCycle,
 // PutSettlement, PutMandate, PutBank — take no book and record nothing
-// themselves. But no network row is written on its own: the domain allocates its
-// id first, with NextID(ctx, ledger.NetworkBook, …), and writes an audit event
-// under BookID: ledger.NetworkBook. Both of those ARE recorded — NextID
-// positionally, AppendAudit through its struct — so a handler that only writes
-// network rows records touched = [network].
+// themselves. But no such row is written on its own: the domain allocates its id
+// first, with NextID(ctx, s.book(), …), and writes an audit event under BookID:
+// s.book(). Both of those ARE recorded — NextID positionally, AppendAudit through
+// its struct — so a handler that only writes rows records touched = [its own
+// institution's book].
 //
 // Measured, not assumed: OpenCycle writes one ClearingCycle, posts nothing, and
-// records exactly [network]. TestWritingANetworkRowRecordsTheNetworkBook is the
-// pin. The allocation sites are payment/system.go NextID(…, NetworkBook, …) for
-// "bank", "mnd", "cyc", "set" and "pay", and payment/audit.go, which takes an
-// "evt" id under NetworkBook and then appends the event under it.
+// records exactly [clearing-house]. TestWritingANetworkRowRecordsTheNetworkBook
+// is the pin. The allocation sites are payment/system.go's NextID(…, s.book(), …)
+// for "bank", "mnd", "cyc", "set" and "pay", and payment/audit.go, which takes an
+// "evt" id under the same book and then appends the event under it.
 //
-// So the brief's
+// # ledger.NetworkBook is deleted, and every want-list here lost an entry
 //
-//	assertBooksTouched(t, "clearing house", h.booksTouchedBy(h.cfg.ClearingHouseBIC),
-//	    []ledger.BookID{ledger.NetworkBook})
+// It named the book those ids and events used to be drawn under: "belongs to no
+// single institution" — one counter and one audit stream shared by everybody, in
+// the one database that held everything. Task 18c is the finding that there was
+// no such thing. Every one of those rows has exactly one owner, each owner has a
+// database, and payment.Network.book is the answer to every "which book?" that
+// used to be NetworkBook.
 //
-// is satisfied by a CSM handler that moves a cycle along — OpenCycle,
-// CloseCycle, and now AcceptAtCSMTx — with no posting required. Task 8 is what
-// separated the CSM's half out: initiation used to post the debtor leg in the
-// same call that took the payment into a cycle, so one handler recorded both
-// the bank's book and this one. The clearing house's half now writes the
-// payment and the cycle and posts nothing, which is exactly the shape this
-// assertion wants — and it keeps its audit event, which is the ONLY reason
-// those network rows are visible here at all.
+// So a set that read [its own book, NetworkBook] reads [its own book], and the
+// clearing house's [NetworkBook] reads [ClearingHouseBook]. That is not the
+// assertion getting weaker. The old second entry was shared ground every actor
+// stood on; there is none left, so each of these lists now names one institution
+// and the sets no longer overlap at all.
 //
-// # A BANK's expected set is [NetworkBook, its own book], not [its own book]
+// A previous version of this note argued at length that a BANK's set could not be
+// [its own book] — "not satisfiable and never was", because a payment's id and
+// its initiated event were network-scoped. It was right about the code it sat on
+// and the reason it gave is exactly what changed: those two are drawn in the
+// submitting bank's own book now, because that bank's database is where the
+// payment row is going. It is recorded rather than replaced, because a want-list
+// that shrank for the right reason is indistinguishable from one somebody relaxed
+// to make a test pass.
 //
-// The brief's draft — TestABankHandlerTouchesOnlyItsOwnBook, now
-// TestWhichBooksEachBankActuallyReaches, and see there for why it was renamed —
-// wants []ledger.BookID{h.debtorBook} for the submitting bank. That is not
-// satisfiable and never was: every payment id is allocated network-scoped —
-// payment/system.go's NextID(ctx, ledger.NetworkBook, "pay") — and submission
-// appends payment.initiated under NetworkBook. No version of creating a
-// payment avoids either. Correct the draft's want list rather than the domain.
+// # Nothing in this repository EVER posts under an institution's row-book
 //
-// The invariant that actually makes this sub-project real is narrower and does
-// hold: NO BANK REACHES ANOTHER BANK'S BOOK, and the CSM reaches only this one.
-// NetworkBook is not another bank's book; it is the label for rows that belong
-// to no single bank, and a bank that creates or advances a payment necessarily
-// touches it.
-//
-// And nothing in this repository EVER posts under NetworkBook. It labels
-// entities that belong to no single bank; it is not a chart of accounts
-// (payment/system.go, on CentralBankBook, says so), and no ledger.NewBook is
-// ever bound to it. Clearing posts nothing at all. Settlement does, and in three
-// places — the netting transaction in the CENTRAL BANK's book (CentralBankBook),
-// the mirror leg in each participant's own book, and each creditor leg in the
-// creditor's book. Those three are still the postings a cut-off makes; what
-// changed at Task 15b.2 is WHO makes the second, which is now the member itself
-// on the statement it was sent. None of them is NetworkBook, so a handler that
-// settles contributes those books and not this one. Do not go looking for a
-// NetworkBook posting: there is none to find.
+// ClearingHouseBook is not a chart of accounts and there is none to be had — the
+// csm schema has no ledger tables at all (payment.ClearingHouseBook says so).
+// Clearing posts nothing. Settlement does, in three places: the netting
+// transaction in the CENTRAL BANK's book, the mirror leg in each member's own
+// book, and each creditor leg in the creditor's book. Those are still the
+// postings a cut-off makes; what changed at Task 15b.2 is WHO makes the second,
+// which is the member itself on the statement it was sent. Do not go looking for
+// a posting in the clearing house's book: there is none to find.
 //
 // # This is a property of today's domain layer, not a structural invariant
 //
-// What makes a network-scoped write visible is that the domain happens to
-// allocate an id and append an audit event under NetworkBook. Nothing enforces
-// that. If Task 8's or Task 10's new CSM-side cycle-add writes its rows without
-// an audit event, it records NOTHING, and TestTheCSMTouchesOnlyTheNetworkBook
-// fails with exactly the empty set the OLD note wrongly predicted — for an
-// entirely different reason. Whoever hits that failure needs both stories: the
-// recorder is not blind to network rows, but it sees them only through the id
-// and the audit event, so a network-scoped write must keep its audit event or
-// the recorder cannot see it at all.
+// What makes a row-write visible is that the domain happens to allocate an id and
+// append an audit event. Nothing enforces that. A handler that wrote its rows
+// without an audit event would record NOTHING and its assertion would fail with
+// an empty set — which reads exactly like an actor that did no work. Whoever hits
+// that needs both stories: the recorder is not blind to row-writes, but it sees
+// them only through the id and the audit event, so a write must keep its audit
+// event or the recorder cannot see it at all.
 //
-// A previous version of this note claimed the exact reverse — that NetworkBook
+// An earlier version of this note claimed the exact reverse — that the book
 // arrived only through postings — and would have sent Task 10 hunting for a
 // posting that cannot exist. It is left recorded here rather than quietly
 // replaced, because the reason it was wrong is the reason this file distrusts
@@ -871,7 +865,7 @@ func TestWhichBooksEachBankActuallyReaches(t *testing.T) {
 	h.drain(t)
 
 	assertBooksTouched(t, "the payer's bank", h.booksTouchedBy(h.debtorBIC),
-		[]ledger.BookID{h.debtorBook, ledger.NetworkBook})
+		[]ledger.BookID{h.debtorBook, payment.ClearingHouseBook})
 	assertBooksTouched(t, "the payee's bank", h.booksTouchedBy(h.creditorBIC),
 		[]ledger.BookID{h.creditorBook})
 
@@ -1008,7 +1002,7 @@ func TestWhichBooksEachBankReachesInAPull(t *testing.T) {
 	h.drain(t)
 
 	assertBooksTouched(t, "the payee's bank, submitting a collection", h.booksTouchedBy(h.creditorBIC),
-		[]ledger.BookID{h.creditorBook, ledger.NetworkBook})
+		[]ledger.BookID{h.creditorBook, payment.ClearingHouseBook})
 	assertBooksTouched(t, "the payer's bank, answering a collection", h.booksTouchedBy(h.debtorBIC),
 		[]ledger.BookID{h.debtorBook})
 
@@ -1017,7 +1011,7 @@ func TestWhichBooksEachBankReachesInAPull(t *testing.T) {
 	// message carries: no store read to route, and nothing but network rows to
 	// clear.
 	assertBooksTouched(t, "the clearing house, clearing a collection", h.booksTouchedBy(h.cfg.ClearingHouseBIC),
-		[]ledger.BookID{ledger.NetworkBook})
+		[]ledger.BookID{payment.ClearingHouseBook})
 
 	// And the payer's money moved without the central bank being involved. A
 	// direct debit is the first flow in this package where a receiving bank
@@ -1075,13 +1069,38 @@ func TestWhichBooksEachBankReachesInAPull(t *testing.T) {
 // The book sets are asserted again for one specific reason: the wrong bank must
 // touch its OWN book and no other. Under the sweep it touched every bank's, which
 // is precisely the crossing that made the misroute dangerous.
+//
+// # The wrong bank is a THIRD one, and it used to be the submitter's own
+//
+// Both subtests named the submitter's own bank as the counterparty's, which was
+// the sharpest available misroute while a fixture named one side. Since a
+// submission has to name BOTH agents — Mesh.Submit picks the actor out of them
+// before any bank's half runs, see creditTransferRequestTo — that request is
+// caught one guard earlier and never reaches anybody: two identical agents is
+// exactly what Submit's on-us check refuses, and refusing it there is right. A
+// payer who types their own bank's BIC for a payee is told it is a book transfer
+// rather than having a message built for it.
+//
+// So the misroute needs a bank that is neither end of the payment and is still a
+// member, and the fixture admits one. That is the case the guards genuinely
+// cannot catch — the clearing house routes on the address it was given, the
+// address belongs to a real member, and only the bank that receives the message
+// can say it holds no such account. It is also the more realistic typo: a payer
+// picking the wrong BIC out of a list picks somebody else's, not their own.
 func TestAWrongCounterpartyAgentIsRefusedByTheBankItNames(t *testing.T) {
+	// wrongBIC is a member that holds neither party's account. Admitted per
+	// subtest, because each builds its own harness.
+	const wrongBIC iso20022.BIC = "NORDSESSXXX"
+
 	t.Run("push", func(t *testing.T) {
 		h := newMeshHarness(t)
+		h.admit(t, "Nordhaven Bank", wrongBIC, euroOnly)
+		h.drain(t)
+
 		req := h.creditTransferRequest(t)
-		// A payer naming their OWN bank as the payee's. Any form that asks a
+		// A payer naming a bank that is not the payee's. Any form that asks a
 		// payer to type the payee's BIC is a form that can be handed this.
-		req.CreditorDetails.Agent = h.debtorBIC
+		req.CreditorDetails.Agent = wrongBIC
 
 		h.rec.reset()
 		p, err := h.mesh.Submit(context.Background(), req)
@@ -1092,7 +1111,7 @@ func TestAWrongCounterpartyAgentIsRefusedByTheBankItNames(t *testing.T) {
 
 		// Routed as addressed. The clearing house relays on CdtrAgt with no store
 		// read of its own, so the message goes where the instruction said.
-		if n := h.messagesSentTo(h.debtorBIC, "pacs.008.001.08"); n != 1 {
+		if n := h.messagesSentTo(wrongBIC, "pacs.008.001.08"); n != 1 {
 			t.Errorf("the bank the payer named was handed %d credit transfers, want 1", n)
 		}
 		if n := h.messagesSentTo(h.creditorBIC, "pacs.008.001.08"); n != 0 {
@@ -1115,21 +1134,24 @@ func TestAWrongCounterpartyAgentIsRefusedByTheBankItNames(t *testing.T) {
 
 		// The bank that was wrongly named answered out of its OWN register and
 		// reached no other book. Under the sweep this set was every bank's.
-		assertBooksTouched(t, "the bank the payer wrongly named", h.booksTouchedBy(h.debtorBIC),
-			[]ledger.BookID{h.debtorBook, ledger.NetworkBook})
+		assertBooksTouched(t, "the bank the payer wrongly named", h.booksTouchedBy(wrongBIC),
+			[]ledger.BookID{ledger.BookID(wrongBIC)})
 
 		// And the agent is RECORDED rather than overruled: what the payment says
 		// about the counterparty's bank is what the instruction said.
-		if got := got.CreditorDetails.Agent; got != h.debtorBIC {
-			t.Errorf("stored creditor agent = %q, want the instruction's %q — an asserted agent is recorded, not replaced", got, h.debtorBIC)
+		if got := got.CreditorDetails.Agent; got != wrongBIC {
+			t.Errorf("stored creditor agent = %q, want the instruction's %q — an asserted agent is recorded, not replaced", got, wrongBIC)
 		}
 	})
 
 	t.Run("pull", func(t *testing.T) {
 		h := newMeshHarness(t)
+		h.admit(t, "Nordhaven Bank", wrongBIC, euroOnly)
+		h.drain(t)
+
 		req := h.directDebitRequest(t)
-		// A collector naming ITSELF as the payer's bank.
-		req.DebtorDetails.Agent = h.creditorBIC
+		// A collector naming a bank that is not the payer's.
+		req.DebtorDetails.Agent = wrongBIC
 
 		h.rec.reset()
 		p, err := h.mesh.Submit(context.Background(), req)
@@ -1138,8 +1160,8 @@ func TestAWrongCounterpartyAgentIsRefusedByTheBankItNames(t *testing.T) {
 		}
 		h.drain(t)
 
-		if n := h.messagesSentTo(h.creditorBIC, "pacs.003.001.08"); n != 1 {
-			t.Errorf("the bank the collector named — itself — was handed %d collections, want 1", n)
+		if n := h.messagesSentTo(wrongBIC, "pacs.003.001.08"); n != 1 {
+			t.Errorf("the bank the collector named was handed %d collections, want 1", n)
 		}
 		if n := h.messagesSentTo(h.debtorBIC, "pacs.003.001.08"); n != 0 {
 			t.Errorf("the payer's real bank was handed %d collections, want 0 — nothing addressed it", n)
@@ -1160,11 +1182,11 @@ func TestAWrongCounterpartyAgentIsRefusedByTheBankItNames(t *testing.T) {
 			t.Errorf("the payer's bank's clearing suspense = %d, want 0 — it never saw this collection", bal)
 		}
 
-		assertBooksTouched(t, "the collector, having addressed the collection to itself",
-			h.booksTouchedBy(h.creditorBIC), []ledger.BookID{h.creditorBook, ledger.NetworkBook})
+		assertBooksTouched(t, "the bank the collector wrongly named",
+			h.booksTouchedBy(wrongBIC), []ledger.BookID{ledger.BookID(wrongBIC)})
 
-		if got := got.DebtorDetails.Agent; got != h.creditorBIC {
-			t.Errorf("stored debtor agent = %q, want the instruction's %q — an asserted agent is recorded, not replaced", got, h.creditorBIC)
+		if got := got.DebtorDetails.Agent; got != wrongBIC {
+			t.Errorf("stored debtor agent = %q, want the instruction's %q — an asserted agent is recorded, not replaced", got, wrongBIC)
 		}
 	})
 }
@@ -1190,7 +1212,7 @@ func TestTheCSMTouchesOnlyTheNetworkBook(t *testing.T) {
 	h.drain(t)
 
 	assertBooksTouched(t, "clearing house", h.booksTouchedBy(h.cfg.ClearingHouseBIC),
-		[]ledger.BookID{ledger.NetworkBook})
+		[]ledger.BookID{payment.ClearingHouseBook})
 }
 
 // TestTheCSMStillTouchesOnlyTheNetworkBookWhenItSettles extends the assertion
@@ -1223,7 +1245,7 @@ func TestTheCSMStillTouchesOnlyTheNetworkBookWhenItSettles(t *testing.T) {
 	h.drain(t)
 
 	assertBooksTouched(t, "the clearing house, reaching a cut-off and instructing settlement",
-		h.booksTouchedBy(h.cfg.ClearingHouseBIC), []ledger.BookID{ledger.NetworkBook})
+		h.booksTouchedBy(h.cfg.ClearingHouseBIC), []ledger.BookID{payment.ClearingHouseBook})
 }
 
 // TestWhichBooksTheCentralBankReachesWhenItSettles is the test Task 10 deferred,
@@ -1304,7 +1326,7 @@ func TestWhichBooksTheCentralBankReachesWhenItSettles(t *testing.T) {
 	}
 	assertBooksTouched(t, "the central bank, settling a cycle",
 		h.booksTouchedBy(h.cfg.CentralBankBIC),
-		[]ledger.BookID{payment.CentralBankBook, ledger.NetworkBook})
+		[]ledger.BookID{payment.CentralBankBook, payment.ClearingHouseBook})
 }
 
 // TestEachBankBooksItsOwnSettlementAndNoOtherBooks is the counterpart of the
@@ -1385,7 +1407,7 @@ func TestEachBankBooksItsOwnSettlementAndNoOtherBooks(t *testing.T) {
 	assertBooksTouched(t, "the payer's bank, booking its own settlement",
 		h.booksTouchedBy(h.debtorBIC), []ledger.BookID{h.debtorBook})
 	assertBooksTouched(t, "the payee's bank, booking its own settlement and paying its customer",
-		h.booksTouchedBy(h.creditorBIC), []ledger.BookID{h.creditorBook, ledger.NetworkBook})
+		h.booksTouchedBy(h.creditorBIC), []ledger.BookID{h.creditorBook, payment.ClearingHouseBook})
 }
 
 // TestWhichBooksAReturnReaches is the last flow's measurement, and it has just
@@ -1540,7 +1562,7 @@ func TestEachBankBooksItsOwnReturnAndNoOtherBooks(t *testing.T) {
 	assertBooksTouched(t, "the payee's bank, clawing its own customer back before it asks",
 		h.booksTouchedBy(h.creditorBIC), []ledger.BookID{h.creditorBook})
 	assertBooksTouched(t, "the payer's bank, refunding its own customer after finality",
-		h.booksTouchedBy(h.debtorBIC), []ledger.BookID{h.debtorBook, ledger.NetworkBook})
+		h.booksTouchedBy(h.debtorBIC), []ledger.BookID{h.debtorBook, payment.ClearingHouseBook})
 }
 
 // TestWhichBooksAdmissionReaches is the counterpart the sub-project's Tasks
@@ -1554,45 +1576,58 @@ func TestEachBankBooksItsOwnReturnAndNoOtherBooks(t *testing.T) {
 // bank's book, and that the two institutions that used to be reached INTO now
 // reach their own.
 //
-// # The measured want-lists, and where the plan for this task was wrong
+// # The measured want-lists, and what Task 18c did to them
 //
-// The plan predicted:
+// Three institutions, one book each:
 //
-//	the joining bank    [its own book, NetworkBook]
+//	the joining bank    [its own book]
 //	the central bank    [CentralBankBook]
-//	the clearing house  [NetworkBook]
+//	the clearing house  [ClearingHouseBook]
 //
-// Two of the three are what the recorder says. The CENTRAL BANK's is not: it is
-// [CentralBankBook, NetworkBook], and the reason is the note above the tests in
-// this file. A network-scoped write reaches this recorder through the id it
-// ALLOCATED and the audit event it APPENDED, never through the row itself — and
-// OpenSettlementAccountTx does both: it draws an id before the read its
-// idempotency is decided from (payment.admissionSequenceTx) and appends
-// settlement_account.opened afterwards. Neither is optional. Drop the event and
-// the settlement account exists in no immutable record; drop the id and the act
-// loses the ordering that made its idempotency its own rather than the store's —
-// see payment.admissionSequenceTx, which measures what that is worth here.
+// Every one of those used to carry ledger.NetworkBook beside it, and the
+// disappearance is the whole of what this task did rather than a loosening of the
+// assertion. NetworkBook meant "belongs to no single institution", and it was
+// where a bank's id, a payment's id, a cycle's id and every network-scoped audit
+// event were drawn — one counter and one audit stream, shared by everybody, in
+// the one database that held everything. Each of those rows turned out to have
+// exactly one owner. So the id and the audit event an act draws now come from the
+// store that act is about to write, which is its own institution's
+// (payment.Network.book), and the second entry in each set collapsed into the
+// first.
 //
-// So the correction is the plan's and not the domain's, exactly as Task 16's
-// return measurement was — that one predicted [CentralBankBook, NetworkBook] and
-// measured [CentralBankBook], for the mirror-image reason. Both times the
-// question is the same one: does this act write a row of the network's, or not.
+// The mechanism the note above the tests describes is UNCHANGED and still the
+// only way a row-write is visible here: through the id it allocated and the audit
+// event it appended, never through the row itself. What changed is which book
+// those two name. An act that stopped appending its audit event would still
+// vanish from this measurement, which is the failure that note exists to warn
+// about.
+//
+// The plan for this task predicted [its own book, NetworkBook] for the joining
+// bank and [CentralBankBook] alone for the central bank, and was wrong about the
+// second in the direction the note explains: OpenSettlementAccountTx draws an id
+// before the read its idempotency is decided from (payment.admissionSequenceTx)
+// and appends settlement_account.opened afterwards, so it was [CentralBankBook,
+// NetworkBook]. Neither half is optional — drop the event and the settlement
+// account exists in no immutable record; drop the id and the act loses the
+// ordering that made its idempotency its own rather than the store's. Both are
+// still drawn. They are drawn in the settlement agent's own book, so the
+// correction and the prediction have arrived at the same list by different
+// routes, and the reasoning is kept because the mechanism it is about survives.
 //
 // # What each set says
 //
-// The JOINING BANK reaches its own book and NetworkBook. Its own, because
-// founding builds a chart of accounts, four internal accounts per asset and a
-// product; NetworkBook, because the bank's id and two audit events are drawn
-// there. That is Mesh.Admit's synchronous half plus the handler that records the
-// acknowledgement, and the two are the same actor.
+// The JOINING BANK reaches its own book: founding builds a chart of accounts,
+// four internal accounts per asset and a product, and the bank's id and two audit
+// events are drawn there too. That is Mesh.Admit's synchronous half plus the
+// handler that records the acknowledgement, and the two are the same actor.
 //
-// The CENTRAL BANK reaches CentralBankBook and NetworkBook, and never a bank's.
-// It opens a Liability in its own book and writes its own member row; the
-// settlement reference it produces reaches the bank as a MESSAGE, which is the
-// whole of what changed.
+// The CENTRAL BANK reaches CentralBankBook and never a bank's. It opens a
+// Liability in its own book and writes its own member row; the settlement
+// reference it produces reaches the bank as a MESSAGE, which is the whole of what
+// changed at Task 17.
 //
-// The CLEARING HOUSE reaches NetworkBook alone. It writes one roster row and
-// posts nothing, which is what it does on every other flow in this package.
+// The CLEARING HOUSE reaches ClearingHouseBook alone. It writes one roster row
+// and posts nothing, which is what it does on every other flow in this package.
 //
 // # And no institution reaches another bank's book
 //
@@ -1615,11 +1650,11 @@ func TestWhichBooksAdmissionReaches(t *testing.T) {
 	}
 
 	assertBooksTouched(t, "the joining bank, founding itself and recording what it was told",
-		h.booksTouchedBy(joinerBIC), []ledger.BookID{joiner.BookID, ledger.NetworkBook})
+		h.booksTouchedBy(joinerBIC), []ledger.BookID{joiner.BookID})
 	assertBooksTouched(t, "the central bank, opening a settlement account in its own book",
-		h.booksTouchedBy(h.cfg.CentralBankBIC), []ledger.BookID{payment.CentralBankBook, ledger.NetworkBook})
+		h.booksTouchedBy(h.cfg.CentralBankBIC), []ledger.BookID{payment.CentralBankBook})
 	assertBooksTouched(t, "the clearing house, writing a routing entry",
-		h.booksTouchedBy(h.cfg.ClearingHouseBIC), []ledger.BookID{ledger.NetworkBook})
+		h.booksTouchedBy(h.cfg.ClearingHouseBIC), []ledger.BookID{payment.ClearingHouseBook})
 
 	// No institution went near a bank's book but that bank itself. The two
 	// incumbents are in the fixture and are not party to this admission at all,
@@ -1772,13 +1807,13 @@ func TestALodgementIsTwoBooksInTwoUnitsOfWork(t *testing.T) {
 
 	vaultBefore := h.vaultCash(t, h.debtor.ID)
 	mirrorBefore := h.reserveMirror(t, h.debtor.ID)
-	cbBefore, err := h.cb().ReserveBalance(ctx, h.debtor.ID, "EUR")
+	cbBefore, err := h.cb().ReserveBalance(ctx, h.debtor.BIC, "EUR")
 	if err != nil {
 		t.Fatalf("ReserveBalance: %v", err)
 	}
 
 	h.rec.reset()
-	if _, err := h.mesh.Lodge(ctx, h.debtor.ID, "EUR", amount); err != nil {
+	if _, err := h.mesh.Lodge(ctx, h.debtor.BIC, "EUR", amount); err != nil {
 		t.Fatalf("Lodge: %v", err)
 	}
 	h.drain(t)
@@ -1800,7 +1835,7 @@ func TestALodgementIsTwoBooksInTwoUnitsOfWork(t *testing.T) {
 	if got, want := h.reserveMirror(t, h.debtor.ID)-mirrorBefore, amount; got != want {
 		t.Errorf("the lodgement raised the bank's own reserve mirror by %d, want %d", got, want)
 	}
-	cbAfter, err := h.cb().ReserveBalance(ctx, h.debtor.ID, "EUR")
+	cbAfter, err := h.cb().ReserveBalance(ctx, h.debtor.BIC, "EUR")
 	if err != nil {
 		t.Fatalf("ReserveBalance: %v", err)
 	}
@@ -1831,7 +1866,7 @@ func TestABankCannotLodgeCashItDoesNotHold(t *testing.T) {
 	mirrorBefore := h.reserveMirror(t, h.debtor.ID)
 	mark := h.messagesSeen()
 
-	_, err := h.mesh.Lodge(ctx, h.debtor.ID, "EUR", vault+1)
+	_, err := h.mesh.Lodge(ctx, h.debtor.BIC, "EUR", vault+1)
 	if !errors.Is(err, ledger.ErrInsufficientBalance) {
 		t.Fatalf("lodging more than the vault holds = %v, want ledger.ErrInsufficientBalance", err)
 	}
@@ -1998,23 +2033,54 @@ func TestEveryStructCarriedBookIsDecided(t *testing.T) {
 // TestWritingAParticipantTouchesNoBankBook is the evidence behind the one
 // exclusion in structCarriedBooks, made falsifiable rather than asserted.
 //
-// The claim is that Bank.BookID is a column on a network-scoped row, not
-// the scope of the write. So writing a participant that NAMES a bank's book must
-// leave that book empty — and this reads the book back through the store to say
-// so, rather than trusting the recorder that is itself under test.
+// The claim is that Bank.BookID is a COLUMN on the row, not the scope of the
+// write. So writing a bank row that NAMES some other book must leave that book
+// alone — and this asks the store rather than trusting the recorder that is
+// itself under test.
 //
-// If PutBank ever did write into p.BookID, this fails and the entry in
+// If PutBank ever did write into b.BookID, this fails and the entry in
 // structCarriedBooks becomes wrong at the same moment, which is what makes the
 // exclusion a claim about the code rather than about the author's confidence.
+//
+// # The split makes the second half a refusal, and that is the stronger answer
+//
+// This used to write into one shared store and read the named book back EMPTY,
+// which is as much as a shared store can say: the book existed, it was reachable,
+// and nothing had landed in it. A bank's store answers for exactly one book now,
+// so asking it about another is sqlite.ErrNotThisStoresBook rather than an empty
+// page — "there is nothing of yours here" replaced by "that is not a question
+// this database can be asked". The assertion is on the refusal, because an empty
+// answer is the thing this schema can no longer give and a test still expecting
+// one would pass for the wrong reason.
+//
+// # And Bank.BookID is not a column any more either, which is stronger
+//
+// The last leg used to read the row back and find it still carrying the foreign
+// book, on the argument that a stored field is a column and not a scope. There is
+// no such column: a bank's id IS its BIC and IS its book (payment.AsBank), so
+// store/sqlite writes neither and scanBank derives both from the primary key.
+// A BookID that disagrees is silently NORMALISED — the serialiser's stance on
+// every derived field, with payment.FoundBankTx as the thing that refuses an
+// inconsistent bank — so the round trip comes back naming this bank's own book.
+//
+// That is the same claim arriving one step further: the field could not scope the
+// write, and now it cannot even be carried. Both halves are asserted, because
+// they fail apart. A store that scoped the write would put rows in the victim's
+// book; a store that stored the field verbatim would hand back a bank claiming a
+// book nobody keeps.
 func TestWritingAParticipantTouchesNoBankBook(t *testing.T) {
 	clock := func() time.Time { return testTime }
-	rec := newRecordingStore(testenv.New(t, clock).Payment())
 	ctx := context.Background()
-	victim := ledger.BookID("bank_verde")
+	rec := newRecordingStores(testenv.NewSet(t, clock))
+	store, err := rec.Bank(ctx, "AURODEFFXXX")
+	if err != nil {
+		t.Fatalf("opening the bank's store: %v", err)
+	}
+	victim := ledger.BookID("VERDITMMXXX")
 
-	if err := rec.Update(ctx, func(ctx context.Context, tx payment.Tx) error {
+	if err := store.Update(ctx, func(ctx context.Context, tx payment.Tx) error {
 		return tx.PutBank(ctx, payment.Bank{
-			ID:        "p_aurora",
+			ID:        "AURODEFFXXX",
 			Name:      "Aurora Bank",
 			BIC:       "AURODEFFXXX",
 			BookID:    victim,
@@ -2024,36 +2090,31 @@ func TestWritingAParticipantTouchesNoBankBook(t *testing.T) {
 		t.Fatalf("PutBank: %v", err)
 	}
 
-	// Nothing landed in the book the row names.
-	if err := rec.View(ctx, func(ctx context.Context, tx payment.Tx) error {
-		ledgers, err := tx.ListLedgers(ctx, victim)
-		if err != nil {
-			return err
+	// The book the row names is not one this database answers for, so nothing
+	// could have landed in it and the store says so rather than answering empty.
+	if err := store.View(ctx, func(ctx context.Context, tx payment.Tx) error {
+		if _, err := tx.ListLedgers(ctx, victim); !errors.Is(err, sqlite.ErrNotThisStoresBook) {
+			t.Errorf("listing ledgers in %s = %v, want ErrNotThisStoresBook; writing a bank row must not make its BookID reachable here", victim, err)
 		}
-		if len(ledgers) != 0 {
-			t.Errorf("writing a participant put %d ledgers in %s; it is supposed to be a network-scoped row", len(ledgers), victim)
-		}
-		accounts, err := tx.ListAccounts(ctx, victim)
-		if err != nil {
-			return err
-		}
-		if len(accounts) != 0 {
-			t.Errorf("writing a participant put %d accounts in %s; it is supposed to be a network-scoped row", len(accounts), victim)
+		if _, err := tx.ListAccounts(ctx, victim); !errors.Is(err, sqlite.ErrNotThisStoresBook) {
+			t.Errorf("listing accounts in %s = %v, want ErrNotThisStoresBook", victim, err)
 		}
 		return nil
 	}); err != nil {
 		t.Fatalf("View: %v", err)
 	}
 
-	// And the row itself is readable without naming any book at all, which is
-	// what "network-scoped" means.
-	if err := rec.View(ctx, func(ctx context.Context, tx payment.Tx) error {
-		p, err := tx.GetBank(ctx, "p_aurora")
+	// And the row itself is readable without naming any book at all, carrying THIS
+	// bank's book rather than the one it was written with — the field is derived
+	// from the id, so it cannot name somebody else's book even by mistake.
+	if err := store.View(ctx, func(ctx context.Context, tx payment.Tx) error {
+		p, err := tx.GetBank(ctx, "AURODEFFXXX")
 		if err != nil {
 			return err
 		}
-		if p.BookID != victim {
-			t.Errorf("participant came back with BookID %q, want %q — the field is stored, it just does not scope the write", p.BookID, victim)
+		if p.BookID != "AURODEFFXXX" {
+			t.Errorf("bank came back with BookID %q, want its own %q — the field is derived from the id, not stored",
+				p.BookID, ledger.BookID("AURODEFFXXX"))
 		}
 		return nil
 	}); err != nil {
@@ -2156,9 +2217,15 @@ var errProbeDone = errors.New("probe finished")
 //
 // What the recorder saw survives the rollback, because a read that happened and
 // was then rolled back still happened.
+// Which institution's store it probes through does not matter and the choice is
+// arbitrary: every book here is synthetic ("book_PutBank"), so no store answers
+// for any of them and every call fails. What is under test is that the recorder
+// noted the book BEFORE the call went through, which is exactly what makes the
+// probe independent of any one shape's tables.
 func TestRecordingStoreRecordsTheBookOfEveryCall(t *testing.T) {
 	clock := func() time.Time { return testTime }
-	rec := newRecordingStore(testenv.New(t, clock).Payment())
+	recs := newRecordingStores(testenv.NewSet(t, clock))
+	rec := recs.ClearingHouse()
 	ctx := context.Background()
 
 	methods := bookScopedTxMethods(t)
@@ -2166,7 +2233,7 @@ func TestRecordingStoreRecordsTheBookOfEveryCall(t *testing.T) {
 		t.Fatal("no book-scoped methods parsed; the parser is wrong, not the recorder")
 	}
 	for _, m := range methods {
-		rec.reset()
+		recs.reset()
 		book := ledger.BookID("book_" + m.Name)
 		err := rec.Update(ctx, func(ctx context.Context, tx payment.Tx) error {
 			fn := reflect.ValueOf(tx).MethodByName(m.Name)
@@ -2186,7 +2253,7 @@ func TestRecordingStoreRecordsTheBookOfEveryCall(t *testing.T) {
 		if !errors.Is(err, errProbeDone) {
 			t.Errorf("probing %s (%s.Tx): Update returned %v, want the callback's own error back", m.Name, m.Pkg, err)
 		}
-		got := rec.touched()
+		got := recs.touched()
 		if len(got) != 1 || got[0] != book {
 			t.Errorf("calling %s (%s.Tx) on book %q recorded %v, want exactly [%s]", m.Name, m.Pkg, book, got, book)
 		}
@@ -2223,30 +2290,38 @@ func bookArgument(t *testing.T, typ reflect.Type, m bookMethod, book ledger.Book
 // The second half is the wider crossing still: an AuditFilter with no BookID
 // reads every book at once. That must not look like a clean unit of work either,
 // which is what everyBook is for.
+// The read is made through ONE bank's store and names ANOTHER bank's book, which
+// the split turns into a refusal — so the store's error is discarded and only
+// what the recorder saw is asserted. That is the point rather than a compromise:
+// the recorder must notice the attempt, and it must notice it whether or not any
+// database was ever going to answer. A version of this that insisted on a
+// successful read would be testing the schema, and would have to be deleted the
+// day the schema stopped allowing it. See recordingStores, which records what
+// the split cost it.
 func TestACrossBookAuditReadIsRecorded(t *testing.T) {
 	clock := func() time.Time { return testTime }
-	rec := newRecordingStore(testenv.New(t, clock).Payment())
+	recs := newRecordingStores(testenv.NewSet(t, clock))
 	ctx := context.Background()
-	victim := ledger.BookID("bank_verde")
+	rec, err := recs.Bank(ctx, "AURODEFFXXX")
+	if err != nil {
+		t.Fatalf("opening the bank's store: %v", err)
+	}
+	victim := ledger.BookID("VERDITMMXXX")
 
-	if err := rec.View(ctx, func(ctx context.Context, tx payment.Tx) error {
+	_ = rec.View(ctx, func(ctx context.Context, tx payment.Tx) error {
 		_, err := tx.ListAudit(ctx, ledger.AuditFilter{BookID: victim})
 		return err
-	}); err != nil {
-		t.Fatalf("ListAudit: %v", err)
-	}
-	if got := rec.touched(); !slices.Equal(got, []ledger.BookID{victim}) {
-		t.Errorf("a unit of work that read %s's audit trail touched %v, want [%s]", victim, got, victim)
+	})
+	if got := recs.touched(); !slices.Equal(got, []ledger.BookID{victim}) {
+		t.Errorf("a unit of work that reached for %s's audit trail touched %v, want [%s]", victim, got, victim)
 	}
 
-	rec.reset()
-	if err := rec.View(ctx, func(ctx context.Context, tx payment.Tx) error {
+	recs.reset()
+	_ = rec.View(ctx, func(ctx context.Context, tx payment.Tx) error {
 		_, err := tx.ListAudit(ctx, ledger.AuditFilter{})
 		return err
-	}); err != nil {
-		t.Fatalf("unfiltered ListAudit: %v", err)
-	}
-	if got := rec.touched(); !slices.Equal(got, []ledger.BookID{everyBook}) {
+	})
+	if got := recs.touched(); !slices.Equal(got, []ledger.BookID{everyBook}) {
 		t.Errorf("an unfiltered audit read touched %v, want [%s] — it reads every book, and must not pass for a quiet one", got, everyBook)
 	}
 }
@@ -2261,16 +2336,16 @@ func TestACrossBookAuditReadIsRecorded(t *testing.T) {
 // is appended under it.
 func TestWritingANetworkRowRecordsTheNetworkBook(t *testing.T) {
 	clock := func() time.Time { return testTime }
-	rec := newRecordingStore(testenv.New(t, clock).Payment())
+	rec := newRecordingStores(testenv.NewSet(t, clock))
 	net := payment.NewNetworks(rec, clock).ClearingHouse()
 
 	if _, err := net.OpenCycle(context.Background(), payment.SchemeSEPACT); err != nil {
 		t.Fatalf("OpenCycle: %v", err)
 	}
-	if got := rec.touched(); !slices.Equal(got, []ledger.BookID{ledger.NetworkBook}) {
+	if got := rec.touched(); !slices.Equal(got, []ledger.BookID{payment.ClearingHouseBook}) {
 		t.Errorf("opening a cycle touched %v, want [%s].\n"+
 			"A network-scoped write records its book through NextID and AppendAudit, not through a posting.",
-			got, ledger.NetworkBook)
+			got, payment.ClearingHouseBook)
 	}
 }
 
@@ -2358,16 +2433,34 @@ func isAuditEventType(w *chainWalk, pkg *pkgAST, imports map[string]string, typ 
 // read hides — reading another bank's register or its audit trail needs no write
 // — so a View that handed back the bare Tx would leave the whole read side
 // unrecorded.
+//
+// # Two books means two DATABASES now, and that is what makes the pair legal
+//
+// The two legs used to be two book ids in one store, which was the only way to
+// have two books and is also the crossing this file exists to catch. Each leg is
+// its own bank's store reaching its own book here, so both are ordinary acts, and
+// what the assertion at the end proves is that ONE recorder aggregates across
+// institutions — which is the property every TestXTouchesOnly… assertion rests
+// on and which no single-store version could have shown.
 func TestRecordingTxReachesTheStoreUnderneath(t *testing.T) {
 	clock := func() time.Time { return testTime }
-	rec := newRecordingStore(testenv.New(t, clock).Payment())
+	recs := newRecordingStores(testenv.NewSet(t, clock))
 	ctx := context.Background()
-	// Two books, named so that "aurora" sorts before "verde": touched() is
-	// asserted whole, order included.
-	written := ledger.BookID("bank_aurora")
-	read := ledger.BookID("bank_verde")
+	// Two books, and a bank IS its own book, so these are the two banks' addresses
+	// — named so that "AURO" sorts before "VERD": touched() is asserted whole,
+	// order included.
+	written := ledger.BookID("AURODEFFXXX")
+	read := ledger.BookID("VERDITMMXXX")
+	writer, err := recs.Bank(ctx, "AURODEFFXXX")
+	if err != nil {
+		t.Fatalf("opening the writing bank's store: %v", err)
+	}
+	reader, err := recs.Bank(ctx, "VERDITMMXXX")
+	if err != nil {
+		t.Fatalf("opening the reading bank's store: %v", err)
+	}
 
-	err := rec.Update(ctx, func(ctx context.Context, tx payment.Tx) error {
+	err = writer.Update(ctx, func(ctx context.Context, tx payment.Tx) error {
 		first, err := tx.NextID(ctx, written, "ldg")
 		if err != nil {
 			return err
@@ -2385,7 +2478,7 @@ func TestRecordingTxReachesTheStoreUnderneath(t *testing.T) {
 		t.Fatalf("Update: %v", err)
 	}
 
-	err = rec.View(ctx, func(ctx context.Context, tx payment.Tx) error {
+	err = reader.View(ctx, func(ctx context.Context, tx payment.Tx) error {
 		if _, err := tx.GetLedger(ctx, read, "ldg_nope"); !errors.Is(err, ledger.ErrLedgerNotFound) {
 			t.Errorf("GetLedger on a missing row returned %v, want ledger.ErrLedgerNotFound from the store underneath", err)
 		}
@@ -2405,8 +2498,8 @@ func TestRecordingTxReachesTheStoreUnderneath(t *testing.T) {
 		t.Fatalf("View: %v", err)
 	}
 
-	if got := rec.touched(); !slices.Equal(got, []ledger.BookID{written, read}) {
-		t.Errorf("touched() = %v, want [%s %s] — both units of work, sorted", got, written, read)
+	if got := recs.touched(); !slices.Equal(got, []ledger.BookID{written, read}) {
+		t.Errorf("touched() = %v, want [%s %s] — both units of work, at two institutions, sorted", got, written, read)
 	}
 }
 
@@ -2431,7 +2524,7 @@ func TestRecordingTxReachesTheStoreUnderneath(t *testing.T) {
 // It needs no store: nothing here goes through Update, which is why the inner
 // store is nil.
 func TestTheRecorderIsSafeForConcurrentActorsAndSortsWhatItSaw(t *testing.T) {
-	rec := newRecordingStore(nil)
+	rec := newRecordingStores(nil)
 
 	// Two actors and an unattributed writer, all at once. The books are named so
 	// that each actor's own set is out of order on the way in.

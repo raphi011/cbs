@@ -267,8 +267,19 @@ var euroAndDollar = []ledger.AssetCode{"EUR", "USD"}
 // bank is one member's own network, keyed by its ADDRESS — a bank's
 // ParticipantID is its BIC since Task 18 (see payment.AsBank), and every caller
 // here holds an address.
+//
+// It panics on a failure to open, which Task 18c made possible: a bank's network
+// is minted over that bank's own DATABASE now, and opening one is I/O. Every
+// caller here is one expression inside an assertion and every address they pass
+// is a bank this harness founded, so a failure is a broken fixture rather than an
+// outcome worth reporting through the test's own error path. payment's testSystem
+// takes the same line for the same reason.
 func (h *meshHarness) bank(bic iso20022.BIC) *payment.Network {
-	return h.nets.Bank(payment.ParticipantID(bic))
+	net, err := h.nets.Bank(context.Background(), payment.ParticipantID(bic))
+	if err != nil {
+		panic("mesh_test: opening " + string(bic) + "'s store: " + err.Error())
+	}
+	return net
 }
 func (h *meshHarness) cb() *payment.Network { return h.nets.CentralBank() }
 
@@ -377,7 +388,7 @@ func newHarness(t *testing.T, opts harnessOptions) *meshHarness {
 		if err := h.bank(h.debtor.BIC).Deposit(ctx, h.debtor.ID, h.debtorAcct.ID, harnessFunding, "Opening deposit"); err != nil {
 			t.Fatalf("Deposit: %v", err)
 		}
-		h.lodge(t, h.debtor.ID, "EUR", harnessFunding)
+		h.lodge(t, h.debtor.BIC, "EUR", harnessFunding)
 	}
 	if opts.twoAssets {
 		h.debtorUSDAcct = h.openCustomer(t, h.debtor, "Alice", "USD", 0, debtorUSDIBAN)
@@ -390,7 +401,7 @@ func newHarness(t *testing.T, opts harnessOptions) *meshHarness {
 		if err := h.bank(h.debtor.BIC).Deposit(ctx, h.debtor.ID, h.debtorUSDAcct.ID, harnessFunding, "Opening deposit"); err != nil {
 			t.Fatalf("Deposit USD: %v", err)
 		}
-		h.lodge(t, h.debtor.ID, "USD", harnessFunding)
+		h.lodge(t, h.debtor.BIC, "USD", harnessFunding)
 	}
 
 	h.debtorBIC, h.creditorBIC = h.debtor.BIC, h.creditor.BIC
@@ -458,9 +469,13 @@ func (h *meshHarness) admit(t *testing.T, name string, bic iso20022.BIC, assets 
 // getBank re-reads a bank from the store, which is the only way to learn what
 // became of an admission: Admit answers with the bank as its own operator left
 // it, and everything after that happened at two other actors.
+//
+// Out of the BANK's own database, and it used to be out of the clearing house's.
+// That worked while there was one store; the csm shape has no banks table, and a
+// bank's own row is the one thing about it no other institution keeps.
 func (h *meshHarness) getBank(t *testing.T, id payment.ParticipantID) *payment.Bank {
 	t.Helper()
-	p, err := h.net.GetBank(context.Background(), id)
+	p, err := h.bank(iso20022.BIC(id)).GetBank(context.Background(), id)
 	if err != nil {
 		t.Fatalf("GetBank %s: %v", id, err)
 	}
@@ -476,7 +491,7 @@ func (h *meshHarness) getBank(t *testing.T, id payment.ParticipantID) *payment.B
 func (h *meshHarness) centralBankTransactionCount(t *testing.T) int {
 	t.Helper()
 	var n int
-	if err := h.net.Store().View(context.Background(), func(ctx context.Context, tx payment.Tx) error {
+	if err := h.cb().Store().View(context.Background(), func(ctx context.Context, tx payment.Tx) error {
 		txs, err := tx.ListTransactions(ctx, payment.CentralBankBook)
 		n = len(txs)
 		return err
@@ -490,13 +505,18 @@ func (h *meshHarness) centralBankTransactionCount(t *testing.T) int {
 // settlement agent with its own database would post from, read by BIC because
 // that is the only identifier it has.
 //
-// It goes through the store rather than through a Network method, because there
-// is no reader for this row outside the domain — payment.settlementAccountTx is
-// what every reserve movement resolves through, and it is unexported.
+// Through the CENTRAL BANK's own store, and it used to be through the clearing
+// house's — which held the row while there was one store and whose schema has no
+// settlement_members table at all.
+//
+// It goes through the store rather than through a Network method because it
+// predates one: payment.Network.GetSettlementMember exists now, added for GET
+// /reserves/{bic}, and this stays a direct read so that a fixture asserting what
+// the agent WROTE does not go through the method it is asserting about.
 func (h *meshHarness) getSettlementMember(t *testing.T, bic iso20022.BIC) payment.SettlementMember {
 	t.Helper()
 	var out payment.SettlementMember
-	if err := h.net.Store().View(context.Background(), func(ctx context.Context, tx payment.Tx) error {
+	if err := h.cb().Store().View(context.Background(), func(ctx context.Context, tx payment.Tx) error {
 		var err error
 		out, err = tx.GetSettlementMember(ctx, bic)
 		return err
@@ -516,33 +536,48 @@ func (h *meshHarness) getRosterEntry(bic iso20022.BIC) (payment.RosterEntry, err
 	return h.net.GetRosterEntryByBIC(context.Background(), bic)
 }
 
-// bankCount is how many bank rows this network holds. It is what says a refused
-// admission wrote NOTHING, which no read of one bank could say.
+// bankCount is how many banks this DEPLOYMENT holds — a database with a bank
+// founded in it. It is what says a refused admission wrote NOTHING, which no
+// read of one bank could say.
+//
+// It was the clearing house's ListBanks, and that institution has no banks table
+// to count. What replaces it is payment.Stores.Banks, which is the composition
+// root's question and the only enumeration of banks that survives the split. A
+// fixture is the composition root: it holds every store, which is exactly what no
+// institution does.
 func (h *meshHarness) bankCount(t *testing.T) int {
 	t.Helper()
-	banks, err := h.net.ListBanks(context.Background())
+	return len(h.allBanks(t))
+}
+
+// allBanks is every address this deployment has founded a bank at.
+func (h *meshHarness) allBanks(t *testing.T) []iso20022.BIC {
+	t.Helper()
+	bics, err := h.rec.Banks(context.Background())
 	if err != nil {
-		t.Fatalf("ListBanks: %v", err)
+		t.Fatalf("Banks: %v", err)
 	}
-	return len(banks)
+	return bics
 }
 
 // assertBankCount checks how many banks answer to one address.
 //
-// By BIC and not by id, because what it exists to catch is a second FOUNDING on
-// an address that already has one — which would have its own id and would be
-// invisible to any assertion made about the first.
+// The count it can report is now 0 or 1 and cannot be 2, and that is a stronger
+// guarantee rather than a weaker assertion. A bank's database is NAMED by its
+// address (store/sqlite.Set), so a second founding on a taken address does not
+// make a second bank — it opens the first one's database. What this catches is
+// therefore the case that is still reachable: an address that should have no bank
+// and has one, or should have one and has none.
+//
+// It was a sweep of every bank row comparing BICs, on the stated worry that a
+// second founding would have its own id and be invisible to an assertion about
+// the first. Ids are addresses now (payment.AsBank), so there is no second id
+// for it to hide behind.
 func assertBankCount(t *testing.T, h *meshHarness, bic iso20022.BIC, want int) {
 	t.Helper()
-	banks, err := h.net.ListBanks(context.Background())
-	if err != nil {
-		t.Fatalf("ListBanks: %v", err)
-	}
 	var got int
-	for _, b := range banks {
-		if b.BIC == bic {
-			got++
-		}
+	if slices.Contains(h.allBanks(t), bic) {
+		got = 1
 	}
 	if got != want {
 		t.Errorf("%d banks answer to %s, want %d", got, bic, want)
@@ -632,6 +667,15 @@ func (h *meshHarness) creditTransferRequestTo(t *testing.T, iban string) payment
 		// own. TestAWrongCounterpartyAgentIsRefusedByTheBankItNames sets a WRONG
 		// one on purpose, which is the only place in this package that should.
 		CreditorDetails: payment.PartyDetails{Agent: h.creditorBIC, Name: h.creditorAcct.Name},
+		// And the payer's own bank, which this fixture has to name and a customer's
+		// instruction does not. Mesh.Submit picks the SUBMITTING actor out of the
+		// two agents (submitterOf) before any bank's half runs, so a request that
+		// left this empty would be refused with "no bank actor for" — the mesh
+		// having nobody to hand it to. api's POST /payments fills the same field
+		// from the port's bound identity and the seed names it outright; this is a
+		// caller that names both, which is the case Submit's on-us guard says it
+		// covers.
+		DebtorDetails: payment.PartyDetails{Agent: h.debtorBIC, Name: h.debtorAcct.Name},
 	}
 }
 
@@ -674,6 +718,12 @@ func (h *meshHarness) directDebitRequest(t *testing.T) payment.InitiatePaymentRe
 		// Pull: the debtor is the counterparty, so the request must name it. See
 		// creditTransferRequest on why the BIC sits beside the name.
 		DebtorDetails: payment.PartyDetails{Agent: h.debtorBIC, Name: h.debtorAcct.Name},
+		// And the SUBMITTER, which on a pull is the payee's bank. Mesh.Submit picks
+		// the actor out of the two agents before any bank's half runs, so a request
+		// naming one side leaves it with nobody to hand the collection to. See
+		// creditTransferRequestTo, where the same field arrived for the same reason
+		// on the other side.
+		CreditorDetails: payment.PartyDetails{Agent: h.creditorBIC, Name: h.creditorAcct.Name},
 	}
 }
 
@@ -916,7 +966,7 @@ func (h *meshHarness) returnErr(id payment.PaymentID, reason iso20022.ReturnReas
 func (h *meshHarness) balance(t *testing.T, id payment.ParticipantID, acct deposit.AccountID) ledger.Amount {
 	t.Helper()
 	ctx := context.Background()
-	p, err := h.net.GetBank(ctx, id)
+	p, err := h.bank(iso20022.BIC(id)).GetBank(ctx, id)
 	if err != nil {
 		t.Fatalf("GetBank %s: %v", id, err)
 	}
@@ -938,7 +988,7 @@ func (h *meshHarness) balance(t *testing.T, id payment.ParticipantID, acct depos
 func (h *meshHarness) postingByKey(t *testing.T, id payment.ParticipantID, key string) ledger.Transaction {
 	t.Helper()
 	ctx := context.Background()
-	p, err := h.net.GetBank(ctx, id)
+	p, err := h.bank(iso20022.BIC(id)).GetBank(ctx, id)
 	if err != nil {
 		t.Fatalf("GetBank %s: %v", id, err)
 	}
@@ -960,7 +1010,7 @@ func (h *meshHarness) postingByKey(t *testing.T, id payment.ParticipantID, key s
 func (h *meshHarness) posting(t *testing.T, id payment.ParticipantID, txID ledger.TransactionID) ledger.Transaction {
 	t.Helper()
 	ctx := context.Background()
-	p, err := h.net.GetBank(ctx, id)
+	p, err := h.bank(iso20022.BIC(id)).GetBank(ctx, id)
 	if err != nil {
 		t.Fatalf("GetBank %s: %v", id, err)
 	}
@@ -1043,7 +1093,7 @@ func (h *meshHarness) instructionsTo(t *testing.T, to iso20022.BIC) []*iso20022.
 func (h *meshHarness) suspense(t *testing.T, id payment.ParticipantID) ledger.Amount {
 	t.Helper()
 	ctx := context.Background()
-	p, err := h.net.GetBank(ctx, id)
+	p, err := h.bank(iso20022.BIC(id)).GetBank(ctx, id)
 	if err != nil {
 		t.Fatalf("GetBank %s: %v", id, err)
 	}
@@ -1071,7 +1121,7 @@ func (h *meshHarness) suspense(t *testing.T, id payment.ParticipantID) ledger.Am
 // Draining here is what makes the reserve real before the test starts. The fixture
 // forgets its own messages afterwards (see newHarness), so the round trip does not
 // show up in a test that counts what it provoked.
-func (h *meshHarness) lodge(t *testing.T, id payment.ParticipantID, asset ledger.AssetCode, amount ledger.Amount) {
+func (h *meshHarness) lodge(t *testing.T, id iso20022.BIC, asset ledger.AssetCode, amount ledger.Amount) {
 	t.Helper()
 	if _, err := h.mesh.Lodge(context.Background(), id, asset, amount); err != nil {
 		t.Fatalf("Lodge %s %s: %v", id, asset, err)
@@ -1089,7 +1139,7 @@ func (h *meshHarness) lodge(t *testing.T, id payment.ParticipantID, asset ledger
 func (h *meshHarness) vaultCash(t *testing.T, id payment.ParticipantID) ledger.Amount {
 	t.Helper()
 	ctx := context.Background()
-	p, err := h.net.GetBank(ctx, id)
+	p, err := h.bank(iso20022.BIC(id)).GetBank(ctx, id)
 	if err != nil {
 		t.Fatalf("GetBank %s: %v", id, err)
 	}
@@ -1114,7 +1164,7 @@ func (h *meshHarness) vaultCash(t *testing.T, id payment.ParticipantID) ledger.A
 func (h *meshHarness) reserveMirror(t *testing.T, id payment.ParticipantID) ledger.Amount {
 	t.Helper()
 	ctx := context.Background()
-	p, err := h.net.GetBank(ctx, id)
+	p, err := h.bank(iso20022.BIC(id)).GetBank(ctx, id)
 	if err != nil {
 		t.Fatalf("GetBank %s: %v", id, err)
 	}
@@ -1150,7 +1200,7 @@ func (h *meshHarness) booksTouchedBy(who iso20022.BIC) []ledger.BookID {
 // than quietly track it — the right direction, but it is this helper that would
 // need fixing, not them.
 func (h *meshHarness) allBooks() []ledger.BookID {
-	out := []ledger.BookID{h.debtorBook, h.creditorBook, payment.CentralBankBook, ledger.NetworkBook}
+	out := []ledger.BookID{h.debtorBook, h.creditorBook, payment.CentralBankBook, payment.ClearingHouseBook}
 	slices.Sort(out)
 	return out
 }
@@ -1162,7 +1212,7 @@ func (h *meshHarness) allBooks() []ledger.BookID {
 // fixture reaches both at once.
 func (h *meshHarness) bankBooks() []ledger.BookID {
 	return slices.DeleteFunc(h.allBooks(), func(b ledger.BookID) bool {
-		return b == payment.CentralBankBook || b == ledger.NetworkBook
+		return b == payment.CentralBankBook || b == payment.ClearingHouseBook
 	})
 }
 

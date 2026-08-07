@@ -31,7 +31,7 @@ import (
 func (h *meshHarness) reserveOf(t *testing.T, id payment.ParticipantID) ledger.Amount {
 	t.Helper()
 	ctx := context.Background()
-	p, err := h.net.GetBank(ctx, id)
+	p, err := h.bank(iso20022.BIC(id)).GetBank(ctx, id)
 	if err != nil {
 		t.Fatalf("GetBank %s: %v", id, err)
 	}
@@ -50,7 +50,7 @@ func (h *meshHarness) reserveOf(t *testing.T, id payment.ParticipantID) ledger.A
 // it — the account a camt.053 to that member is about.
 func (h *meshHarness) settlementAccountOf(t *testing.T, id payment.ParticipantID) ledger.AccountID {
 	t.Helper()
-	p, err := h.net.GetBank(context.Background(), id)
+	p, err := h.bank(iso20022.BIC(id)).GetBank(context.Background(), id)
 	if err != nil {
 		t.Fatalf("GetBank %s: %v", id, err)
 	}

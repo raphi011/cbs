@@ -1087,7 +1087,7 @@ func TestAReturnRetriedAfterAnUnwindRepaysThePayer(t *testing.T) {
 	if err := h.bank(h.creditorBIC).Deposit(ctx, h.creditorPID, h.creditorAcct.ID, harnessAmount, "cash in over the counter"); err != nil {
 		t.Fatalf("funding the biller's bank so the return can be retried: %v", err)
 	}
-	h.lodge(t, h.creditorPID, "EUR", harnessAmount)
+	h.lodge(t, h.creditorBIC, "EUR", harnessAmount)
 
 	payerBefore := h.balance(t, h.debtorPID, h.debtorAcct.ID)
 	billerBefore := h.balance(t, h.creditorPID, h.creditorAcct.ID)

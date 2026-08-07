@@ -340,7 +340,7 @@ func TestARefusedAdmissionLeavesAFoundedBank(t *testing.T) {
 	h := newMeshHarness(t)
 	ctx := context.Background()
 
-	joiner, err := h.net.FoundBank(ctx, "Nordhaven Bank", joinerBIC, euroOnly)
+	joiner, err := h.bank(joinerBIC).FoundBank(ctx, "Nordhaven Bank", joinerBIC, euroOnly)
 	if err != nil {
 		t.Fatalf("FoundBank: %v", err)
 	}
@@ -840,7 +840,7 @@ func TestTheClearingHouseRefusesAnApplicationOnAnotherBanksAddress(t *testing.T)
 	if _, err := h.getRosterEntry(joinerBIC); !errors.Is(err, payment.ErrRosterEntryNotFound) {
 		t.Errorf("the clearing house routes to %s: %v", joinerBIC, err)
 	}
-	err = h.net.Store().View(context.Background(), func(ctx context.Context, tx payment.Tx) error {
+	err = h.cb().Store().View(context.Background(), func(ctx context.Context, tx payment.Tx) error {
 		_, err := tx.GetSettlementMember(ctx, joinerBIC)
 		return err
 	})
@@ -865,7 +865,7 @@ func TestAFoundedBankIsNotAdmittedByARestart(t *testing.T) {
 	h := newMeshHarness(t)
 	ctx := context.Background()
 
-	joiner, err := h.net.FoundBank(ctx, "Nordhaven Bank", joinerBIC, euroOnly)
+	joiner, err := h.bank(joinerBIC).FoundBank(ctx, "Nordhaven Bank", joinerBIC, euroOnly)
 	if err != nil {
 		t.Fatalf("FoundBank: %v", err)
 	}
@@ -930,7 +930,7 @@ func TestAFoundedBankCanNeitherPayNorBePaid(t *testing.T) {
 	found := func(t *testing.T, h *meshHarness) (*payment.Bank, deposit.Account) {
 		t.Helper()
 		ctx := context.Background()
-		b, err := h.net.FoundBank(ctx, "Nordhaven Bank", joinerBIC, euroOnly)
+		b, err := h.bank(joinerBIC).FoundBank(ctx, "Nordhaven Bank", joinerBIC, euroOnly)
 		if err != nil {
 			t.Fatalf("FoundBank: %v", err)
 		}

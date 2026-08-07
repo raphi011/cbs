@@ -158,6 +158,28 @@ func (s *Server) handleSubmitPayment(w http.ResponseWriter, r *http.Request) {
 		writeUnprocessable(w, "this bank does not submit this payment: a credit transfer is submitted by the payer's bank and a direct debit by the payee's")
 		return
 	}
+	// And an omitted one is FILLED IN from the port, which is the identity the
+	// paragraph above says makes the check unnecessary.
+	//
+	// Without it, Mesh.Submit has nobody to hand the instruction to.
+	// submitterOf reads the submitting side's agent off the request to choose the
+	// ACTOR, before any bank's half runs and therefore before
+	// payment.SubmitPaymentTx refills that field from the bank's own row — so an
+	// ordinary customer instruction, which names its own side nowhere, reached the
+	// mesh's bank index under the empty address and came back "no bank actor for".
+	// Every submission through this route did, which is what the audit found.
+	//
+	// This is not a payer naming their own bank: the value comes from the LISTENER,
+	// so it is the same fact SubmitPaymentTx will write a moment later, supplied
+	// early enough for the mesh to route on. A caller that named its own side
+	// already passed the check above, so this can only agree with it.
+	if submitter == "" {
+		if sc.Direction() == payment.Pull {
+			dom.CreditorDetails.Agent = s.boundBIC()
+		} else {
+			dom.DebtorDetails.Agent = s.boundBIC()
+		}
+	}
 	// The submitting bank's half, and then the send. Mesh.Submit runs it on this
 	// goroutine and marks it as this bank's work, so the books it touches are
 	// attributed to the bank and not to whoever called in; the pacs.008 or

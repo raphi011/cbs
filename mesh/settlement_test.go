@@ -106,7 +106,7 @@ func TestARefusedSettlementCanBeInstructedAgain(t *testing.T) {
 	if err := h.bank(h.debtorBIC).Deposit(context.Background(), h.debtorPID, h.debtorAcct.ID, harnessAmount, "Reserve top-up"); err != nil {
 		t.Fatalf("Deposit: %v", err)
 	}
-	h.lodge(t, h.debtorPID, "EUR", harnessAmount)
+	h.lodge(t, h.debtorBIC, "EUR", harnessAmount)
 
 	// And ask again. This is the route POST /cycles/{cid}/settle reaches.
 	if _, err := h.mesh.Settle(context.Background(), stuck.ID); err != nil {
@@ -163,7 +163,7 @@ func TestReSettlingASettledCycleIsRefused(t *testing.T) {
 		t.Fatalf("a refused re-settle sent %d instructions, want the original %d", got, instructionsBefore)
 	}
 
-	settlements, err := h.net.ListSettlements(context.Background())
+	settlements, err := h.cb().ListSettlements(context.Background())
 	if err != nil {
 		t.Fatalf("ListSettlements: %v", err)
 	}
@@ -211,7 +211,7 @@ func TestASecondSettlementInstructionPostsNothing(t *testing.T) {
 	if got := h.balance(t, h.creditorPID, h.creditorAcct.ID); got != payeeBefore {
 		t.Fatalf("the payee holds %d after a replayed instruction, want the unchanged %d", got, payeeBefore)
 	}
-	settlements, err := h.net.ListSettlements(context.Background())
+	settlements, err := h.cb().ListSettlements(context.Background())
 	if err != nil {
 		t.Fatalf("ListSettlements: %v", err)
 	}
@@ -291,7 +291,7 @@ func TestEachMemberBooksTheStatementItWasSent(t *testing.T) {
 		if advice.Movement != member.want {
 			t.Errorf("%s booked a movement of %d, want %d", member.name, advice.Movement, member.want)
 		}
-		reserve, err := h.cb().ReserveBalance(context.Background(), member.pid, "EUR")
+		reserve, err := h.cb().ReserveBalance(context.Background(), iso20022.BIC(member.pid), "EUR")
 		if err != nil {
 			t.Fatalf("ReserveBalance %s: %v", member.pid, err)
 		}
@@ -311,7 +311,7 @@ func TestEachMemberBooksTheStatementItWasSent(t *testing.T) {
 func (h *meshHarness) advice(t *testing.T, id payment.ParticipantID, reference string) payment.SettlementAdvice {
 	t.Helper()
 	ctx := context.Background()
-	p, err := h.net.GetBank(ctx, id)
+	p, err := h.bank(iso20022.BIC(id)).GetBank(ctx, id)
 	if err != nil {
 		t.Fatalf("GetBank %s: %v", id, err)
 	}
@@ -531,7 +531,7 @@ func TestARefusedSettlementLeavesTheCycleClosedAndThePaymentsCleared(t *testing.
 	if got := h.suspense(t, h.debtorPID); got != harnessAmount {
 		t.Errorf("the payer's bank holds %d in suspense, want %d — nothing settled, so nothing left it", got, harnessAmount)
 	}
-	settlements, err := h.net.ListSettlements(context.Background())
+	settlements, err := h.cb().ListSettlements(context.Background())
 	if err != nil {
 		t.Fatalf("ListSettlements: %v", err)
 	}
@@ -749,7 +749,7 @@ func TestASettlementInstructionNamingTwoCyclesIsRefused(t *testing.T) {
 		t.Errorf("the refusal does not name the second cycle: %v", statusText(got))
 	}
 	// And nothing was settled on the strength of the leg it could read.
-	settlements, err := h.net.ListSettlements(context.Background())
+	settlements, err := h.cb().ListSettlements(context.Background())
 	if err != nil {
 		t.Fatalf("ListSettlements: %v", err)
 	}

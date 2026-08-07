@@ -86,7 +86,7 @@ func TestAnOperatorRejectionRefundsThePayerOnlyOnceTheMessageArrives(t *testing.
 	// payment, so the set contains it either way — worth saying, because the
 	// natural reading of this line is that it holds the attribution too.
 	assertBooksTouched(t, "the clearing house", h.booksTouchedBy(h.cfg.ClearingHouseBIC),
-		[]ledger.BookID{ledger.NetworkBook})
+		[]ledger.BookID{payment.ClearingHouseBook})
 	// The code the operator named travels, rather than being replaced by
 	// whatever the clearing house would have said on its own behalf.
 	h.assertLastTxStatusTo(t, h.debtorBIC, iso20022.TransactionStatusRejected)
@@ -211,22 +211,26 @@ func TestABankAdmittedAfterStartCanPayAndBePaid(t *testing.T) {
 // the old bank's actor would sign one bank's instruction with another's identity.
 func TestAddingABankOnAnotherBanksBICIsRefusedAndChangesNothing(t *testing.T) {
 	h := newMeshHarness(t)
-	ctx := context.Background()
 
-	// FOUNDED and not admitted, because the clearing house would refuse to admit
-	// a second institution on an address it already routes to
-	// (payment.ErrBICAlreadyAdmitted) and this test is about the mesh's refusal
-	// rather than the domain's. A founded bank is all AddBank needs.
-	clash, err := h.net.FoundBank(ctx, "Aurora Bank (again)", h.debtorBIC, euroOnly)
-	if err != nil {
-		t.Fatalf("FoundBank: %v", err)
-	}
+	// The clashing bank is a VALUE and it used to be founded through the domain.
+	// It cannot be founded any more, and the reason is the refusal this test is
+	// about arriving one layer down: a bank's database is NAMED by its address
+	// (store/sqlite.Set), so "a second bank on this BIC" is not a thing the store
+	// can hold — founding on a taken address opens the first bank's own database
+	// and would rename it rather than making a rival.
+	//
+	// That leaves the mesh's own refusal as the thing under test, which is what it
+	// always was: AddBank takes a *payment.Bank and asks whether an actor already
+	// answers to its address. Handing it a value skips a founding this test never
+	// wanted — the old fixture said as much, "a founded bank is all AddBank needs"
+	// — and no longer pretends the domain would have allowed one.
+	clash := &payment.Bank{ID: payment.ParticipantID(h.debtorBIC), Name: "Aurora Bank (again)", BIC: h.debtorBIC}
 	if err := h.mesh.AddBank(context.Background(), clash); err == nil {
 		t.Fatal("AddBank accepted a second bank on an address another bank already answers to")
 	}
 
 	h.mesh.mu.Lock()
-	_, indexed := h.mesh.banks[clash.ID]
+	_, indexed := h.mesh.banks[clash.BIC]
 	h.mesh.mu.Unlock()
 	if indexed {
 		t.Error("the refused bank is in the mesh's bank index; a refusal must leave it as it found it")
@@ -299,7 +303,7 @@ func TestForgetBanksRemovesAnActorTheBankIndexDoesNotName(t *testing.T) {
 	h := newMeshHarness(t)
 
 	h.mesh.mu.Lock()
-	delete(h.mesh.banks, h.debtorPID)
+	delete(h.mesh.banks, h.debtorBIC)
 	h.mesh.mu.Unlock()
 
 	if err := h.mesh.ForgetBanks(drainCtx(t)); err != nil {
@@ -337,7 +341,10 @@ func TestJoinRosterKeepsABankRegisteredBesideIt(t *testing.T) {
 	if err := h.mesh.ForgetBanks(ctx); err != nil {
 		t.Fatalf("ForgetBanks: %v", err)
 	}
-	beside := &payment.Bank{ID: "bank_beside", Name: "Beside Bank", BIC: "BSDEDEFFXXX"}
+	// The id IS the address (payment.AsBank), and AddBank opens this bank's own
+	// database from it — so an id that is not a BIC names no file and the mesh
+	// refuses to open it. It read "bank_beside" while ids were allocated.
+	beside := &payment.Bank{ID: "BSDEDEFFXXX", Name: "Beside Bank", BIC: "BSDEDEFFXXX"}
 	if err := h.mesh.AddBank(context.Background(), beside); err != nil {
 		t.Fatalf("AddBank: %v", err)
 	}
@@ -347,8 +354,8 @@ func TestJoinRosterKeepsABankRegisteredBesideIt(t *testing.T) {
 	}
 
 	h.mesh.mu.Lock()
-	_, kept := h.mesh.banks[beside.ID]
-	_, rejoined := h.mesh.banks[h.debtorPID]
+	_, kept := h.mesh.banks[beside.BIC]
+	_, rejoined := h.mesh.banks[h.debtorBIC]
 	h.mesh.mu.Unlock()
 	if !kept {
 		t.Error("the bank registered beside JoinRoster lost its index entry; its actor is running and nothing can reach it")
@@ -372,7 +379,7 @@ func TestJoinRosterRefusesTheWholeRosterWhenOneAddressIsTaken(t *testing.T) {
 		t.Fatalf("ForgetBanks: %v", err)
 	}
 	// Somebody else answering to the payer's bank's address.
-	squatter := &payment.Bank{ID: "bank_squatter", Name: "Squatter", BIC: h.debtorBIC}
+	squatter := &payment.Bank{ID: payment.ParticipantID(h.debtorBIC), Name: "Squatter", BIC: h.debtorBIC}
 	if err := h.mesh.AddBank(context.Background(), squatter); err != nil {
 		t.Fatalf("AddBank: %v", err)
 	}
@@ -388,7 +395,7 @@ func TestJoinRosterRefusesTheWholeRosterWhenOneAddressIsTaken(t *testing.T) {
 	// not have been registered either.
 	h.mesh.mu.Lock()
 	_, partial := h.mesh.actors[h.creditorBIC]
-	_, indexed := h.mesh.banks[h.creditorPID]
+	_, indexed := h.mesh.banks[h.creditorBIC]
 	h.mesh.mu.Unlock()
 	if partial || indexed {
 		t.Error("a refused roster left one of its banks behind; the batch is all-or-none")

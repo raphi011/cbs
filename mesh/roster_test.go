@@ -27,7 +27,7 @@ var euroOnly = []ledger.AssetCode{"EUR"}
 func rosterNetwork(t *testing.T, bics map[string]iso20022.BIC) *payment.Networks {
 	t.Helper()
 	clock := func() time.Time { return testTime }
-	nets := payment.NewNetworks(testenv.New(t, clock).Payment(), clock)
+	nets := payment.NewNetworks(testenv.NewSet(t, clock), clock)
 	for name, bic := range bics {
 		if _, err := storetest.Admit(context.Background(), nets, name, bic, euroOnly); err != nil {
 			t.Fatalf("admitting %s: %v", name, err)
@@ -105,7 +105,7 @@ func TestStartGivesEveryParticipantAnActor(t *testing.T) {
 // the roster and listing the banks were the same list.
 func TestStartGivesAFoundedBankNoActor(t *testing.T) {
 	clock := func() time.Time { return testTime }
-	nets := payment.NewNetworks(testenv.New(t, clock).Payment(), clock)
+	nets := payment.NewNetworks(testenv.NewSet(t, clock), clock)
 	ctx := context.Background()
 	if _, err := storetest.Admit(ctx, nets, "Aurora Bank", "AURODEFFXXX", euroOnly); err != nil {
 		t.Fatalf("admitting Aurora: %v", err)
