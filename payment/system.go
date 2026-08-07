@@ -2736,6 +2736,7 @@ func (s *Network) SettleCycleTx(ctx context.Context, tx Tx, id CycleID, instruct
 		ID:           SettlementID(settlementID),
 		CycleID:      id,
 		NetPositions: positions,
+		Asset:        asset,
 		SettlementTx: settlementTx,
 		ValueDate:    s.now(),
 		SettledAt:    s.now(),

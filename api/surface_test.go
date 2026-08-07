@@ -39,11 +39,12 @@ var allowedOverlaps = []string{
 	"GET /audit",
 	"GET /payments",
 	"GET /payments/{payid}",
+	// Same pattern, same handler family, two logs. A bank's answers about its
+	// own book and the clearing house's about its own — one payment-scope trail
+	// per institution, because there is no shared one left. See
+	// handleBankPaymentAudit.
+	"GET /payments/audit",
 	"POST /payments",
-	"GET /cycles",
-	"GET /cycles/{cid}",
-	"GET /settlements",
-	"GET /settlements/{sid}",
 }
 
 func surfaces(t *testing.T) map[string][]string {
@@ -110,14 +111,36 @@ func movedTo(old string) (operator, pattern string) {
 	case path == "/participants" && method == "POST":
 		return "central-bank", "POST /members"
 	case path == "/participants" && method == "GET":
-		return "clearing-house", "GET /members"
+		// On the CENTRAL BANK's listener, beside POST /members, and both are the
+		// OPERATOR's rather than that institution's — see centralBankRouter. It
+		// was the clearing house's while that institution was thought to hold a
+		// list of banks; the csm shape holds a roster of addresses, which is
+		// exactly the list that omits the founded bank this read exists to show.
+		return "central-bank", "GET /members"
 	case path == "/participants/{pid}":
 		return "bank", "GET /me"
 	case strings.HasPrefix(path, "/participants/{pid}/"):
 		return "bank", method + " /" + strings.TrimPrefix(path, "/participants/{pid}/")
 
+	case path == "/central-bank/reserves/{pid}":
+		// The path parameter is a BIC now and not a bank id, which is what the
+		// settlement agent's own records are keyed by and the only name for a
+		// bank it is ever told. See handleGetReserve.
+		return "central-bank", "GET /reserves/{bic}"
 	case strings.HasPrefix(path, "/central-bank/"):
 		return "central-bank", method + " /" + strings.TrimPrefix(path, "/central-bank/")
+
+	case path == "/cycles" || path == "/cycles/{cid}":
+		// The cycles are the CLEARING HOUSE's rows and are served there alone.
+		// The pre-split server had one store, so the central bank's console
+		// carried the same two reads; since Task 18d that institution's database
+		// has no cycles table and the routes answered a missing table rather
+		// than a list. See centralBankRouter.
+		return "clearing-house", old
+	case path == "/settlements" || path == "/settlements/{sid}":
+		// And the mirror of it: a settlement is the SETTLEMENT AGENT's row, so
+		// these two moved off the clearing house's surface and onto its own.
+		return "central-bank", old
 	case path == "/admin/reset":
 		return "central-bank", old
 
@@ -300,36 +323,42 @@ func TestABankCannotNameAnotherBank(t *testing.T) {
 	}
 }
 
-// TestTheClearingHouseReadsTheSettlementItDidNotPerform is what is left of the
-// operator split's settlement assertion, and the rename is part of the finding.
+// TestTheClearingHouseLearnsSettlementFromItsOwnCycle is what is left of the
+// operator split's settlement assertion, and it has now been renamed twice for
+// two different reasons.
 //
 // It was TestSettlingIsTheCentralBanksAct, and it pinned that by driving POST
 // /settlements on one operator and getting a 404 on the other. Neither half is
-// available now: no route settles, so there is no HTTP act left to attribute to
-// anybody, and a test still called that would be naming an assertion it no
-// longer makes. TestNoRouteSettlesACycle is where that is pinned.
+// available: no route settles, so there is no HTTP act left to attribute to
+// anybody. TestNoRouteSettlesACycle is where that is pinned.
 //
-// What survives is the READ, and it is the half that keeps mattering: the
-// clearing house closed the cycle and sent the instruction, so it has to be able
-// to find out whether the central bank discharged it. Reading is not doing, and
-// after Task 12 that sentence is the whole of the clearing house's relationship
-// with settlement.
-func TestTheClearingHouseReadsTheSettlementItDidNotPerform(t *testing.T) {
+// It then became TestTheClearingHouseReadsTheSettlementItDidNotPerform, on the
+// READ: this institution closed the cycle and sent the instruction, so it has to
+// be able to find out whether the central bank discharged it. That is still
+// exactly right and the ROUTE it used is gone — a settlement is the settlement
+// agent's row and Task 18d gives the clearing house a database with no
+// settlements table in it, so GET /settlements on this listener answered a
+// missing table.
+//
+// What it finds out with instead is its OWN cycle, whose status the agent's ACSC
+// moved. That is a better shape than the borrowed read was: the clearing house
+// learns the outcome from the message it was sent and records it on the row it
+// owns, rather than reaching into another institution's book to look. The
+// settlement's own row stays where it was written, on the agent's console —
+// TestTheCentralBankCanReadTheCycleItSettles is that half.
+func TestTheClearingHouseLearnsSettlementFromItsOwnCycle(t *testing.T) {
 	h := newServer(t, nil)
 	cid := settledCycle(t, h)
 
-	sid := settlementOfCycle(t, h, cid)
-	var settlement settlementDTO
-	getJSON(t, csm(h), "/settlements/"+sid, &settlement)
-	if settlement.CycleID != cid {
-		t.Fatalf("settlement cycleId = %v, want %s", settlement.CycleID, cid)
+	got := doJSON(t, csm(h), "GET", "/cycles/"+cid, "", http.StatusOK)
+	if got["status"] != "Settled" {
+		t.Fatalf("cycle status = %v, want Settled", got["status"])
 	}
-
-	var settlements []settlementDTO
-	getJSON(t, csm(h), "/settlements", &settlements)
-	if len(settlements) != 1 {
-		t.Fatalf("the clearing house sees %d settlements, want 1", len(settlements))
-	}
+	// And it cannot read the settlement itself, which is the boundary rather
+	// than a gap: that row is the agent's record of its own act, and its id was
+	// allocated in the agent's own database. See payment.ClearingCycle, which
+	// carries no settlement id for the same reason.
+	assertStatus(t, csm(h), "GET", "/settlements", "", http.StatusNotFound)
 }
 
 // TestTheCentralBankCanReadTheCycleItSettles is the other half: what the central
@@ -349,19 +378,24 @@ func TestTheCentralBankCanReadTheCycleItSettles(t *testing.T) {
 	h := newServer(t, nil)
 	cid := settledCycle(t, h)
 
+	// The CYCLE is read on the clearing house's console: that row is its own and
+	// this institution has no cycles table. What the central bank's operator
+	// finds a refused instruction with is a cut-off with NO SETTLEMENT of its
+	// own against it, which is the read below.
 	var cycles []clearingCycleDTO
-	getJSON(t, cb(h), "/cycles", &cycles)
+	getJSON(t, csm(h), "/cycles", &cycles)
 	if len(cycles) != 1 || cycles[0].ID != cid {
-		t.Fatalf("the central bank sees %v, want the one cycle %s", cycles, cid)
+		t.Fatalf("the clearing house sees %v, want the one cycle %s", cycles, cid)
 	}
 
 	// Settled, and by this institution: the clearing house sent a pacs.009 and
 	// this actor discharged it. Before the mesh a cycle sat Closed until a human
 	// pressed a second button on this console.
-	got := doJSON(t, cb(h), "GET", "/cycles/"+cid, "", http.StatusOK)
+	got := doJSON(t, csm(h), "GET", "/cycles/"+cid, "", http.StatusOK)
 	if got["status"] != "Settled" {
 		t.Fatalf("cycle status = %v, want Settled", got["status"])
 	}
+	assertStatus(t, cb(h), "GET", "/cycles/"+cid, "", http.StatusNotFound)
 
 	sid := settlementOfCycle(t, h, cid)
 
@@ -556,7 +590,7 @@ func TestTheCreditorsBankSubmitsADirectDebit(t *testing.T) {
 	// the same bank that submits below, and the only one that may hold the row.
 	mandate := doJSON(t, bank(h, payeeBank.pid), "POST", "/mandates", `{
 		"debtorAgent":"`+payerBank.pid+`","debtor":{"account":"`+payerBank.account+`"},
-		"creditorAgent":"`+payeeBank.pid+`","creditor":{"account":"`+payeeBank.account+`"},
+		"creditor":{"account":"`+payeeBank.account+`"},
 		"maxAmount":0
 	}`, http.StatusCreated)["id"].(string)
 
@@ -615,10 +649,15 @@ func TestAnUnknownSchemeIsRefusedAsAnUnknownScheme(t *testing.T) {
 // request that names no direction to violate. Same shape as the unregistered
 // scheme above, and the same fix: ask the question that has an answer first.
 //
-// Both directions, because the field that is missing is not the same one: a
-// push names no DEBTOR participant and a pull names no CREDITOR participant,
-// and a message that said "debtor" for both would be wrong for every
-// collection.
+// Both directions, because the field that is missing is not the same one: it is
+// the COUNTERPARTY's agent, and which side that is is the scheme's direction —
+// the creditor's on a push, the debtor's on a pull. A message that said
+// "debtor" for both would be wrong for every collection.
+//
+// It used to be the counterparty's PARTICIPANT, a field on the party ref. Task
+// 18 deleted it: a ref names no bank any more, because a bank's id became its
+// BIC and the agent beside the ref already carried it (see payment.PartyRef).
+// The refusal is the same refusal about the value that survived.
 func TestAnInstructionWithNoParticipantIsRefusedAsAMissingField(t *testing.T) {
 	h := newServer(t, nil)
 	a, b, _ := threeBanks(t, h)
@@ -628,34 +667,36 @@ func TestAnInstructionWithNoParticipantIsRefusedAsAMissingField(t *testing.T) {
 	push := do(t, bank(h, a.pid), "POST", "/payments", `{
 		"scheme":"sepa.ct",
 		"debtor":{"account":"`+a.account+`"},
-		"creditorAgent":"`+b.pid+`","creditor":{"account":"`+b.account+`","identifier":{"scheme":"IBAN","value":"`+b.iban+`"}},
+		"creditor":{"account":"`+b.account+`","identifier":{"scheme":"IBAN","value":"`+b.iban+`"}},
+		"creditorName":"Bob",
 		"amount":10000
 	}`)
 	if push.Code != http.StatusUnprocessableEntity {
-		t.Fatalf("a push naming no debtor participant = %d, want 422 (%s)", push.Code, push.Body.String())
+		t.Fatalf("a push naming no creditor agent = %d, want 422 (%s)", push.Code, push.Body.String())
 	}
-	if !strings.Contains(push.Body.String(), "names no debtor participant") {
-		t.Fatalf("a push naming no debtor participant was refused as %q", push.Body.String())
+	if !strings.Contains(push.Body.String(), "usable BIC for the counterparty's bank") {
+		t.Fatalf("a push naming no creditor agent was refused as %q", push.Body.String())
 	}
 
 	mandate := doJSON(t, bank(h, b.pid), "POST", "/mandates", `{
 		"debtorAgent":"`+a.pid+`","debtor":{"account":"`+a.account+`"},
-		"creditorAgent":"`+b.pid+`","creditor":{"account":"`+b.account+`"},
+		"creditor":{"account":"`+b.account+`"},
 		"maxAmount":0
 	}`, http.StatusCreated)["id"].(string)
 
 	pull := do(t, bank(h, b.pid), "POST", "/payments", `{
 		"scheme":"sepa.dd",
-		"debtorAgent":"`+a.pid+`","debtor":{"account":"`+a.account+`","identifier":{"scheme":"IBAN","value":"`+a.iban+`"}},
+		"debtor":{"account":"`+a.account+`","identifier":{"scheme":"IBAN","value":"`+a.iban+`"}},
+		"debtorName":"Alice",
 		"creditor":{"account":"`+b.account+`"},
 		"amount":10000,
 		"mandateId":"`+mandate+`"
 	}`)
 	if pull.Code != http.StatusUnprocessableEntity {
-		t.Fatalf("a collection naming no creditor participant = %d, want 422 (%s)", pull.Code, pull.Body.String())
+		t.Fatalf("a collection naming no debtor agent = %d, want 422 (%s)", pull.Code, pull.Body.String())
 	}
-	if !strings.Contains(pull.Body.String(), "names no creditor participant") {
-		t.Fatalf("a collection naming no creditor participant was refused as %q", pull.Body.String())
+	if !strings.Contains(pull.Body.String(), "usable BIC for the counterparty's bank") {
+		t.Fatalf("a collection naming no debtor agent was refused as %q", pull.Body.String())
 	}
 }
 

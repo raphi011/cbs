@@ -969,14 +969,15 @@ func (t *tx) PutSettlement(ctx context.Context, s payment.Settlement) error {
 		return err
 	}
 	_, err := t.tx.ExecContext(ctx, `
-		INSERT INTO settlements (id, cycle_id, settlement_tx, value_date, settled_at, seq)
-		VALUES (?, ?, ?, ?, ?, `+nextRowSeq("settlements")+`)
+		INSERT INTO settlements (id, cycle_id, asset, settlement_tx, value_date, settled_at, seq)
+		VALUES (?, ?, ?, ?, ?, ?, `+nextRowSeq("settlements")+`)
 		ON CONFLICT (id) DO UPDATE SET
 			cycle_id      = EXCLUDED.cycle_id,
+			asset         = EXCLUDED.asset,
 			settlement_tx = EXCLUDED.settlement_tx,
 			value_date    = EXCLUDED.value_date,
 			settled_at    = EXCLUDED.settled_at`,
-		string(s.ID), string(s.CycleID), string(s.SettlementTx),
+		string(s.ID), string(s.CycleID), string(s.Asset), string(s.SettlementTx),
 		nullTime{s.ValueDate}, nullTime{s.SettledAt})
 	if err != nil {
 		return fmt.Errorf("sqlite: put settlement %s: %w", s.ID, err)
@@ -1042,7 +1043,7 @@ func (t *tx) ListSettlements(ctx context.Context) ([]payment.Settlement, error) 
 // cannot tell an empty map from an absent one, and every settlement the domain
 // writes carries positions.
 func (t *tx) querySettlements(ctx context.Context, where, order string, args ...any) ([]payment.Settlement, error) {
-	query := "SELECT s.id, s.cycle_id, s.settlement_tx, s.value_date, s.settled_at, sp.bic, sp.amount " +
+	query := "SELECT s.id, s.cycle_id, s.asset, s.settlement_tx, s.value_date, s.settled_at, sp.bic, sp.amount " +
 		"FROM settlements s LEFT JOIN settlement_positions sp ON sp.settlement_id = s.id " + where
 	if order != "" {
 		query += " ORDER BY " + order
@@ -1062,7 +1063,7 @@ func (t *tx) querySettlements(ctx context.Context, where, order string, args ...
 			bic       sql.NullString
 			amount    sql.NullInt64
 		)
-		if err := rows.Scan(&s.ID, &s.CycleID, &s.SettlementTx, &value, &at, &bic, &amount); err != nil {
+		if err := rows.Scan(&s.ID, &s.CycleID, &s.Asset, &s.SettlementTx, &value, &at, &bic, &amount); err != nil {
 			return nil, fmt.Errorf("sqlite: query settlements: %w", err)
 		}
 		pos, seen := index[s.ID]

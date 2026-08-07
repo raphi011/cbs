@@ -382,6 +382,19 @@ CREATE TABLE settlements (
     -- commits — it does not, and must not, need to read the batch to do any of
     -- that.
     cycle_id      TEXT NOT NULL,
+    -- What was settled IN, and it is this institution's own answer rather than
+    -- a lookup. There is no CHECK against a known-assets table for the reason
+    -- every other asset column in this schema has none, and no join to the
+    -- cycle's scheme is possible: the scheme lives with the cycle, in the
+    -- clearing house's database, and this one has neither table.
+    --
+    -- It is a column rather than a derivation because the derivation was a
+    -- CROSSING. api's settlementAsset read settlement -> cycle -> scheme, which
+    -- is one institution asking about another's database and answers "no such
+    -- table" here. The agent never needed the trip: an instruction whose legs
+    -- are not all in one asset is refused by payment.positionsIn, so the batch
+    -- this row records has exactly one and this is it.
+    asset         TEXT NOT NULL,
     -- The single netting transaction in this book that moved every reserve. One
     -- transaction and not one per member, because a settlement window is
     -- whole-or-nothing: a partial discharge is the state this design exists to

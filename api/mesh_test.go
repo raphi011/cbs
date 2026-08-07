@@ -368,10 +368,18 @@ func TestSubmitAnswers202AndThePaymentIsNotYetAccepted(t *testing.T) {
 	}
 	id := decodePaymentID(t, rec)
 
-	before := getPayment(t, srv, id)
+	// Read on the PAYER'S BANK's surface, because with the clearing house's door
+	// shut that bank is the only institution that has a row for this payment at
+	// all — the instruction has not been relayed, so the clearing house has not
+	// been told it exists and answers 404 rather than "Initiated". Which is the
+	// same claim in a stronger form: the response was written before any other
+	// institution had heard of the payment.
+	var before paymentDTO
+	getJSON(t, payerRoutes(t, srv), "/payments/"+id, &before)
 	if before.Status != "Initiated" {
 		t.Errorf("status before draining = %q, want Initiated", before.Status)
 	}
+	assertStatus(t, csm(srv), "GET", "/payments/"+id, "", http.StatusNotFound)
 
 	open()
 	drain(t, msh)
@@ -451,10 +459,15 @@ func TestAdmissionAnswers202WithAFoundedBank(t *testing.T) {
 	assertEqual(t, "settlement account in the 202",
 		assets[0].(map[string]any)["settlement"].(string), "")
 
-	// Nothing to report about it, and a 200 saying so.
-	if got := reserveRows(t, srv, pid); len(got) != 0 {
-		t.Errorf("a founded bank reports %v; the central bank holds no account for it yet", got)
-	}
+	// Nothing to report about it, and a 422 saying so rather than an empty list.
+	//
+	// The empty list was the old answer and it was a claim this institution
+	// cannot make: it presumed the settlement agent knew of a bank and held no
+	// accounts for it. Since Task 18d the agent's own register is the whole of
+	// what it knows — there is no banks table for it to look the applicant up
+	// in — so a BIC it has admitted nobody at is not a member with zero reserves
+	// but a member it has never heard of. See handleGetReserve.
+	assertStatus(t, cb(srv), "GET", "/reserves/"+pid, "", http.StatusUnprocessableEntity)
 	// And the list carries the members it has, with no row and no failure for
 	// the applicant.
 	if got := reserveRows(t, srv, ""); len(got) != len(members) {

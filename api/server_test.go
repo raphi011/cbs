@@ -942,9 +942,12 @@ func TestPaymentDTOsCarryAsset(t *testing.T) {
 	// recording bank holds. Both ends are USD here anyway, so this reads the
 	// same either way — the field it is asserting on is the row's now, not a
 	// join onto the debtor's register.
+	// There is no creditorAgent on the wire: the creditor's bank is the one this
+	// request is being made to, and a field naming it could only ever repeat the
+	// port or contradict it. See createMandateRequest.
 	mandate := doJSON(t, bank(h, b), "POST", "/mandates", `{
 		"debtorAgent":"`+a+`","debtor":{"account":"`+aliceUSD+`"},
-		"creditorAgent":"`+b+`","creditor":{"account":"`+bobUSD+`"},
+		"creditor":{"account":"`+bobUSD+`"},
 		"maxAmount":50000
 	}`, http.StatusCreated)
 	assertEqual(t, "created mandate asset", mandate["asset"].(string), "USD")
@@ -1000,13 +1003,16 @@ func TestPaymentDTOsCarryAsset(t *testing.T) {
 	drainServer(t, h)
 	sid := settlementOfCycle(t, h, cid)
 
+	// On the SETTLEMENT AGENT's console, which is whose rows these are, and the
+	// asset is on the row rather than joined from the cycle's scheme. See
+	// payment.Settlement.Asset.
 	var settlements []settlementDTO
-	getJSON(t, csm(h), "/settlements", &settlements)
+	getJSON(t, cb(h), "/settlements", &settlements)
 	if len(settlements) != 1 || settlements[0].Asset != "EUR" {
 		t.Fatalf("GET /settlements asset = %+v, want one EUR settlement", settlements)
 	}
 
-	gotSettlement := doJSON(t, csm(h), "GET", "/settlements/"+sid, "", http.StatusOK)
+	gotSettlement := doJSON(t, cb(h), "GET", "/settlements/"+sid, "", http.StatusOK)
 	assertEqual(t, "GET settlement asset", gotSettlement["asset"].(string), "EUR")
 }
 
@@ -1075,12 +1081,18 @@ func TestNoRouteSettlesACycle(t *testing.T) {
 	h := newServer(t, nil)
 	cid := settledCycle(t, h)
 
-	// 405 and not 404 on the two /settlements, and the difference is the point
-	// rather than a quirk of the mux: GET /settlements is still there on both
-	// operators, so the PATH exists and the METHOD does not. That is exactly
-	// what "keep the reads, drop the action" means, said in a status code.
+	// 405 and not 404 on the central bank's /settlements, and the difference is
+	// the point rather than a quirk of the mux: GET /settlements is still there,
+	// so the PATH exists and the METHOD does not. That is exactly what "keep the
+	// reads, drop the action" means, said in a status code.
 	assertStatus(t, cb(h), "POST", "/settlements", `{"cycleId":"`+cid+`"}`, http.StatusMethodNotAllowed)
-	assertStatus(t, csm(h), "POST", "/settlements", `{"cycleId":"`+cid+`"}`, http.StatusMethodNotAllowed)
+	// On the CLEARING HOUSE the path is gone entirely, which is Task 18d rather
+	// than this deletion: a settlement is the settlement agent's row and that
+	// institution's database has no table for one. So there is nothing to say
+	//405 about, and 404 is the true answer — the console reads settlements on
+	// the operator whose book they are in.
+	assertStatus(t, csm(h), "POST", "/settlements", `{"cycleId":"`+cid+`"}`, http.StatusNotFound)
+	assertStatus(t, csm(h), "GET", "/settlements", "", http.StatusNotFound)
 	// The central bank has no settle route at all: instructing is the clearing
 	// house's act, and settling is this operator's but is not an HTTP one.
 	assertStatus(t, cb(h), "POST", "/cycles/"+cid+"/settle", "", http.StatusNotFound)
@@ -1091,18 +1103,24 @@ func TestNoRouteSettlesACycle(t *testing.T) {
 	// has already settled is 422 and no second pacs.009 is built.
 	assertStatus(t, csm(h), "POST", "/cycles/"+cid+"/settle", "", http.StatusUnprocessableEntity)
 	var settlementsAfter []settlementDTO
-	getJSON(t, csm(h), "/settlements", &settlementsAfter)
+	getJSON(t, cb(h), "/settlements", &settlementsAfter)
 	if len(settlementsAfter) != 1 {
 		t.Fatalf("asking a settled cycle to settle again produced %d settlements, want the original 1", len(settlementsAfter))
 	}
 
-	// The reads it left behind still answer, on both operators. They are what
-	// the console watches settlement with now.
+	// The reads it left behind still answer, each on the operator whose rows they
+	// are. They are what the console watches settlement with now.
+	//
+	// The CYCLES are the clearing house's, and the central bank's listener no
+	// longer serves them: that institution's database has no cycles table, so
+	// the route it used to carry answered a missing table rather than a list.
+	// See centralBankRouter.
 	var cycles []clearingCycleDTO
-	getJSON(t, cb(h), "/cycles", &cycles)
+	getJSON(t, csm(h), "/cycles", &cycles)
 	if len(cycles) != 1 || cycles[0].ID != cid {
-		t.Fatalf("the central bank sees %v, want the one closed cycle %s", cycles, cid)
+		t.Fatalf("the clearing house sees %v, want the one closed cycle %s", cycles, cid)
 	}
+	assertStatus(t, cb(h), "GET", "/cycles", "", http.StatusNotFound)
 	// And a settlement it can read, which no request in this test asked for: the
 	// cut-off instructed it. That is the shape the deleted POST leaves behind —
 	// the console watches settlement rather than performing it.
@@ -1180,8 +1198,21 @@ func TestARefusedSettlementIsRecoverableOverHTTP(t *testing.T) {
 	drainServer(t, h)
 
 	settled := doJSON(t, csm(h), "GET", "/cycles/"+cyc, "", http.StatusOK)
-	if settled["status"] != "Settled" || settled["settlementId"] == nil {
-		t.Fatalf("cycle = %v, want Settled with a settlement", settled)
+	if settled["status"] != "Settled" {
+		t.Fatalf("cycle = %v, want Settled", settled)
+	}
+	// And the settlement itself, on the SETTLEMENT AGENT's console and matched
+	// by the cut-off it names. The cycle carries no settlement id: that id is
+	// allocated inside the agent's own unit of work in its own database, and the
+	// clearing house is never told it. See clearingCycleDTO.
+	var settlements []settlementDTO
+	getJSON(t, cb(h), "/settlements", &settlements)
+	var found bool
+	for _, st := range settlements {
+		found = found || st.CycleID == cyc
+	}
+	if !found {
+		t.Fatalf("the settlement agent has no settlement against %s: %v", cyc, settlements)
 	}
 	if got := doJSON(t, csm(h), "GET", "/payments/"+pay, "", http.StatusOK)["status"]; got != "Settled" {
 		t.Fatalf("payment status = %v, want Settled", got)
@@ -1200,7 +1231,12 @@ func TestErrorMapping(t *testing.T) {
 	did := doJSON(t, bank(h, pid), "POST", "/deposit-accounts", `{"name":"Alice","asset":"EUR","productId":"`+prdOf(t, h, pid)+`"}`, http.StatusCreated)["id"].(string)
 
 	// 404: unknown participant.
-	assertStatus(t, bank(h, "nope"), "GET", "/me", "", http.StatusNotFound)
+	//
+	// A well-formed address nobody founded, not the string "nope". Binding a
+	// bank's surface OPENS that bank's database since Task 18d, and an address
+	// that is not a BIC has no database to open — so the fixture panicked in the
+	// harness instead of reaching the handler whose status code is under test.
+	assertStatus(t, bank(h, "NOSUCHBKXXX"), "GET", "/me", "", http.StatusNotFound)
 
 	// 422: withdrawal hold exceeding available balance (account has no funds).
 	assertStatus(t, bank(h, pid), "POST", "/deposit-accounts/"+did+"/holds", `{"amount":5000}`, http.StatusUnprocessableEntity)
@@ -1263,9 +1299,12 @@ func TestAuditEndpointIncludesPayloadAndSeq(t *testing.T) {
 
 	// Founding a bank posts several ledger audit events as a side effect
 	// (ledger + subledgers + accounts), so no further setup is needed.
-	admitMember(t, h, `{"bic":"BNKADEFFXXX","name":"Bank A"}`, http.StatusAccepted)
+	pid := admitMember(t, h, `{"bic":"BNKADEFFXXX","name":"Bank A"}`, http.StatusAccepted)["id"].(string)
 
-	rec := do(t, bank(h, "bank_1"), "GET", "/audit", "")
+	// The id the admission answered with, rather than the literal "bank_1". A
+	// bank's ParticipantID is its BIC since Task 18 and its database is opened by
+	// it, so a hard-coded sequence id has no store behind it.
+	rec := do(t, bank(h, pid), "GET", "/audit", "")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("GET audit: got status %d, want %d (body: %s)", rec.Code, http.StatusOK, rec.Body.String())
 	}
@@ -1320,9 +1359,12 @@ func TestAdminReset(t *testing.T) {
 // the network would leave "Temp" in the store and the test would see it.
 func TestResetEmptiesState(t *testing.T) {
 	// The tests' sample dataset: one bank with one customer. Idempotent, like
-	// the real one, so booting and resetting are the same call.
+	// the real one, so booting and resetting are the same call — and it asks
+	// "has anything been built here already" of the DEPLOYMENT rather than of an
+	// institution, which is Dataset.Populate's own shape and the only one that
+	// works: no institution holds a list of banks since Task 18d.
 	baseline := func(ctx context.Context, nets *payment.Networks, msh *mesh.Mesh) error {
-		existing, err := nets.ClearingHouse().ListBanks(ctx)
+		existing, err := nets.Stores().Banks(ctx)
 		if err != nil {
 			return err
 		}
@@ -1341,7 +1383,7 @@ func TestResetEmptiesState(t *testing.T) {
 
 	names := func() []string {
 		var accounts []depositAccountDTO
-		getJSON(t, bank(srv, "bank_1"), "/deposit-accounts", &accounts)
+		getJSON(t, bank(srv, "BANKDEFFXXX"), "/deposit-accounts", &accounts)
 		out := make([]string, len(accounts))
 		for i, a := range accounts {
 			out[i] = a.Name
@@ -1354,7 +1396,7 @@ func TestResetEmptiesState(t *testing.T) {
 	}
 
 	// Mutate, reset, then assert the mutation is gone and the seed is back.
-	doJSON(t, bank(srv, "bank_1"), "POST", "/deposit-accounts", `{"name":"Temp","asset":"EUR","overdraftLimit":0,"productId":"`+prdOf(t, srv, "bank_1")+`"}`, http.StatusCreated)
+	doJSON(t, bank(srv, "BANKDEFFXXX"), "POST", "/deposit-accounts", `{"name":"Temp","asset":"EUR","overdraftLimit":0,"productId":"`+prdOf(t, srv, "BANKDEFFXXX")+`"}`, http.StatusCreated)
 	if got := names(); len(got) != 2 {
 		t.Fatalf("accounts after the mutation = %v, want two", got)
 	}
@@ -1395,7 +1437,7 @@ func TestResetSurvivesAClientDisconnect(t *testing.T) {
 	baseline := func(ctx context.Context, nets *payment.Networks, msh *mesh.Mesh) error {
 		populateRan = true
 		populateCtx = ctx.Err()
-		existing, err := nets.ClearingHouse().ListBanks(ctx)
+		existing, err := nets.Stores().Banks(ctx)
 		if err != nil {
 			return err
 		}
@@ -1445,7 +1487,7 @@ func TestResetSurvivesAClientDisconnect(t *testing.T) {
 // participants where there should have been four.
 func TestConcurrentResetsLeaveExactlyOneDataset(t *testing.T) {
 	baseline := func(ctx context.Context, nets *payment.Networks, msh *mesh.Mesh) error {
-		existing, err := nets.ClearingHouse().ListBanks(ctx)
+		existing, err := nets.Stores().Banks(ctx)
 		if err != nil {
 			return err
 		}
@@ -1587,10 +1629,10 @@ func TestControlCharactersInAPathAreRefused(t *testing.T) {
 	h := newServer(t, nil)
 
 	// A well-formed but unknown id is still an honest 404.
-	assertStatus(t, bank(h, "bank_404"), "GET", "/me", "", http.StatusNotFound)
+	assertStatus(t, bank(h, "NOSUCHBKXXX"), "GET", "/me", "", http.StatusNotFound)
 
 	assertStatus(t, csm(h), "GET", "/participants/bank%001", "", http.StatusBadRequest)
-	assertStatus(t, bank(h, "bank_1"), "GET", "/deposit-accounts/dep%001", "", http.StatusBadRequest)
+	assertStatus(t, bank(h, "BNKADEFFXXX"), "GET", "/deposit-accounts/dep%001", "", http.StatusBadRequest)
 	assertStatus(t, csm(h), "GET", "/payments/audit?entity=pay%001", "", http.StatusBadRequest)
 }
 
@@ -1681,31 +1723,27 @@ func TestPaymentAuditRecordsTheLifecycle(t *testing.T) {
 	var events []auditEventDTO
 	getJSON(t, csm(h), "/payments/audit?limit=1000", &events)
 
-	// Four events per admission, one per act, and grouped per bank rather than
-	// interleaved: admitMember drains before the next request, so each bank's
-	// conversation finishes before the next one starts. Without that drain the
-	// order would be a race between two conversations and this assertion would
-	// be flaky rather than wrong. See payment's
-	// TestEachActOfAnAdmissionLeavesItsOwnAuditEvent for what each event is.
+	// THIS INSTITUTION'S log, and only its own. The route is on the clearing
+	// house's port and reads the clearing house's book, so an admission
+	// contributes ONE event here — the roster entry this institution wrote — and
+	// the other three are in the applicant's own log and the settlement agent's.
+	// cycle.settled is the settlement agent's too, and is absent for the same
+	// reason. See payment's TestEachActOfAnAdmissionLeavesItsOwnAuditEvent and
+	// TestPaymentAuditCoversTheNettingFlow, which assert all four logs side by
+	// side; there is no cross-institution stream for this route to serve.
+	//
+	// Grouped per bank rather than interleaved: admitMember drains before the
+	// next request, so each bank's conversation finishes before the next one
+	// starts. Without that drain the order would be a race between two
+	// conversations and this assertion would be flaky rather than wrong.
 	want := []string{
-		ledger.EventParticipantAdded, // Bank A founds itself
-		ledger.EventSettlementAccountOpened,
-		ledger.EventMemberAdmitted,
-		ledger.EventMembershipRecorded,
-		ledger.EventParticipantAdded, // Bank B
-		ledger.EventSettlementAccountOpened,
-		ledger.EventMemberAdmitted,
-		ledger.EventMembershipRecorded,
+		ledger.EventMemberAdmitted, // Bank A into the roster
+		ledger.EventMemberAdmitted, // Bank B
 		ledger.EventCycleOpened,
 		ledger.EventPaymentInitiated,
 		ledger.EventPaymentAccepted,
 		ledger.EventPaymentCleared, // one per payment in the cycle
 		ledger.EventCycleClosed,
-		// The settlement agent closes the cut-off, and each payee's bank
-		// settles its own payment afterwards on the clearing house's advice —
-		// so cycle.settled comes first. See
-		// payment.TestPaymentAuditCoversTheNettingFlow.
-		ledger.EventCycleSettled,
 		ledger.EventPaymentSettled, // one per payment in the cycle
 	}
 	got := auditTypes(events)
@@ -1887,11 +1925,16 @@ func TestARejectionWhoseRefundFailsStandsAndIsDeadLettered(t *testing.T) {
 	}`, http.StatusAccepted)["id"].(string)
 	drainServer(t, h)
 
-	p, err := h.network().GetPayment(ctx, payment.PaymentID(payID))
+	// The PAYER'S BANK's own copy and its own network. The leg this reverses is
+	// on that copy — the clearing house's row has no leg columns — and the act
+	// is that bank's, so through the clearing house it is refused as another
+	// institution's.
+	payer := mustForBank(t, h, payment.ParticipantID(a)).network()
+	p, err := payer.GetPayment(ctx, payment.PaymentID(payID))
 	if err != nil {
 		t.Fatalf("get payment: %v", err)
 	}
-	if err := h.network().ReverseDebtorLeg(ctx, p, "reversed already"); err != nil {
+	if err := payer.ReverseDebtorLeg(ctx, p, "reversed already"); err != nil {
 		t.Fatalf("reverse the leg out from under the payer's bank: %v", err)
 	}
 
@@ -1928,13 +1971,16 @@ func TestAuditMandateEvents(t *testing.T) {
 
 	mid := doJSON(t, bank(h, b), "POST", "/mandates", `{
 		"debtorAgent":"`+a+`","debtor":{"account":"`+aAccounts[0].ID+`"},
-		"creditorAgent":"`+b+`","creditor":{"account":"`+bAccounts[0].ID+`"},
+		"creditor":{"account":"`+bAccounts[0].ID+`"},
 		"maxAmount":50000
 	}`, http.StatusCreated)["id"].(string)
 	doJSON(t, bank(h, b), "POST", "/mandates/"+mid+"/revoke", "", http.StatusOK)
 
+	// In the CREDITOR BANK's own log, because a mandate is that bank's row and
+	// both events are its own acts. The clearing house has never been told the
+	// mandate exists.
 	var events []auditEventDTO
-	getJSON(t, csm(h), "/payments/audit?entity="+mid, &events)
+	getJSON(t, bank(h, b), "/payments/audit?entity="+mid, &events)
 	assertEqual(t, "mandate events", strings.Join(auditTypes(events), " "),
 		strings.Join([]string{ledger.EventMandateCreated, ledger.EventMandateRevoked}, " "))
 }
@@ -1973,6 +2019,13 @@ func TestAuditRoutesAreScoped(t *testing.T) {
 	// Scope alone does not identify a route: bank A's log, bank B's log and the
 	// central bank's are all ledger-scoped, so a route that served the wrong
 	// BOOK would still pass the loop above. Every pair of logs must be disjoint.
+	//
+	// Disjoint BY BOOK, and it used to be by Seq. Seq was a store-GLOBAL sequence
+	// while there was one store, so two events sharing one meant two routes
+	// serving one log; since Task 18d each institution has its own database and
+	// its own counter, and seq 1 is in every one of these logs by construction.
+	// The book is what a route can get wrong and is what identifies the log. See
+	// payment/audit_test.go's paymentAudit, which lost the same total order.
 	logs := map[string][]auditEventDTO{}
 	// Keyed by a name rather than by the path, because "/audit" now names three
 	// different logs depending on which operator you ask.
@@ -1994,19 +2047,29 @@ func TestAuditRoutesAreScoped(t *testing.T) {
 		}
 		logs[c.name] = events
 	}
-	for lhs, left := range logs {
-		seen := map[int64]bool{}
-		for _, e := range left {
-			seen[e.Seq] = true
+	books := map[string]string{}
+	for name, events := range logs {
+		for _, e := range events {
+			if e.BookID == "" {
+				t.Fatalf("%s serves %s with no book on it", name, e.Type)
+			}
+			if seen, ok := books[name]; ok && seen != e.BookID {
+				t.Fatalf("%s serves events from two books, %s and %s", name, seen, e.BookID)
+			}
+			books[name] = e.BookID
 		}
-		for rhs, right := range logs {
-			if lhs == rhs {
+	}
+	// Bank A's ledger log and its deposit log are the same book and differ by
+	// scope, which the loop above already asserted; every OTHER pair is two
+	// institutions and must be two books.
+	for lhs, left := range books {
+		for rhs, right := range books {
+			if lhs == rhs || (lhs == "bank A ledger" && rhs == "bank A deposit") ||
+				(lhs == "bank A deposit" && rhs == "bank A ledger") {
 				continue
 			}
-			for _, e := range right {
-				if seen[e.Seq] {
-					t.Fatalf("seq %d (%s) appears in both %s and %s", e.Seq, e.Type, lhs, rhs)
-				}
+			if left == right {
+				t.Fatalf("%s and %s both serve book %s", lhs, rhs, left)
 			}
 		}
 	}
@@ -3316,7 +3379,10 @@ func TestDirectoryAmbiguousIdentifierIs409(t *testing.T) {
 	doJSON(t, bank(srv, pid), "POST", "/deposit-accounts/"+did+"/identifiers",
 		`{"scheme":"IBAN","value":"SHARED-0001"}`, http.StatusNoContent)
 
-	p, err := srv.network().GetBank(context.Background(), payment.ParticipantID(pid))
+	// The bank's own network, because the row and the register are both its own
+	// and the clearing house has no table for either.
+	p, err := mustForBank(t, srv, payment.ParticipantID(pid)).
+		network().GetBank(context.Background(), payment.ParticipantID(pid))
 	if err != nil {
 		t.Fatalf("reading the bank: %v", err)
 	}
@@ -3481,7 +3547,17 @@ func TestPaymentAddressingRefusalsAre422(t *testing.T) {
 	}`, http.StatusAccepted)
 	assertEqual(t, "back-filled debtor address",
 		pay["debtor"].(map[string]any)["identifier"].(map[string]any)["value"].(string), "SE89-ADDR-ALICE-0001")
-	carried := doJSON(t, csm(h), "GET", "/payments/"+pay["id"].(string), "", http.StatusOK)
+	// A drain first, because the clearing house's own copy is written when the
+	// instruction reaches it and the 202 is answered before that. The paragraph
+	// above said no drain was needed and it was right while one row served every
+	// institution; since Task 18d the read below is of a row the relay creates.
+	drainServer(t, h)
+	// On the PAYER'S BANK's copy, which is the row the request was persisted
+	// into. The clearing house's carries the address as the MESSAGE spelt it,
+	// which for an IBAN is the compact form — separators are display, and
+	// iso20022 strips them on the way out. Same address, two spellings, and the
+	// one this assertion is about is the one the caller sent.
+	carried := doJSON(t, bank(h, a), "GET", "/payments/"+pay["id"].(string), "", http.StatusOK)
 	assertEqual(t, "creditor address persisted from the request",
 		carried["creditor"].(map[string]any)["identifier"].(map[string]any)["value"].(string), "SE89-ADDR-BOB-0001")
 
@@ -3568,8 +3644,14 @@ func TestPostPaymentRequiresTheCounterpartyName(t *testing.T) {
 	fundAndLodge(t, h, a, alice, 100000)
 	doJSON(t, csm(h), "POST", "/cycles", `{"scheme":"sepa.ct"}`, http.StatusCreated)
 
+	// No creditorAgent here: it is the field three of the four cases below are
+	// about, so it belongs in each case's own body rather than in the shared
+	// prefix. It used to be safe here because the ref carried the counterparty's
+	// PARTICIPANT and the agent was derived; Task 18 deleted that field and
+	// Task 18a stopped deriving, so the shared prefix was silently supplying the
+	// value the "no agent" case exists to withhold.
 	parties := `"debtorAgent":"` + a + `","debtor":{"account":"` + alice + `"},` +
-		`"creditorAgent":"` + b + `","creditor":{"account":"` + bob + `","identifier":{"scheme":"IBAN","value":"SE89-CPTY-BOB-0001"}},`
+		`"creditor":{"account":"` + bob + `","identifier":{"scheme":"IBAN","value":"SE89-CPTY-BOB-0001"}},`
 
 	for _, tc := range []struct {
 		name       string
@@ -3621,11 +3703,14 @@ func TestDepositAccountDTOCarriesIdentifiers(t *testing.T) {
 // A real payer reads the BIC off one; there is no invoice here, so this is where
 // the value comes from — and it must not be mistaken for something the SUBMITTING
 // BANK does, which is the whole point of the change.
+// bicOf is the identity function and is kept for what it says at its call sites.
+//
+// A bank's ParticipantID IS its BIC since Task 18 (see payment.AsBank), so there
+// is nothing to look up — and the lookup it used to do went through the clearing
+// house, which holds no banks table. What the name still buys is the reader
+// knowing that the value in a creditorAgent field is an ADDRESS, at the four call
+// sites where the same string is also being used as an id.
 func bicOf(t *testing.T, h *Server, pid string) string {
 	t.Helper()
-	p, err := h.network().GetBank(context.Background(), payment.ParticipantID(pid))
-	if err != nil {
-		t.Fatalf("reading %s's address: %v", pid, err)
-	}
-	return string(p.BIC)
+	return pid
 }

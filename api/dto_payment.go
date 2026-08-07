@@ -350,15 +350,17 @@ type settlementDTO struct {
 	SettledAt    time.Time        `json:"settledAt"`
 }
 
-// toSettlementDTO renders a settlement, including the asset it settles. A
-// settlement carries no scheme itself, only a CycleID — its asset is one hop
-// further than a cycle's: callers resolve it via (*Server).settlementAsset
-// (settlement -> its cycle -> the cycle's scheme) and pass it in here.
-func toSettlementDTO(s payment.Settlement, asset string) settlementDTO {
+// toSettlementDTO renders a settlement, including the asset it settles.
+//
+// The asset comes off the ROW. It used to be passed in, resolved by the caller
+// as settlement -> its cycle -> the cycle's scheme, and that chain crosses an
+// institution boundary the settlement agent cannot cross — see the note where
+// settlementAsset used to be, and payment.Settlement.Asset.
+func toSettlementDTO(s payment.Settlement) settlementDTO {
 	return settlementDTO{
 		ID:           string(s.ID),
 		CycleID:      string(s.CycleID),
-		Asset:        asset,
+		Asset:        string(s.Asset),
 		NetPositions: positionsToMap(s.NetPositions),
 		SettlementTx: string(s.SettlementTx),
 		ValueDate:    s.ValueDate,

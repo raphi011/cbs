@@ -520,6 +520,19 @@ type Settlement struct {
 	// the institution that could least afford the other key: the settlement agent
 	// holds no banks table to resolve one against.
 	NetPositions map[iso20022.BIC]ledger.Amount
+	// What was settled IN, taken off the instruction this agent acted on.
+	//
+	// It is stored rather than derived, and the derivation it replaces was a
+	// crossing: a settlement's asset used to be read settlement -> its cycle ->
+	// the cycle's scheme, and the cycle is the CLEARING HOUSE's row. The
+	// settlement agent has no cycles table, so from Task 18d the only reader of
+	// that chain (api's settlementAsset) was asking one institution about
+	// another's database and getting "no such table" for it.
+	//
+	// The agent has always known the answer without asking: positionsIn refuses
+	// an instruction whose legs are not all in ONE asset, so the batch it posts
+	// has exactly one and this records it.
+	Asset        ledger.AssetCode
 	SettlementTx ledger.TransactionID // the transaction in the central-bank ledger
 	ValueDate    time.Time
 	SettledAt    time.Time

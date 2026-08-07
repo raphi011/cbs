@@ -20,8 +20,18 @@ import (
 // auditEventDTO is the wire shape of an audit event. All four layers render
 // into it; scope says which one produced it.
 type auditEventDTO struct {
-	Seq       int64             `json:"seq"`
-	ID        string            `json:"id"`
+	Seq int64  `json:"seq"`
+	ID  string `json:"id"`
+	// BookID is which institution's log this event is in, and it is on the wire
+	// because Seq stopped identifying one.
+	//
+	// Seq was a store-GLOBAL sequence, so an event's number was unique across
+	// the whole system and a reader could tell two logs apart without being
+	// told. Each institution has its own database and its own counter since Task
+	// 18d, so every log starts at 1 and "seq 7" names as many events as there
+	// are institutions. The book is what disambiguates them, and a reader
+	// holding pages from several logs has no other way to.
+	BookID    string            `json:"bookId"`
 	Scope     string            `json:"scope"`
 	Timestamp time.Time         `json:"timestamp"`
 	Type      string            `json:"type"`
@@ -36,6 +46,7 @@ func toAuditDTO(e ledger.AuditEvent) auditEventDTO {
 	return auditEventDTO{
 		Seq:       e.Seq,
 		ID:        e.ID,
+		BookID:    string(e.BookID),
 		Scope:     string(e.Scope),
 		Timestamp: e.OccurredAt,
 		Type:      e.Type,

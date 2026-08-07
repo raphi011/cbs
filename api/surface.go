@@ -107,15 +107,26 @@ func (s *Server) centralBankRouter() *router {
 	// RJCT/AM04 (mesh.centralBank). A route that let a human do it beside that
 	// would be a second way to settle the same cycle, racing the first.
 	//
-	// So the four reads below are what is left, and they are the whole point of
+	// So the two reads below are what is left, and they are the whole point of
 	// keeping them: the console no longer drives settlement, it WATCHES it. A
-	// closed cycle with no settlement against it is an instruction the central
-	// bank refused, and the net positions beside the reserves are why.
+	// settlement row is this institution's own record of a cut-off it
+	// discharged, and the net positions on it, beside the reserves, are what it
+	// moved.
+	//
+	// # GET /cycles and GET /cycles/{cid} were here too, and Task 18d took them
+	//
+	// There were four reads, and the two on CYCLES were the clearing house's
+	// rows read on this listener — which was invisible while one store held both
+	// and is a missing table now. It is not a loss the console feels: a
+	// settlement carries the cut-off's id, its net positions and, since this
+	// change, its asset, so everything those two routes were being read FOR is
+	// on the row this institution wrote itself. What is genuinely gone is the
+	// closed cycle with NO settlement against it — an instruction this agent
+	// refused — and that is visible where the refusal happened, on the clearing
+	// house's own GET /cycles.
 	//
 	// What it still cannot reach is an individual payment: GET /payments is the
 	// clearing house's, and a real central bank does not see one.
-	mux.HandleFunc("GET /cycles", s.handleListCycles)
-	mux.HandleFunc("GET /cycles/{cid}", s.handleGetCycle)
 	mux.HandleFunc("GET /settlements", s.handleListSettlements)
 	mux.HandleFunc("GET /settlements/{sid}", s.handleGetSettlement)
 	mux.HandleFunc("GET /assets", s.handleListAssets)
@@ -207,6 +218,11 @@ func (s *Server) bankRouter() *router {
 	// A bank's own legs. The clearing house serves the same two patterns
 	// unnarrowed, which is the split doing its job rather than a collision.
 	mux.HandleFunc("GET /payments", s.handleListBankPayments)
+	// This bank's own payment-scope log — its founding, its membership, its
+	// mandates, its side of every payment. It shares a path prefix with the
+	// route below and wins it, because a literal segment beats a wildcard in
+	// the mux's own precedence rules. See handleBankPaymentAudit.
+	mux.HandleFunc("GET /payments/audit", s.handleBankPaymentAudit)
 	mux.HandleFunc("GET /payments/{payid}", s.handleGetBankPayment)
 	// Where a customer's instruction lands. Never the clearing house: a
 	// retail client has no CSM connection in the real thing either.

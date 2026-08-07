@@ -1,7 +1,6 @@
 package api
 
 import (
-	"context"
 	"net/http"
 
 	"github.com/raphi011/cbs/iso20022"
@@ -24,44 +23,21 @@ import (
 // anybody. The batching those two functions existed for goes with them: k+1
 // round trips for k banks becomes zero.
 //
-// settlementAsset resolves a settlement's asset via its cycle's scheme — a
-// settlement carries a CycleID but no scheme of its own (see toSettlementDTO).
-func (s *Server) settlementAsset(ctx context.Context, st payment.Settlement) (string, error) {
-	c, err := s.network().GetCycle(ctx, st.CycleID)
-	if err != nil {
-		return "", err
-	}
-	return schemeAsset(c.Scheme, s.network().ListSchemes()), nil
-}
-
-// settlementAssets resolves a whole batch of settlements' assets at once.
+// settlementAsset and settlementAssets are gone with them, for the same reason
+// and one task later.
 //
-// Per row, settlementAsset costs a GetCycle (one store.View) plus a fresh
-// ListSchemes (which takes the network's lock). One ListCycles reads every
-// cycle in a single View and the scheme list is fetched once, so a listing of
-// N settlements costs 2 round trips rather than N+1.
-func (s *Server) settlementAssets(ctx context.Context, settlements []payment.Settlement) (map[payment.SettlementID]string, error) {
-	cycles, err := s.network().ListCycles(ctx)
-	if err != nil {
-		return nil, err
-	}
-	schemes := s.network().ListSchemes()
-	byCycle := make(map[payment.CycleID]payment.SchemeID, len(cycles))
-	for _, c := range cycles {
-		byCycle[c.ID] = c.Scheme
-	}
-
-	out := make(map[payment.SettlementID]string, len(settlements))
-	for _, st := range settlements {
-		scheme, ok := byCycle[st.CycleID]
-		if !ok {
-			return nil, payment.ErrCycleNotFound
-		}
-		out[st.ID] = schemeAsset(scheme, schemes)
-	}
-	return out, nil
-}
-
+// They resolved a settlement's asset settlement -> its CYCLE -> that cycle's
+// scheme, because a settlement carried a CycleID and no asset of its own. The
+// cycle is the CLEARING HOUSE's row and these routes are on the SETTLEMENT
+// AGENT's port, so from Task 18d the GetCycle and the ListCycles were one
+// institution reading another's database and answered "this store's schema
+// holds no such table" — the same crossing the mandate pair made, discovered
+// the same way and closed the same way.
+//
+// payment.Settlement carries its Asset now, written by SettleCycleTx off the
+// instruction it acted on. The agent always knew it: an instruction whose legs
+// are not all in one asset is refused by positionsIn.
+//
 // registerMandateRoutes is the CREDITOR bank's mandate console, and it is on a
 // bank's surface because a mandate is that bank's own row.
 //
@@ -96,8 +72,13 @@ func (s *Server) registerPaymentRoutes(mux *router) {
 	mux.HandleFunc("POST /cycles/{cid}/close", s.handleCloseCycle)
 	mux.HandleFunc("POST /cycles/{cid}/settle", s.handleSettleCycle)
 
-	mux.HandleFunc("GET /settlements", s.handleListSettlements)
-	mux.HandleFunc("GET /settlements/{sid}", s.handleGetSettlement)
+	// GET /settlements is NOT here, and it used to be — this function is the
+	// clearing house's router, and a settlement is the SETTLEMENT AGENT's row.
+	// The csm shape has no settlements table, so the route answered 500 with the
+	// store saying so. It lives on the central bank's listener, next to the
+	// reserves it moved; see centralBankRouter. A caller holding a cycle finds
+	// its settlement by matching cycleId there — clearingCycleDTO carries no
+	// settlement id, for the reason set out on it.
 }
 
 func (s *Server) handleCreateMandate(w http.ResponseWriter, r *http.Request) {
@@ -460,14 +441,9 @@ func (s *Server) handleListSettlements(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	assets, err := s.settlementAssets(r.Context(), settlements)
-	if err != nil {
-		writeError(w, err)
-		return
-	}
 	out := make([]settlementDTO, len(settlements))
 	for i, st := range settlements {
-		out[i] = toSettlementDTO(st, assets[st.ID])
+		out[i] = toSettlementDTO(st)
 	}
 	writeJSON(w, http.StatusOK, out)
 }
@@ -478,10 +454,5 @@ func (s *Server) handleGetSettlement(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	asset, err := s.settlementAsset(r.Context(), st)
-	if err != nil {
-		writeError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, toSettlementDTO(st, asset))
+	writeJSON(w, http.StatusOK, toSettlementDTO(st))
 }

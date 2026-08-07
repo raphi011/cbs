@@ -86,9 +86,35 @@ func (s *Server) handleCentralBankAudit(w http.ResponseWriter, r *http.Request) 
 	s.writeAudit(w, r, auditFilter(r, payment.CentralBankBook, ledger.ScopeLedger))
 }
 
-// handlePaymentAudit serves the network's own trail: participants, mandates,
-// payments and clearing cycles, which belong to no single bank and so live
-// under ledger.NetworkBook.
+// handlePaymentAudit serves the CLEARING HOUSE's payment-scope trail: the
+// members it admitted to its roster, the cut-offs it ran, and every payment it
+// relayed and took into one.
+//
+// It used to be "the network's own trail", under one ledger.NetworkBook shared
+// by every institution, and there is no such book and no such trail. Each
+// institution keeps its own payment-scope log in its own database, so this
+// answers for one of them and handleBankPaymentAudit answers for a member.
+// A reader who wants the whole picture reads several and matches them up by the
+// MESSAGES, which is what an auditor holding four banks' logs actually does —
+// there is no cross-institution order for a route to serve. See
+// payment/audit_test.go's paymentAudit.
 func (s *Server) handlePaymentAudit(w http.ResponseWriter, r *http.Request) {
 	s.writeAudit(w, r, auditFilter(r, payment.ClearingHouseBook, ledger.ScopePayment))
+}
+
+// handleBankPaymentAudit serves ONE bank's payment-scope trail, in its own book:
+// its founding, the membership it recorded, the mandates it holds, and its own
+// side of every payment it is a party to.
+//
+// It is on the bank's surface because those events are in the bank's database
+// and in no other. Before Task 18d they were in the shared network book and the
+// clearing house's route above was the only way to read them; a bank asking that
+// route now gets the clearing house's log, which does not mention its mandates
+// at all.
+func (s *Server) handleBankPaymentAudit(w http.ResponseWriter, r *http.Request) {
+	p, ok := s.participant(w, r)
+	if !ok {
+		return
+	}
+	s.writeAudit(w, r, auditFilter(r, p.BookID, ledger.ScopePayment))
 }
