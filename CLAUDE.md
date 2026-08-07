@@ -6,6 +6,42 @@ plus a quiz and web UI).
 The teaching book _How Money Moves_ lives in the _Lead Engineer's Field Guide_
 (the `second-brain` repo, Part IX), not here.
 
+## Comments: what earns its place
+
+This repository has been through one large comment cull. The rules below are what
+it converged on; follow them rather than re-deriving them.
+
+**Write the rule, not the history.** A comment states what is true now. It does
+not say what the code used to do, which task changed it, what an earlier version
+of the comment claimed, or that a ruling was reversed. If the old behaviour is
+worth knowing, it is worth a test, not a paragraph — and `git log` already has
+it. Words that should not appear in a comment: "used to", "no longer does",
+"Task N", "sub-project N", "this comment said", "an earlier version".
+
+**Where a rejected alternative is genuinely instructive**, state it as a
+hypothesis in the present tense — "a sweep over every bank's register would
+catch a cross-bank collision; there is none, because…" — not as a change log.
+
+**Length is a budget.** Aim for these, and treat anything beyond as needing a
+reason you could defend in review:
+
+- inline comment: 1–3 lines
+- function or field doc: up to ~10 lines
+- exported type or long-form `#` section: up to ~25 lines
+- package doc (`doc.go`): as long as the domain needs, and no longer
+
+**Do not restate the code.** If the sentence can be read off the identifiers and
+the three lines below it, delete it. Prefer a better name to a comment that
+explains a worse one.
+
+**Say it once.** A rule belongs in one place, with the other sites pointing at
+it. Three copies become three versions.
+
+**What is always worth writing:** an invariant the compiler cannot state, why a
+refusal exists and what it costs, why something is ABSENT (a missing constraint,
+an unresolved lookup, a check deliberately not made), an ordering that is
+load-bearing, and a measured number with what was measured.
+
 ## Domain knowledge stays consistent across layers
 
 The banking/accounting/payments content is duplicated, by design, across:
