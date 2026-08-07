@@ -547,7 +547,21 @@ func (b *builder) initiate(req payment.InitiatePaymentRequest) payment.Payment {
 	// take it into a cycle. In the mesh this is the moment it relays the
 	// instruction on; here there is nothing to relay, so the record stands alone.
 	must(b.csm().RecordRelayed(b.ctx, p.ID, relayed))
-	return must(b.csm().AcceptAtCSM(b.ctx, p.ID))
+	accepted := must(b.csm().AcceptAtCSM(b.ctx, p.ID))
+
+	// And the SUBMITTING bank is told, which is the act this composite was
+	// missing. In the mesh the clearing house answers the instruction with an
+	// ACCP addressed to the bank that sent it, and that bank records Accepted on
+	// its own copy (csm.tell, payment.AcceptAtBankTx). Without it the seed's
+	// banks sat at Initiated where the mesh's reach Accepted — the same payment
+	// with two different histories depending on which fixture built it, which is
+	// exactly the divergence a sample dataset must not have.
+	//
+	// Only the submitter. The other bank ANSWERED the instruction and is told
+	// nothing further until the cut-off; its copy goes Initiated -> Settled and
+	// is not wrong. Every assertion about a status has to say whose copy.
+	must(b.bank(submitter).AcceptAtBank(b.ctx, p.ID))
+	return accepted
 }
 
 // reject runs both halves of a rejection — the clearing house's transition and
