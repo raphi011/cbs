@@ -47,10 +47,9 @@ func (d *Dataset) Now() time.Time { return d.clock.now() }
 // Because admission is a conversation, and a bank that has not had one is not a
 // member: it holds no settlement account, so the very first thing this scenario
 // does after opening its accounts — paying an opening deposit in — has nowhere
-// to credit. The four acts used to be called here one after another, which is
-// the stand-in this replaces; the seeded dataset now goes through the mesh's own
-// door for its admissions and is answered by the same two actors that answer an
-// operator's POST /members.
+// to credit. The seeded dataset goes through the mesh's own door for its
+// admissions and is answered by the same two actors that answer an operator's
+// POST /members.
 //
 // So the mesh must be RUNNING before this is called, which reverses the order
 // cmd/server used: the mesh is built and started over an unseeded store, and its
@@ -78,13 +77,10 @@ func (d *Dataset) Now() time.Time { return d.clock.now() }
 // tagging rows, and a tag is a schema change in aid of a situation that should
 // not arise.
 //
-// It should not arise because the half-built store this probe used to paper
-// over had one cause: POST /admin/reset truncating and then losing its context
-// before it reseeded. That is fixed where it belongs, in the handler, by
-// running the reset on a context the client cannot cancel — see
-// api.Server.handleReset. What remains is a process killed mid-seed, which
-// leaves a partial dataset that this probe will indeed skip; the answer to that
-// is to reset, which is now a single call that finishes.
+// It should not arise: POST /admin/reset runs on a context the client cannot
+// cancel, so it cannot truncate and then lose its context before it reseeds (see
+// api.Server.handleReset). What remains is a process killed mid-seed, which
+// leaves a partial dataset this probe will skip; the answer to that is to reset.
 //
 // The clock goes live on every path out of Populate, including the one that
 // built nothing. That is not a detail: the second process to open a store that
@@ -116,10 +112,9 @@ func (d *Dataset) Populate(ctx context.Context, nets *payment.Networks, msh *mes
 	// the whole answer anyway — a bank founded and never admitted is in no roster
 	// and in no settlement register, and it is still a bank this scenario built.
 	//
-	// payment.Stores.Banks is the set of DATABASES, which is what the old read
-	// amounted to and is the same question a restart's listener plan asks. It also
-	// becomes true at the same moment: founding the first bank is what creates the
-	// first database, exactly as it used to write the first row.
+	// payment.Stores.Banks is the set of DATABASES, which is the same question a
+	// restart's listener plan asks. Founding the first bank is what creates the
+	// first database.
 	existing, err := nets.Stores().Banks(ctx)
 	if err != nil {
 		return err
@@ -176,27 +171,22 @@ func recoverBuild(r any) error {
 // There is no Network() convenience constructor any more, and the reason is
 // worth recording rather than rediscovering.
 //
-// It used to build a store, a network and the sample scenario in one call and
-// hand back the network, for tests and examples. Admission is a conversation
-// now, so building the scenario needs a running mesh — and a mesh is a set of
-// goroutines somebody has to stop. A function returning only the network would
-// leave them running for the life of the process with no handle to join them,
-// which is exactly the shutdown bug mesh.Stop's doc exists to prevent. Callers
-// build the four pieces themselves: cmd/server does, and so does this package's
-// own test helper.
+// Building the scenario needs a running mesh, and a mesh is a set of goroutines
+// somebody has to stop — so there is no one-call helper that hands back only the
+// network and leaves them running for the life of the process. Callers build the
+// four pieces themselves: cmd/server does, and so does this package's own test
+// helper.
 
 type builder struct {
 	ctx context.Context
 	// nets mints one payment.Network per institution, and the builder below
 	// names which institution performs each act.
 	//
-	// It used to be one *payment.Network playing all of them, which stopped
-	// being expressible at Task 18b: a member's mirror leg needs that member's
-	// own network and a cut-off needs the central bank's. The composites here —
-	// initiate, reject, returnPayment, settle — still run several institutions'
-	// halves inside ONE unit of work, and that is unchanged and still the thing
-	// the mesh exists to model. What changed is that each half now says whose it
-	// is, which is a fixture reading closer to the conversation it stands in for.
+	// One *payment.Network per institution: a member's mirror leg needs that
+	// member's own network and a cut-off needs the central bank's. The composites
+	// here — initiate, reject, returnPayment, settle — still run several
+	// institutions' halves inside ONE unit of work, and each half says whose it
+	// is.
 	nets  *payment.Networks
 	mesh  *mesh.Mesh
 	clock *clock
@@ -264,14 +254,13 @@ func check(err error) {
 // admit puts one bank through the mesh's own door and waits for the scheme to
 // answer.
 //
-// It is the whole conversation and no longer a stand-in for one: Mesh.Admit
-// founds the bank, gives it an actor and sends one acmt.007 per asset; the
-// central bank opens the settlement account and answers acmt.010; the clearing
-// house writes the routing entry and relays acmt.011; the bank records what it
-// was told. What comes back from Admit is a FOUNDED bank, because none of that
-// has happened yet, so this drains and re-reads the row — a bank that is still
-// Founded holds no settlement account, and the next thing this scenario does is
-// pay an opening deposit in, which is refused without one.
+// It is the whole conversation: Mesh.Admit founds the bank, gives it an actor
+// and sends one acmt.007 per asset; the central bank opens the settlement
+// account and answers acmt.010; the clearing house writes the routing entry and
+// relays acmt.011; the bank records what it was told. What comes back from Admit
+// is a FOUNDED bank, because none of that has happened yet, so this drains and
+// re-reads the row — a bank that is still Founded holds no settlement account,
+// and the next thing this scenario does is pay an opening deposit in.
 //
 // # One admission at a time, because the ids have to be reproducible
 //
@@ -433,11 +422,10 @@ func (b *builder) ref(acct deposit.Account) payment.PartyRef {
 // fund credits a deposit account with cash, which the bank then holds as vault
 // cash.
 //
-// It no longer raises the bank's reserve, and that is Task 18a's change rather
-// than a change to the seed's intent. Cash paid in is one institution's act in one
-// book; moving it onto reserve is a LODGEMENT, which is a conversation with the
-// central bank and cannot happen inside a deposit. See lodge, which every funded
-// bank has to run before this scenario can settle anything.
+// It does not raise the bank's reserve. Cash paid in is one institution's act in
+// one book; moving it onto reserve is a LODGEMENT, which is a conversation with
+// the central bank and cannot happen inside a deposit. See lodge, which every
+// funded bank has to run before this scenario can settle anything.
 func (b *builder) fund(p *payment.Bank, acct deposit.Account, amount ledger.Amount) {
 	check(b.bank(p.BIC).Deposit(b.ctx, p.ID, acct.ID, amount, "Opening deposit"))
 }
@@ -447,11 +435,9 @@ func (b *builder) fund(p *payment.Bank, acct deposit.Account, amount ledger.Amou
 //
 // # Why the seed has to do this at all
 //
-// Deposit used to raise the bank's reserve as a side effect, so a funded bank
-// could settle immediately. It does not any more, and nothing else in this
-// scenario funds a reserve — so without this every bank would reach the first
-// cut-off with a zero reserve and settlement would fail for all of them. That is
-// why 18a.4 and 18a.5 are one commit: either alone leaves this scenario broken.
+// Nothing else in this scenario funds a reserve, so without this every bank
+// would reach the first cut-off with a zero reserve and settlement would fail
+// for all of them.
 //
 // # It goes through the MESH and not through the domain
 //
@@ -489,12 +475,11 @@ func (b *builder) lodge(p *payment.Bank, amount ledger.Amount) {
 // is no such method, precisely so that no caller can validate both ends of a
 // payment by accident.
 //
-// It is the LAST composite in this repository. api had a twin of these ten lines
-// until sub-project 7b's handoff, and what replaced it there was the mesh, not a
-// shared helper. It survives here for a reason no HTTP handler has: the seed
-// runs before any actor exists, so there is nothing to send a message to and
-// nobody to answer one — and its whole job is to leave a FIXED scenario, which a
-// conversation carried out at startup could not promise.
+// It is the LAST composite in this repository, and it survives for a reason no
+// HTTP handler has: the seed runs before any actor exists, so there is nothing
+// to send a message to and nobody to answer one — and its whole job is to leave
+// a FIXED scenario, which a conversation carried out at startup could not
+// promise.
 //
 // # It is THREE units of work now, and it has to be
 //
@@ -520,9 +505,9 @@ func (b *builder) initiate(req payment.InitiatePaymentRequest) payment.Payment {
 	p := must(b.bank(submitter).SubmitPayment(b.ctx, req))
 
 	// What the OTHER two institutions would have been sent, and it is the whole of
-	// what they get. Each writes its own row from it (Task 18d), so the seed has
-	// to hand over an instruction rather than an id — which is what a pacs.008 or
-	// a pacs.003 is, minus the XML.
+	// what they get. Each writes its own row from it, so the seed hands over an
+	// instruction rather than an id — which is what a pacs.008 or a pacs.003 is,
+	// minus the XML.
 	//
 	// The two DETAILS come off the payment rather than off the request: the
 	// submitting bank overwrote its own side from its own register, and the
@@ -534,10 +519,9 @@ func (b *builder) initiate(req payment.InitiatePaymentRequest) payment.Payment {
 	relayed := req
 	relayed.DebtorDetails, relayed.CreditorDetails = p.DebtorDetails, p.CreditorDetails
 
-	// The RECEIVING bank answers, and it is the other one. Naming it is what
-	// picks the network AcceptInbound resolves the address in — its own register
-	// and no other, since Task 18a — and the seed is playing that bank as well as
-	// the submitting one.
+	// The RECEIVING bank answers, and it is the other one. Naming it is what picks
+	// the network AcceptInbound resolves the address in — its own register and no
+	// other — and the seed is playing that bank as well as the submitting one.
 	receiver := p.CreditorDetails.Agent
 	if receiver == submitter {
 		receiver = p.DebtorDetails.Agent
@@ -569,17 +553,15 @@ func (b *builder) initiate(req payment.InitiatePaymentRequest) payment.Payment {
 // the payer's money back in their account.
 //
 // Split for the same reason initiate is: there is no method that plays both
-// actors. The two used to share a Tx, which made the seed's rejection whole or
-// nothing where the mesh's is two units of work with an interval between them —
-// the seam RejectAtCSMTx documents. They cannot share one now: two institutions,
-// two databases. So the fixture has the mesh's shape here as well, and what it
-// still promises is the OUTCOME rather than the process.
+// actors, and the two cannot share a Tx — two institutions, two databases. So
+// the fixture has the mesh's shape here as well, and what it promises is the
+// OUTCOME rather than the process.
 func (b *builder) reject(id payment.PaymentID, code iso20022.StatusReason, reason string) {
 	rejected := must(b.csm().RejectAtCSM(b.ctx, id, code, reason))
 	// Both banks record it, each on its own copy, and only the payer's bank gives
-	// any money back — which is one act at each of them since Task 18d, because
-	// the decision and the reversal cannot be separated once the row the guard
-	// reads is the acting bank's own. See payment.RejectAtBankTx.
+	// any money back — one act at each of them, because the decision and the
+	// reversal cannot be separated once the row the guard reads is the acting
+	// bank's own. See payment.RejectAtBankTx.
 	//
 	// On a push the two are one bank and there is one call; on a pull the payee's
 	// bank submitted and is being told the answer to its instruction, with nothing
@@ -607,12 +589,11 @@ func (b *builder) reject(id payment.PaymentID, code iso20022.StatusReason, reaso
 //   - the OTHER bank's customer leg, which is what takes the payment to
 //     Returned.
 //
-// It is settle's argument applied to the return, and it became necessary at the
-// same point and for the same reason: payment.ReturnPaymentTx used to be one
-// call that did all four, and Task 16e deleted it because no institution may
-// post in another's book. The seed can, because the seed is not an institution.
-// See settle for the whole of that argument, and for what the fixture gives up
-// by running the four halves together.
+// It is settle's argument applied to the return: no institution may post in
+// another's book, so there is no one call that does all four halves. The seed
+// can, because the seed is not an institution. See settle for the whole of that
+// argument, and for what the fixture gives up by running the four halves
+// together.
 //
 // The instruction handed to SettleReturn is built from the CLEARING HOUSE's
 // payment row here, which is the one thing the mesh does differently rather than
@@ -645,11 +626,9 @@ func (b *builder) returnPayment(id payment.PaymentID, reason string) {
 	}))
 	b.advise(statements)
 	// The OTHER bank's leg, which is the SECOND one and therefore the one that
-	// takes that bank's copy to Returned. Which of the two is second used to be
-	// read off the row — the leg that found the other side's transaction id
-	// already there — and cannot be now: each bank writes its own field on its own
-	// copy, so both would see one leg and neither would be last. Position in the
-	// conversation replaces it; see payment.PostReturnLegTx.
+	// takes that bank's copy to Returned. Each bank writes its own field on its own
+	// copy, so which is second is POSITION IN THE CONVERSATION rather than
+	// something readable off a row; see payment.PostReturnLegTx.
 	must(b.bank(other).PostReturnLeg(b.ctx, id, reason))
 	// So the returner's copy and the clearing house's are moved by what they are
 	// TOLD, which in the mesh is the settlement agent's ACSC relayed on. The seed
@@ -662,8 +641,7 @@ func (b *builder) returnPayment(id payment.PaymentID, reason string) {
 // produced, in that member's own book and in a unit of work of its own.
 //
 // It is shared by returnPayment and settle because the two produce the same
-// statements and do the same thing with them, and it became worth extracting
-// when the loop stopped being three lines inside somebody else's Tx.
+// statements and do the same thing with them.
 func (b *builder) advise(statements []payment.SettlementStatement) {
 	for _, st := range statements {
 		must(b.bank(st.Agent).PostSettlementAdvice(b.ctx, payment.AdvisedMovement{
@@ -688,19 +666,16 @@ func (b *builder) advise(statements []payment.SettlementStatement) {
 //     suspense, which is what that bank does when the clearing house advises it
 //     that a payment settled.
 //
-// It is initiate's argument applied to settlement, and it became necessary the
-// moment settlement stopped being one institution's act. There is no method that
-// plays all three, deliberately: the whole of Task 15 is that no institution can
-// post in another's book. The seed can, because the seed is not an institution —
-// it is one process building a fixed scenario before any actor exists, and a
-// conversation carried out at startup could not promise a fixed outcome.
+// It is initiate's argument applied to settlement. There is no method that plays
+// all three, deliberately: no institution can post in another's book. The seed
+// can, because the seed is not an institution — it is one process building a
+// fixed scenario before any actor exists, and a conversation carried out at
+// startup could not promise a fixed outcome.
 //
 // What the seed gives up by doing so is exactly what the mesh exists to model:
-// the halves used to commit or roll back together, and in the mesh they are
-// several units of work with an unreconciled interval between them. Since the
-// store split they are several here too — one database each, and no statement
-// spans two. The fixture is the outcome, not the process, and that is now the
-// only thing it could be.
+// in the mesh these halves are several units of work with an unreconciled
+// interval between them. They are several here too — one database each, and no
+// statement spans two. The fixture is the outcome, not the process.
 func (b *builder) settle(id payment.CycleID) {
 	// What the pacs.009 would have carried, built where the clearing house builds
 	// it — off the CLOSED CYCLE, which is that institution's own row. The
@@ -739,10 +714,10 @@ func (b *builder) settle(id payment.CycleID) {
 // taken from the account the seed itself already built — this is the seed
 // playing the payer who typed the payee's name in, not a lookup.
 //
-// The BIC too, since Task 18a. It used to be derived by SubmitPaymentTx from the
-// counterparty's own bank row, and that row is the counterparty's — a bank holds
-// only its own — so the payer supplies it, as SEPA's payers did before 2016 and
-// a cross-border payer still does. See payment.PartyDetails.Agent.
+// The BIC too. SubmitPaymentTx cannot derive it — that row is the
+// counterparty's, and a bank holds only its own — so the payer supplies it, as
+// SEPA's payers did before 2016 and a cross-border payer still does. See
+// payment.PartyDetails.Agent.
 //
 // The seed takes it off the bank it is about to address, which is the one place
 // this fixture differs from the payer it is playing: a real payer reads the BIC

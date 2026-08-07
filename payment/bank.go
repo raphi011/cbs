@@ -20,12 +20,11 @@ import (
 // request is out" is worth knowing for is a stuck admission, which needs a
 // reconciliation that walks both ends rather than a column on one of them.
 //
-// That walk exists as of Task 18e and it is payment/recon: an admission writes
-// three rows in three databases, each institution can see exactly one of them,
-// and the harness is what holds the three against each other. A bank calling
-// itself a Member that no settlement agent holds an account for is what a
-// half-happened admission looks like from outside all three, and it is not
-// visible from inside any.
+// That walk is payment/recon: an admission writes three rows in three
+// databases, each institution can see exactly one of them, and the harness is
+// what holds the three against each other. A bank calling itself a Member that
+// no settlement agent holds an account for is what a half-happened admission
+// looks like from outside all three, and it is not visible from inside any.
 type BankStatus string
 
 const (
@@ -36,11 +35,6 @@ const (
 	// reserve needs the central bank to credit an account in the central bank's
 	// book, and no settlement agent holds one for it (LodgeReservesTx,
 	// ErrSettlementMemberNotFound).
-	//
-	// That refusal used to sit on the deposit and said this bank could not be
-	// funded at all, which was true of the code and false about banking: a bank's
-	// counter has nothing to do with its central bank account. Task 18a moved it to
-	// the act it was always correct about.
 	//
 	// It is in no routing directory either, so nothing it takes part in can
 	// settle — what a transport does and does not enforce about that is measured
@@ -101,11 +95,9 @@ const (
 // other checking that an arriving statement is about the account it holds and not
 // another member's.
 //
-// DepositTx used to be first on that list and is not on it at all any more, and
-// the reason is Task 18a's crossing. Taking cash in is now one institution's act
-// in one book — see VaultCash — so it has no reason to name an account in
-// anybody else's. What quotes this number is the LODGEMENT that moves the cash
-// onward, and that is a message rather than a posting.
+// Taking cash in is one institution's act in one book — see VaultCash — so it
+// names no account in anybody else's. What quotes this number is the LODGEMENT
+// that moves the cash onward, and that is a message rather than a posting.
 //
 // It is empty on a founded bank. The number is something the bank has to be
 // told, and RecordMembershipTx is where being told lands.
@@ -153,13 +145,9 @@ type BankAccounts struct {
 	// # It is why a founded bank can take a deposit
 	//
 	// It exists from FoundBankTx, per asset, alongside the other four — before any
-	// settlement account is opened and independently of whether one ever is. That
-	// is the whole of Task 18a's deposit change. DepositTx used to credit the
-	// customer and debit Reserve at Central Bank, and then post the matching pair
-	// in the CENTRAL BANK's book to keep the reserve mirror true; so a bank with no
-	// settlement account had nowhere to put the cash and was refused
-	// (ErrSettlementMemberNotFound), and a bank with one reached into another
-	// institution's ledger inside its own unit of work, which was crossing 6.
+	// settlement account is opened and independently of whether one ever is. Cash
+	// paid in over the counter lands here, so a bank with no settlement account
+	// can still take deposits.
 	//
 	// Cash paid in now debits this and credits the customer, in this book and
 	// nowhere else. Nothing about it involves the central bank, because nothing
@@ -202,13 +190,8 @@ type BankAccounts struct {
 //
 // Every book is in its OWN DATABASE, so no unit of work can span two banks and a
 // BookID that is not this bank's is a refusal rather than a lookup
-// (sqlite.ErrNotThisStoresBook). This paragraph used to describe the arrangement
-// that preceded it — one store, books told apart by BookID, the spanning still
-// possible and nothing but the recorder in mesh/books_test.go able to notice a
-// handler reaching across — and Task 18c and 18d are what replaced it. What did
-// not change is that chart-of-accounts numbers, ID counters and idempotency keys
-// are per book: they were per book because a book was a scope, and they are per
-// book now because a book is a database.
+// (sqlite.ErrNotThisStoresBook). Chart-of-accounts numbers, ID counters and
+// idempotency keys are per book because a book is a database.
 //
 // The internal accounts each bank needs:
 //
@@ -303,10 +286,9 @@ type Bank struct {
 	//
 	// The clearing house's is a registry's: it decides between two institutions
 	// contending for an address, in a row that belongs to a different institution
-	// and, from Task 18, a different database. This one is the bank's own record
-	// of what it itself accepted, and comparing against it needs nobody else's
-	// store. That the two agree in a healthy system is a consequence rather than
-	// the mechanism, which is what makes this a guard the split does not remove.
+	// and a different database. This one is the bank's own record of what it itself
+	// accepted, and comparing against it needs nobody else's store. That the two
+	// agree in a healthy system is a consequence rather than
 	//
 	// Empty on a Founded bank, because nothing has been accepted yet.
 	// RecordMembershipTx is the only writer.

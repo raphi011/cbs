@@ -18,17 +18,15 @@
 //
 // # It is the successor to the book recorder
 //
-// mesh/books_test.go's recordingStores was Task 7b's instrument: it watched
-// which ledger book each unit of work reached and failed a test when one reached
-// somebody else's. That instrument still works and still bites, but its whole
-// subject is a CROSSING — one institution touching another's rows — and Task
-// 18's store split made most crossings impossible rather than merely wrong. What
-// the split cannot see is the defect class that replaces the crossing: two
-// institutions' books that no longer agree, with no crossing anywhere and no
-// message misdelivered. A payment settled at the central bank and never booked
-// by the member, a return whose reserves reversed at one end, a cut-off
-// discharged twice — none of those touches a book it should not, and every one
-// of them is money in the wrong place.
+// mesh/books_test.go's recordingStores watches which ledger book each unit of
+// work reached and fails a test when one reaches somebody else's. Its whole
+// subject is a CROSSING, and the store split made most crossings impossible
+// rather than merely wrong. What the split cannot see is the defect class that
+// replaces the crossing: two institutions' books that no longer agree, with no
+// crossing anywhere and no message misdelivered. A payment settled at the
+// central bank and never booked by the member, a return whose reserves reversed
+// at one end, a cut-off discharged twice — none of those touches a book it
+// should not, and every one of them is money in the wrong place.
 //
 // The spec called that class invisible to everything this sub-project had. This
 // is the instrument for it.
@@ -43,10 +41,9 @@
 // or a reserve movement the central bank has made and this bank has not booked.
 // It is REAL, it is modelled on purpose, and it is not a defect: the interval
 // between the settlement agent's commit and a member's is what the Settlement
-// Finality Directive is about, and this system stopped pretending it away at
-// Task 15. Check fails a test on the first kind and reports the second, because
-// a harness that treated an unreconciled position as a break would be a harness
-// nobody could run against a network with a payment in it.
+// Finality Directive is about. Check fails a test on the first kind and reports
+// the second, because a harness that treated an unreconciled position as a break
+// would be a harness nobody could run against a network with a payment in it.
 //
 // # Where the figures come from
 //
@@ -508,11 +505,10 @@ func (v *bankView) inFlight(asset ledger.AssetCode, assetOf func(payment.SchemeI
 // reservesMirror holds every bank's Reserve at Central Bank against the central
 // bank's own liability to that bank.
 //
-// It is the classic nostro/vostro check and the one this system was built to
-// make possible: the bank's asset and the central bank's liability are two
-// records of one account in two databases, and until Task 18 they were two rows
-// one process wrote in one unit of work, which is to say one record wearing two
-// hats. They can now disagree, so it is worth asking whether they do.
+// It is the classic nostro/vostro check: the bank's asset and the central bank's
+// liability are two records of one account in two databases, written by two
+// institutions in two units of work. They can disagree, so it is worth asking
+// whether they do.
 //
 // They are ALLOWED to disagree by exactly the movements the agent has made and
 // the bank has not booked, and by nothing else. That is the equation:
@@ -606,17 +602,14 @@ func (s *snapshot) suspenseIsExplained(rep *Report) {
 // These are two rows in two databases about one event and NEITHER points at the
 // other in the way a reader expects. A cycle carries no settlement id — the
 // agent allocates that inside its own unit of work and no message carries it
-// back, which is why ClearingCycle says so at the field that used to be there —
-// and the agent holds no cycles table to join to. The one link is
+// back — and the agent holds no cycles table to join to. The one link is
 // Settlement.CycleID, the agent's own row naming what it discharged, and that is
 // what this walks in both directions.
 //
-// The asset comparison is here for a reason worth naming: the settlement's asset
-// used to be DERIVED, settlement -> its cycle -> that cycle's scheme, which is a
-// read of the clearing house's database from the settlement agent's row. It is a
-// column now (Settlement.Asset). What the derivation was is now what this check
-// is: the two institutions each say what the cut-off was in, out of their own
-// books, and the harness is what compares them.
+// The asset comparison is here because the settlement's asset is a column of the
+// agent's own (Settlement.Asset) and the cycle's is the clearing house's scheme.
+// The two institutions each say what the cut-off was in, out of their own books,
+// and the harness is what compares them.
 func (s *snapshot) cyclesAndSettlementsAgree(rep *Report) {
 	byCycle := map[payment.CycleID][]payment.Settlement{}
 	for _, st := range s.settlements {
@@ -699,12 +692,11 @@ func (s *snapshot) cyclesAndSettlementsAgree(rep *Report) {
 // partiesHoldTheirCopy checks that the three institutions a payment passes
 // through hold three rows about the same payment.
 //
-// A payment is three rows since Task 18d and they legitimately differ — the
-// clearing house's has no legs, a bank's has no cycle, and their statuses run
-// ahead of each other. What they may NOT differ about is the payment itself: the
-// amount and the scheme are what was instructed, and a bank whose copy says a
-// different figure from the clearing house's is a bank that will settle the
-// wrong number.
+// A payment is three rows and they legitimately differ — the clearing house's
+// has no legs, a bank's has no cycle, and their statuses run ahead of each
+// other. What they may NOT differ about is the payment itself: the amount and
+// the scheme are what was instructed, and a bank whose copy says a different
+// figure from the clearing house's is a bank that will settle the wrong number.
 //
 // It walks only payments the clearing house has taken into a cycle, and that
 // bound is the honest one rather than a convenience. A payment the receiving

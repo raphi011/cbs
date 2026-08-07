@@ -15,14 +15,10 @@ import (
 // bank's own books keep their ledger- and deposit-scope logs separately, and the
 // three never mix, because Scope discriminates them.
 //
-// It used to say "network-scoped": participants, mandates, payments and clearing
-// cycles belonged to no single bank, so they went under ledger.NetworkBook and
-// one audit stream held all three institutions' payment-layer events
-// interleaved. Task 18 split the databases and the stream went with them. Each
-// of those rows had exactly one owner all along — a mandate is the creditor
-// bank's, a cycle is the clearing house's — and what the shared book was hiding
-// is that "the network did this" was never a thing that happened. Some institution
-// did it.
+// Each of these rows has exactly one owner — a mandate is the creditor bank's, a
+// cycle is the clearing house's — so each institution's audit stream holds its
+// own events and nobody else's. "The network did this" is never a thing that
+// happened; some institution did it.
 //
 // The visible consequence is that one payment now leaves events in up to three
 // logs, and that is the honest record rather than a duplication: the payer's

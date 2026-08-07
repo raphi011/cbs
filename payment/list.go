@@ -25,13 +25,11 @@ import (
 //
 // # It listed the network and there is no network to list
 //
-// This was the system's bank directory: every bank in one shared store, founded
-// ones included, and its callers were the ones that needed all of them. api's
-// GET /members watched a bank become a member through it and cmd/server built its
-// port table from it. Task 18c leaves neither institution a banks table to
-// answer from — the csm and centralbank shapes have none — so both callers moved
-// to payment.Stores.Banks, which asks the DEPLOYMENT which databases exist rather
-// than asking an institution which colleagues it has.
+// Neither the clearing house nor the settlement agent has a banks table to
+// answer from, so it is a member bank's own row and nothing else. What asks
+// which banks EXIST is payment.Stores.Banks, which asks the DEPLOYMENT which
+// databases there are rather than asking an institution which colleagues it
+// has.
 //
 // What is left is a bank's own row, reachable through its own network, and the
 // listing form of it is a slice of one. It survives because storetest's suites
@@ -72,14 +70,8 @@ func (s *Network) ListBanks(ctx context.Context) ([]*Bank, error) {
 // one path out of an interrupted admission.
 //
 // What it hands back is a bank's own record, live handles and all, so a caller
-// that is not that bank gets the ability to read and write its books. Two of
-// the five callers in api read another bank's deposit register through the
-// handle this binds, and they are two different institutions doing it: the
-// directory's name lookup, served on a bank's own port, which is crossing 2
-// (ResolveIdentifierTx), open and Task 18's; and the mandate listing's asset
-// lookup, served on the clearing house's port alone, which reaches every debtor
-// bank's books directly off the id on the mandate and is not on the spec's
-// table at all. See Bank.Ledger, which sets both out.
+// that is not that bank would get the ability to read and write its books. See
+// Bank.Ledger.
 //
 // GetRosterEntryByBIC below is the answer to the narrower question — "is this
 // address a member, and what does the scheme hold about it" — and it is what the
@@ -114,12 +106,6 @@ func (s *Network) GetBank(ctx context.Context, id ParticipantID) (*Bank, error) 
 // Ledger, Deposit and Catalogue.
 //
 // # There was a second method here, keyed by ParticipantID, and it was a crossing
-//
-// GetRosterEntry took a bank id, read that bank's own row to learn its address,
-// and then read the roster. Under one store that is a read like any other; under
-// Task 18's stores it is the clearing house reaching into a bank's database, and
-// it had eight callers in the mesh, each pointing back at a paragraph here that
-// said the crossing was Task 18's to close.
 //
 // What closed it is not a narrowing of the lookup. It is the ruling that a bank's
 // ParticipantID IS its BIC (see AsBank): a caller that held an id already held an
@@ -177,11 +163,9 @@ func (s *Network) ListRosterEntries(ctx context.Context) ([]RosterEntry, error) 
 // account for, oldest account first.
 //
 // It is the settlement agent's answer to the question the clearing house answers
-// with ListRosterEntries and the network used to answer with ListBanks, and the
-// three are genuinely three answers rather than one read three ways. A bank
-// founded and not yet admitted is in none of them but the last; a bank whose
-// acmt.007 the agent answered and whose acknowledgement never reached the
-// clearing house is in this one and not the roster.
+// with ListRosterEntries, and the two are genuinely two answers rather than one
+// read twice: a bank whose acmt.007 the agent answered and whose acknowledgement
+// never reached the clearing house is in this one and not the roster.
 //
 // Its caller is api's GET /reserves, which is the operator console asking the
 // central bank what it holds and for whom. Nothing else can ask: this list names
@@ -204,9 +188,8 @@ func (s *Network) ListSettlementMembers(ctx context.Context) ([]SettlementMember
 // founded, unadmitted bank ordinarily is.
 //
 // It is ListSettlementMembers narrowed to one member, and it is what GET
-// /reserves/{bic} reads. The route used to read the BANK's row and take the
-// assets off that; the settlement agent has no such row and the assets it can
-// report are the ones it opened accounts in.
+// /reserves/{bic} reads. The assets it can report are the ones this agent opened
+// accounts in, which is not necessarily what the bank thinks it operates in.
 func (s *Network) GetSettlementMember(ctx context.Context, bic iso20022.BIC) (SettlementMember, error) {
 	var out SettlementMember
 	err := s.store.View(ctx, func(ctx context.Context, tx Tx) error {
@@ -237,13 +220,9 @@ func (s *Network) ListPayments(ctx context.Context) ([]Payment, error) {
 // member's authorisations — which is the crossing this route was moved off the
 // clearing house's port to avoid, arriving by a different door.
 //
-// It used to be a filter in Go — every mandate in the store, kept when its
-// creditor was this participant — and Task 18b's version of this doc said the
-// filter was temporary because "under Task 18d each bank's store holds its own
-// mandates and there is nothing to filter". This is that: a mandate is the
-// creditor's bank's row, it carries no creditor participant to filter ON (see
-// Mandate.DebtorAgent, and the mandates statement in the bank schema, which
-// argues the absent column), and the row set is this institution's by
+// A mandate is the creditor's bank's row and carries no creditor participant to
+// filter ON (see Mandate.DebtorAgent, and the mandates statement in the bank
+// schema, which argues the absent column): the row set is this institution's by
 // construction.
 //
 // It is a refusal on the other two institutions rather than an empty list,
@@ -310,13 +289,11 @@ func (s *Network) GetSettlement(ctx context.Context, id SettlementID) (Settlemen
 // GetSettlementByCycle returns the settlement this agent made for a cycle, or
 // ErrSettlementNotFound if it made none.
 //
-// It is the only way left to ask "did this cut-off settle, and as what". The
-// CYCLE used to name the settlement's id, and Task 18d found that it cannot: the
-// id belongs to this institution, is allocated inside its own unit of work, and
-// no message in this system carries it back to the clearing house that asked.
-// The link survives in the direction it can be kept — the settlement names the
-// cycle — and this is that direction, answerable only at the agent that holds
-// both halves of it. See ClearingCycle, where the field was.
+// It is the only way to ask "did this cut-off settle, and as what". The
+// settlement's id belongs to this institution, is allocated inside its own unit
+// of work, and no message carries it back to the clearing house that asked — so
+// the link survives only in the direction the settlement names the cycle, which
+// is answerable at the agent alone. See ClearingCycle.
 func (s *Network) GetSettlementByCycleID(ctx context.Context, id CycleID) (Settlement, error) {
 	var out Settlement
 	err := s.store.View(ctx, func(ctx context.Context, tx Tx) error {

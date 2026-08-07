@@ -76,9 +76,8 @@ var (
 	// the CLEARING HOUSE making the judgement from its own row, and it is what
 	// protects the cycle from a payment that reached the acts by another route —
 	// payment.Network's halves are separately callable and seed/seed.go composes
-	// them directly, which is the same argument checkAcknowledgement makes about
-	// the admission acts one flow over. Under Task 18's stores it is also the
-	// only one of the two whose read is the clearing house's own database.
+	// them directly. It is also the only one of the two whose read is the clearing
+	// house's own database.
 	//
 	// # It is answered on the wire, and only in one direction
 	//
@@ -142,21 +141,19 @@ var (
 	// ErrCycleNotClosed is returned when settlement is attempted on a cycle
 	// that has not been closed (its cut-off has not been reached).
 	//
-	// It is the CLEARING HOUSE's refusal and only its own: that institution
-	// holds the cycle and knows whether the cut-off has been reached. The
-	// SETTLEMENT AGENT used to make it too, by reading the cycle row out of the
-	// clearing house's database, and it has no cycles table — see
-	// ErrCycleAlreadySettled, which is what it refuses a redelivery with instead.
+	// It is the CLEARING HOUSE's refusal and only its own: that institution holds
+	// the cycle and knows whether the cut-off has been reached. The settlement
+	// agent has no cycles table — see ErrCycleAlreadySettled, which is what it
+	// refuses a redelivery with instead.
 	ErrCycleNotClosed = errors.New("clearing cycle is not closed")
 
 	// ErrCycleAlreadySettled is the SETTLEMENT AGENT refusing to discharge a
 	// cut-off it has already discharged.
 	//
-	// It replaces ErrCycleNotClosed on that one path, and the swap is Task 18d.
-	// A redelivered pacs.009 used to be caught by the cycle's status, which is a
-	// row this institution cannot read; what it can read is its own settlement
+	// A redelivered pacs.009 cannot be caught by the cycle's status, which is a row
+	// this institution cannot read. What it can read is its own settlement
 	// register, and a settlement against this cycle is its own record of having
-	// done the work. Same shape of statement, made out of a fact it owns.
+	// done the work.
 	//
 	// Like ErrCycleNotClosed it is classified with the EMPTY code in reasonTable:
 	// it describes this system's own state rather than a judgement about the
@@ -192,23 +189,19 @@ var (
 	// ErrNotThisInstitutionsAct is one institution's act reached through
 	// another's Network.
 	//
-	// It is the sentinel Task 18b's identity produces, and it is a different
-	// class from every other refusal in this file. The rest are about the
-	// SUBJECT of an act — a payment this bank is not a party to, a statement
-	// about another member's reserve account, an admission addressed to
-	// somebody else — and each is decided by comparing the act's subject
-	// against the bank performing it. This one is about the PERFORMER: a
-	// member bank's act on the clearing house's network, or the settlement
-	// agent's on a bank's, where there is no subject to compare against
-	// because there is no member and no book to be about.
+	// It is a different class from every other refusal in this file. The rest are
+	// about the SUBJECT of an act — a payment this bank is not a party to, a
+	// statement about another member's reserve account, an admission addressed to
+	// somebody else — and each is decided by comparing the act's subject against
+	// the bank performing it. This one is about the PERFORMER: a member bank's act
+	// on the clearing house's network, or the settlement agent's on a bank's, where
+	// there is no subject to compare against because there is no member and no book
+	// to be about.
 	//
-	// The two are not redundant. Every subject guard still fires, and still
-	// has to: two member banks are both members, so nothing here can tell one
-	// from the other, and "this payment's creditor banks elsewhere" is the
-	// only thing that ever could. What this adds is the case a subject guard
-	// cannot see, because until Task 18b it was not expressible — the acting
-	// institution was whatever the caller passed, so an institution acting as
-	// one it is not looked exactly like the real thing.
+	// The two are not redundant. Every subject guard still fires, and still has to:
+	// two member banks are both members, so nothing here can tell one from the
+	// other, and "this payment's creditor banks elsewhere" is the only thing that
+	// ever could. What this adds is the case a subject guard cannot see.
 	//
 	// See payment.Identity, Network.self and Network.centralBankBook.
 	ErrNotThisInstitutionsAct = errors.New("payment: this act belongs to another institution")
@@ -272,13 +265,12 @@ var (
 	// ErrBankAlreadyAdmitted is a bank recording an acknowledgement that belongs
 	// to an admission other than the one it recorded a membership under.
 	//
-	// It is ErrBICAlreadyAdmitted one institution over and about a different row,
-	// and the pair is deliberate rather than duplication. The clearing house
-	// refuses a second INSTITUTION contending for an address, from the roster;
-	// this is a BANK refusing a message about itself, from its own memory of what
-	// it accepted (Bank.AdmissionRef). They are separate because the rows are
-	// separate — Task 18 puts them in different databases — so a guard that
-	// existed only at the clearing house would be a guard the split removes.
+	// It is ErrBICAlreadyAdmitted one institution over and about a different row.
+	// The clearing house refuses a second INSTITUTION contending for an address,
+	// from the roster; this is a BANK refusing a message about itself, from its own
+	// memory of what it accepted (Bank.AdmissionRef). They are separate because the
+	// rows are in different databases, so a guard only at the clearing house would
+	// be no guard at all here.
 	//
 	// What it stops is measured, not supposed: an acknowledgement naming a
 	// member's own BIC and quoting an admission it never heard of moved that
@@ -327,10 +319,9 @@ var (
 	// guards those two rows now carry.
 	//
 	// ReadAdmissionAcknowledgement refuses all three on the way in from the wire.
-	// These are the same refusals in the acts, so that the reader's are defence
-	// in depth rather than the only line — the rule Task 16e arrived at for
-	// ReadReturn and SettleReturnTx after an implementer found the hole outside
-	// its brief. See checkAcknowledgement, which sets the two lists side by side.
+	// These are the same refusals in the acts, so that the reader's are defence in
+	// depth rather than the only line. See checkAcknowledgement, which sets the two
+	// lists side by side.
 	//
 	// # A fourth arm, which only the BANK can decide
 	//
@@ -480,14 +471,11 @@ var (
 	// the leg comes out as a EUR suspense debit against a BTC credit and
 	// validateBalance refuses it with ledger.ErrUnbalancedAsset.
 	//
-	// That is still a bad place to find out, though less bad than it was. Until
-	// Task 15b.3 the leg was posted inside the settlement agent's unit of work,
-	// so one mismatched payment failed the entire clearing cycle; it is the
-	// payee's bank's own act now, so the cut-off settles and this one payment
-	// stays Cleared. What has not improved is the error: it names an unbalanced
-	// asset rather than the payment that caused it, and it arrives long after
-	// the payer was debited. This sentinel is what turns a late, misattributed
-	// failure into an immediate, correctly attributed one.
+	// That is still a bad place to find out. The leg is the payee's bank's own act,
+	// so the cut-off settles and this one payment stays Cleared — but the error
+	// names an unbalanced asset rather than the payment that caused it, and it
+	// arrives long after the payer was debited. This sentinel is what turns a late,
+	// misattributed failure into an immediate, correctly attributed one.
 	//
 	// TestCrossAssetPaymentSurvivesInitiationAndFailsAtThePayeesBank in
 	// system_test.go pins both halves of that.
@@ -533,13 +521,10 @@ var (
 	// instruction exists — see PartyDetails — but its answer is never wired into
 	// the payment.)
 	//
-	// The counterparty's AGENT has its own sentinel below and has moved between
-	// the two twice. It was part of this refusal; Task 14 derived it, so there
-	// was nothing left for a caller to omit; Task 18a made it asserted again,
-	// because the row it was derived from is the counterparty's own and a bank
-	// holds only its own. Two sentinels rather than one because the two omissions
-	// have different remedies — a payer who left the name out types a name, and a
-	// payer who left the BIC out has to go and find one.
+	// The counterparty's AGENT has its own sentinel below. Two sentinels rather
+	// than one because the two omissions have different remedies — a payer who left
+	// the name out types a name, and a payer who left the BIC out has to go and
+	// find one.
 	ErrCounterpartyNotNamed = errors.New("payment: the instruction does not name the counterparty")
 
 	// ErrCounterpartyAgentNotNamed is a submission that did not say which BANK

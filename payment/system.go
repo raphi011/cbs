@@ -2094,12 +2094,11 @@ func (s *Network) CloseCycleTx(ctx context.Context, tx Tx, id CycleID) (Clearing
 // That is the whole of what it posts. Neither of the two legs in a member's own
 // book is here any more:
 //
-//   - the MIRROR leg — a member's suspense moving against its own reserve — left
-//     in Task 15b.2, and what this returns beside the settlement is the
-//     STATEMENTS that tell each member what to post. See PostSettlementAdviceTx.
+//   - the MIRROR leg — a member's suspense moving against its own reserve. What
+//     this returns beside the settlement is the STATEMENTS that tell each member
+//     what to post. See PostSettlementAdviceTx.
 //   - the CREDITOR leg — a payee's funds released out of that payee's bank's
-//     suspense — left in Task 15b.3, on the clearing house's per-payment advice.
-//     See SettleAtBankTx.
+//     suspense, on the clearing house's per-payment advice. See SettleAtBankTx.
 //
 // So this reads a cycle, its own SettlementMember rows and its own book, and no
 // payment and no bank row at all, which is the whole of what a settlement agent
@@ -2252,11 +2251,10 @@ func (s *Network) SettleCycleTx(ctx context.Context, tx Tx, id CycleID, instruct
 		}
 		settlementTx = posted.ID
 
-		// 2. What each member is TOLD, in place of the mirror leg this used to
-		//    post in its book. The balance is read AFTER the posting and inside
-		//    the same unit of work, which is what makes it a CLOSING balance:
-		//    reading it before would produce an opening balance labelled CLBD,
-		//    which is the exact error closingBalanceIn refuses on the other side.
+		// 2. What each member is TOLD. The balance is read AFTER the posting and
+		//    inside the same unit of work, which is what makes it a CLOSING balance:
+		//    reading it before would produce an opening balance labelled CLBD, which
+		//    is the exact error closingBalanceIn refuses on the other side.
 		for _, leg := range legs {
 			closing, err := book.BookBalanceTx(ctx, tx, leg.settlement)
 			if err != nil {
@@ -4291,9 +4289,8 @@ func (s *Network) PostReturnLegTx(ctx context.Context, tx Tx, id PaymentID, reas
 	// transaction.
 	//
 	// So the LEDGER is asked, which is where "it no longer stands" is recorded.
-	// Only ever about THIS bank's own leg: the other side's id names a
-	// transaction in the other bank's book, and reaching into it is what
-	// TestEachBankBooksItsOwnReturnAndNoOtherBooks forbids.
+	// Only ever about THIS bank's own leg: the other side's id names a transaction
+	// in the other bank's book.
 	var clawbackStands, refundStands bool
 	if self == p.CreditorDetails.Agent {
 		if clawbackStands, err = s.legStandsTx(ctx, tx, bank, p.ReturnClawbackTx); err != nil {
@@ -4921,12 +4918,9 @@ func (s *Network) ResolveIdentifierTx(ctx context.Context, tx Tx, ident deposit.
 
 // checkPartyTx verifies that a deposit account exists in THIS bank's register,
 // returning both the account and the bound bank so callers that need more than
-// existence (the account's Asset, GLAccount, ... or the bank's live
-// Deposit/Ledger handles) don't have to fetch either again. Binding costs nothing
-// beyond the fetch this function already makes — s.bind wraps the row it just
-// read with live handles built from the Network's own stores, not a second round
-// trip — so returning a bound bank here is free, and a caller re-fetching the
-// same row with bankTx (as debtorSideTx used to) is not.
+// existence — the account's Asset or GLAccount, the bank's live Deposit/Ledger
+// handles — do not have to fetch either again. Binding costs nothing beyond the
+// fetch this function already makes.
 //
 // The bank is this network's own: the half of a payment the submitting or
 // receiving bank is the authority on. The counterparty's account is at another

@@ -102,12 +102,10 @@ type SchemeContext struct {
 // applies to every scheme rather than only the ones whose Validate happens to
 // call this helper.
 //
-// The bank it reads is THIS one, and it used to be p.Debtor.Participant. That
-// was the same bank on every path this can succeed on — a push runs it at the
-// submitting bank, which is the payer's, and a pull runs it at the receiving
-// bank, which is also the payer's — and it stopped being a field a PartyRef
-// carries; see PartyRef. A network that is not a member bank's is now a refusal
-// rather than a lookup.
+// The bank it reads is THIS one, on every path this can succeed on: a push runs
+// it at the submitting bank, which is the payer's, and a pull runs it at the
+// receiving bank, which is also the payer's. A network that is not a member
+// bank's is a refusal.
 //
 // A failure to read that row is returned unchanged rather than flattened into
 // ErrParticipantNotFound, which is what this did. The store's own not-found
@@ -147,23 +145,16 @@ func validateFunds(ctx context.Context, p *Payment, sc SchemeContext) error {
 // written, and that one has to be: mesh.Mesh.Submit chooses a submitter from a
 // request, and a request is not yet a payment.
 //
-// It took the two PartyRefs until Task 18. Every caller then took .Participant
-// off the answer, because what all four of them want is a bank to address, and a
-// PartyRef stopped naming one (see PartyRef). Returning the address directly is
-// what the callers were doing by hand; the accounts on those refs were never read
-// through this.
+// It hands back the ADDRESS rather than a party ref, because what all four
+// callers want is a bank to address.
 //
 // # Why it lives here and not in mesh
 //
-// It used to be mesh.returnerOf and nothing else, because picking which actor's
-// goroutine sends the pacs.004 was the only use for it. PostReturnLegTx is a
-// second use, in the domain: which leg a bank posts follows from which side of
-// the payment it is on, and whether that bank may REFUSE the leg follows from
-// whether it is the returner. Two copies of a rule that both the mesh's
-// actor-selection and the domain's refusal test consult would be free to drift,
-// and a mesh that sent a return from one bank while the domain let the other
-// refuse is a payment nobody can finish. mesh.returnerOf is a one-line
-// delegation now.
+// Two callers: mesh picks which actor's goroutine sends the pacs.004, and
+// PostReturnLegTx decides whether the bank posting a leg may REFUSE it. Two
+// copies of that rule would be free to drift, and a mesh that sent a return from
+// one bank while the domain let the other refuse is a payment nobody can finish.
+// mesh.returnerOf is a one-line delegation.
 func ReturnerOf(scheme Scheme, debtorAgent, creditorAgent iso20022.BIC) iso20022.BIC {
 	if scheme.Direction() == Pull {
 		return debtorAgent

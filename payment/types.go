@@ -176,14 +176,11 @@ func (s CycleStatus) String() string {
 // PartyRef identifies one side of a payment: a customer deposit account, and the
 // external address that was quoted to reach it.
 //
-// # It does not name the bank, and it used to
+// # It does not name the bank
 //
-// The field was Participant, a ParticipantID, and it sat beside a
-// PartyDetails.Agent naming the same bank by BIC. Task 18 made a bank's id its
-// BIC (see AsBank), so the two could no longer differ, and two values that cannot
-// differ are not two facts. The agent is the survivor because it is what ROUTES:
-// it goes out as DbtrAgt/CdtrAgt and the clearing house relays on it, which is
-// something an id nobody puts on the wire never did.
+// A bank's id IS its BIC (see AsBank), and the AGENT beside this ref is what
+// carries it: the agent is what ROUTES, going out as DbtrAgt/CdtrAgt with the
+// clearing house relaying on it.
 //
 // So one side of a payment is now read as a PAIR — this ref says which account,
 // and the PartyDetails beside it says at which bank. Payment.Debtor and
@@ -192,11 +189,10 @@ func (s CycleStatus) String() string {
 // exactly that reason, and store/sqlite/schema/bank/0001_init.sql's payments,
 // where the two dropped columns are argued at length.
 //
-// One consequence is worth naming rather than discovering: a WRONG counterparty
-// agent and a wrong counterparty are no longer distinguishable, because there is
-// one value to be wrong. Nothing is weakened — the instruction still reaches the
-// bank it names, which resolves the address in its own register and answers AC01
-// — but a test constructing a DISAGREEMENT between the two has nothing to build.
+// One consequence: a WRONG counterparty agent and a wrong counterparty are not
+// distinguishable, because there is one value to be wrong. Nothing is weakened —
+// the instruction still reaches the bank it names, which resolves the address in
+// its own register and answers AC01.
 //
 // The identifier is STORED rather than derived, because identifiers are
 // mutable: an account that later has its IBAN withdrawn must not retroactively
@@ -229,13 +225,12 @@ type PartyRef struct {
 //
 // The reason is that identifiers are mutable by design: reissuing a card is a
 // RemoveIdentifier plus an AddIdentifier against an account whose balance and
-// history do not move (deposit/register.go). Whole-struct equality would turn
-// that ordinary operation into a silent, permanent kill of every mandate on the
-// account — quoting the new address fails the mandate comparison, quoting the
-// old one is refused because the account no longer holds it, and quoting
-// nothing back-fills the new one and fails the comparison again. There is no
-// UpdateMandate, so there would be no way back.
-// TestMandateSurvivesAReissuedDebtorIdentifier pins it.
+// history do not move. Whole-struct equality would turn that ordinary operation
+// into a silent, permanent kill of every mandate on the account — quoting the
+// new address fails the mandate comparison, quoting the old one is refused
+// because the account no longer holds it, and quoting nothing back-fills the new
+// one and fails the comparison again. There is no UpdateMandate, so there would
+// be no way back. TestMandateSurvivesAReissuedDebtorIdentifier pins it.
 func (r PartyRef) SameParty(o PartyRef) bool {
 	return r.Account == o.Account
 }
@@ -255,19 +250,10 @@ func (r PartyRef) SameParty(o PartyRef) bool {
 //
 // # Why it is stored on the payment rather than resolved
 //
-// It used to be resolved: payment.partyTx read the account out of the party's
-// own bank's deposit register to get the name on it. That is a read of ANOTHER
-// BANK'S BOOK on the happy path of every submission, measured by the recorder in
-// mesh/books_test.go and recorded there at length. A real payer's bank knows the
-// payee's name because the payer typed it in, not because building the
-// instruction went and found it, so the name travels on the instruction.
-//
-// This used to add that it was a claim about the payment and not about the whole
-// system, because GET /directory "still resolves an address across the network"
-// and reads the resolved account's name. That exception is gone as of Task 18a:
-// the lookup answers out of ONE bank's own register, so nothing in this system
-// resolves an address across banks and there is no cross-bank name to reach a
-// payment even in principle. The claim is now about the whole system.
+// It is asserted rather than resolved: resolving it would read ANOTHER BANK'S
+// BOOK on the happy path of every submission. A real payer's bank knows the
+// payee's name because the payer typed it in, so the name travels on the
+// instruction.
 //
 // Storing it is therefore not a cache. There is nothing to fall back to.
 type PartyDetails struct {
@@ -279,23 +265,17 @@ type PartyDetails struct {
 	// COUNTERPARTY's is ASSERTED by the instruction, and SubmitPaymentTx refuses
 	// one that names none (ErrCounterpartyAgentNotNamed).
 	//
-	// This doc said the opposite for two tasks — that neither side is taken from
-	// the instruction, because both come from the BANK ROW of the party the
-	// payment names — and that reading was right about the hazard and was
-	// overtaken by the split. The hazard is real: this element ROUTES, going out
-	// as CdtrAgt/DbtrAgt with the clearing house relaying on it and reading
-	// nothing, so a payer able to type it is a payer able to choose which bank
-	// receives their payment. It was measured doing exactly that before it was
-	// closed the first time; see mesh/books_test.go's
+	// This element ROUTES, going out as CdtrAgt/DbtrAgt with the clearing house
+	// relaying on it and reading nothing, so a payer able to type it is a payer
+	// able to choose which bank receives their payment. See mesh/books_test.go's
 	// TestAWrongCounterpartyAgentDoesNotMisroute.
 	//
-	// What changed is that the row it was derived FROM is the counterparty's own,
-	// and since Task 18c a bank holds only its own. There is nothing left to
-	// derive it from, and Task 18a put the assertion back. What makes asserting
-	// it safe is the narrowing that landed in the same commit: a bank resolves an
-	// address in its OWN register only, so a misdirected instruction is refused
-	// AC01 by the bank it named rather than quietly accepted for somebody else's
-	// customer. An IBAN plus a BIC is also what SEPA was before 2016.
+	// It is asserted anyway, because the row it could be derived from is the
+	// counterparty's own and a bank holds only its own. What makes asserting it
+	// safe is that a bank resolves an address in its OWN register only, so a
+	// misdirected instruction is refused AC01 by the bank it named rather than
+	// quietly accepted for somebody else's customer. An IBAN plus a BIC is also
+	// what SEPA was before 2016.
 	//
 	// On a RECEIVED message it is what the message said, read off the wire by
 	// CreditTransferRequest/DirectDebitRequest — there the agent is the sender's
@@ -310,12 +290,8 @@ type PartyDetails struct {
 	// it, because that is the only place it can come from. The asymmetry is
 	// the point — see SubmitPaymentTx.
 	//
-	// It used to be the ONLY thing about the counterparty a payer asserts, on the
-	// argument that the name cannot be looked up without reading another bank's
-	// register while routing is not the payer's to decide. The first half is
-	// unchanged; the second stopped being available, because the row the agent
-	// was derived from is that other bank's too. Both are asserted now, and both
-	// for the same reason. See Agent.
+	// It is asserted for Agent's reason: the register that could answer it is
+	// another bank's. See Agent.
 	Name string
 }
 
@@ -422,14 +398,6 @@ type Payment struct {
 	// it sends — so neither field can be the marker on its own.
 	//
 	// # What this cannot survive
-	//
-	// It works because one payment is one row that both banks can see. Under
-	// sub-project 8's store split it is two rows in two stores, and neither
-	// bank can read the other's, so the counterparty's transaction id stops
-	// being available to read at all. What replaces it is Task 18's to decide —
-	// the material a bank will have is the return message it received and the
-	// status its own row is already at. This note exists so that task inherits
-	// the problem rather than discovering it.
 	ReturnClawbackTx ledger.TransactionID
 	ReturnRefundTx   ledger.TransactionID
 }
@@ -510,7 +478,7 @@ type ClearingCycle struct {
 	OpenedAt time.Time
 	ClosedAt time.Time
 
-	// There is no SettlementID here, and there was until Task 18d.
+	// There is no SettlementID here.
 	//
 	// The settlement's id is the SETTLEMENT AGENT's own row number, allocated
 	// inside that agent's own unit of work in its own database. What comes back
@@ -535,12 +503,9 @@ type Settlement struct {
 	NetPositions map[iso20022.BIC]ledger.Amount
 	// What was settled IN, taken off the instruction this agent acted on.
 	//
-	// It is stored rather than derived, and the derivation it replaces was a
-	// crossing: a settlement's asset used to be read settlement -> its cycle ->
-	// the cycle's scheme, and the cycle is the CLEARING HOUSE's row. The
-	// settlement agent has no cycles table, so from Task 18d the only reader of
-	// that chain (api's settlementAsset) was asking one institution about
-	// another's database and getting "no such table" for it.
+	// It is stored rather than derived. Deriving it would read settlement -> its
+	// cycle -> the cycle's scheme, and the cycle is the CLEARING HOUSE's row: the
+	// settlement agent has no cycles table.
 	//
 	// The agent has always known the answer without asking: positionsIn refuses
 	// an instruction whose legs are not all in ONE asset, so the batch it posts
@@ -573,8 +538,7 @@ const (
 	// atomic: a row asserting a booking that did not happen is worse than no row.
 	//
 	// So the detector for a bank that was told and did not book is the ABSENCE of
-	// a row against a clearing suspense that has not returned to zero. This doc
-	// used to claim the opposite, and so did four other layers; see
+	// a row against a clearing suspense that has not returned to zero. See
 	// SettlementAdvice and PostSettlementAdviceTx.
 	AdviceAdvised AdviceStatus = iota
 	// AdvicePosted is booked: the mirror leg is in this bank's own ledger.
@@ -590,31 +554,27 @@ const (
 //
 // Book is part of its identity, which is the whole point. A cycle is the
 // clearing house's and a settlement is the central bank's; this is the member's,
-// and under sub-project 8 it lives in that member's own store. Two banks advised
-// of the same movement write two rows independently, so "one bank has booked
-// this and the other has not" is expressible — as one row present and the other
-// ABSENT, rather than as two rows at different statuses. See AdviceAdvised for
-// why the difference matters and what it cost to get wrong.
+// and it lives in that member's own store. Two banks advised of the same
+// movement write two rows independently, so "one bank has booked this and the
+// other has not" is expressible — as one row present and the other ABSENT,
+// rather than as two rows at different statuses. See AdviceAdvised.
 //
 // # Reference is opaque, and that is the point
 //
 // It is the AcctSvcrRef a statement carried, kept verbatim: a cycle id on the
-// path SettleCycleTx builds today, a payment id on the return path sub-project
-// 8's Task 16d adds. A member bank holds no cycles and no other institution's
-// payment ids, so it cannot tell the two apart and has no reason to — Reference
-// exists to be quoted back at the central bank and to be this row's own key, not
-// to be resolved to anything this bank holds. There is deliberately no field
-// saying which kind a row is: ids are unique across the store, and Task 19's
-// reconciliation walks one shape, not two. See AdvisedMovement's doc and
-// StatementMessage's.
+// cut-off path, a payment id on the return path. A member bank holds no cycles
+// and no other institution's payment ids, so it cannot tell the two apart and
+// has no reason to — Reference exists to be quoted back at the central bank and
+// to be this row's own key. There is deliberately no field saying which kind a
+// row is: ids are unique across the store. See AdvisedMovement and
+// StatementMessage.
 //
 // # ClosingBalance is stored and nothing checks it yet
 //
 // It is what the central bank says this bank's reserve stands at, and it is the
 // only figure in this system that a bank can check its own books against without
-// reading another institution's store. Task 19 is where that check happens. It is
-// stored now because it arrives now, and a statement's balance discarded on
-// receipt is a balance nobody can ever go back for.
+// reading another institution's store. It is stored because a statement's
+// balance discarded on receipt is a balance nobody can ever go back for.
 type SettlementAdvice struct {
 	Book      ledger.BookID
 	Reference string
@@ -651,16 +611,13 @@ type SettlementAdvice struct {
 // Reference travels as AcctSvcrRef and StatementRef as Stmt/Id — the account
 // servicer's own reference for the entry and for the statement it sits in.
 // SettleCycleTx sets Reference to the cycle's id and StatementRef to the
-// settlement row's, as string(SettlementID); the return path Task 16d adds sets
-// Reference to a payment id and StatementRef to a value that is NOT a row's key
-// (see AdvisedMovement's doc), which is why StatementRef is a plain string and
-// not a typed SettlementID.
+// settlement row's; the return path sets Reference to a payment id and
+// StatementRef to a value that is NOT a row's key (see AdvisedMovement), which
+// is why StatementRef is a plain string and not a typed SettlementID.
 //
-// It carried a Member beside Agent — the same bank as an id and as an address —
-// until Task 18 made the two one value. Agent is the survivor for the reason the
-// payments table's agent columns are: it is what goes on the wire, and the
-// settlement agent that builds these holds no table that could turn one into the
-// other. See payment.PartyRef, which is the same collapse on a payment's parties.
+// There is no member id beside Agent: a bank's id IS its BIC, the address is
+// what goes on the wire, and the settlement agent that builds these holds no
+// table that could turn one into the other. See payment.PartyRef.
 type SettlementStatement struct {
 	Agent        iso20022.BIC
 	Account      ledger.AccountID
