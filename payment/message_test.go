@@ -113,9 +113,12 @@ func networkWithOneCollection(t *testing.T) (*testSystem, Payment, Mandate) {
 		EndToEndID:  "e2e-dd-1",
 		Description: "electricity, August",
 		// Pull: the debtor is the counterparty, so the request must name it. See
-		// networkWithOnePayment on why the Agent is the fixture's to supply.
-		DebtorDetails: PartyDetails{Agent: aurora.BIC, Name: alice.Name},
-	})
+		// networkWithOnePayment on why the Agent is the fixture's to supply. The
+		// COLLECTOR's agent is named too, and it is the fixture's own need rather
+		// than the domain's: it selects which bank's database this collection is
+		// submitted at. See submitterOfReq.
+		DebtorDetails:   PartyDetails{Agent: aurora.BIC, Name: alice.Name},
+		CreditorDetails: PartyDetails{Agent: verde.BIC}})
 	assertNoError(t, err)
 	return sys, p, m
 }
@@ -821,9 +824,16 @@ func TestCreditTransferRoundTripsThroughTheWire(t *testing.T) {
 	// The DEBTOR is the SENDING bank's customer. Task 14.4 narrowed
 	// CreditTransferRequest to resolve its own side only — not the sweep itself,
 	// which is still network-wide, but WHICH party is put through it — so the
-	// debtor comes back with the address the message quoted and nothing
-	// resolved at all: no participant, no account.
-	if got.DebtorDetails.Agent != "" || got.Debtor.Account != "" {
+	// debtor comes back with the address the message quoted and NO ACCOUNT: an
+	// account id is this bank's own key for its own register and there is
+	// nothing here for it to be a key to.
+	//
+	// The AGENT is not part of that claim and this used to assert it was empty.
+	// It is DbtrAgt, read straight off the message like every other element,
+	// and it has been asserted rather than derived since Task 18a — see
+	// SubmitPaymentTx. The check below on DebtorDetails as a whole is the one
+	// that says so, and the two contradicted each other.
+	if got.Debtor.Account != "" {
 		t.Errorf("debtor resolved to %+v, want it recorded rather than resolved", got.Debtor)
 	}
 	if got.Debtor.Identifier != p.Debtor.Identifier {
@@ -888,9 +898,9 @@ func TestDirectDebitRoundTripsThroughTheWire(t *testing.T) {
 	}
 	// The CREDITOR is the SENDING bank's customer here — the mirror of
 	// receiveCreditTransfer's debtor — and comes back recorded rather than
-	// resolved: no participant, no account, only the address the message
-	// quoted.
-	if got.CreditorDetails.Agent != "" || got.Creditor.Account != "" {
+	// resolved: no account, only the address the message quoted. The AGENT is
+	// CdtrAgt and is on the message; see the push's mirror of this note.
+	if got.Creditor.Account != "" {
 		t.Errorf("creditor resolved to %+v, want it recorded rather than resolved", got.Creditor)
 	}
 	if got.Creditor.Identifier != p.Creditor.Identifier {
@@ -1447,8 +1457,9 @@ func TestCreditTransferRoundTripsThroughTheWireForSeedShapedAddresses(t *testing
 		t.Errorf("creditor resolved to %+v, want %+v", got.Creditor, p.Creditor)
 	}
 	// The DEBTOR is Aurora's customer, not Verde's, so it comes back recorded —
-	// the address the message quoted — and not resolved.
-	if got.DebtorDetails.Agent != "" || got.Debtor.Account != "" {
+	// the address the message quoted — and not resolved. Its AGENT is on the
+	// message; see TestCreditTransferRoundTripsThroughTheWire.
+	if got.Debtor.Account != "" {
 		t.Errorf("debtor resolved to %+v, want it recorded rather than resolved", got.Debtor)
 	}
 	// The request records the address the MESSAGE quoted, which is the compact
@@ -1481,7 +1492,7 @@ func TestCreditTransferRoundTripsThroughTheWireForSeedShapedAddresses(t *testing
 		Creditor:        got.Creditor,
 		Amount:          got.Amount,
 		CreditorDetails: got.CreditorDetails,
-	})
+		DebtorDetails:   PartyDetails{Agent: aurora.BIC}})
 	if err != nil {
 		t.Fatalf("initiating the translated payment: %v", err)
 	}

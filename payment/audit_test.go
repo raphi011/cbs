@@ -159,18 +159,30 @@ func eventTypes(events []ledger.AuditEvent) string {
 // two payments is the smallest fixture that can tell "once" from "once per
 // payment" apart.
 //
-// # The ORDER across the cut-off is the measurement Task 15 moved
+// # The ORDER across the cut-off is the measurement Task 15 moved, and Task 18d
+// moved it out of reach
 //
 // payment.settled used to come BEFORE cycle.settled, because both were appended
 // inside the settlement agent's one unit of work and the payments were done
-// first. They are two institutions' acts now: cycle.settled is the settlement
-// agent's, and each payment.settled is a payee's bank's, appended when that bank
-// posts its own creditor leg on the clearing house's advice. So the settlement
-// closes first and the payments follow it.
+// first. They became two institutions' acts at Task 15: cycle.settled is the
+// settlement agent's, and each payment.settled is a payee's bank's, appended
+// when that bank posts its own creditor leg on the clearing house's advice. So
+// the settlement closed first and the payments followed it, and this test read
+// that off one merged list.
 //
-// A trail in which they ran the other way round would mean a payee had been paid
-// before the reserves moved, which is what finality forbids and which no bank
-// could have known to do.
+// There is no list to read it off now. The two events are in two DATABASES with
+// two counters, so nothing here can order them — see paymentAudit. The claim
+// they carried (a payee is not paid before the reserves move) is a claim about
+// MESSAGES and is measured where the messages are, in mesh; what this test
+// measures is what each institution's own log contains and in what order, which
+// is the strongest statement four separate logs support.
+//
+// # So it asserts four trails, and their differences are the subject
+//
+// A settlement agent that has never heard of a payment, a clearing house that
+// never sees three of an admission's four acts, and two banks whose logs are the
+// same shape as each other and say nothing about each other. Each of those is a
+// separation the one shared log could not have shown.
 func TestPaymentAuditCoversTheNettingFlow(t *testing.T) {
 	ctx := context.Background()
 	sys := testNetwork(t)
@@ -194,51 +206,95 @@ func TestPaymentAuditCoversTheNettingFlow(t *testing.T) {
 		payments = []PaymentID{p1.ID, p2.ID}
 	})
 
-	// Four events per admission, because an admission is four units of work at
-	// three institutions and each writes its own. They are interleaved per bank
-	// rather than grouped, because the acts run in order for one bank before the
-	// next bank is admitted. See TestEachActOfAnAdmissionLeavesItsOwnAuditEvent.
-	want := strings.Join([]string{
-		ledger.EventParticipantAdded, // Bank A founds itself
-		ledger.EventSettlementAccountOpened,
-		ledger.EventMemberAdmitted,
+	// FOUR trails, one per institution, and each is asserted whole and in its own
+	// order. There is no fifth list that is all of them: see paymentAudit on why
+	// the concatenation is a grouping and not a sequence.
+	//
+	// The clearing house's is the only one that sees the flow as a flow — it
+	// admits both members, opens and closes the cut-off and takes each payment
+	// into it — and even it does not see an admission's other three acts.
+	assertEqual(t, "the clearing house's trail", eventTypes(csmAudit(t, sys, "")),
+		strings.Join([]string{
+			ledger.EventMemberAdmitted, // Bank A into the roster
+			ledger.EventMemberAdmitted, // Bank B
+			ledger.EventCycleOpened,
+			ledger.EventPaymentInitiated, // payment 1, relayed to it
+			ledger.EventPaymentAccepted,
+			ledger.EventPaymentInitiated, // payment 2
+			ledger.EventPaymentAccepted,
+			ledger.EventPaymentCleared, // one per payment in the cycle
+			ledger.EventPaymentCleared,
+			ledger.EventCycleClosed,
+			ledger.EventPaymentSettled, // one per payment, on its advice
+			ledger.EventPaymentSettled,
+		}, " "))
+
+	// The settlement agent's is three lines long: it opened an account for each
+	// member and it discharged one cut-off. It has never heard of a payment,
+	// which is what netting means.
+	assertEqual(t, "the settlement agent's trail", eventTypes(cbAudit(t, sys, "")),
+		strings.Join([]string{
+			ledger.EventSettlementAccountOpened,
+			ledger.EventSettlementAccountOpened,
+			ledger.EventCycleSettled,
+		}, " "))
+
+	// Each bank's is the same shape as the other's, and it is the shape of what a
+	// bank actually did: it founded itself, it recorded the membership it was
+	// granted, and it took part in both payments — as the submitter of one and
+	// the receiver of the other. TWO payment.initiated per bank, because a bank's
+	// log opens with its own initiation for every payment it holds a row for
+	// (SubmitPaymentTx and AcceptInboundTx both append one); the distinction
+	// between the two roles is not in the event and is not meant to be.
+	//
+	// No cycle and no settlement. A member is told the outcome of a cut-off and
+	// posts against it; it does not run one.
+	eachBank := strings.Join([]string{
+		ledger.EventParticipantAdded,
 		ledger.EventMembershipRecorded,
-		ledger.EventParticipantAdded, // Bank B
-		ledger.EventSettlementAccountOpened,
-		ledger.EventMemberAdmitted,
-		ledger.EventMembershipRecorded,
-		ledger.EventCycleOpened,
-		ledger.EventPaymentInitiated, // payment 1
-		ledger.EventPaymentAccepted,
-		ledger.EventPaymentInitiated, // payment 2
-		ledger.EventPaymentAccepted,
-		ledger.EventPaymentCleared, // one per payment in the cycle
-		ledger.EventPaymentCleared,
-		ledger.EventCycleClosed,
-		ledger.EventCycleSettled,   // the settlement agent's, and it comes first
-		ledger.EventPaymentSettled, // one per payment, each its own bank's
+		ledger.EventPaymentInitiated,
+		ledger.EventPaymentInitiated,
+		ledger.EventPaymentSettled,
 		ledger.EventPaymentSettled,
 	}, " ")
-	assertEqual(t, "network audit trail", eventTypes(paymentAudit(t, sys, "")), want)
+	assertEqual(t, "Bank A's trail", eventTypes(bankAudit(t, sys, a.BIC, "")), eachBank)
+	assertEqual(t, "Bank B's trail", eventTypes(bankAudit(t, sys, b.BIC, "")), eachBank)
 
-	// Every event names the entity it is about, so ?entity= is usable.
+	// Every event names the entity it is about, so ?entity= is usable — and the
+	// answer differs by institution, which is the point. The clearing house holds
+	// a payment's whole lifecycle; a bank holds the two moments it acted in.
 	for _, pid := range payments {
-		assertEqual(t, "trail for "+string(pid), eventTypes(paymentAudit(t, sys, string(pid))),
+		assertEqual(t, "the clearing house on "+string(pid), eventTypes(csmAudit(t, sys, string(pid))),
 			strings.Join([]string{
 				ledger.EventPaymentInitiated,
 				ledger.EventPaymentAccepted,
 				ledger.EventPaymentCleared,
 				ledger.EventPaymentSettled,
 			}, " "))
+		bothEnds := ledger.EventPaymentInitiated + " " + ledger.EventPaymentSettled
+		assertEqual(t, "Bank A on "+string(pid), eventTypes(bankAudit(t, sys, a.BIC, string(pid))), bothEnds)
+		assertEqual(t, "Bank B on "+string(pid), eventTypes(bankAudit(t, sys, b.BIC, string(pid))), bothEnds)
 	}
-	// The bank's OWN two, keyed by its own id: it founded itself, and later it
+
+	// A bank's own two, keyed by its own id: it founded itself, and later it
 	// recorded what the scheme told it. The other two acts of its admission are
-	// keyed by its BIC, because the institutions that wrote them know it by no
-	// other name — see TestEachActOfAnAdmissionLeavesItsOwnAuditEvent.
-	assertEqual(t, "trail for "+string(a.ID), eventTypes(paymentAudit(t, sys, string(a.ID))),
+	// keyed by its BIC — and since Task 18 a bank's id IS its BIC, so what
+	// separates them is no longer the key but the LOG THEY ARE IN. See
+	// TestEachActOfAnAdmissionLeavesItsOwnAuditEvent.
+	assertEqual(t, "Bank A's own trail for itself", eventTypes(bankAudit(t, sys, a.BIC, string(a.ID))),
 		ledger.EventParticipantAdded+" "+ledger.EventMembershipRecorded)
-	assertEqual(t, "trail for the cycle", eventTypes(paymentAudit(t, sys, string(st.CycleID))),
-		strings.Join([]string{ledger.EventCycleOpened, ledger.EventCycleClosed, ledger.EventCycleSettled}, " "))
+	assertEqual(t, "the clearing house on Bank A", eventTypes(csmAudit(t, sys, string(a.ID))),
+		ledger.EventMemberAdmitted)
+	assertEqual(t, "the settlement agent on Bank A", eventTypes(cbAudit(t, sys, string(a.ID))),
+		ledger.EventSettlementAccountOpened)
+	// And Bank B's log says nothing about Bank A at all, which is the claim the
+	// one shared log could not make.
+	assertEqual(t, "Bank B on Bank A", eventTypes(bankAudit(t, sys, b.BIC, string(a.ID))), "")
+
+	assertEqual(t, "the clearing house on the cycle", eventTypes(csmAudit(t, sys, string(st.CycleID))),
+		ledger.EventCycleOpened+" "+ledger.EventCycleClosed)
+	assertEqual(t, "the settlement agent on the cycle", eventTypes(cbAudit(t, sys, string(st.CycleID))),
+		ledger.EventCycleSettled)
 
 	// Payment-scope events carry a payload snapshot, and each is written under the
 	// book of the institution whose act it was — one of the three, never a shared
@@ -329,6 +385,11 @@ func TestARefusedSettlementLeavesNoAuditTrail(t *testing.T) {
 // TestRejectedPaymentIsAudited covers the branch the happy path never reaches,
 // and pins that a rejected payment's own initiation events survive: the
 // rejection is a later unit of work, not a rollback of the initiation.
+//
+// Three trails, because a rejection is three institutions' acts and each records
+// its own: the clearing house decides, and each bank records the decision on its
+// own copy — the payer's giving the money back. See RejectAtBankTx, and the
+// reject helper, which plays all three.
 func TestRejectedPaymentIsAudited(t *testing.T) {
 	ctx := context.Background()
 	sys := testNetwork(t)
@@ -346,12 +407,20 @@ func TestRejectedPaymentIsAudited(t *testing.T) {
 	_, err = reject(ctx, sys, p.ID, iso20022.StatusReasonDuplication, "AM05")
 	assertNoError(t, err)
 
-	assertEqual(t, "trail for the rejected payment", eventTypes(paymentAudit(t, sys, string(p.ID))),
+	assertEqual(t, "the clearing house on the rejected payment", eventTypes(csmAudit(t, sys, string(p.ID))),
 		strings.Join([]string{
 			ledger.EventPaymentInitiated,
 			ledger.EventPaymentAccepted,
 			ledger.EventPaymentRejected,
 		}, " "))
+	// Each bank's own copy: it took the payment on, and it was told the payment
+	// died. No payment.accepted — that is the clearing house's act and no bank
+	// records another institution's.
+	bothBanks := ledger.EventPaymentInitiated + " " + ledger.EventPaymentRejected
+	assertEqual(t, "the payer's bank on the rejected payment",
+		eventTypes(bankAudit(t, sys, a.BIC, string(p.ID))), bothBanks)
+	assertEqual(t, "the payee's bank on the rejected payment",
+		eventTypes(bankAudit(t, sys, b.BIC, string(p.ID))), bothBanks)
 }
 
 // TestFailedInitiationLeavesNoAuditTrail is the mirror image: an instruction
@@ -426,7 +495,7 @@ func TestReturnedPaymentIsAudited(t *testing.T) {
 	_, err = returnWholePayment(ctx, sys, payID, "AC04")
 	assertNoError(t, err)
 
-	assertEqual(t, "trail for the returned payment", eventTypes(paymentAudit(t, sys, string(payID))),
+	assertEqual(t, "the clearing house on the returned payment", eventTypes(csmAudit(t, sys, string(payID))),
 		strings.Join([]string{
 			ledger.EventPaymentInitiated,
 			ledger.EventPaymentAccepted,
@@ -434,6 +503,17 @@ func TestReturnedPaymentIsAudited(t *testing.T) {
 			ledger.EventPaymentSettled,
 			ledger.EventPaymentReturned,
 		}, " "))
+	// Each bank recorded the payment and its settlement, and each recorded the
+	// return: a return is posted at both ends, unlike a rejection's refund.
+	bothBanks := strings.Join([]string{
+		ledger.EventPaymentInitiated,
+		ledger.EventPaymentSettled,
+		ledger.EventPaymentReturned,
+	}, " ")
+	assertEqual(t, "the payer's bank on the returned payment",
+		eventTypes(bankAudit(t, sys, a.BIC, string(payID))), bothBanks)
+	assertEqual(t, "the payee's bank on the returned payment",
+		eventTypes(bankAudit(t, sys, b.BIC, string(payID))), bothBanks)
 }
 
 // TestParticipantAuditPayloadDropsLiveHandles pins that the payload of both
@@ -444,6 +524,11 @@ func TestReturnedPaymentIsAudited(t *testing.T) {
 // Both, because there are two of them now and they carry the same type: the bank
 // founds itself and later records what the scheme told it. A check on one of the
 // two would leave the other free to leak a handle.
+//
+// Both are in the BANK's own log, which is what selects them: a bank's id is its
+// BIC, so the two events the other institutions wrote about the same address
+// answer the same entity filter and are a different type carrying a different
+// payload. See TestEachActOfAnAdmissionLeavesItsOwnAuditEvent.
 func TestParticipantAuditPayloadDropsLiveHandles(t *testing.T) {
 	ctx := context.Background()
 	sys := testNetwork(t)
@@ -451,7 +536,7 @@ func TestParticipantAuditPayloadDropsLiveHandles(t *testing.T) {
 	p, err := storetest.Admit(ctx, sys.nets, "Bank A", testBIC, euroOnly)
 	assertNoError(t, err)
 
-	events := paymentAudit(t, sys, string(p.ID))
+	events := bankAudit(t, sys, testBIC, string(p.ID))
 	assertEqual(t, "events about the bank's own row", eventTypes(events),
 		ledger.EventParticipantAdded+" "+ledger.EventMembershipRecorded)
 
@@ -483,10 +568,28 @@ func TestParticipantAuditPayloadDropsLiveHandles(t *testing.T) {
 //
 // # What each event has to be about
 //
-// The two BIC-keyed events are the other institutions' own records, and they are
-// keyed by the BIC because that is the only identifier those institutions have —
-// neither of them has ever been told this system's bank ids. The two id-keyed
-// events are the bank's own row, before and after.
+// The two the other institutions wrote are keyed by the BIC because that is the
+// only identifier those institutions have — neither of them has ever been told
+// this system's bank ids. The bank's own two are keyed by its id, and they are
+// its own row before and after.
+//
+// # Which is no longer a distinction, and the log each event is in has replaced it
+//
+// A bank's ParticipantID IS its BIC since Task 18 (see AsBank), so all four
+// events are keyed by one string and filtering by entity cannot tell the
+// institutions apart. What can, and what could not before Task 18d, is WHOSE
+// DATABASE each event is in: the bank's own log holds the two it wrote, the
+// settlement agent's holds the account it opened, the clearing house's holds the
+// roster entry it made. That is a stronger separation than the key ever was —
+// the key was a convention and this is a boundary — and it is why the four
+// assertions below are four reads rather than one.
+//
+// The ORDER between them is gone with it. Each institution's log orders its own
+// acts and nothing orders one against another (see paymentAudit), so
+// "participant.added, then settlement_account.opened, then member.admitted, then
+// membership.recorded" is no longer a sequence this system can state. What
+// survives is that each act happened, in the log of the institution that
+// performed it, and that each carries its result.
 //
 // The settlement account numbers are asserted on the events that must carry
 // them, rather than only counting types: an event whose payload had lost the
@@ -499,18 +602,16 @@ func TestEachActOfAnAdmissionLeavesItsOwnAuditEvent(t *testing.T) {
 	p, err := storetest.Admit(ctx, sys.nets, "Bank A", testBIC, euroOnly)
 	assertNoError(t, err)
 
-	assertEqual(t, "the whole admission's trail", eventTypes(paymentAudit(t, sys, "")),
-		strings.Join([]string{
-			ledger.EventParticipantAdded,
-			ledger.EventSettlementAccountOpened,
-			ledger.EventMemberAdmitted,
-			ledger.EventMembershipRecorded,
-		}, " "))
-
-	// The two the other institutions wrote are keyed by the address, which is
-	// the whole of what they know this bank by.
-	assertEqual(t, "the trail under the bank's address", eventTypes(paymentAudit(t, sys, string(testBIC))),
-		ledger.EventSettlementAccountOpened+" "+ledger.EventMemberAdmitted)
+	// The bank's own two, in its own log and in its own order: it founded itself
+	// and later recorded what the scheme told it.
+	assertEqual(t, "the bank's own trail", eventTypes(bankAudit(t, sys, testBIC, "")),
+		ledger.EventParticipantAdded+" "+ledger.EventMembershipRecorded)
+	// The settlement agent opened the account.
+	assertEqual(t, "the settlement agent's trail", eventTypes(cbAudit(t, sys, "")),
+		ledger.EventSettlementAccountOpened)
+	// The clearing house put the address in the roster.
+	assertEqual(t, "the clearing house's trail", eventTypes(csmAudit(t, sys, "")),
+		ledger.EventMemberAdmitted)
 
 	// And the settlement account number is in the log, twice: once as the
 	// account the servicer opened, once as the reference the bank was told.

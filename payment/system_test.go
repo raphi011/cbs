@@ -591,7 +591,28 @@ func returnWholePayment(ctx context.Context, sys *testSystem, id PaymentID, reas
 			return Payment{}, err
 		}
 	}
-	return sys.bank(other).PostReturnLeg(ctx, id, reason)
+	// The OTHER bank's leg is the SECOND one and takes that bank's copy to
+	// Returned; see PostReturnLegTx on position in the conversation.
+	out, err := sys.bank(other).PostReturnLeg(ctx, id, reason)
+	if err != nil {
+		return Payment{}, err
+	}
+	// And the two institutions that learn it only by being told: the bank that
+	// ASKED for the return, whose own leg was the first and therefore not the
+	// one that closes the payment, and the clearing house, which carried the
+	// pacs.004 and posts nothing. In the mesh both are sent the settlement
+	// agent's ACSC; here, as in the seed, they are told directly.
+	//
+	// The fixture ran neither, which is why the returner's copy and the clearing
+	// house's sat at Settled for ever and why this helper's own tests could only
+	// see a return in one bank's log.
+	if _, err := sys.bank(returner).CompleteReturn(ctx, id); err != nil {
+		return Payment{}, err
+	}
+	if _, err := sys.CompleteReturn(ctx, id); err != nil {
+		return Payment{}, err
+	}
+	return out, nil
 }
 
 // bookTheAdvices is every member's half of a cut-off: each books the mirror leg
