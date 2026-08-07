@@ -3764,6 +3764,11 @@ func TestTheClearingHouseWillNotClearForANonMember(t *testing.T) {
 			req.Debtor = PartyRef{Account: foundedAcct.ID}
 			req.Creditor = PartyRef{Account: memberAcct.ID}
 			req.CreditorDetails = PartyDetails{Agent: member.BIC, Name: "Alice"}
+			// And the FOUNDED bank submits it, which the reversed refs alone no
+			// longer say: since Task 18d the debtor's agent selects the database
+			// the submission is made in, so leaving it at the member's had that
+			// bank submitting a payment drawn on an account it does not hold.
+			req.DebtorDetails = PartyDetails{Agent: founded.BIC}
 		}
 		return sys, req
 	}
@@ -3787,6 +3792,12 @@ func TestTheClearingHouseWillNotClearForANonMember(t *testing.T) {
 			p, err := sys.submit(ctx, req)
 			assertNoError(t, err)
 			assertNoError(t, sys.bank(receiverOf(sys, p)).AcceptInbound(ctx, p.ID, relayedFrom(p)))
+			// The clearing house's own copy, which it has to be holding before
+			// it can take a payment into a cycle — and which it writes from the
+			// instruction it relayed, asking nothing about membership. The
+			// roster check is the ACCEPTANCE's, below. See RecordRelayedTx.
+			_, err = sys.RecordRelayed(ctx, p.ID, relayedFrom(p))
+			assertNoError(t, err)
 
 			_, err = sys.AcceptAtCSM(ctx, p.ID)
 			if !errors.Is(err, ErrBankNotAdmitted) {
@@ -3893,6 +3904,10 @@ func TestTheClearingHouseWillNotClearInAnAssetAMemberWasNotAdmittedIn(t *testing
 		DebtorDetails:   PartyDetails{Agent: payer.BIC}})
 	assertNoError(t, err)
 	assertNoError(t, sys.bank(receiverOf(sys, p)).AcceptInbound(ctx, p.ID, relayedFrom(p)))
+	// The clearing house's own copy first; see the same step in
+	// TestTheClearingHouseWillNotClearForANonMember.
+	_, err = sys.RecordRelayed(ctx, p.ID, relayedFrom(p))
+	assertNoError(t, err)
 
 	_, err = sys.AcceptAtCSM(ctx, p.ID)
 	if !errors.Is(err, ErrBankNotAdmitted) {
@@ -3964,12 +3979,18 @@ func TestSubmitTakesTheCounterpartyNameFromTheRequest(t *testing.T) {
 	creditorBank, err := n.bank(req.CreditorDetails.Agent).GetBank(ctx, ParticipantID(req.CreditorDetails.Agent))
 	assertNoError(t, err)
 	req.CreditorDetails = PartyDetails{Agent: creditorBank.BIC, Name: "Whoever The Payer Typed"}
-	// A WRONG name on the bank's own side. A merge that copied req.DebtorDetails
-	// onto the payment unchanged would pass this test's name check; only an
-	// overwrite from the register catches it.
+	// A WRONG name AND a wrong agent on the bank's own side. A merge that copied
+	// req.DebtorDetails onto the payment unchanged would pass this test's name
+	// check; only an overwrite from the register catches it.
+	submitter := req.DebtorDetails.Agent
 	req.DebtorDetails = PartyDetails{Agent: "WRONGDEFFXXX", Name: "Not Alice At All"}
 
-	p, err := n.submit(ctx, req)
+	// Submitted through the bank that really submits, named before the plant.
+	// n.submit cannot be used here for the first time: it routes on the agent
+	// the request claims for its own side, and the whole point of this fixture
+	// is that that value is a lie. Which is a fixture's problem and not the
+	// domain's — a real submission arrives AT a bank, it does not name one.
+	p, err := n.bank(submitter).SubmitPayment(ctx, req)
 	if err != nil {
 		t.Fatalf("SubmitPayment: %v", err)
 	}
@@ -3983,7 +4004,7 @@ func TestSubmitTakesTheCounterpartyNameFromTheRequest(t *testing.T) {
 	if p.DebtorDetails.Name != "Alice" {
 		t.Errorf("debtor name is %q, want the submitting bank's own register value %q, not what the request carried", p.DebtorDetails.Name, "Alice")
 	}
-	debtorBank, err := n.bank(req.DebtorDetails.Agent).GetBank(ctx, ParticipantID(req.DebtorDetails.Agent))
+	debtorBank, err := n.bank(submitter).GetBank(ctx, ParticipantID(submitter))
 	assertNoError(t, err)
 	if p.DebtorDetails.Agent != debtorBank.BIC {
 		t.Errorf("debtor agent is %q, want the submitting bank's own BIC %q", p.DebtorDetails.Agent, debtorBank.BIC)
@@ -4124,7 +4145,12 @@ func TestSubmitRecordsTheCounterpartyAgentTheInstructionAsserts(t *testing.T) {
 // back as a message and reverses it.
 func TestSubmitDoesNotCheckWhetherTheCounterpartysBankExists(t *testing.T) {
 	n, req := networkWithTwoBanks(t)
-	req.CreditorDetails.Agent = "no-such-bank"
+	// A well-formed address nobody has founded. It has to be well formed: the
+	// FORMAT is still refused here, and by design — the mesh cannot route to a
+	// string that is not a BIC, so that refusal belongs where the payer can
+	// still fix it. See SubmitPaymentTx. What is not checked is whether anything
+	// answers to it.
+	req.CreditorDetails.Agent = "NOSUCHBKXXX"
 
 	if _, err := n.submit(context.Background(), req); err != nil {
 		t.Errorf("SubmitPayment = %v, want it accepted — a submitting bank does not check the counterparty's registry", err)
@@ -4141,9 +4167,15 @@ func TestSubmitDoesNotCheckWhetherTheCounterpartysBankExists(t *testing.T) {
 // which is also what AcceptInboundTx runs on the receiving side.
 func TestSubmitRefusesItsOwnPartyAtNoSuchBank(t *testing.T) {
 	n, req := networkWithTwoBanks(t)
-	req.DebtorDetails.Agent = "no-such-bank"
 
-	if _, err := n.submit(context.Background(), req); !errors.Is(err, ErrParticipantNotFound) {
+	// The instruction is submitted at an address that has a DATABASE and no bank
+	// row in it — a network for an institution that was never founded — which is
+	// the only shape "its own party is at no such bank" can take since Task 18d.
+	// It used to be a field on the request: the submitting bank's own agent was
+	// read back out and looked up, so planting a name there reached the lookup.
+	// SubmitPaymentTx writes its own identity over that field now and never
+	// reads it, so the party this act could fail to find is the ACTING one.
+	if _, err := n.bank("NOSUCHBKXXX").SubmitPayment(context.Background(), req); !errors.Is(err, ErrParticipantNotFound) {
 		t.Errorf("got %v, want ErrParticipantNotFound", err)
 	}
 }
