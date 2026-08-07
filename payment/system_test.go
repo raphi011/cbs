@@ -174,9 +174,9 @@ func accountsOf(t *testing.T, p *Bank) BankAccounts {
 	return accts
 }
 
-// initiate runs all three halves of an initiation — the submitting bank's, the
-// receiving bank's and the clearing house's — in one unit of work, and returns
-// the payment Accepted in its scheme's open cycle.
+// initiate runs all four halves of an initiation — the submitting bank's, the
+// receiving bank's, the clearing house's record and the clearing house's
+// acceptance — and returns the payment Accepted in its scheme's open cycle.
 //
 // It is what InitiatePayment used to be, and it is a TEST helper rather than a
 // method because there is deliberately no such method any more: a single call
@@ -185,29 +185,44 @@ func accountsOf(t *testing.T, p *Bank) BankAccounts {
 // tests keep asserting the end state the whole choreography produces; the
 // tests that ARE about the split call the halves directly.
 //
-// One Tx for all three, so a payment the far side refuses leaves nothing
-// behind — which is what these tests were written against. In the mesh the
-// three halves are three actors and three units of work, and a refusal after
-// the debtor leg is posted is a reversal (Task 9).
+// # It was one Tx and it is now four, and it had to be
+//
+// One Tx for all three bought atomicity — a payment the far side refused left
+// nothing behind — and that is not a thing the code under test can offer any
+// more. A unit of work is ONE DATABASE's, each institution has its own, and a
+// statement spanning two of them is what Task 18c removed. This helper held a
+// transaction on the CLEARING HOUSE's store and ran two banks' halves inside it,
+// which stopped working the moment those banks' rows lived elsewhere.
+//
+// What the loss costs a caller is nothing these tests were measuring: a failure
+// in a later half leaves the earlier ones committed, and every test here
+// assertNoErrors the whole call. It is seed.builder.initiate's shape, for
+// seed.builder.initiate's reason, and the real thing is the mesh — three actors,
+// three units of work, and a refusal after the debtor leg is posted is a
+// reversal.
+//
+// The RECORD at the clearing house is the fourth act and is new: that
+// institution has to be carrying the payment before it can take one into a
+// cycle (RecordRelayedTx). In the mesh it is the moment the instruction is
+// relayed on; here there is nothing to relay, so it stands alone.
 func initiate(ctx context.Context, sys *testSystem, req InitiatePaymentRequest) (Payment, error) {
-	var out Payment
-	err := sys.Store().Update(ctx, func(ctx context.Context, tx Tx) error {
-		// The SUBMITTING bank's own network, and it used to be sys — the clearing
-		// house's. That worked while a payment's refs named their own banks and
-		// checkPartyTx read the named one; the submitting side is resolved in this
-		// network's own register now, so the institution has to be right. See
-		// submitterOfReq.
-		p, err := sys.bank(submitterOfReq(sys, req)).SubmitPaymentTx(ctx, tx, req)
-		if err != nil {
-			return err
-		}
-		if err := sys.bank(receiverOf(sys, p)).AcceptInboundTx(ctx, tx, p.ID, relayedFrom(p)); err != nil {
-			return err
-		}
-		out, err = sys.AcceptAtCSMTx(ctx, tx, p.ID)
-		return err
-	})
-	return out, err
+	// The SUBMITTING bank's own network, and it used to be sys — the clearing
+	// house's. That worked while a payment's refs named their own banks and
+	// checkPartyTx read the named one; the submitting side is resolved in this
+	// network's own register now, so the institution has to be right. See
+	// submitterOfReq.
+	p, err := sys.bank(submitterOfReq(sys, req)).SubmitPayment(ctx, req)
+	if err != nil {
+		return Payment{}, err
+	}
+	relayed := relayedFrom(p)
+	if err := sys.bank(receiverOf(sys, p)).AcceptInbound(ctx, p.ID, relayed); err != nil {
+		return Payment{}, err
+	}
+	if _, err := sys.RecordRelayed(ctx, p.ID, relayed); err != nil {
+		return Payment{}, err
+	}
+	return sys.AcceptAtCSM(ctx, p.ID)
 }
 
 // reject runs both halves of a rejection — the clearing house's transition and
@@ -220,16 +235,26 @@ func initiate(ctx context.Context, sys *testSystem, req InitiatePaymentRequest) 
 // the end state a whole rejection produces; the tests that ARE about the split
 // call the halves directly and see the state between them.
 func reject(ctx context.Context, sys *testSystem, id PaymentID, code iso20022.StatusReason, reason string) (Payment, error) {
-	var out Payment
-	err := sys.Store().Update(ctx, func(ctx context.Context, tx Tx) error {
-		var err error
-		out, err = sys.RejectAtCSMTx(ctx, tx, id, code, reason)
-		if err != nil {
-			return err
+	out, err := sys.RejectAtCSM(ctx, id, code, reason)
+	if err != nil {
+		return Payment{}, err
+	}
+	// Both banks record it on their own copy, and only the payer's gives any
+	// money back — one act at each of them, because the decision and the reversal
+	// cannot be separated once the row the guard reads is the acting bank's own.
+	// See RejectAtBankTx. This helper used to run the clearing house's transition
+	// and a ReverseDebtorLegTx in ONE transaction on the clearing house's store,
+	// which was two institutions in one unit of work and a bank's book reached
+	// through another institution's network.
+	if _, err := sys.bank(out.DebtorDetails.Agent).RejectAtBank(ctx, id, code, reason); err != nil {
+		return Payment{}, err
+	}
+	if other := out.CreditorDetails.Agent; other != out.DebtorDetails.Agent {
+		if _, err := sys.bank(other).RejectAtBank(ctx, id, code, reason); err != nil {
+			return Payment{}, err
 		}
-		return sys.ReverseDebtorLegTx(ctx, tx, out, reason)
-	})
-	return out, err
+	}
+	return out, nil
 }
 
 // setupTwoBanks creates two participant banks, opens a customer account at
@@ -571,15 +596,31 @@ func bookTheAdvices(t *testing.T, sys *testSystem, statements []SettlementStatem
 	}
 }
 
-// payTheCreditors is each PAYEE's bank's half of a cut-off: it releases that
-// payment out of its own clearing suspense into its own customer's account, and
-// that is what takes the payment to Settled.
+// payTheCreditors is every institution's half of a cut-off, once the reserves
+// have moved: the clearing house's own copies, and then each of the two banks'.
 //
 // It is the test's stand-in for the clearing house's ACSC fan-out — one pacs.002
-// per payment, addressed to the creditor's bank, and that bank calling
-// PostCreditorLeg for itself. The cycle is re-read for its payment list because
-// the settlement does not carry one: a settlement agent answers per MEMBER and
-// cannot enumerate the batch, which is why the fan-out is the clearing house's.
+// per payment per bank, and each bank calling SettleAtBank for itself. The cycle
+// is re-read for its payment list because the settlement does not carry one: a
+// settlement agent answers per MEMBER and cannot enumerate the batch, which is
+// why the fan-out is the clearing house's.
+//
+// # THREE institutions act, and the name is now half the story
+//
+// It called SettleAtBank at the creditor's bank alone, because that was the only
+// institution with anything left to do: the clearing house had already written
+// Settled onto the row all three shared, and the payer's bank had no leg. Each
+// holds its own copy now.
+//
+//   - The clearing house marks its own copies and its own cycle (SettleAtCSM).
+//     Nothing else can, and a test fixture that skipped it left a cycle Closed
+//     for ever.
+//   - The PAYEE's bank pays its customer, which is the posting the old name is
+//     about.
+//   - The PAYER's bank posts nothing and still has to be told, because its copy
+//     would otherwise say Initiated for ever — and a return is an edge from
+//     Settled, so it would then refuse to return a payment it could not see had
+//     settled. See csm.tellSettled in mesh, which is this loop with messages.
 //
 // Each leg is its OWN unit of work, and that is the substance rather than the
 // shape of the loop: one payee's closed account, or one payment the ledger
@@ -587,13 +628,13 @@ func bookTheAdvices(t *testing.T, sys *testSystem, statements []SettlementStatem
 func payTheCreditors(t *testing.T, sys *testSystem, id CycleID) {
 	t.Helper()
 	ctx := context.Background()
-	cyc, err := sys.GetCycle(ctx, id)
+	settled, err := sys.SettleAtCSM(ctx, id)
 	assertNoError(t, err)
-	for _, pid := range cyc.PaymentIDs {
-		p, err := sys.GetPayment(ctx, pid)
-		assertNoError(t, err)
-		_, err = sys.bank(p.CreditorDetails.Agent).SettleAtBank(ctx, pid)
-		assertNoError(t, err)
+	for _, p := range settled {
+		for _, agent := range []iso20022.BIC{p.CreditorDetails.Agent, p.DebtorDetails.Agent} {
+			_, err := sys.bank(agent).SettleAtBank(ctx, p.ID)
+			assertNoError(t, err)
+		}
 	}
 }
 
@@ -5194,10 +5235,23 @@ func receiverOf(n *testSystem, p Payment) iso20022.BIC {
 // Task 18 checkPartyTx resolves the submitting side's account in THIS network's
 // own register, so a request submitted through the clearing house's network —
 // which is what the initiate helper used to do — resolves nothing.
+//
+// A request that does not NAME its submitting side falls back to the fixture's
+// own bank, which is what most of these requests are: a caller only has to name
+// the COUNTERPARTY's agent, because SubmitPaymentTx fills its own side in from
+// the network it runs on. The fallback is the fixture supplying what that fill
+// would have. Naming a wrong one would be caught — SubmitPaymentTx writes its
+// own identity over whatever the request claimed for its own side — so the only
+// thing at risk here is opening a database for the empty address, which is a
+// panic three frames down in the store rather than an answer.
 func submitterOfReq(n *testSystem, req InitiatePaymentRequest) iso20022.BIC {
 	scheme, ok := n.Scheme(req.Scheme)
+	side := req.DebtorDetails.Agent
 	if ok && scheme.Direction() == Pull {
-		return req.CreditorDetails.Agent
+		side = req.CreditorDetails.Agent
 	}
-	return req.DebtorDetails.Agent
+	if side == "" {
+		return testBIC
+	}
+	return side
 }

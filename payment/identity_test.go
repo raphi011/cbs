@@ -242,7 +242,7 @@ func TestARegisteredSchemeReachesEveryInstitutionsNetwork(t *testing.T) {
 		net *Network
 	}{
 		{"the central bank", sys.cb()},
-		{"a member bank", sys.bank("bank_1")},
+		{"a member bank", sys.bank(testBIC)},
 		{"a second view of the clearing house", sys.nets.ClearingHouse()},
 	} {
 		if _, ok := seen.net.Scheme(dollarPush{}.ID()); !ok {

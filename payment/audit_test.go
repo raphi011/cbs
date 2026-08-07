@@ -22,35 +22,74 @@ import (
 // now has a book of its own (payment.Network.book, and ClearingHouseBook's doc,
 // which is where the constant's meaning is recorded).
 //
-// So the trail these tests are about is spread across three logs, and this reads
-// all three and merges them. That keeps every assertion below meaning what it
-// meant — "these events happened, in this order" — rather than quietly narrowing
-// each one to whichever institution happened to write it.
+// So the trail these tests are about is spread across N+2 logs, and this reads
+// them all and CONCATENATES them, institution by institution: the clearing
+// house, the settlement agent, then each bank, each in its own order.
 //
-// Merged by Seq, which is a store-GLOBAL total order and not a per-book one; see
-// store/storetest, whose AuditPagingIsScopedToItsFilter is written against
-// exactly that property. So the merge is a sort and not an interleave, and it
-// reproduces the single log's order exactly.
+// # It used to sort by Seq, and there is no longer a total order to sort into
 //
-// What it deliberately does NOT assert is which of the three books each event
-// landed in. That is a real claim and a per-event one — a mandate is its
-// creditor bank's, a cut-off is the clearing house's, a settlement account is the
-// central bank's — and it wants a store per entity to be worth pinning, because
-// until then all three logs are rows in one table. See the handoff.
+// Seq was a store-GLOBAL sequence, so merging the three books by it reproduced
+// the one log's order exactly — the merge was a sort and not an interleave, and
+// this doc said so. Task 18c gives each institution its own DATABASE and
+// therefore its own counter. Two events from two institutions now carry Seq
+// numbers that mean "third thing this bank did" and "third thing the clearing
+// house did", and comparing them produces an order nothing in the system has.
+// Sorted anyway, the trail came out interleaved by accident of how busy each
+// institution had been.
+//
+// What replaces it is the only cross-institution order this system can honestly
+// state: NONE. There is no global clock and no shared log, and that is the
+// finding rather than a limitation of the fixture — an auditor holding three
+// banks' logs and a clearing house's has exactly this problem, and answers it
+// with the MESSAGES, which carry causality the counters do not.
+//
+// So the concatenation is a grouping, and every assertion built on it reads as
+// "this institution recorded these things, in this order; that one recorded
+// those". Where a test's subject IS one institution's log, it should read that
+// one directly rather than the whole — see institutionAudit.
 func paymentAudit(t *testing.T, sys *testSystem, entity string) []ledger.AuditEvent {
 	t.Helper()
 	var events []ledger.AuditEvent
 	for _, r := range auditReaders(t, sys) {
-		got, err := r.net.ListAudit(context.Background(), ledger.AuditFilter{
-			BookID:   r.book,
-			Scope:    ledger.ScopePayment,
-			EntityID: entity,
-		})
-		assertNoError(t, err)
-		events = append(events, got...)
+		events = append(events, institutionAudit(t, r, entity)...)
 	}
-	slices.SortFunc(events, func(a, b ledger.AuditEvent) int { return int(a.Seq - b.Seq) })
 	return events
+}
+
+// institutionAudit is ONE institution's payment-scope log, in its own order.
+//
+// It is the read every assertion about ordering has to be built on now, because
+// an institution's Seq is a total order within its own database and nothing
+// orders two databases against each other. See paymentAudit.
+func institutionAudit(t *testing.T, r auditReader, entity string) []ledger.AuditEvent {
+	t.Helper()
+	got, err := r.net.ListAudit(context.Background(), ledger.AuditFilter{
+		BookID:   r.book,
+		Scope:    ledger.ScopePayment,
+		EntityID: entity,
+	})
+	assertNoError(t, err)
+	return got
+}
+
+// bankAudit is one member bank's own log, by address.
+func bankAudit(t *testing.T, sys *testSystem, bic iso20022.BIC, entity string) []ledger.AuditEvent {
+	t.Helper()
+	net := sys.bank(bic)
+	b, err := net.GetBank(context.Background(), ParticipantID(bic))
+	assertNoError(t, err)
+	return institutionAudit(t, auditReader{net: net, book: b.BookID}, entity)
+}
+
+// csmAudit and cbAudit are the two named institutions' own logs.
+func csmAudit(t *testing.T, sys *testSystem, entity string) []ledger.AuditEvent {
+	t.Helper()
+	return institutionAudit(t, auditReader{net: sys.Network, book: ClearingHouseBook}, entity)
+}
+
+func cbAudit(t *testing.T, sys *testSystem, entity string) []ledger.AuditEvent {
+	t.Helper()
+	return institutionAudit(t, auditReader{net: sys.cb(), book: CentralBankBook}, entity)
 }
 
 // auditReader is one institution's log: the network to ask, and the book its own

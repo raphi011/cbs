@@ -88,6 +88,20 @@ var reasonTable = []reasonMapping{
 	{ErrAmbiguousAddress, "ErrAmbiguousAddress", iso20022.StatusReasonMissingDebtorAccountOrIdentification},
 	{ErrCycleNotOpen, "ErrCycleNotOpen", iso20022.StatusReasonInvalidCutOffTime},
 
+	// A settlement instruction the agent cannot read as one batch, and unlike
+	// every cycle error above it IS a judgement about the message: no legs, legs
+	// naming two cycles or two assets, no single agent between them, or one
+	// member twice. The clearing house sent it and the clearing house can fix it,
+	// so it is answered rather than swallowed.
+	//
+	// MS03, which is also where ReasonFor's default would have put it — and it is
+	// listed EXPLICITLY rather than left to fall through, because "no entry" and
+	// "classified as MS03 on purpose" are indistinguishable from the table and
+	// only one of them is a decision anybody made. There is no code for "your
+	// batch does not describe one cut-off"; MS03 plus the AddtlInf that names the
+	// element is what an operator can act on.
+	{ErrInvalidSettlement, "ErrInvalidSettlement", iso20022.StatusReasonNotSpecifiedAgentGenerated},
+
 	// MS03 for a stronger reason than "no better code exists": in SEPA a
 	// currency mismatch cannot happen, because the scheme is euro-only, so the
 	// code set never needed one. That this repository can produce the error at
@@ -227,6 +241,20 @@ var reasonTable = []reasonMapping{
 	// the wrong state; no counterparty ever sees one.
 	{ErrCycleNotClosed, "ErrCycleNotClosed", ""},
 	{ErrCycleAlreadyOpen, "ErrCycleAlreadyOpen", ""},
+
+	// A cut-off the settlement agent has already discharged. It is a redelivered
+	// pacs.009 and nothing more — the clearing house asked twice, or the queue
+	// did — so it takes ErrCycleNotClosed's empty code and ErrCycleNotClosed's
+	// argument: it describes THIS system's state and not a judgement about the
+	// instruction, and MS03 would tell a clearing house that a cycle which in
+	// fact settled was refused. mesh's centralBank.receiveSettlement
+	// discriminates it by name and dead-letters it.
+	//
+	// It is a separate sentinel because the agent no longer reads the cycle to
+	// find out: it holds no cycles table, so the question "have I settled this"
+	// is answered out of its own settlement register (Tx.GetSettlementByCycle)
+	// rather than off a status somebody else wrote. See SettleCycleTx.
+	{ErrCycleAlreadySettled, "ErrCycleAlreadySettled", ""},
 
 	// An illegal transition means this system tried to move a payment
 	// somewhere its own state machine forbids. Telling the counterparty
