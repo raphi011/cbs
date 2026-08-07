@@ -14,10 +14,10 @@ import (
 
 // What a Network's identity is worth, measured rather than asserted.
 //
-// Task 18b's claim is that an institution can no longer perform another's act
-// through a handle it legitimately holds. Everything else in this package
-// measures what an act DOES; these measure who may reach it at all, and each
-// one fails if the guard is removed from the act it names.
+// The claim is that an institution cannot perform another's act through a handle
+// it legitimately holds. Everything else in this package measures what an act
+// DOES; these measure who may reach it at all, and each one fails if the guard is
+// removed from the act it names.
 
 // TestAMemberBanksActsAreRefusedOnAnyOtherInstitutionsNetwork is the plan's bar
 // for this task, in as many words: a bank's act performed with the clearing
@@ -132,12 +132,12 @@ func TestAMemberBanksActsAreRefusedOnAnyOtherInstitutionsNetwork(t *testing.T) {
 // other half of the identity, and the one that removes a handle rather than an
 // argument.
 //
-// Every Network used to hold a ledger.Book over CentralBankBook, so every
-// institution in this system held the book central-bank money lives in. What
-// kept a bank handler out of it was that bankOps names no method that reaches
-// it — a fact about the mesh, not about this package, and all five of these are
-// exported. A test fixture, api, seed or Task 18e's harness could call any of
-// them on any network and post reserves.
+// A Network that held a ledger.Book over CentralBankBook would put the book
+// central-bank money lives in inside every institution in this system. What
+// keeps a bank handler out of it in the mesh is that bankOps names no method
+// that reaches it — a fact about the mesh, not about this package, and all five
+// of these are exported. A test fixture, api, seed or payment/recon could call
+// any of them on any network and post reserves.
 //
 // The list is derived from the other side as the table above is: it is every
 // caller of Network.centralBankBook.

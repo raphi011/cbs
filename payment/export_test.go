@@ -11,8 +11,8 @@ import "context"
 // them the handful of internals they still need.
 
 // OpenCycleID returns the ID of the open cycle for a scheme. Tests use it to
-// tidy up a cycle they opened, which they used to do by reading the Network's
-// openCycle map directly — that map now lives in the store.
+// tidy up a cycle they opened; the cycle lives in the store, so there is nothing
+// on the Network to read it off.
 func (s *Network) OpenCycleID(ctx context.Context, scheme SchemeID) (CycleID, error) {
 	var out CycleID
 	err := s.store.View(ctx, func(ctx context.Context, tx Tx) error {

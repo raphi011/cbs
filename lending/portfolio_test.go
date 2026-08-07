@@ -196,14 +196,12 @@ func TestDisburse_PostsPrincipalAndGeneratesTheSchedule(t *testing.T) {
 	if after.Status != lending.Active {
 		t.Errorf("status = %s, want Active", after.Status)
 	}
-	// Disbursement no longer touches LastAccrualDate, and it is still zero here.
-	//
-	// It used to be set to the clock, because disbursement was where the accrual
-	// window opened. The window now opens at ORIGINATION and never moves, so
-	// there is nothing for a disbursement to open and LastAccrualDate is only the
-	// advancement guard's high-water mark, set by the first accrual run. Money
-	// not yet paid out still earns nothing — but by arithmetic, because the drawn
-	// series is zero across those days, rather than by a date on the row.
+	// Disbursement does not touch LastAccrualDate, and it is still zero here. The
+	// accrual window opens at ORIGINATION and never moves, so there is nothing for a
+	// disbursement to open and LastAccrualDate is only the advancement guard's
+	// high-water mark, set by the first accrual run. Money not yet paid out still
+	// earns nothing — but by arithmetic, because the drawn series is zero across
+	// those days, rather than by a date on the row.
 	if !after.LastAccrualDate.IsZero() {
 		t.Errorf("last accrual date = %v, want zero: disbursement does not open a window", after.LastAccrualDate)
 	}
@@ -301,10 +299,9 @@ func TestDraw_RespectsTheCommitmentAndRepeats(t *testing.T) {
 // ErrAlreadyDisbursed is guarded on drawn principal, not on status, so a term
 // loan repaid in full and not closed can be disbursed a second time. End-of-day
 // takes its date from the caller, so accrual can legitimately have run through a
-// date ahead of the wall clock by then. Disbursement USED to reopen the recompute
-// window at the clock and zero AccruedGross with it, which on that path would
-// have left the window behind an already-charged span and charged it twice — so
-// it clamped forward.
+// date ahead of the wall clock by then. A disbursement that reopened the
+// recompute window at the clock and zeroed AccruedGross with it would leave the
+// window behind an already-charged span and charge it twice.
 //
 // Neither figure is touched at all now: the window opens at origination and never
 // moves, so there is no boundary for a day to fall between and nothing for a

@@ -10,10 +10,9 @@ import (
 // TestListBanksAndLookup is the read narrowed to what an institution can
 // actually answer, and the narrowing is the finding.
 //
-// It asked the clearing house for two banks. A clearing house holds no banks
-// table since Task 18d — it holds a ROSTER of addresses, which is a different
-// claim and says nothing about a bank that has been founded and never admitted
-// — so the read it used to serve is now two reads at two different scopes:
+// A clearing house holds no banks table — it holds a ROSTER of addresses, which
+// is a different claim and says nothing about a bank that has been founded and
+// never admitted. So "which banks" is two reads at two different scopes:
 //
 //   - each bank lists ITSELF, from its own database, and that is the whole of
 //     what a bank knows about who else is on the network.

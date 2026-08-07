@@ -323,8 +323,8 @@ func (s *Server) handleGetReserve(w http.ResponseWriter, r *http.Request) {
 //
 // # What that costs, and which stuck bank it was actually about
 //
-// What is no longer visible from here is worth naming, because the obvious
-// candidate was never one of them.
+// What this reading cannot show is worth naming, because the obvious candidate
+// is not one of them.
 //
 // An acmt.007 that never reached the settlement agent — a dead letter on the way
 // out — leaves the agent holding a row without that asset, permanently. An

@@ -421,8 +421,8 @@ func (t countingTx) ValueDatedSeries(ctx context.Context, book ledger.BookID, id
 	return t.Tx.ValueDatedSeries(ctx, book, id, normal, from, to)
 }
 
-// Re-disbursement charges the span between a full repayment and the new advance's
-// predecessor — the drawn days the deleted clamp used to skip.
+// Re-disbursement charges the span between a full repayment and the new
+// advance's predecessor: those are drawn days, so they are owed.
 //
 // The sequence: disburse at day 0, accrue to L (day 10), repay in full at R (day
 // 15), re-disburse at D (day 40), accrue to day 41.

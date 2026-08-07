@@ -127,10 +127,8 @@ func TestReasonForAnEmptyAccountIsAM04(t *testing.T) {
 // — one layer below the deposit error that classifies the same condition for a
 // customer's account.
 //
-// It used to come from the LEDGER itself: the mirror leg would take an Asset
-// account negative and PostTransactionTx will not. The mirror leg is the
-// member's own posting since Task 15b.2, so SettleCycleTx checks each net
-// payer's reserve at the central bank itself and returns this same sentinel
+// The mirror leg is the member's own posting, so SettleCycleTx checks each net
+// payer's reserve at the central bank itself and returns ledger's own sentinel
 // deliberately — a member's settlement account there is a Liability, which the
 // ledger does not guard, and a new sentinel would have changed the code on the
 // wire for a refusal that did not change at all.
@@ -201,10 +199,9 @@ func TestReasonTableExplicitlyClassifiesAmbiguousMS03Cases(t *testing.T) {
 }
 
 // TestReasonForEmptyCodeEntriesFallToMS03 pins the claim in reasonTable's
-// "never reaching a counterparty" section: today, before the mesh (Task 6)
-// exists to make that classification observable as a dead letter,
-// ReasonFor cannot tell one of these sentinels apart from an error it has
-// never heard of at all. Both return MS03 by exactly the same fallback path.
+// "never reaching a counterparty" section: ReasonFor cannot tell one of these
+// sentinels apart from an error it has never heard of at all. Both return MS03
+// by exactly the same fallback path.
 func TestReasonForEmptyCodeEntriesFallToMS03(t *testing.T) {
 	var checked int
 	for _, m := range reasonTable {

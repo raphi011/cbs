@@ -16,13 +16,11 @@ const goModPath = "../go.mod"
 
 // modulePath reads this repository's module path out of go.mod.
 //
-// It used to be a const spelling "github.com/raphi011/cbs" out by hand, which
-// made the guard below decoupled from the only place the module path is
-// actually declared: rename the module and the test keeps passing while
-// checking a string that appears nowhere. That was demonstrated — the package
-// copied verbatim into a module named "scratch" passed unchanged. A constant
-// somebody must remember to update is precisely the arrangement this test
-// exists to replace, one level down.
+// Read from go.mod rather than spelled out as a const, which would decouple the
+// guard below from the only place the module path is actually declared: rename
+// the module and a hand-written test keeps passing while checking a string that
+// appears nowhere. Demonstrated — the package copied verbatim into a module
+// named "scratch" passed unchanged.
 //
 // It fails rather than skips when it cannot find the declaration. A guard that
 // cannot locate its own input has stopped guarding, and saying so is the whole

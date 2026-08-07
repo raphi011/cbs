@@ -44,11 +44,9 @@ func bicLexicalSpace(schema, typeName string) string {
 // over; the compared count is asserted non-zero so that an empty directory
 // cannot make this pass by examining nothing.
 //
-// A schema declaring only ONE of them is passed over for the same reason, and
-// that arm used to be an error. It was written when every schema here declared
-// both, so the case it refused had never occurred; camt.050.001.05 and
-// camt.025.001.05 are the first that declare BICFI alone, and they are entitled
-// to. camt.050 identifies both parties as financial institutions
+// A schema declaring only ONE of them is passed over rather than refused.
+// camt.050.001.05 and camt.025.001.05 declare BICFI alone and are entitled to:
+// camt.050 identifies both parties as financial institutions
 // (BranchAndFinancialInstitutionIdentification6) and camt.025 names no party at
 // all, so neither has an element of the AnyBIC type to declare it for.
 //
@@ -316,13 +314,11 @@ func TestNamedPartyStillRequiresAName(t *testing.T) {
 // SettlementInstruction's doc comment now makes about the CODE, as opposed to
 // the ones it makes about the guidelines.
 //
-// The comment used to say the settlement method "is always CLRG for SEPA",
-// which is false of the scheme — the SCT Inter-PSP IG allows INGA and INDA too,
-// and the SDD Core IG restricts the element not at all — and was never true of
-// this code, which has only ever checked that SttlmMtd is non-empty. A comment
-// asserting a narrowing next to code that does not narrow is the failure mode
-// this repository keeps hitting, so both halves are asserted here: absence is
-// an error, and a value this system does not itself produce is not.
+// SttlmMtd is checked for PRESENCE and not for a value. "Always CLRG for SEPA"
+// is false of the scheme — the SCT Inter-PSP IG allows INGA and INDA too, and
+// the SDD Core IG restricts the element not at all — so both halves are asserted
+// here: absence is an error, and a value this system does not itself produce is
+// not.
 func TestSettlementInstructionChecksPresenceNotValue(t *testing.T) {
 	if err := (SettlementInstruction{}).validate(); !errors.Is(err, ErrMissingElement) {
 		t.Fatalf("validate() with no SttlmMtd = %v, want it to wrap ErrMissingElement", err)
@@ -342,10 +338,8 @@ func TestSettlementInstructionChecksPresenceNotValue(t *testing.T) {
 // unstructured arm and nothing else, and it does not re-check the schema's
 // Max140Text bound.
 //
-// The comment used to say the EPC guidelines allow "ONE unstructured line",
-// full stop, which reads as an exclusion the guidelines do not make — either
-// arm may be present. Correcting that leaves behind a statement about the code,
-// and this is it.
+// The EPC guidelines allow one unstructured line, and they do not exclude the
+// structured arm: either may be present. This is the statement about the code.
 func TestRemittanceInformationCarriesTheUnstructuredArmOnly(t *testing.T) {
 	if n := reflect.TypeOf(RemittanceInformation{}).NumField(); n != 1 {
 		t.Fatalf("RemittanceInformation has %d fields, want 1; the doc comment says only the unstructured arm is modelled", n)

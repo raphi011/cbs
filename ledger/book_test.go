@@ -1092,11 +1092,11 @@ func TestValueDateBalance_AsOfDayBoundary(t *testing.T) {
 // read the result of that posting without opening a second one, which
 // Store.Update refuses.
 //
-// It also pins the property that made the direction argument worth removing.
-// Both balances come back POSITIVE from one call each: Cash is an Asset debited
-// 1000, Alice a Liability credited 1000, and each is signed by its own account's
-// normal direction. A caller passing one direction for both — which is what the
-// deposit and lending helpers used to do — would have to get one of them wrong.
+// It also pins the property that makes a direction argument unnecessary. Both
+// balances come back POSITIVE from one call each: Cash is an Asset debited 1000,
+// Alice a Liability credited 1000, and each is signed by its own account's normal
+// direction. A caller passing one direction for both would have to get one of
+// them wrong.
 func TestDerivedReadsTx_SeeWritesInTheSameUnitOfWork(t *testing.T) {
 	ctx := context.Background()
 	book := testBook(t)
@@ -1144,12 +1144,11 @@ func TestDerivedReadsTx_SeeWritesInTheSameUnitOfWork(t *testing.T) {
 	assertEqual(t, "nothing carried into the window", series.Opening, Amount(0))
 }
 
-// TestSeriesTx_SnapsTheWindowBounds pins the snapping that used to be done by
-// each caller: from is inclusive, and to is inclusive of the whole day it falls
+// TestSeriesTx_SnapsTheWindowBounds pins the snapping, so that each caller does
+// not have to: from is inclusive, and to is inclusive of the whole day it falls
 // in, so a window that accrues THROUGH to reads to's own movement. Both bounds
-// are handed in mid-afternoon here, which is what a caller's clock actually
-// gives you and what every consumer would otherwise have to remember to
-// truncate.
+// are handed in mid-afternoon here, which is what a caller's clock actually gives
+// you and what every consumer would otherwise have to remember to truncate.
 func TestSeriesTx_SnapsTheWindowBounds(t *testing.T) {
 	ctx := context.Background()
 	book := testBook(t)
@@ -1400,9 +1399,8 @@ func TestEnsureAccountTx_MatchesOnNameTypeAndAsset(t *testing.T) {
 	}
 }
 
-// findAccountByName walks the chart of accounts looking for an account by name.
-// The Book no longer holds a map to peek at, so it enumerates the same way any
-// other caller would.
+// findAccountByName walks the chart of accounts looking for an account by name,
+// the same way any other caller would: the Book holds no map to peek at.
 func findAccountByName(t *testing.T, book *Book, name string) Account {
 	t.Helper()
 	ctx := context.Background()

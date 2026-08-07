@@ -232,7 +232,7 @@ func TestClose_RefusesAnUnsettledReceivable(t *testing.T) {
 		t.Fatalf("Repay: %v", err)
 	}
 
-	// One more day of interest, and the facility is no longer empty.
+	// One more day of interest, and the facility is not empty.
 	if err := p.Accrue(ctx, loan.ID, day(2025, time.February, 15)); err != nil {
 		t.Fatalf("Accrue: %v", err)
 	}
@@ -256,9 +256,9 @@ func TestClose_RefusesAnUnsettledReceivable(t *testing.T) {
 //	1_825 × 100_000 × 1 / 365 = 500_000 micro-minor-units, exactly half a cent.
 //
 // Minor(500_000) = 1, so settling the loan credits 1 cent to the receivable
-// (clearing it, since that is exactly its book balance) and leaves the record
-// at 500_000 − 1_000_000 = −500_000. Minor(−500_000) = −1: the old guard's
-// test is nonzero, but the receivable is back to zero.
+// (clearing it, since that is exactly its book balance) and leaves the record at
+// 500_000 − 1_000_000 = −500_000. Minor(−500_000) = −1, which is nonzero — and
+// the receivable is back to zero.
 func TestClose_SucceedsOnAnExactHalfMinorUnitResidue(t *testing.T) {
 	ctx := context.Background()
 	p, book, sub, customer := newTestPortfolio(t)
@@ -316,17 +316,15 @@ func TestClose_SucceedsOnAnExactHalfMinorUnitResidue(t *testing.T) {
 		t.Fatalf("receivable account = %d, want 0 despite the nonzero residue", receivable)
 	}
 
-	// The old guard (Accrued.Minor() != 0) would refuse this close forever.
-	// The fixed guard reads the receivable's own ledger balance instead, which
-	// is zero, and lets it through.
+	// A guard on Accrued.Minor() != 0 would refuse this close forever. Reading the
+	// receivable's own ledger balance instead gives zero, and lets it through.
 	if err := p.Close(ctx, loan.ID); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
 }
 
-// Carried from the Task 11 review: DisburseTx and DrawTx both guard
-// ErrFacilityClosed, but nothing could close a facility before this task, so
-// no test could reach it. Now that Close exists, both are reachable.
+// DisburseTx and DrawTx both guard ErrFacilityClosed, and Close is what makes
+// either reachable.
 func TestDisburseAndDraw_RefuseAClosedFacility(t *testing.T) {
 	ctx := context.Background()
 	p, _, sub, customer := newTestPortfolio(t)

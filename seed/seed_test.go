@@ -63,12 +63,12 @@ func testMesh(t *testing.T, nets *payment.Networks) *mesh.Mesh {
 //
 // It is what makes the seed assertions (deterministic IDs, conserved reserves,
 // status coverage) claims about the seed rather than about a store, and it is
-// the whole of what a caller of this package now assembles for itself: a store,
-// a network, a running mesh, and Populate over the three.
-// testNets is what a seed fixture holds: the clearing house's view for the
-// network-scoped reads these tests make, plus the factory Populate and the mesh
-// both take. See payment.Networks; the reason it is two values rather than one
-// is Task 18b, and payment's own testSystem carries the same note.
+// the whole of what a caller of this package assembles for itself: a store, a
+// network, a running mesh, and Populate over the three.
+//
+// testNets is what a seed fixture holds: the clearing house's view for the reads
+// these tests make, plus the factory Populate and the mesh both take. See
+// payment.Networks.
 type testNets struct {
 	*payment.Network
 	nets *payment.Networks
@@ -261,8 +261,8 @@ func TestRejectedCollectionWasReversedInThePayersBank(t *testing.T) {
 	}
 	// The leg is on the PAYER'S BANK's copy and on no other. The clearing house's
 	// row — which is what ListPayments above returns — has no leg columns at all,
-	// so reading DebtorLegTx off it reported a fixture that no longer covers a
-	// reversal when the reversal was there all along.
+	// so reading DebtorLegTx off it would report a fixture that does not cover a
+	// reversal when the reversal is there all along.
 	payerBIC := payment.ParticipantID(rejected.DebtorDetails.Agent)
 	atPayer, err := net.bank(payerBIC).GetPayment(ctx, rejected.ID)
 	if err != nil {
@@ -290,12 +290,11 @@ func TestRejectedCollectionWasReversedInThePayersBank(t *testing.T) {
 //
 // # It was TestSeedRejectIsOneUnitOfWork, and that unit of work is gone
 //
-// It claimed both halves ran on ONE transaction, so a reversal that failed took
-// the clearing house's transition down with it and the seed could never build a
-// dataset containing a Rejected payment whose payer never got their money back.
-// That transaction spanned the clearing house and a bank, and Task 18c is
-// exactly its removal: a unit of work is ONE DATABASE's. b.reject is three of
-// them now — the decision, and each bank recording it on its own copy.
+// The two halves cannot run on ONE transaction: that would span the clearing
+// house and a bank, and a unit of work is ONE DATABASE's. b.reject is three of
+// them — the decision, and each bank recording it on its own copy — so a
+// reversal that fails leaves the clearing house's transition standing, which is
+// a dataset this seed can build.
 //
 // So the half-happened state RejectAtCSMTx names is reachable here, as it always
 // was in the mesh, and the guarantee that replaces it is the one a single
@@ -647,12 +646,11 @@ func TestClockWentLive(t *testing.T) {
 // assertions above.
 //
 // listParticipants goes through the STORES rather than through an institution,
-// and that is the shape of the question rather than a workaround. It used to be
-// the clearing house's ListBanks; that institution holds no banks table since
-// Task 18d, and the roster it does hold names addresses and says nothing about a
-// bank that was founded and never admitted. "Which banks exist" is the
-// composition root's question and no institution has it. See payment's allBanks
-// and auditReaders, which had the same problem and the same answer.
+// and that is the shape of the question rather than a workaround. The clearing
+// house holds no banks table, and the roster it does hold names addresses and
+// says nothing about a bank that was founded and never admitted. "Which banks
+// exist" is the composition root's question and no institution has it. See
+// payment's allBanks and auditReaders.
 func listParticipants(t *testing.T, ctx context.Context, net testNets) []*payment.Bank {
 	t.Helper()
 	bics, err := net.stores.Banks(ctx)

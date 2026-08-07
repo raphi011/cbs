@@ -37,10 +37,8 @@ func TestValidateTextAcceptsOrdinaryText(t *testing.T) {
 func TestValidateTextRejectsControlCharactersAndInvalidUTF8(t *testing.T) {
 	// Every one of these is legal in a Go string and legal in JSON, and none of
 	// them is refused by the store: SQLite holds a NUL and an invalid UTF-8 byte
-	// as happily as store/mem did, where Postgres refused the first two as
-	// SQLSTATE 22021 in a text column and the NUL again as 22P05 inside jsonb.
-	// So nothing below this line is enforced by a database. It is enforced here
-	// or nowhere, which is the argument in text.go read from the other end.
+	// happily. So nothing below this line is enforced by a database. It is enforced
+	// here or nowhere, which is the argument in text.go read from the other end.
 	for _, tc := range []struct{ label, s string }{
 		{"NUL", "Ban\x00k"},
 		{"invalid UTF-8", "Ban\xffk"},
@@ -71,10 +69,8 @@ func TestValidateTextMapChecksKeysAndValues(t *testing.T) {
 	if err := ledger.ValidateTextMap("metadata", nil); err != nil {
 		t.Errorf("ValidateTextMap(nil) = %v, want nil", err)
 	}
-	// A metadata map is one column and a name is not a value, so a check that
-	// only looked at values would leave half the document unvalidated — which is
-	// how this was found: Postgres refused a NUL in a jsonb value under 22P05,
-	// a different code from the text column's 22021.
+	// A metadata map is one column and a name is not a value, so a check that only
+	// looked at values would leave half the document unvalidated.
 	if err := ledger.ValidateTextMap("metadata", map[string]string{"ref": "INV\x00"}); !errors.Is(err, ledger.ErrInvalidText) {
 		t.Errorf("ValidateTextMap with a NUL value = %v, want ErrInvalidText", err)
 	}

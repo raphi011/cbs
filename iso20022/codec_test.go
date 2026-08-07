@@ -572,9 +572,9 @@ func TestUnmarshalAcceptsUndispatchedElementsAnywhere(t *testing.T) {
 // invisible in the other.
 //
 // XML 1.0 forbids character data in the prolog, so a conforming parser rejects
-// the leading case outright — meaning this codec used to return a value for
-// bytes another parser would refuse to read at all. encoding/xml is lenient
-// there and will not raise it, so Unmarshal does.
+// the leading case outright — meaning a codec that accepted it would return a
+// value for bytes another parser would refuse to read at all. encoding/xml is
+// lenient there and will not raise it, so Unmarshal does.
 func TestUnmarshalRejectsTextOutsideTheEnvelope(t *testing.T) {
 	body := envelopeAround(testDocumentXML)
 
@@ -707,9 +707,9 @@ func TestUnmarshalTakesTheLastOfARepeatedScalar(t *testing.T) {
 }
 
 // TestUnmarshalRejectsAHeaderItCouldNotReMarshal closes the decode/encode
-// asymmetry FuzzUnmarshal found: an AppHdr carrying nothing but a MsgDefIdr
-// used to satisfy Unmarshal and then fail Marshal on the very next call, so
-// this package accepted bytes it could not reproduce.
+// asymmetry FuzzUnmarshal found: an AppHdr carrying nothing but a MsgDefIdr can
+// satisfy Unmarshal and then fail Marshal on the very next call, so the package
+// would accept bytes it could not reproduce.
 //
 // The document below is deliberately VALID — the point is that the header
 // alone decides it, and that the error is the same one Marshal would have
@@ -742,12 +742,12 @@ func TestUnmarshalRejectsAHeaderItCouldNotReMarshal(t *testing.T) {
 //
 // head.001.001.02 declares CreDt with minOccurs defaulted to 1, and xmllint
 // refuses a header without it ("Missing child element(s). Expected is one of
-// ( BizSvc, MktPrctc, CreDt )"). AppHdr.validate() used to check four things
-// and not this one, so a header with no <CreDt> was accepted, decoded to the
-// zero time, and re-marshalled as <CreDt>0001-01-01T00:00:00Z</CreDt>: a
-// schema-VALID document carrying a business fact — the moment the header was
-// created — that nobody sent. The round trip holds, which is exactly why
-// FuzzUnmarshal cannot find it; silent fabrication is not a crash.
+// ( BizSvc, MktPrctc, CreDt )"). Without this check a header with no <CreDt> is
+// accepted, decoded to the zero time, and re-marshalled as
+// <CreDt>0001-01-01T00:00:00Z</CreDt>: a schema-VALID document carrying a
+// business fact — the moment the header was created — that nobody sent. The
+// round trip holds, which is exactly why FuzzUnmarshal cannot find it; silent
+// fabrication is not a crash.
 func TestUnmarshalRejectsAHeaderWithNoCreationDate(t *testing.T) {
 	noCreDt := `<Envelope><AppHdr xmlns="urn:iso:std:iso:20022:tech:xsd:head.001.001.02">` +
 		`<Fr><FIId><FinInstnId><BICFI>AURTSESSXXX</BICFI></FinInstnId></FIId></Fr>` +
@@ -774,15 +774,11 @@ func TestUnmarshalRejectsAHeaderWithNoCreationDate(t *testing.T) {
 // TestUnmarshalledEnvelopesAlwaysReMarshal is FuzzUnmarshal's property stated
 // as an ordinary test, under a name that says what the property IS.
 //
-// It does not add coverage, and the comment here used to claim it did — "so
-// that it holds in a normal `go test` run and not only under the fuzzer, which
-// CI does not invoke". That is wrong twice over: a plain `go test` runs
-// FuzzUnmarshal over its seed corpus, and those seeds are f.Add-ed from these
-// same four golden files. assertGoldenRoundTrip has been asserting it since
-// before this branch as well. What this test buys is that the property has a
-// name a reader can grep for and a failure message that names it, rather than
-// arriving as a fuzz seed failing. That is a smaller claim, and it is the true
-// one.
+// It does not add coverage: a plain `go test` runs FuzzUnmarshal over its seed
+// corpus, and those seeds are f.Add-ed from these same four golden files, and
+// assertGoldenRoundTrip asserts it too. What this test buys is that the property
+// has a name a reader can grep for and a failure message that names it, rather
+// than arriving as a fuzz seed failing.
 func TestUnmarshalledEnvelopesAlwaysReMarshal(t *testing.T) {
 	for _, file := range []string{"pacs008.xml", "pacs003.xml", "pacs002.xml", "pacs004.xml"} {
 		t.Run(file, func(t *testing.T) {
@@ -805,15 +801,14 @@ func TestUnmarshalledEnvelopesAlwaysReMarshal(t *testing.T) {
 // that reads bytes it did not write. Every case must return an error and none
 // may panic.
 //
-// It asserts the error CLASS per case rather than merely non-nilness. An
-// earlier version listed these same inputs and checked only err != nil, which
-// locked in — without ever observing it — that the empty string and
-// <Envelope></Envelope> came back as a bare io.EOF: neither
-// ErrMissingElement: AppHdr nor ErrMissingElement: Document, and the one error
-// a transport layer is idiomatically required to read as "the peer closed
-// cleanly, read more" rather than "these bytes are bad". Sub-project 7b puts
-// this function behind a channel or an HTTP handler, where a framing bug that
-// truncates a body would then have surfaced as a clean disconnect.
+// It asserts the error CLASS per case rather than merely non-nilness. Checking
+// only err != nil would lock in — without ever observing it — that the empty
+// string and <Envelope></Envelope> come back as a bare io.EOF: neither
+// ErrMissingElement: AppHdr nor ErrMissingElement: Document, and the one error a
+// transport layer is idiomatically required to read as "the peer closed cleanly,
+// read more" rather than "these bytes are bad". This function sits behind a
+// channel or an HTTP handler, where a framing bug that truncates a body would
+// then surface as a clean disconnect.
 //
 // So io.EOF may never escape Unmarshal, for ANY input — that is asserted for
 // every case, including the ones whose sentinel is deliberately left open
