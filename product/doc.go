@@ -30,6 +30,6 @@
 // per-account pricing one, no resolution log, and no maker-checker. Publication
 // is forward-only, which is this package's answer to the control problem a
 // retroactive reprice creates. docs/superpowers/specs/2026-07-30-product-catalogue-design.md
-// argues each of those, and cbs-vs-book.md item 4.3 is the comparison they come
-// from.
+// argues each of those; docs/expansion-roadmap.md records which stay open and
+// why.
 package product

@@ -191,7 +191,8 @@ type Snapshot struct {
 // In a real bank the same split falls out of subledger-to-GL summarization: the
 // nightly feed buckets accounts by the sign of their balance into two control
 // accounts. This system has no summarization step to hide it in, because it has
-// no control accounts — see docs/deposit-accounts-vs-subledger.md. So the split
+// no control accounts — see README.md, "A Control Account, or an Aggregation".
+// So the split
 // is a query, exactly as "total customer deposits" already is, and no journal
 // posts it.
 //

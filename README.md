@@ -36,6 +36,7 @@ The sections below are organized around these layers: general-ledger concepts fi
     - [Expense](#expense--costs-the-bank-incurs)
     - [Accounts Are Per Asset](#accounts-are-per-asset)
   - [Ledger and Subledger Hierarchy](#ledger-and-subledger-hierarchy)
+    - [A Control Account, or an Aggregation](#a-control-account-or-an-aggregation)
   - [Amounts and Precision](#amounts-and-precision)
     - [Why Scale Is Capped at Nine](#why-scale-is-capped-at-nine)
 - [Transactions](#transactions)
@@ -375,6 +376,16 @@ Not every subledger is seeded. `lending.Portfolio` creates a **`Payables`** subl
 
 That folder is also the one place this system keeps a **subsidiary ledger**: one account per facility that has ever been over-refunded, with the folder's total as the control figure. Every other lazily-created account here is one per asset — `Interest Income (EUR)` serves every facility in the book — and the difference is what each balance has to answer. Interest income is a bank-wide total that nothing needs split by borrower. A refund payable is a debt to *one* borrower that somebody eventually has to pay back, so pooled it would hold a single number that cannot say who is owed what, and a payout against it would be unbounded: nothing would stop it paying one borrower out of another's money, because the ledger's balance check guards Asset and Expense accounts only and a Liability is never caught by it.
 
+#### A Control Account, or an Aggregation
+
+The line item above is where this system parts company with classic core banking, and the difference is worth stating because it is the general form of an argument that recurs — in the [overdraft](#overdraft), which has no facility record, and in [A Balance Is an Aggregate, Not a Column](#a-balance-is-an-aggregate-not-a-column).
+
+In the classic design the general ledger and the deposit subledger are genuinely separate systems. The subledger holds the per-customer detail; the GL holds a single **control account** — "Customer Deposits" — whose **stored** balance is supposed to equal the sum of all that detail, and the subledger posts summarized entries up to it. Because the control figure is written down independently of the detail, the two can drift: a bug, a partial failure, a timing window. So the bank runs a **subledger-to-GL reconciliation** every day to prove that `Σ(detail) == control`, and a mismatch is a reconciliation break somebody has to investigate. That is real operational toil, and it exists precisely because the same number is recorded in two places.
+
+Here there is one ledger. A deposit account is a pointer to a GL account, a subledger is a folder, and "total customer deposits" is **computed by aggregation when asked** — every GL account whose subledger is the Customer Deposits folder, summed. There is no second copy of the number, so there is nothing to reconcile and nothing that can drift; the daily proof holds vacuously, because there is no independently stored control figure for the detail to disagree with. What it costs is performance: every balance read replays the account's entries rather than reading a column.
+
+The exception proves the rule. `Payables` above *is* a control-figure arrangement, and it earns that only because its balance has to answer a question a single pooled number cannot — who is owed what.
+
 ### Amounts and Precision
 
 All monetary amounts are integers in the smallest unit of their [asset](#assets-what-an-account-is-denominated-in) — cents for EUR and USD, satoshi for BTC. This is the approach Stripe, most banks and most payment processors use, generalized here to any asset rather than to a single currency.
@@ -710,7 +721,7 @@ An overdraft is not free once a rate is set on it. Interest accrues **daily** on
 
 The load-bearing point is what does *not* happen. Once a customer is overdrawn, the bank's balance-sheet classification of that money flips: what was a liability (money the bank owes the customer) is now, from the bank's perspective, an asset (money the customer owes the bank). A real bank's general ledger reflects this with a posting — a nightly sweep or reclassification journal that moves the drawn amount onto an Asset-side receivable. **This system posts no such thing.** The overdrawn balance stays exactly where it always was, in the customer's Liability GL account, merely negative; and the Asset-side total — "how much is drawn on overdraft across the book" — is computed by aggregating `Σ max(0, −balance)` over every deposit account, the same on-demand aggregation that produces "total customer deposits". It is not stored, and no transaction ever posts the **drawn amount** to an Asset account (`deposit.TestTotals_OverdraftsAreDerivedAndNothingIsPosted` pins exactly this, over accounts with no rate set). The interest on that drawn amount is a different matter and does post: once a rate is set, each day's accrual debits an Asset account — the account's own accrued-interest receivable — because interest earned and not yet collected genuinely is a receivable. What never happens is the *balance* being reclassified.
 
-The reason is the same one that keeps a balance from being a stored column anywhere else in this system: the drawn amount **has no independent existence**. It is the negative balance of the customer's own account, read by sign — the same fact, viewed the other way — not a second fact that happens to agree with it. Storing it separately, even as a "derived" mirror kept in sync by a sweep, would be exactly the drift a unified ledger is built without: two numbers that are supposed to agree and that nothing but discipline keeps agreeing. See `docs/deposit-accounts-vs-subledger.md` §7 for the general pattern (a control account maintained by reconciliation, versus a total computed by aggregation) and the [Lending](#lending) section below for why this is also the reason an overdraft has no facility record of its own.
+The reason is the same one that keeps a balance from being a stored column anywhere else in this system: the drawn amount **has no independent existence**. It is the negative balance of the customer's own account, read by sign — the same fact, viewed the other way — not a second fact that happens to agree with it. Storing it separately, even as a "derived" mirror kept in sync by a sweep, would be exactly the drift a unified ledger is built without: two numbers that are supposed to agree and that nothing but discipline keeps agreeing. See [A Control Account, or an Aggregation](#a-control-account-or-an-aggregation) for the general pattern, and the [Lending](#lending) section below for why this is also the reason an overdraft has no facility record of its own.
 
 ## Lending
 

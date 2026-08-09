@@ -502,7 +502,7 @@ func (r *Register) customerLedgerIDTx(ctx context.Context, tx Tx, acct Account) 
 // One per deposit account, not one shared receivable per bank. A shared account
 // would be a stored total whose per-customer detail lives in Account.Accrued —
 // a control account, and the duplication this codebase is built without. See
-// docs/deposit-accounts-vs-subledger.md.
+// README.md, "A Control Account, or an Aggregation".
 func (r *Register) ensureReceivableTx(ctx context.Context, tx Tx, acct Account) (ledger.AccountID, error) {
 	ledgerID, err := r.customerLedgerIDTx(ctx, tx, acct)
 	if err != nil {

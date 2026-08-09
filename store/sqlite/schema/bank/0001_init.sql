@@ -728,8 +728,8 @@ CREATE TABLE facilities (
     -- the negative balance of its own Liability account viewed by sign; it has
     -- no independent existence, so a facility row for it would store a number
     -- that already exists. Its terms live in overdraft_terms, and its Asset-side
-    -- classification is an aggregation (deposit.Totals). See
-    -- docs/deposit-accounts-vs-subledger.md.
+    -- classification is an aggregation (deposit.Totals). See README.md,
+    -- "A Control Account, or an Aggregation".
     book_id           TEXT NOT NULL REFERENCES books (id) ON DELETE CASCADE,
     id                TEXT NOT NULL,
     kind              INTEGER NOT NULL,
