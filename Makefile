@@ -8,7 +8,6 @@
 # opens the app once it is serving. See `make help` for all targets.
 
 SHELL := /usr/bin/env bash
-.ONESHELL:
 .DEFAULT_GOAL := help
 
 WEB          := web
@@ -55,28 +54,61 @@ build: install ## Install deps, then build the backend binary and the frontend
 	cd $(WEB) && npm run build
 	go build -o bin/cbs ./cmd/server
 
-# Wait for the frontend to start serving, then open it in the default browser.
-# Backgrounded so it runs alongside the foreground server; never fatal.
-define open_when_ready
+# Everything that starts a server lives in ONE recipe line, joined by
+# backslashes. That is not a style choice: the make macOS ships is 3.81 and
+# `.ONESHELL` arrived in 3.82, so on a stock machine every recipe LINE is its own
+# shell. A `trap` on one line and the pid it kills on another are in different
+# processes, which is how a backgrounded server ends up orphaned to init the
+# moment its line finishes.
+#
+# Three more things about stopping cleanly, none readable off the code:
+#
+# Neither server may be the LAST command, or bash execs into it and this shell —
+# trap and all — is gone before the signal arrives. Hence the wait loop.
+#
+# Both are started DIRECTLY rather than through `npm run` and `go run`, because
+# each of those is a parent that dies and leaves the real server behind: TERM to
+# a `go run` orphans the compiled binary, still holding its port. Started
+# directly, the pid held here is the pid that serves. Both scripts bypassed are
+# bare `next` invocations (web/package.json); a flag added to either belongs here.
+#
+# The SIGKILL is not impatience. `next start` drains in-flight requests and
+# latches a cleanup flag on the FIRST signal, discarding every later one
+# (next/dist/server/lib/start-server.js), so a second Ctrl+C can neither hurry it
+# nor give up on it. Ten seconds is the low end of the drain window Next's own
+# self-hosting guide asks a platform to allow.
+#
+# $(1) is the `next` subcommand: the two targets differ in that and nothing else.
+define serve
+	set -euo pipefail; \
+	BACK= FRONT= OPENER=; \
+	stop() { \
+		trap - EXIT INT TERM; \
+		local deadline; \
+		kill $$BACK $$FRONT $$OPENER 2>/dev/null || true; \
+		deadline=$$((SECONDS + 10)); \
+		while kill -0 $$FRONT 2>/dev/null && [ $$SECONDS -lt $$deadline ]; do sleep 0.25; done; \
+		[ -n "$$FRONT" ] && pkill -9 -P $$FRONT 2>/dev/null || true; \
+		kill -9 $$BACK $$FRONT 2>/dev/null || true; \
+	}; \
+	trap stop EXIT INT TERM; \
+	./bin/cbs -base-port "$(BASE_PORT)" -database "$(DATABASE_URL)" & BACK=$$!; \
+	( cd $(WEB) && exec ./node_modules/.bin/next $(1) ) & FRONT=$$!; \
 	( for i in $$(seq 1 60); do \
 		if curl -sf -o /dev/null "$(APP_URL)"; then $(OPEN) "$(APP_URL)"; break; fi; \
 		sleep 1; \
-	done ) &
+	done ) & OPENER=$$!; \
+	while kill -0 $$BACK 2>/dev/null && kill -0 $$FRONT 2>/dev/null; do sleep 0.25; done
 endef
 
 run: build ## Fresh checkout → build, start backend + frontend (prod), open browser
-	set -euo pipefail
-	./bin/cbs -base-port "$(BASE_PORT)" -database "$(DATABASE_URL)" & BACK=$$!
-	trap 'kill $$BACK 2>/dev/null || true' EXIT INT TERM
-	$(open_when_ready)
-	cd $(WEB) && npm run start
+	$(call serve,start)
 
+# `go run` is a build followed by a run, so building here loses nothing and costs
+# one pid instead of two.
 dev: install ## Run backend + frontend in watch mode, open browser
-	set -euo pipefail
-	go run ./cmd/server -base-port "$(BASE_PORT)" -database "$(DATABASE_URL)" & BACK=$$!
-	trap 'kill $$BACK 2>/dev/null || true' EXIT INT TERM
-	$(open_when_ready)
-	cd $(WEB) && npm run dev
+	go build -o bin/cbs ./cmd/server
+	$(call serve,dev)
 
 # `dev-pg` and `run-pg` used to sit here, starting a docker-compose Postgres and
 # handing the server its DSN. They are gone with the store they pointed at, and
