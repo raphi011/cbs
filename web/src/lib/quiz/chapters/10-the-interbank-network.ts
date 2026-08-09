@@ -333,5 +333,22 @@ export const chapter: Chapter = {
         "[[allows-return|A return]] refused for `AM04` is refused for a **shortfall**, and a shortfall somebody can cover is not a payer who has lost their refund right — so the return is asked again. What the retry must not do is trust the transaction id left on the payment. The unwind [[reversal|reverses]] the posting and leaves the id in place, because that id is what the retry's key is derived from; the id therefore says *this bank attempted the leg*, never *this bank's leg stands*. Only the transaction's own status answers that. Doing nothing is the defect this rule exists to stop: read as \"already posted\", the retry posts nothing while the conversation runs to completion around it — the reserves reverse, the biller is clawed back, `ACSC` goes back on the wire, and the payer is never repaid. Re-posting under the ORIGINAL key cannot happen either: a ledger refuses a repeated [[idempotency-key|idempotency key]] whatever became of the first posting, which is exactly why the key has to change.",
       explore: { label: "View payments", href: "/clearing-house/payments" },
     },
+    {
+      kind: "mc",
+      id: "ch10-q22",
+      difficulty: "challenge",
+      concept: "bank-reconciliation",
+      prompt:
+        "A bank reconciles its own books, reading only its own database and the camt.053 statements it was sent. It finds two things: an entry on its reserve account that is neither a mirror leg nor a lodgement, and a clearing suspense that has held 3000 for nine days. How should it report them?",
+      options: [
+        "Both as breaks — an unexplained reserve movement and a suspense that has not cleared are equally defects",
+        "The reserve entry as a break; the suspense as a position with an age on it, and never as a break",
+        "Both as positions — a bank reading one database can never say anything is wrong, only that something is outstanding",
+        "The suspense as a break, because nine days is far past the settlement delay; the reserve entry only as a position, since another institution moved it",
+      ],
+      answer: 1,
+      explanation:
+        "The two accounts are not symmetric, and the reason is a fact about the postings. Exactly two things post to a bank's [[reserve-account|reserve]]: an advice's **mirror leg**, which a settlement-advice row names the transaction of, and a [[lodgement]], which is the bank's own act. There is no third — so the identity **closes**, every entry is classifiable from inside, and one in neither class is a [[bank-reconciliation|break]] this bank can stand behind. The [[clearing-suspense]] has no such identity and cannot be given one, because the mirror leg is [[netting|netted]]: one cut-off produces one figure per member covering every payment in the batch and naming none of them. So the balance cannot be decomposed into the payments that put it there, and all a bank can honestly say is how old each part of it is — a bank told its payment settled and not told its reserves moved has done nothing wrong, and only the settlement agent's own register separates that from a defect. Nine days is a reason to go and ask, not a finding: no rulebook puts a clock on a clearing suspense, because what discharges it is a conversation.",
+    },
   ],
 };

@@ -116,6 +116,22 @@
 // posts after the reserves have moved and cannot refuse, which is why
 // BankAccounts.ReturnsReceivable is reached on one side and not the other.
 //
+// # And one act on its own books, driven by no message at all
+//
+// Network.Reconcile is a bank holding its own ledger against the camt.053
+// statements it was sent, out of one database — its own. It is the only act here
+// nobody asks a bank to perform, and it reports two kinds of finding: a BREAK,
+// which is something this bank's books say cannot be true, and a POSITION, which
+// is money in flight with how long it has been. Only the first is a defect. The
+// reserve side closes into an identity and the clearing suspense cannot, because
+// the mirror leg is netted; see reconcile.go and ageing.go, which carry the whole
+// argument.
+//
+// It is one word from payment/recon and answers a different question. That
+// package opens every institution's database at once, precisely because no
+// institution may, which is why its reader is a test harness and this is a
+// method.
+//
 // # One admission, three institutions
 //
 // The same split about a bank rather than a payment. The bank's own record, the

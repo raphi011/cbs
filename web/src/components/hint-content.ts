@@ -757,7 +757,9 @@ So the position is the **absence** of a row against a suspense that has not clea
 
 (A failed posting does NOT leave the row at *Advised*. That status exists in the type, but nothing on the settlement path commits it.)
 
-It is the first payment-layer table **keyed by** book rather than network-wide, because the row belongs to one member: a cycle is the clearing house's and a settlement is the central bank's. The closing balance the statement carried is stored and not yet read — reading it is how a reconciliation would tell those two absences apart.
+It is the first payment-layer table **keyed by** book rather than network-wide, because the row belongs to one member: a cycle is the clearing house's and a settlement is the central bank's.
+
+The closing balance the statement carried is stored and **read** — see [[bank-reconciliation|what a bank can catch on its own]] — but it does not tell those two absences apart, and it cannot: a closing balance only ever arrives on a statement the bank holds, so both absences leave the newest one it holds agreeing with its own reserve.
 
 **A [[allows-return|return]] leaves one of these too.** It is settled by the central bank and booked by each bank locally, so the same interval opens for it, and the same absence records it. The row's \`reference\` holds a **payment** id on that path where a cut-off's holds a cycle id, and there is deliberately no column beside it saying which: ids are unique across the store, a member cannot resolve either one, and a reconciliation reads one shape rather than two.`,
   },
@@ -778,7 +780,34 @@ Bank B, a net receiver, over one cut-off:
 
 Its [[clearing-suspense|clearing suspense]] returns to zero only if the two agree, which is the whole point of the split: two **senders** make a check possible. If both advices came from the same institution the bank would be checking a sender against itself and there would be nothing to reconcile.
 
-This is the classic **nostro/vostro** check — the bank's reserve asset against the central bank's reserve liability — with the payment list as a second, independent witness.`,
+This is the classic **nostro/vostro** check — the bank's reserve asset against the central bank's reserve liability — with the payment list as a second, independent witness. [[bank-reconciliation|Running it]] is one bank's own act, over one database.`,
+  },
+  "bank-reconciliation": {
+    title: "What a bank can catch on its own",
+    body: `A member bank checks its own books against the statements it was sent, over **one database** — its own. It is served on that bank's console alone (\`POST /reconciliation?asset=EUR\`), and there is nowhere on it to name another bank.
+
+It works because the **[[reserve-account|reserve]] side closes into an identity**. Exactly two things post to a bank's Reserve at Central Bank:
+
+- the **mirror leg** of a \`camt.053\`, which a settlement-advice row names the transaction of;
+- a **[[lodgement]]**, which is the bank's own act.
+
+There is no third. So every entry on that account is classifiable from inside, and an entry in neither class is a **break** — something this bank's own books say cannot be true.
+
+| failure | caught by |
+|---|---|
+| a mirror leg posted at the wrong amount or direction | the advice's closing balance against the reserve's **running** balance at that leg |
+| a reserve moved with **no statement behind it** | an entry that is neither a mirror leg nor a lodgement |
+| an advice claiming a posting that is not in the book | its transaction absent from the reserve's history |
+| a statement **missed, then superseded** by one that arrived | the same running-balance check, at the later statement |
+| **the last statement never arriving** | **nothing.** Undetectable from inside |
+
+It is a **walk** and not a comparison of two totals, because the first three have the same total and different histories. And the last row is empty because a closing balance only ever arrives on a statement the bank holds; closing it needs a *periodic* statement, and there is none.
+
+**The [[clearing-suspense|clearing suspense]] has no such identity and cannot be given one**, because the mirror leg is [[netting|netted]]: one cut-off, one figure per member, naming no payment. So the balance cannot be decomposed into the payments that put it there. What a bank can do is **age** it — FIFO over the account's own entries, so a netted leg discharges the batch that opened before it — and report **positions with ages**, never breaks.
+
+A break is a defect; a position is money in flight. Only the first is something to investigate, and a run that called the second a defect would be a run nobody could make against a live network. Those are the same two kinds the cross-institution harness reports (see [[store-split]]); what the narrowing changes is the balance between them — and one thing more: a reserve moved with no statement behind it used to need every institution's database to catch, and one bank now catches it alone.
+
+**Nothing is durable as rows.** There is no findings table — a finding is a pure function of the books at a moment, so a stored one is a cache that can disagree with them. A run leaves a \`reconciliation.run\` [[audit-trail|audit event]] in that bank's own log plus one \`reconciliation.break\` per finding, appended in the **same [[unit-of-work|unit of work]] as the read**. That is what makes it a \`POST\`, and what makes a finding a claim about a consistent snapshot rather than about several reads taken while a cut-off committed underneath them.`,
   },
   "unclaimed-balances": {
     title: "Unclaimed balances",
@@ -798,7 +827,13 @@ The payment still reaches **Settled**, because it did: the reserves moved and th
 
 **Having somewhere for it to go is what makes the check affordable.** With the creditor leg posted inside the settlement agent's one unit of work, refusing a credit would take the whole cut-off down for one retail customer. One payment at one bank fails on its own.
 
-**The same account catches the same case on the [[allows-return|return]] path.** A payer who has closed their account since the payment settled is refunded into their own bank's Unclaimed Balances instead — affordable for the same reason: the return is not one unit of work over three institutions, so the payer's bank has an act of its own to decide in. The diversion happens on a **closed** account and on nothing else: a store failure is not a statement about the account, and money must not be routed on a failure nobody can classify. The mirror case — money the bank has to take *back* and cannot — is [[returns-receivable|Returns Receivable]], and it is an asset rather than a liability.`,
+**The same account catches the same case on the [[allows-return|return]] path.** A payer who has closed their account since the payment settled is refunded into their own bank's Unclaimed Balances instead — affordable for the same reason: the return is not one unit of work over three institutions, so the payer's bank has an act of its own to decide in. The diversion happens on a **closed** account and on nothing else: a store failure is not a statement about the account, and money must not be routed on a failure nobody can classify. The mirror case — money the bank has to take *back* and cannot — is [[returns-receivable|Returns Receivable]], and it is an asset rather than a liability.
+
+**Finding the balance is a report; clearing it is a return.** \`GET /unclaimed-balances/ageing?asset=EUR\` decomposes the account into what its balance is made of and how long each part has been there. It is *exact* where the [[bank-reconciliation|clearing suspense's ageing]] is FIFO lots, and the difference is a fact about the postings: every credit here is **one payment's** diverted leg and carries that payment's id, so each lot names the payment, its scheme, and what may now be done about it. The return itself was always available — what was missing was anything that *found* the balance, so an operator had to already know the payment id.
+
+**The window is three days, and it gates nothing.** SEPA gives a receiving bank three *banking business* days to send back a credit it cannot apply. This system has no business date, so it counts **calendar** days and is always early — a balance arriving on a Thursday is called overdue on Sunday where the rulebook would say Tuesday. That costs nothing, because the window is a deadline on the bank's *obligation* and not permission to begin: a return is available for the whole life of a settled payment, and the window only decides which line of the report is printed in bold.
+
+**On a [[scheme-direction-pull|pull]] the bank holding the money is not the bank that may return it.** The balance sits at the **creditor's** bank — the biller closed their account between the collection's answer and the cut-off — and the returner on a collection is the **debtor's** bank, because a \`pacs.004\` on a pull is the payer's bank's instrument and the payer has asked for nothing. What the creditor's bank wants is a *reversal*, \`pacs.007\`, which this system does not have. So those lots are reported and **blocked**, with the reason on them and no deadline: a clock this bank has no message to beat would be a report telling somebody off for something they cannot send.`,
   },
   "returns-receivable": {
     title: "Returns receivable",

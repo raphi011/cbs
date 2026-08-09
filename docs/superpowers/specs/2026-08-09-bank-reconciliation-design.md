@@ -439,8 +439,52 @@ The run is a **`POST /reconciliation`** and not a GET: it appends to the audit
 log, so it is an act, and a GET that writes is a lie about the method. The three
 reads beside it stay GETs.
 
+> **Landed 2026-08-09.** `api/handlers_reconciliation.go`,
+> `api/dto_reconciliation.go` and `api/reconciliation_test.go`, with the four
+> routes exactly as planned. Three things worth knowing:
+>
+> - **`GET /settlement-advices` takes no asset and the other three require one**,
+>   which is not an inconsistency: the three read ONE account each and an account
+>   belongs to one asset, where this reads a bank's whole correspondence and every
+>   row carries its own. The asset is required rather than defaulted on the three,
+>   because defaulting to EUR answers confidently about an asset the caller did
+>   not ask about.
+> - **`allowedOverlaps` needed nothing added.** None of the four appears on
+>   another operator, and `TestOnlyABankChecksItsOwnBooks` asserts the 404 on both
+>   rather than leaving it to the disjointness test, which only proves no route is
+>   registered twice.
+> - **`TestABanksOwnRunAgreesWithTheHarness` landed here rather than with 19b**,
+>   which is where the Testing table put it. It sits in `seed`, holds every bank's
+>   own run against `payment/recon` over the widest deployment, and asserts the
+>   containment on breaks in one direction and the agreement on POSITIONS in both
+>   — the suspense is the one finding both instruments read off the same account,
+>   so the two must name the same banks.
+
 **19e — the documentation sweep.** All four layers plus the two spec files, in
 one change, after the code is green.
+
+> **Landed 2026-08-09.** The closing-balance correction moved through
+> `README.md`, the hint registry, `store/sqlite/schema/bank/0001_init.sql` and
+> `2026-08-02-db-per-entity-design.md`, and the README gained a
+> *What a Bank Can Catch on Its Own* section carrying the table above. Four
+> departures:
+>
+> - **The quiz gained one question rather than four.** `diversity.test.ts` caps a
+>   chapter at 22 and chapters 9, 12 and 14 were already there, so a question in
+>   any of them costs an existing one. Chapter 10 had a free slot and took the new
+>   fact that actually needed teaching — why the reserve produces breaks and the
+>   suspense cannot. The return window is taught in the hint registry and the
+>   README, and displacing a SEPA question to repeat it there would have been a
+>   worse trade.
+> - **A new hint key, `bank-reconciliation`**, linked from
+>   `unreconciled-position`, `nostro-reconciliation` and `unclaimed-balances`.
+> - **`payment/doc.go` gained a short section** naming `Network.Reconcile` and
+>   pointing at `reconcile.go`; `mesh/doc.go` needed nothing, because what it says
+>   about a statement not being an instruction was already right.
+> - **The roadmap's Task 19 item is deleted rather than marked done**, per that
+>   file's own opening line, and the build sequence renumbered §1–§7. What is left
+>   of the task is where it belongs: the `pacs.007` gap under *The remaining
+>   R-transactions*, which was already written.
 
 ## Verification
 

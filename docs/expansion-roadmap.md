@@ -41,7 +41,10 @@ Three constraints apply to everything below.
 - `iso20022`, `mesh` — the messages, and the N+2 actors that exchange them.
 - `payment/recon` — the reconciliation harness, test-only by convention: the one
   instrument that opens every institution's database at once, precisely because
-  no actor in the system may.
+  no actor in the system may. Its narrow sibling is `payment.Network.Reconcile`,
+  one bank over its own database, which reports **breaks** on the reserve and
+  **positions with ages** on the clearing suspense, because only the first of the
+  two accounts closes into an identity from inside.
 - `api`, `store/sqlite`, `store/storetest`, `store/testenv`, `seed`, `web`.
 
 Two numbers that bound the work below: **`Amount` is `int64` and an asset's
@@ -54,7 +57,7 @@ Four groups, and only the first two are sequenced against each other.
 
 1. **Defects** — small, verified against the current tree, and each one is a
    thing the system gets wrong rather than a thing it does not have.
-2. **The build sequence** — the payments and settlement arc, §1 through §8,
+2. **The build sequence** — the payments and settlement arc, §1 through §7,
    where each item genuinely wants the one before it.
 3. **Domain gaps worth building** — a standing catalogue, ranked by value per
    unit of effort. Take from the top; nothing here blocks anything there.
@@ -110,76 +113,15 @@ about what a 500 may disclose.
 
 ## The build sequence
 
-1. **Task 19 — reconciliation a bank can do for itself.** Everything it needs is
-   already written and unread.
-2. **The on-us book transfer.** The only payment this system cannot make at all.
-3. **7c, the message log.** The last piece of sub-project 7, and it makes every
+1. **The on-us book transfer.** The only payment this system cannot make at all.
+2. **7c, the message log.** The last piece of sub-project 7, and it makes every
    flow already shipped visible.
-4. **Instant payments.** The one place the settlement orchestrator has to grow.
-5. **Card transactions.** Additive on top of holds and the existing net path.
-6. **Reserve adequacy.** Wanted by both 4 and 5, and worth little before either.
-7. **Crypto**, then **FX** — the two undecided-scope domains, largest last.
+3. **Instant payments.** The one place the settlement orchestrator has to grow.
+4. **Card transactions.** Additive on top of holds and the existing net path.
+5. **Reserve adequacy.** Wanted by both 3 and 4, and worth little before either.
+6. **Crypto**, then **FX** — the two undecided-scope domains, largest last.
 
-### 1. Task 19 — reconciliation a bank can do for itself — `spec`
-
-Spec: [`2026-08-09-bank-reconciliation-design.md`](superpowers/specs/2026-08-09-bank-reconciliation-design.md),
-which decides the three homes, the clock, and what a run does not record; the
-four deliverables below are its 19a–19e.
-
-Numbered 19 because it continues sub-project 8's task sequence, and named
-throughout `superpowers/specs/2026-08-02-db-per-entity-design.md` as the work
-that sub-project deliberately left.
-
-An unreconciled position is already a modelled state: a clearing suspense that
-has not returned to zero with no `SettlementAdvice` row against the cycle. What
-is absent is **what a bank does with one**. `payment/recon` is the omniscient
-observer, which no institution may be, and `SettlementAdvice.ClosingBalance` —
-the figure that lets a bank check its own books against what it was told without
-reading anybody else's store — is written and has no reader.
-
-Four deliverables, and the first is the whole point:
-
-- **A bank's own reconciliation.** Its books against the closing balance it was
-  advised, using nothing but its own database and the messages it received. The
-  distinction `payment/recon` already draws has to survive the narrowing: a
-  **break** is two books that disagree with nothing able to make them agree
-  again; an **unreconciled position** is money legitimately in flight.
-- **The ageing report.** A `Clearing Suspense (<asset>)` balance is business as
-  usual; how long it has sat there is what makes it a finding. Money in flight
-  between consistency domains must sit visibly in a named account, and an
-  unexplained gap between two systems is a finding where a named clearing account
-  with an ageing report is business as usual. The account exists; the report is
-  the half this repository can only admire.
-- **A return path for `Unclaimed Balances (<asset>)`.** A payee whose account was
-  closed between their bank's answer and the cut-off is credited there instead,
-  and the money then sits until someone claims it — no clock watches it. What is
-  missing is the rulebook-window clock (three banking business days for SCT) and
-  an outbound return that clears the balance. The control worth stating with it:
-  **inbound suspense older than the return window is a reconciliation break by
-  definition.**
-- **A reader for the stored `camt.053`.** The statement is sent per settlement
-  and persisted, and nothing reads it back.
-
-Related, and the spec decides it: there is **no periodic statement**. A
-`camt.053` per settlement means no mechanism would catch an advice that never
-arrived. That case is unreachable in this transport and would become reachable
-and invisible the moment the mesh gained a lossy one. The spec leaves it
-unbuilt and asserts it instead — a test that the last statement never arriving is
-undetectable from inside the bank — because a claim about what an instrument
-cannot see is worth as much as one about what it can, and only a test keeps it
-true.
-
-Two other things the spec settles rather than inherits: **the closing balance
-does not tell the two absences apart** — "told and could not book" and "never
-told" both leave the newest statement a bank holds agreeing with its own reserve,
-so what it catches is a wrong mirror leg and a statement missed then superseded,
-which is a different and sharper claim than the one three layers currently make;
-and **an unclaimed balance on a pull has no bank that may return it**, because
-the bank holding it is the creditor's and the returner is the debtor's. The
-instrument for that is `pacs.007`, which lands with the remaining
-R-transactions below.
-
-### 2. The on-us book transfer — `todo`
+### 1. The on-us book transfer — `todo`
 
 A payment between two customers of the same bank. `Mesh.Submit` refuses one
 today, correctly: nothing crosses between banks, so there is no obligation to
@@ -200,7 +142,7 @@ submitted, and `PostReturnLegTx` decides which leg is last by position in a
 conversation one institution does not have. Both are closed; both need a test
 through the new path rather than through the store.
 
-### 3. 7c, the message log — `todo`
+### 2. 7c, the message log — `todo`
 
 The last of sub-project 7, and the only reason §7 is not `done`. Envelopes
 persisted so a payment screen can show the XML that actually moved, carried
@@ -210,7 +152,7 @@ Cheap relative to what it exposes: every flow already shipped becomes something 
 reader can watch rather than infer. It is also the natural home for anything that
 wants to explain a `pacs.002` reason code at the point it was returned.
 
-### 4. Instant payments — `todo`
+### 3. Instant payments — `todo`
 
 Real-time **gross** settlement, 24/7. Each payment settles individually and
 immediately instead of being batched into a clearing cycle. (*Instant* and
@@ -236,7 +178,7 @@ the right shape for instant rails, and adopting it for a `Gross` scheme while
 keeping the current shape for `Net` is a real fork in the payment layer, not a
 detail. The earmark primitive already exists: it is a `deposit` hold.
 
-### 5. Card transactions — `todo`
+### 4. Card transactions — `todo`
 
 An **authorise → capture → clear → settle** flow. The authorisation is a
 `deposit` hold (`CreateHold`) reserving the cardholder's available balance;
@@ -251,7 +193,7 @@ front-end work, recorded as out of scope by 6b and unclaimed since.
 Wants the **hold expiry sweep** below first, or ships a hold state machine that
 is less honest than it looks.
 
-### 6. Reserve adequacy — `todo`
+### 5. Reserve adequacy — `todo`
 
 Check a bank's reserves before its net settlement is allowed to post. Motivated
 by both of the two items above and worth little before either: today every
@@ -263,7 +205,7 @@ the `camt.051` that would pull liquidity back the other way. **This system lodge
 cash and never withdraws it**, which is the current reason `camt.051` is refused
 by name in `iso20022/doc.go`.
 
-### 7. Crypto — `todo`
+### 6. Crypto — `todo`
 
 Scope deliberately undecided. Ranges from custody balances denominated in
 non-fiat units — nearly free today, BTC is a known asset at scale 8 and works —
@@ -288,7 +230,7 @@ child table keyed `(participant_id, asset)`; and `interest` is asset-agnostic, s
 a crypto-denominated facility needs no new arithmetic — only an asset inside the
 cap.
 
-### 8. FX / exchange — `todo`
+### 7. FX / exchange — `todo`
 
 Trades against two assets, rate handling, spread recognized as revenue, position
 and exposure accounts, settlement conventions.
@@ -604,7 +546,7 @@ known to be the wrong place for it.
 **Do not act on this before instant payments.** `SettlementModel()` had no
 consumer at all when this was written and now has exactly one, a DTO field —
 nothing branches on it. A third scheme with a genuinely different settlement
-model is what would let the seam earn itself, and §4 of the sequence is that
+model is what would let the seam earn itself, and §3 of the sequence is that
 scheme. Re-ask afterwards.
 
 ---
@@ -774,9 +716,13 @@ One line apiece, for resolving a reference by number. The spec is the record.
 | 7c | The message log | *above* |
 | 8 | Per-entity stores — N+2 databases, three shapes | [`2026-08-02-db-per-entity-design.md`](superpowers/specs/2026-08-02-db-per-entity-design.md) |
 | 9 | One store, and it is SQLite | [`2026-08-03-sqlite-only-store-design.md`](superpowers/specs/2026-08-03-sqlite-only-store-design.md) |
+| 19 | Reconciliation a bank can do for itself | [`2026-08-09-bank-reconciliation-design.md`](superpowers/specs/2026-08-09-bank-reconciliation-design.md) |
 
 Sub-projects 3, 4 and 7c are the only numbers with work left; §9 was not foreseen
-and landed inside §8's task sequence, which is why the numbering skips.
+and landed inside §8's task sequence, which is why the numbering skips. The last
+row is a TASK number rather than a sub-project one: 19 continues §8's task
+sequence, as the work that sub-project deliberately left, and it is listed here
+because it has a spec of its own to resolve a reference to.
 
 Four other design records sit alongside these and are not numbered, because each
 was one topic taken from a comparison rather than a sub-project:

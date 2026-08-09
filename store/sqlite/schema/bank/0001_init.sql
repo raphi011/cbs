@@ -1607,13 +1607,20 @@ CREATE TABLE settlement_advices (
     -- this comment used to claim the opposite, that a row stuck at status 0 was
     -- the unreconciled position and the only trace of a posting that failed. It
     -- never was. The unreconciled position is the ABSENCE of a row against a
-    -- clearing suspense that has not returned to zero, and detecting it is Task
-    -- 19's.
+    -- clearing suspense that has not returned to zero, and what reports it is
+    -- payment.Network.Reconcile, one bank over its own database — as a POSITION
+    -- with an age on it and never as a break, because the mirror leg that will
+    -- discharge that suspense is netted and names no payment, so nothing in here
+    -- can prove an old suspense wrong.
     --
-    -- closing_balance is what the central bank said the reserve stands at.
-    -- Nothing reads it yet; Task 19 is the reconciliation that does. It is stored
-    -- because it arrives, and a balance discarded on receipt is one nobody can go
-    -- back for.
+    -- closing_balance is what the central bank said the reserve stands at, and
+    -- payment.Network.ReconcileTx is what reads it: each advised movement against
+    -- the RUNNING balance of the leg booked from it. That catches a mirror leg
+    -- posted at the wrong figure, a reserve moved with no statement behind it,
+    -- and a statement missed before one that did arrive. What it cannot catch is
+    -- a statement that never arrived at all, because a closing balance only ever
+    -- arrives on a statement the bank holds. It is stored because it arrives, and
+    -- a balance discarded on receipt is one nobody can go back for.
     --
     -- reference is the account servicer's own reference for the entry that moved
     -- this bank's reserve, and it arrives by two routes: a cycle id when a
@@ -1628,7 +1635,7 @@ CREATE TABLE settlement_advices (
     -- payment SETTLED AND RETURNED, which this bank does hold a copy of but
     -- learns nothing from that the advice has not already told it — so knowing
     -- which it is buys the member nothing it could act on; and the
-    -- reconciliation that will read these rows
+    -- reconciliation that reads these rows
     -- asks one question, "did this bank book what it was told", which is one
     -- shape and not two. A discriminator nothing branches on is a field that can
     -- only drift out of step with the id beside it.

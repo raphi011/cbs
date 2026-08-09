@@ -182,6 +182,34 @@ This wording reached Task 15b.1's brief, `payment/system.go`, `payment/types.go`
 `mesh/centralbank.go`, `mesh/settlement_test.go`, `README.md`, the hint registry
 and two quiz chapters before a review caught it. All are corrected.
 
+#### And the correction's own last sentence was wrong too (2026-08-09)
+
+Same convention: left as written above, corrected here.
+
+"Telling them apart needs the stored closing balance, which is exactly what row
+three says" is false, and it does not become true by being implemented. **A
+closing balance only ever arrives on a statement the bank holds.** Suppose a bank
+has booked a statement closing at 500 and the agent then moves its reserve to
+300: if the message was lost the bank holds nothing newer and its own reserve
+still reads 500, so the newest closing balance it holds agrees with it; if the
+message arrived and the posting failed, the whole unit of work rolled back, the
+bank holds nothing newer, and the two figures agree in exactly the same way. The
+closing balance distinguishes nothing between those two.
+
+Row three stands as written — a bank that posts the **wrong amount** is caught by
+the closing balance, and by nothing else. What Task 19 built is that check and
+three more beside it, all out of one database, and the table it lives in is in
+[`2026-08-09-bank-reconciliation-design.md`](2026-08-09-bank-reconciliation-design.md).
+The row that stays empty is the one this correction is about: **the last
+statement never arriving is undetectable from inside the bank**, and closing it
+needs a periodic statement, which this system does not have. It is asserted with
+a test rather than fixed, so the next reader does not rediscover it.
+
+Row two moves out of that column. "The bank was told and could not book" shows as
+a clearing suspense that has not returned to zero with no advice row against the
+reference — and Task 19 reports exactly that, as a **position with an age on it**
+rather than as a break, because from inside the bank nothing proves it wrong.
+
 ### The unclaimed-balances account falls out
 
 Once a bank posts its own creditor legs, a payee's closed account fails **one
