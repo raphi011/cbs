@@ -844,8 +844,8 @@ export function useSettlement(sid: string) {
 // accounts. The lobby and the identity picker both need exactly this, so they
 // share one set of queries rather than each fetching its own.
 //
-// The honest cost of the split is visible here. The roster comes from the
-// clearing house's GET /members, and each bank's accounts come from that bank's
+// The honest cost of the split is visible here. The bank list comes from the
+// central bank's GET /members, and each bank's accounts come from that bank's
 // own listener — so drawing one list touches five backends. That is why this is
 // a shared hook rather than an optimisation.
 //

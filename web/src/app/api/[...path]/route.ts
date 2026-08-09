@@ -27,13 +27,14 @@ const CFG = backendConfig(process.env);
 const CENTRAL_BANK = "central-bank";
 const CLEARING_HOUSE = "clearing-house";
 
-// A bank's port depends on where it sits in the LIST OF BANKS, which only the
-// clearing house's console can answer. That list is GET /members, which is every
-// bank the network has founded and not only the ones the scheme has admitted —
-// deliberately, because a bank founded before the process started gets a
-// listener whether or not its admission ever finished. It is not the clearing
-// house's routing roster, and the name below is a legacy of when the two were
-// one row.
+// A bank's port depends on where it sits in the LIST OF BANKS, which is GET
+// /members on the CENTRAL BANK's listener — beside the route that founds them,
+// because that listing is the operator's read of a deployment and not any
+// institution's own record. It is every bank the network has founded and not
+// only the ones the scheme has admitted, deliberately: a bank founded before the
+// process started gets a listener whether or not its admission ever finished.
+// The clearing house's GET /roster is the other list, and it is the one that
+// omits exactly those banks.
 //
 // It is read once and cached for the life of the process: ports are static by
 // design — a bank admitted at runtime gets no listener until a restart — so a
@@ -43,7 +44,7 @@ let rosterCache: Promise<string[]> | null = null;
 
 function roster(): Promise<string[]> {
   if (!rosterCache) {
-    rosterCache = fetch(`${institutionUrl(CLEARING_HOUSE, CFG)}/members`, {
+    rosterCache = fetch(`${institutionUrl(CENTRAL_BANK, CFG)}/members`, {
       cache: "no-store",
     })
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error("roster unavailable"))))
