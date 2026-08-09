@@ -123,6 +123,23 @@ const (
 	EventCycleClosed        = "cycle.closed"
 	EventCycleSettled       = "cycle.settled"
 
+	// EventReconciliationRun and EventReconciliationBreak are one bank checking
+	// its own books against the statements it was sent, and what that found.
+	//
+	// They are the whole durable record of a run: there is no findings table,
+	// because a finding is a pure function of the books at a moment and a stored
+	// one is a cache that can disagree with them — which is the defect class the
+	// instrument exists to detect, reintroduced by the instrument. What that
+	// costs is a history of how long a break stood; what is left is that a run
+	// happened, when, and what it said.
+	//
+	// The break event is keyed by the ACCOUNT the disagreement is on, because
+	// that is what its reader goes and looks at. The run event is keyed by the
+	// asset, because a bank reconciles each asset separately and a euro reserve
+	// says nothing about a dollar one.
+	EventReconciliationRun   = "reconciliation.run"
+	EventReconciliationBreak = "reconciliation.break"
+
 	// ScopeLending
 	EventFacilityOpened    = "facility.opened"
 	EventFacilityDisbursed = "facility.disbursed"

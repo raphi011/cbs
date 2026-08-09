@@ -569,12 +569,20 @@ const (
 // row is: ids are unique across the store. See AdvisedMovement and
 // StatementMessage.
 //
-// # ClosingBalance is stored and nothing checks it yet
+// # What ClosingBalance checks, and what it does not
 //
 // It is what the central bank says this bank's reserve stands at, and it is the
-// only figure in this system that a bank can check its own books against without
-// reading another institution's store. It is stored because a statement's
-// balance discarded on receipt is a balance nobody can ever go back for.
+// only figure in this system a bank can check its own books against without
+// reading another institution's store. Network.ReconcileTx is what does: each
+// advised movement against the running balance of the leg booked from it, which
+// catches a mirror leg posted at the wrong figure and a statement missed before
+// one that did arrive.
+//
+// It does NOT tell "told and could not book" apart from "never told". Both leave
+// the newest statement this bank holds agreeing with its own reserve, because a
+// closing balance only ever arrives on a statement the bank holds. What would
+// close that is a periodic statement, and there is none; the case is unreachable
+// while the transport delivers exactly once and in order.
 type SettlementAdvice struct {
 	Book      ledger.BookID
 	Reference string

@@ -1563,9 +1563,19 @@ func (s *Network) LodgeReservesTx(ctx context.Context, tx Tx, asset ledger.Asset
 	// The swap: a claim on the central bank replaces cash in the drawer. Both
 	// accounts are this bank's own, in this bank's own book, which is what makes
 	// this half of the lodgement something a member may do at all.
+	//
+	// The metadata is what makes this leg NAMEABLE to the bank's own
+	// reconciliation. Exactly two things post to a member's reserve account —
+	// this and an advice's mirror leg — so an entry that is neither is a reserve
+	// moved by something with no statement behind it, which is a break one bank
+	// can find alone. Saying so needs a label on this leg; the idempotency key
+	// beside it would serve and is deliberately not read, because a key is a
+	// uniqueness claim and reading one as a label turns a rename into a silent
+	// reclassification. See ReconcileTx.
 	if _, err := p.Ledger.PostTransactionTx(ctx, tx, ledger.PostTransactionRequest{
 		Description:    "Lodgement to reserve: " + string(asset),
 		IdempotencyKey: "lodge:" + in.Ref,
+		Metadata:       map[string]string{MetadataLodgementRef: in.Ref},
 		Entries: []ledger.Entry{
 			{AccountID: accts.Reserve, Amount: amount, Direction: ledger.Debit},
 			{AccountID: accts.VaultCash, Amount: amount, Direction: ledger.Credit},
@@ -4278,6 +4288,7 @@ func (s *Network) clawbackTx(ctx context.Context, tx Tx, creditor *Bank, accts B
 	return creditor.Ledger.PostTransactionTx(ctx, tx, ledger.PostTransactionRequest{
 		IdempotencyKey: returnLegKey(p.ID, "return-claw", replacing),
 		Description:    description,
+		Metadata:       paymentMetadata(&p),
 		Entries: []ledger.Entry{
 			{AccountID: from, Amount: p.Amount, Direction: ledger.Debit},
 			{AccountID: accts.Suspense, Amount: p.Amount, Direction: ledger.Credit},
@@ -4315,6 +4326,7 @@ func (s *Network) refundTx(ctx context.Context, tx Tx, debtor *Bank, accts BankA
 	return debtor.Ledger.PostTransactionTx(ctx, tx, ledger.PostTransactionRequest{
 		IdempotencyKey: returnLegKey(p.ID, "return-refund", replacing),
 		Description:    description,
+		Metadata:       paymentMetadata(&p),
 		Entries: []ledger.Entry{
 			{AccountID: accts.Suspense, Amount: p.Amount, Direction: ledger.Debit},
 			{AccountID: to, Amount: p.Amount, Direction: ledger.Credit},

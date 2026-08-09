@@ -205,13 +205,20 @@ type Tx interface {
 	// makes the recorder in mesh/books_test.go see a bank reaching its own book
 	// when it books a settlement.
 	//
-	// ListSettlementAdvices has NO production caller. Its reader is
-	// payment/recon, the reconciliation harness: it holds every institution's
+	// ListSettlementAdvices has two readers and they see different amounts.
+	//
+	// payment/recon, the reconciliation harness, holds every institution's
 	// advices against the settlement agent's own register, so that a movement the
 	// agent made and a member never booked can be told apart from a member's
 	// books simply being wrong. That comparison is the one thing no institution
-	// in this system may make, which is why its reader is a harness and not a
-	// caller. SettlementAdvice.ClosingBalance is read by nothing.
+	// in this system may make, which is why that reader is a harness.
+	//
+	// Network.ReconcileTx is one member bank reading its OWN, which is an act
+	// that bank may perform, and it is what reads
+	// SettlementAdvice.ClosingBalance: every advised movement against the
+	// running balance of the leg booked from it. What it cannot see is a
+	// statement that never arrived, because a closing balance only ever arrives
+	// on a statement the bank holds.
 	PutSettlementAdvice(ctx context.Context, book ledger.BookID, a SettlementAdvice) error
 	GetSettlementAdvice(ctx context.Context, book ledger.BookID, reference string, asset ledger.AssetCode) (SettlementAdvice, error)
 	ListSettlementAdvices(ctx context.Context, book ledger.BookID) ([]SettlementAdvice, error)
