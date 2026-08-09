@@ -545,6 +545,17 @@ const (
 	AdvicePosted
 )
 
+func (s AdviceStatus) String() string {
+	switch s {
+	case AdviceAdvised:
+		return "Advised"
+	case AdvicePosted:
+		return "Posted"
+	default:
+		return "Unknown"
+	}
+}
+
 // SettlementAdvice is a member bank's own record of a reserve movement it was
 // told about — a cut-off's net settlement or a single return — and whether this
 // bank has booked it yet: what its reserve moved by and what the central bank

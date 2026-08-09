@@ -220,6 +220,11 @@ func (s *Server) bankRouter() *router {
 	// registerMandateRoutes.
 	s.registerMandateRoutes(mux)
 
+	// A bank checking its own books, and the only operator that can: the
+	// reconciliation reads one database — this one — and the statements it was
+	// sent. See registerReconciliationRoutes.
+	s.registerReconciliationRoutes(mux)
+
 	s.registerLedgerRoutes(mux)
 	s.registerDepositRoutes(mux)
 	s.registerProductRoutes(mux)

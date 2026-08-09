@@ -277,6 +277,38 @@ func (s *Network) suspenseIsAged(ctx context.Context, tx Tx, bank *Bank, accts B
 	return nil
 }
 
+// ListSettlementAdvices is every statement this bank has been sent, oldest
+// first: what each one said its reserve moved by, what the central bank said the
+// account was left at, and the transaction this bank booked from it.
+//
+// Reconcile is what CHECKS these rows and this is what shows them, which is why
+// the two sit together. A break naming a reference sends its reader here, and
+// there is nowhere else to go: the statement is a message, and this row is the
+// whole of what survives it.
+//
+// It refuses an institution that is no bank, for ReconcileTx's reason. An advice
+// belongs to the MEMBER that was advised — Book is part of its identity — and
+// neither of the other two institutions holds one.
+func (s *Network) ListSettlementAdvices(ctx context.Context) ([]SettlementAdvice, error) {
+	var out []SettlementAdvice
+	err := s.store.View(ctx, func(ctx context.Context, tx Tx) error {
+		var err error
+		out, err = s.ListSettlementAdvicesTx(ctx, tx)
+		return err
+	})
+	return out, err
+}
+
+// ListSettlementAdvicesTx is ListSettlementAdvices within a caller-supplied unit
+// of work.
+func (s *Network) ListSettlementAdvicesTx(ctx context.Context, tx Tx) ([]SettlementAdvice, error) {
+	bank, err := s.selfBankTx(ctx, tx)
+	if err != nil {
+		return nil, err
+	}
+	return tx.ListSettlementAdvices(ctx, bank.BookID)
+}
+
 func (r *Reconciliation) breakf(account ledger.AccountID, format string, args ...any) {
 	r.Breaks = append(r.Breaks, Finding{Account: account, What: fmt.Sprintf(format, args...)})
 }

@@ -237,6 +237,79 @@ func TestTheSeededNetworkReconciles(t *testing.T) {
 	}
 }
 
+// TestABanksOwnRunAgreesWithTheHarness calibrates the narrow instrument against
+// the wide one, over the same six databases the test above reads.
+//
+// There are two instruments now and they answer the same question from different
+// numbers of databases. payment/recon opens all of them at once, precisely
+// because no institution may; payment.Network.Reconcile is one member bank over
+// its own, which is an act that bank performs. This holds the second against the
+// first.
+//
+// # The agreement can only ever hold in one direction
+//
+// A bank sees a subset. So what is asserted is that NO BREAK A BANK REPORTS IS
+// ABSENT FROM THE HARNESS'S REPORT — never the converse, which is false by
+// construction: the harness catches a member's advice row against the AGENT's
+// register, and a bank holding no such register cannot. Over this scenario the
+// harness reports no break at all, so the containment says every one of the four
+// banks reconciles from inside, across eleven payments in five statuses, two
+// settlements and a return. A false positive in the narrow instrument fails here.
+//
+// # The positions agree in BOTH directions, and that is the stronger half
+//
+// A clearing suspense that has not returned to zero is the one finding both
+// instruments read off the same account — the harness out of the bank's book, the
+// bank out of its own — so the two must name the same banks. This scenario ends
+// with five payments in flight deliberately, which is what makes that assertion
+// have something to bite on.
+func TestABanksOwnRunAgreesWithTheHarness(t *testing.T) {
+	ctx := context.Background()
+	net := testNetwork(t)
+
+	// Check fails the test on any break of its own, which is what makes the
+	// containment below a statement about the narrow instrument rather than about
+	// this scenario.
+	harness := recon.Check(t, net.nets)
+
+	type position struct {
+		bank  iso20022.BIC
+		asset ledger.AssetCode
+	}
+	byBank := map[position]bool{}
+	for _, p := range listParticipants(t, ctx, net) {
+		for asset := range p.Assets {
+			rec, err := net.bank(p.ID).Reconcile(ctx, asset)
+			if err != nil {
+				t.Fatalf("%s reconciling its own books in %s: %v", p.BIC, asset, err)
+			}
+			for _, b := range rec.Breaks {
+				t.Errorf("%s (%s) reports a break the harness over all six databases does not: %s",
+					p.BIC, asset, b)
+			}
+			if len(rec.Positions) > 0 {
+				byBank[position{p.BIC, asset}] = true
+			}
+		}
+	}
+
+	if len(byBank) == 0 {
+		t.Fatal("no bank reports a position of its own; this scenario ends with five payments in flight, " +
+			"so a run that finds nothing in transit anywhere means it is not reading the suspense accounts")
+	}
+	for _, u := range harness.Unreconciled {
+		if !byBank[position{u.Bank, u.Asset}] {
+			t.Errorf("the harness reports %s (%s) holding %d in clearing suspense and that bank's own run reports nothing in transit",
+				u.Bank, u.Asset, u.Suspense)
+		}
+		delete(byBank, position{u.Bank, u.Asset})
+	}
+	for p := range byBank {
+		t.Errorf("%s (%s) reports money in transit and the harness reads its suspense as zero",
+			p.bank, p.asset)
+	}
+}
+
 // TestRejectedCollectionWasReversedInThePayersBank pins the second half of the
 // seed's one rejection. build() composes both halves itself — the clearing
 // house transitions the payment, the payer's bank reverses the leg it posted —
