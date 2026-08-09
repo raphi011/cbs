@@ -120,7 +120,11 @@ about what a 500 may disclose.
 6. **Reserve adequacy.** Wanted by both 4 and 5, and worth little before either.
 7. **Crypto**, then **FX** — the two undecided-scope domains, largest last.
 
-### 1. Task 19 — reconciliation a bank can do for itself — `todo`
+### 1. Task 19 — reconciliation a bank can do for itself — `spec`
+
+Spec: [`2026-08-09-bank-reconciliation-design.md`](superpowers/specs/2026-08-09-bank-reconciliation-design.md),
+which decides the three homes, the clock, and what a run does not record; the
+four deliverables below are its 19a–19e.
 
 Numbered 19 because it continues sub-project 8's task sequence, and named
 throughout `superpowers/specs/2026-08-02-db-per-entity-design.md` as the work
@@ -156,10 +160,24 @@ Four deliverables, and the first is the whole point:
 - **A reader for the stored `camt.053`.** The statement is sent per settlement
   and persisted, and nothing reads it back.
 
-Related and worth deciding here rather than later: there is **no periodic
-statement**. A `camt.053` per settlement means no mechanism would catch an advice
-that never arrived. That case is unreachable in this transport and would become
-reachable and invisible the moment the mesh gained a lossy one.
+Related, and the spec decides it: there is **no periodic statement**. A
+`camt.053` per settlement means no mechanism would catch an advice that never
+arrived. That case is unreachable in this transport and would become reachable
+and invisible the moment the mesh gained a lossy one. The spec leaves it
+unbuilt and asserts it instead — a test that the last statement never arriving is
+undetectable from inside the bank — because a claim about what an instrument
+cannot see is worth as much as one about what it can, and only a test keeps it
+true.
+
+Two other things the spec settles rather than inherits: **the closing balance
+does not tell the two absences apart** — "told and could not book" and "never
+told" both leave the newest statement a bank holds agreeing with its own reserve,
+so what it catches is a wrong mirror leg and a statement missed then superseded,
+which is a different and sharper claim than the one three layers currently make;
+and **an unclaimed balance on a pull has no bank that may return it**, because
+the bank holding it is the creditor's and the returner is the debtor's. The
+instrument for that is `pacs.007`, which lands with the remaining
+R-transactions below.
 
 ### 2. The on-us book transfer — `todo`
 
@@ -443,6 +461,25 @@ exception leg is a new linked event, never a reversal of the original. A naive
 "reverse the original journal" on a recall returned net of a handling fee posts
 the gross amount and leaves the fee as a hole in the clearing account that
 reconciliation finds weeks later.
+
+**`pacs.007` has a caller waiting for it.** Task 19c's ageing report finds
+unclaimed balances a bank cannot clear, and on a **pull** the bank holding one is
+the creditor's while `ReturnerOf` names the debtor's bank the returner —
+correctly, since a `pacs.004` on a pull is the payer's bank's instrument and the
+payer has asked for nothing. A reversal is what the creditor's bank actually
+wants, and the report blocks the lot by name until there is one
+(`TestAnUnclaimedBalanceOnAPullHasNoBankThatMayReturnIt`).
+
+That test measures the second half too, and it is not a defect with a fix so much
+as a boundary worth knowing: **`PostReturnLeg` does not refuse the creditor's
+bank on a pull**, because that bank genuinely holds the clawback leg — the
+refusal belongs to the returner and only on a push. Called with no `pacs.004`
+behind it, it releases the unclaimed balance into that bank's own clearing
+suspense and takes its copy to `Returned` while every other institution still
+says `Settled`. The message is the authorisation, exactly as with a forged
+`pacs.002`; what catches an act nobody asked for is the channel plus
+reconciliation, and `payment/recon` reports it as a break where the bank's own
+instrument can only report a position.
 
 ### Maker-checker, and an audit log with an actor
 
