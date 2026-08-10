@@ -37,6 +37,7 @@ import {
 } from "@/lib/api/hooks";
 import { describeError } from "@/lib/api/errors";
 import { formatDate } from "@/lib/dates";
+import { groupIban } from "@/lib/iban";
 import { formatRate } from "@/lib/rate";
 import type { DepositStatus, DepositStatusAction } from "@/lib/enums";
 import type { Asset, Hold, Snapshot } from "@/lib/types";
@@ -376,6 +377,34 @@ export default function DepositAccountDetailPage() {
               )}
             </div>
           </div>
+
+          {/* The addresses, beside the internal number in the header above,
+              because the pair of them IS the distinction: one key the bank finds
+              its own row by and never hands out, and a SET of addresses a
+              counterparty quotes. The whole set rather than the first IBAN — the
+              set is plural by design, and this is the operator's screen, where a
+              second scheme or a reissue is a thing to look at.
+
+              Empty is a real state and says so: an address can be withdrawn and
+              not reissued, and an account in that state cannot be paid. */}
+          <p className="flex flex-wrap items-center gap-1.5 text-sm text-muted-foreground">
+            {account.identifiers.length === 0 ? (
+              <span>
+                No external address. Nothing can be paid to this account until
+                one is issued.
+              </span>
+            ) : (
+              <>
+                <span>Addressed by</span>
+                {account.identifiers.map((i) => (
+                  <span key={`${i.scheme}/${i.value}`} className="font-mono text-xs">
+                    {i.scheme === "IBAN" ? groupIban(i.value) : `${i.scheme} ${i.value}`}
+                  </span>
+                ))}
+              </>
+            )}
+            <Hint id="account-addressing" />
+          </p>
 
           <p className="flex items-center gap-1.5 text-sm text-muted-foreground">
             Backed by GL account <AccountRef pid={pid} id={account.glAccount} /> · overdraft
