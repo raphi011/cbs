@@ -70,17 +70,20 @@ func (t *tx) PutBank(ctx context.Context, b payment.Bank) error {
 	// an inconsistent bank is FoundBankTx, which is the only thing that mints one.
 	_, err := t.tx.ExecContext(ctx, `
 		INSERT INTO banks
-			(id, name, customer_subledger, product_id, status, admission_ref, created_at, seq)
-		VALUES (?, ?, ?, ?, ?, ?, ?, `+nextRowSeq("banks")+`)
+			(id, name, customer_subledger, product_id, status, admission_ref, country, bank_code, created_at, seq)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, `+nextRowSeq("banks")+`)
 		ON CONFLICT (id) DO UPDATE SET
 			name               = EXCLUDED.name,
 			customer_subledger = EXCLUDED.customer_subledger,
 			product_id         = EXCLUDED.product_id,
 			status             = EXCLUDED.status,
 			admission_ref      = EXCLUDED.admission_ref,
+			country            = EXCLUDED.country,
+			bank_code          = EXCLUDED.bank_code,
 			created_at         = EXCLUDED.created_at`,
 		string(b.ID), b.Name, string(b.CustomerSubledger),
-		string(b.ProductID), string(b.Status), b.AdmissionRef, nullTime{b.CreatedAt})
+		string(b.ProductID), string(b.Status), b.AdmissionRef,
+		string(b.Issuer.Country), string(b.Issuer.BankCode), nullTime{b.CreatedAt})
 	if err != nil {
 		return fmt.Errorf("sqlite: put bank %s: %w", b.ID, err)
 	}
@@ -109,7 +112,7 @@ func (t *tx) PutBank(ctx context.Context, b payment.Bank) error {
 	return nil
 }
 
-const bankColumns = `id, name, customer_subledger, product_id, status, admission_ref, created_at`
+const bankColumns = `id, name, customer_subledger, product_id, status, admission_ref, country, bank_code, created_at`
 
 func scanBank(row interface{ Scan(...any) error }) (payment.Bank, error) {
 	var (
@@ -117,7 +120,7 @@ func scanBank(row interface{ Scan(...any) error }) (payment.Bank, error) {
 		createdAt nullTime
 	)
 	err := row.Scan(&b.ID, &b.Name, &b.CustomerSubledger, &b.ProductID,
-		&b.Status, &b.AdmissionRef, &createdAt)
+		&b.Status, &b.AdmissionRef, &b.Issuer.Country, &b.Issuer.BankCode, &createdAt)
 	if err != nil {
 		return payment.Bank{}, err
 	}

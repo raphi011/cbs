@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/raphi011/cbs/deposit"
+	"github.com/raphi011/cbs/iban"
 	"github.com/raphi011/cbs/iso20022"
 	"github.com/raphi011/cbs/ledger"
 	"github.com/raphi011/cbs/lending"
@@ -235,6 +236,22 @@ type Bank struct {
 	// It is also the only field of this row the other two institutions hold: a
 	// SettlementMember and a RosterEntry are both keyed by it.
 	BIC iso20022.BIC
+
+	// Issuer is the country and bank code this bank mints its customers'
+	// addresses under, and it is a SECOND identifier that has nothing to do with
+	// the BIC above.
+	//
+	// The two answer different questions and neither computes the other. A BIC
+	// is what a MESSAGE is addressed to; a bank code is what an ACCOUNT's
+	// address carries, allocated by a national registry, and unique only within
+	// its country. Aurora is AURODEFFXXX and 99900001, and there is no
+	// arithmetic between them — which is the whole reason a scheme has to
+	// publish a directory rather than letting every bank derive.
+	//
+	// It reaches deposit.NewRegister as this bank's Issuer and is what stops one
+	// bank opening an account at another bank's address: a register can only
+	// mint under the code it was given.
+	Issuer iban.Issuer
 
 	// BookID is this bank's book within the network's store. It is
 	// ledger.BookID(ID) — the bank is its own book.

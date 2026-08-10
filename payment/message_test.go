@@ -59,8 +59,8 @@ func addressedBanks(t *testing.T) (sys *testSystem, aurora, verde *Bank, alice, 
 	verde, err = storetest.Admit(ctx, sys.nets, "Banca Verde", "VERDITMMXXX", euroOnly)
 	assertNoError(t, err)
 
-	alice = openCustomer(t, ctx, aurora, "Aurora Customer", "DE89370400440532013000")
-	bruno = openCustomer(t, ctx, verde, "Verde Customer", "IT60X0542811101000000123456")
+	alice = openCustomer(t, ctx, aurora, "Aurora Customer")
+	bruno = openCustomer(t, ctx, verde, "Verde Customer")
 	fundAccount(t, ctx, sys, aurora, alice, 500000)
 	return sys, aurora, verde, alice, bruno
 }
@@ -1029,7 +1029,7 @@ func TestCreditTransferRequestRefusesAnAddressTwoOfItsOwnAccountsClaim(t *testin
 	// and the clearing house's has no such table.
 	verde, err := n.bank(p.CreditorDetails.Agent).GetBank(ctx, ParticipantID(p.CreditorDetails.Agent))
 	assertNoError(t, err)
-	impostor := openCustomer(t, ctx, verde, "Impostor", "IT60-VERDE-9999")
+	impostor := openCustomer(t, ctx, verde, "Impostor")
 	assertNoError(t, verde.Deposit.Store().Update(ctx, func(ctx context.Context, tx deposit.Tx) error {
 		a, err := tx.GetDepositAccount(ctx, verde.BookID, impostor.ID)
 		if err != nil {
@@ -1370,8 +1370,8 @@ func TestCreditTransferRoundTripsThroughTheWireForSeedShapedAddresses(t *testing
 	verde, err := storetest.Admit(ctx, n.nets, "Banca Verde", "VERDITMMXXX", euroOnly)
 	assertNoError(t, err)
 
-	alice := openCustomer(t, ctx, aurora, "Alice", "SE89-AURORA-1001")
-	bruno := openCustomer(t, ctx, verde, "Bruno", "IT60 X054 2811 1010 0000 0123 456")
+	alice := openCustomer(t, ctx, aurora, "Alice")
+	bruno := openCustomer(t, ctx, verde, "Bruno")
 	fundAccount(t, ctx, n, aurora, alice, 500000)
 	openCycle(t, ctx, n, SchemeSEPACT)
 

@@ -53,7 +53,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/raphi011/cbs/deposit"
 	"github.com/raphi011/cbs/iso20022"
 	"github.com/raphi011/cbs/ledger"
 	"github.com/raphi011/cbs/payment"
@@ -204,11 +203,12 @@ func RunSystemRaces(t *testing.T, newStores func(*testing.T) payment.Stores) {
 		debtorNet, err := nets.Bank(ctx, debtorBank.ID)
 		assertNoError(t, err)
 
-		alice, err := debtorBank.Deposit.OpenAccount(ctx, debtorBank.CustomerSubledger, "Alice", "EUR", debtorBank.ProductID, 0,
-			deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "SE89-DUP-ALICE-0001"})
+		// Neither call names an address. A bank issues its customers' addresses
+		// out of its own bank code, so the register mints one and it comes back
+		// on the account — which is where the PartyRefs below read it from.
+		alice, err := debtorBank.Deposit.OpenAccount(ctx, debtorBank.CustomerSubledger, "Alice", "EUR", debtorBank.ProductID, 0)
 		assertNoError(t, err)
-		bruno, err := creditorBank.Deposit.OpenAccount(ctx, creditorBank.CustomerSubledger, "Bruno", "EUR", creditorBank.ProductID, 0,
-			deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "SE89-DUP-BRUNO-0001"})
+		bruno, err := creditorBank.Deposit.OpenAccount(ctx, creditorBank.CustomerSubledger, "Bruno", "EUR", creditorBank.ProductID, 0)
 		assertNoError(t, err)
 
 		const opening ledger.Amount = 1_000_000

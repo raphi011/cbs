@@ -15,6 +15,7 @@ import (
 	"time"
 
 	. "github.com/raphi011/cbs/deposit"
+	"github.com/raphi011/cbs/iban"
 	"github.com/raphi011/cbs/interest"
 	"github.com/raphi011/cbs/ledger"
 	"github.com/raphi011/cbs/product"
@@ -68,7 +69,20 @@ func newTestRegister(t *testing.T) (*Register, *ledger.Book, ledger.SubledgerID,
 // tests where WHEN an operation happened is the thing under test.
 func newTestRegisterOn(t *testing.T, clock func() time.Time) (*Register, *ledger.Book, ledger.SubledgerID, product.ID) {
 	t.Helper()
-	reg, cat, book, sub := newTestRegisterWithCatalogue(t, clock)
+	return newTestRegisterOnIssuedBy(t, clock, testIssuer)
+}
+
+// newTestRegisterIssuedBy is newTestRegister under a caller-supplied allocation,
+// for the tests where WHAT a register mints under is the thing under test —
+// including the zero allocation, which mints nothing.
+func newTestRegisterIssuedBy(t *testing.T, issuer iban.Issuer) (*Register, *ledger.Book, ledger.SubledgerID, product.ID) {
+	t.Helper()
+	return newTestRegisterOnIssuedBy(t, func() time.Time { return fixedTime }, issuer)
+}
+
+func newTestRegisterOnIssuedBy(t *testing.T, clock func() time.Time, issuer iban.Issuer) (*Register, *ledger.Book, ledger.SubledgerID, product.ID) {
+	t.Helper()
+	reg, cat, book, sub := newTestRegisterWithCatalogueIssuedBy(t, clock, issuer)
 	ctx := context.Background()
 
 	free, err := cat.CreateProduct(ctx, "Basic Current Account", product.CurrentAccount)
@@ -88,10 +102,15 @@ func newTestRegisterOn(t *testing.T, clock func() time.Time) (*Register, *ledger
 // this one is a test about pricing, and publishes what it needs.
 func newTestRegisterWithCatalogue(t *testing.T, clock func() time.Time) (*Register, *product.Catalogue, *ledger.Book, ledger.SubledgerID) {
 	t.Helper()
+	return newTestRegisterWithCatalogueIssuedBy(t, clock, testIssuer)
+}
+
+func newTestRegisterWithCatalogueIssuedBy(t *testing.T, clock func() time.Time, issuer iban.Issuer) (*Register, *product.Catalogue, *ledger.Book, ledger.SubledgerID) {
+	t.Helper()
 	ctx := context.Background()
 	store := testenv.New(t, clock)
 	book := ledger.NewBook(store, "bank", clock)
-	reg := NewRegister(store.Deposit(), book, book.ID(), clock)
+	reg := NewRegister(store.Deposit(), book, book.ID(), clock, issuer)
 	cat := product.NewCatalogue(store.Product(), book, book.ID(), clock)
 
 	gl, err := book.CreateLedger(ctx, "General Ledger")
@@ -2243,3 +2262,8 @@ func TestALimitChangeKeepsTheOverlayAndTheProduct(t *testing.T) {
 	assertEqual(t, "product carried forward", string(row.ProductID), string(basic.ID))
 	assertEqual(t, "the new limit", row.OverdraftLimit, ledger.Amount(800_000))
 }
+
+// testIssuer is what every register in this package mints under: one German
+// bank code, because this suite is about the register and not about addressing.
+// The one test that cares which country an address is in says so itself.
+var testIssuer = iban.Issuer{Country: iban.DE, BankCode: "99900001"}

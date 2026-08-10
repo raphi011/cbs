@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/raphi011/cbs/deposit"
+	"github.com/raphi011/cbs/iban"
 	"github.com/raphi011/cbs/iso20022"
 	"github.com/raphi011/cbs/ledger"
 	"github.com/raphi011/cbs/lending"
@@ -334,7 +335,7 @@ func (s *Network) CentralBank() (*ledger.Book, error) { return s.centralBankBook
 // value the store returns.
 func (s *Network) bind(p Bank) *Bank {
 	p.Ledger = ledger.NewBook(s.ledgers, p.BookID, s.clock)
-	p.Deposit = deposit.NewRegister(s.deposits, p.Ledger, p.BookID, s.clock)
+	p.Deposit = deposit.NewRegister(s.deposits, p.Ledger, p.BookID, s.clock, p.Issuer)
 	p.Lending = lending.NewPortfolio(s.lendings, p.Ledger, p.BookID, s.clock)
 	p.Catalogue = product.NewCatalogue(s.products, p.Ledger, p.BookID, s.clock)
 	return &p
@@ -726,11 +727,11 @@ func (s *Network) admissionSequenceTx(ctx context.Context, tx Tx) error {
 
 // FoundBank is FoundBankTx in its own unit of work: the bank's own act, and the
 // only one of the four its own operator drives directly.
-func (s *Network) FoundBank(ctx context.Context, name string, bic iso20022.BIC, assets []ledger.AssetCode) (*Bank, error) {
+func (s *Network) FoundBank(ctx context.Context, name string, bic iso20022.BIC, issuer iban.Issuer, assets []ledger.AssetCode) (*Bank, error) {
 	var out *Bank
 	err := s.store.Update(ctx, func(ctx context.Context, tx Tx) error {
 		var err error
-		out, err = s.FoundBankTx(ctx, tx, name, bic, assets)
+		out, err = s.FoundBankTx(ctx, tx, name, bic, issuer, assets)
 		return err
 	})
 	if err != nil {
@@ -806,7 +807,7 @@ func (s *Network) RecordMembership(ctx context.Context, in AdmissionAcknowledgem
 // bank it carries is Founded and its settlement references are empty, because at
 // the moment it is written no settlement agent has opened one. The other three
 // acts each append their own.
-func (s *Network) FoundBankTx(ctx context.Context, tx Tx, name string, bic iso20022.BIC, assets []ledger.AssetCode) (*Bank, error) {
+func (s *Network) FoundBankTx(ctx context.Context, tx Tx, name string, bic iso20022.BIC, issuer iban.Issuer, assets []ledger.AssetCode) (*Bank, error) {
 	if err := ledger.ValidateText("name", name); err != nil {
 		return nil, err
 	}
@@ -817,6 +818,17 @@ func (s *Network) FoundBankTx(ctx context.Context, tx Tx, name string, bic iso20
 	// when the first payment addressed to it fails somewhere else entirely.
 	if err := bic.Validate(); err != nil {
 		return nil, fmt.Errorf("bic: %w", err)
+	}
+	// The bank code, for the same reason and at the same moment. It is a SECOND
+	// identifier and not a restatement of the BIC — see Bank.Issuer — and a bank
+	// founded without a usable one can open no accounts at all, because every
+	// account is opened with an address minted under it.
+	//
+	// Structure only. Whether this country's registry really allocated this code
+	// to this bank is not a question anything here can ask: the registry is
+	// another institution's table, exactly as the roster is.
+	if err := issuer.Validate(); err != nil {
+		return nil, fmt.Errorf("bank code: %w", err)
 	}
 	assets = joiningAssets(assets)
 
@@ -955,6 +967,7 @@ func (s *Network) FoundBankTx(ctx context.Context, tx Tx, name string, bic iso20
 		ID:                ParticipantID(id),
 		Name:              name,
 		BIC:               bic,
+		Issuer:            issuer,
 		BookID:            bookID,
 		CustomerSubledger: customers.ID,
 		ProductID:         basic.ID,

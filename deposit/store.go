@@ -45,6 +45,20 @@ type Tx interface {
 	// one into ErrIdentifierNotFound, the account, and ErrIdentifierAmbiguous.
 	ListDepositAccountsByIdentifier(ctx context.Context, book ledger.BookID, ident Identifier) ([]Account, error)
 
+	// NextAddressSerial issues the next account serial this book mints an IBAN
+	// from: 1, 2, 3, …, dense and gap-free.
+	//
+	// A counter OF ITS OWN, and that is the whole reason it is a method rather
+	// than a NextID call. NextID shares one counter per book across every prefix,
+	// so an address drawn from it would carry whatever number the book happened
+	// to be on — and the gaps between one account and the next would be a record
+	// of unrelated work. See Register.mintAddressTx.
+	//
+	// Allocated in the caller's transaction and rolled back with it, like every
+	// other counter here. A store implementing this outside the unit of work
+	// would burn an address on a failed open.
+	NextAddressSerial(ctx context.Context, book ledger.BookID) (uint64, error)
+
 	PutHold(ctx context.Context, book ledger.BookID, h Hold) error
 	GetHold(ctx context.Context, book ledger.BookID, id HoldID) (Hold, error)
 	ListHoldsForAccount(ctx context.Context, book ledger.BookID, id AccountID) ([]Hold, error)

@@ -46,36 +46,45 @@ var ibanSeparators = strings.NewReplacer(" ", "", "-", "")
 
 // IBAN is an international bank account number.
 //
-// # This type does not verify the check digit, on purpose
+// # This type checks the pattern and not the check digit, and that is the
+// schema's line rather than a shortcut
 //
 // A real IBAN's third and fourth characters are an ISO 7064 mod-97 checksum over
-// the rest, and this package does not compute it: it would make the seed's
-// readable SE89-AURORA-1001 illegal and replace it with opaque digits in every
-// screenshot, worked example and quiz answer in the repository.
+// the rest, and this package does not compute it. The reason is what this
+// package IS: it models the messages, and the schema constrains an IBAN by
+// PATTERN — IBAN2007Identifier — so a value satisfying the pattern produces a
+// structurally valid document whatever its check digits say. Validate's failure
+// is ErrIBANPattern rather than a checksum error, so the distinction survives in
+// what a caller sees.
 //
-// The refusal costs nothing here, which is the part worth knowing. The schema
-// constrains an IBAN by PATTERN and not by checksum, so a readable identifier
-// still produces a structurally valid document. Validate therefore checks the
-// pattern, and its failure is ErrIBANPattern rather than a checksum error, so
-// that the distinction survives in the error a caller sees.
+// The checksum is real and is checked, one package away: iban.IBAN.Validate
+// computes mod-97 and the national check characters besides. This package cannot
+// call it — it imports nothing from this repository — and does not need to,
+// because every address it ever sees was minted by a register that already did.
 //
 // # Compact and display forms
 //
-// An IBAN is canonically stored and transmitted without separators, and
-// displayed in groups of four. This repository's stored identifiers use hyphens
-// for readability, so Compact is what turns a stored deposit.Identifier value
-// into the form that goes on the wire.
+// An IBAN is canonically stored and transmitted without separators and in upper
+// case, and displayed in groups of four. Both this repository's registers and
+// its messages carry the canonical form, so Compact is what normalises a value
+// somebody wrote out for a human to read.
 //
-// Compaction is NOT reversible: SE89AURORA1001 cannot tell you where the hyphens
-// were. Code matching a received IBAN against a stored identifier must therefore
-// compact BOTH sides and compare, rather than compacting one and hoping. The
-// rule is stated on the side that owns the comparison —
-// deposit.Identifier.MatchValue — because this package imports nothing from the
-// repository; the separator set is duplicated there and a test on that side pins
-// the two copies together.
+// Compaction is NOT reversible: the compact form cannot tell you where the
+// spaces were. Code matching a received IBAN against a stored identifier must
+// therefore compact BOTH sides and compare, rather than compacting one and
+// hoping. The rule is stated on the side that owns the comparison —
+// deposit.Identifier.MatchValue, which delegates it to iban.Compact — and the
+// separator set is duplicated here because of the import rule above. A test on
+// that side pins the two copies together.
 type IBAN string
 
 // Compact returns the IBAN with display separators removed.
+//
+// It does NOT fold case, and the difference from iban.Compact — which does — is
+// deliberate on both sides. The schema's pattern requires an upper-case country
+// code, so this package must be able to REFUSE a lower-case one; folding here
+// would make Validate accept a document that is not schema-valid. Folding what a
+// PERSON typed is a register's job, on the way in, and that is where it happens.
 func (i IBAN) Compact() IBAN { return IBAN(ibanSeparators.Replace(string(i))) }
 
 // Validate reports whether the compact form matches the schema's pattern. It

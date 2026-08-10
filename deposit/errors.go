@@ -104,4 +104,33 @@ var (
 	// is also what closes the within-bank race that comes with enforcing
 	// uniqueness in the domain rather than with a constraint.
 	ErrIdentifierAmbiguous = errors.New("identifier resolves to more than one account")
+
+	// ErrIBANIsIssued is a caller supplying an IBAN — at OpenAccount, or at
+	// AddIdentifier — rather than being given one.
+	//
+	// A BANK ISSUES ITS CUSTOMERS' ADDRESSES. It allocates them out of the bank
+	// code its country's registry allocated to it, which is what makes the code
+	// inside an address a true statement about who holds the account: a bank
+	// cannot issue an address that routes to somebody else, because it has no
+	// other code to issue under.
+	//
+	// A caller-supplied IBAN is exactly the hole that closes. It would let one
+	// bank open an account at another bank's address, and nothing downstream
+	// could tell the difference — the address resolves here, and a directory says
+	// it belongs there.
+	//
+	// The refusal is only for this scheme, and the plural on Identifiers is why
+	// AddIdentifier survives at all: a card PAN is issued by a scheme somewhere
+	// else and quoted to this bank, so it arrives from a caller and always will.
+	// A customer wanting a second IBAN opens a second ACCOUNT, which is already
+	// the rule for a second currency.
+	ErrIBANIsIssued = errors.New("an IBAN is issued by this bank, not supplied to it")
+
+	// ErrNoIssuer is a Register with no bank code, asked to open an account.
+	//
+	// It is a wiring mistake and not a runtime condition: a register that mints
+	// addresses has to know what to mint them under, and there is no sensible
+	// default — every other value would be some other bank's. NewRegister takes
+	// the issuer for that reason, and this fires only for a zero one.
+	ErrNoIssuer = errors.New("this register has no bank code to issue addresses under")
 )

@@ -10,6 +10,7 @@ import (
 	"github.com/raphi011/cbs/iso20022"
 	"github.com/raphi011/cbs/ledger"
 	"github.com/raphi011/cbs/payment"
+	"github.com/raphi011/cbs/store/storetest"
 )
 
 // Admission, as a conversation between three institutions.
@@ -29,11 +30,6 @@ import (
 // no bank the harness builds, which is what makes it admissible at all.
 const joinerBIC iso20022.BIC = "NORDSESSXXX"
 
-// joinerUSDIBAN is the joining bank's customer's DOLLAR account, used by the
-// two-asset admission alone. Its euro sibling is joinerIBAN, in operator_test.go,
-// where the bank that joins after Start already needed one.
-const joinerUSDIBAN = "SE1250000000058398257467"
-
 // TestAdmissionIsAConversation is the task's headline, asserted as the state
 // each institution ends up in rather than as the messages that got there —
 // TestTheMessagesAnAdmissionPutsOnTheWire below is what asserts those.
@@ -47,7 +43,7 @@ func TestAdmissionIsAConversation(t *testing.T) {
 	h := newMeshHarness(t)
 	ctx := context.Background()
 
-	joiner, err := h.mesh.Admit(ctx, "Nordhaven Bank", joinerBIC, euroOnly)
+	joiner, err := h.mesh.Admit(ctx, "Nordhaven Bank", joinerBIC, storetest.FixtureIssuer(joinerBIC), euroOnly)
 	if err != nil {
 		t.Fatalf("Admit: %v", err)
 	}
@@ -111,14 +107,14 @@ func TestAnAdmittedBankCanPayAndBePaid(t *testing.T) {
 	h := newMeshHarness(t)
 	ctx := context.Background()
 
-	joiner, err := h.mesh.Admit(ctx, "Nordhaven Bank", joinerBIC, euroOnly)
+	joiner, err := h.mesh.Admit(ctx, "Nordhaven Bank", joinerBIC, storetest.FixtureIssuer(joinerBIC), euroOnly)
 	if err != nil {
 		t.Fatalf("Admit: %v", err)
 	}
 	h.drain(t)
 	joiner = h.getBank(t, joiner.ID)
 
-	acct := h.openCustomer(t, joiner, "Nora", "EUR", 0, joinerIBAN)
+	acct := h.openCustomer(t, joiner, "Nora", "EUR", 0)
 	if err := h.bank(joiner.BIC).Deposit(ctx, joiner.ID, acct.ID, harnessFunding, "Opening deposit"); err != nil {
 		t.Fatalf("funding a bank admitted through the mesh: %v", err)
 	}
@@ -184,7 +180,7 @@ func TestATwoAssetAdmissionRecordsBothSettlementAccounts(t *testing.T) {
 	h := newMeshHarness(t)
 	ctx := context.Background()
 
-	joiner, err := h.mesh.Admit(ctx, "Nordhaven Bank", joinerBIC, euroAndDollar)
+	joiner, err := h.mesh.Admit(ctx, "Nordhaven Bank", joinerBIC, storetest.FixtureIssuer(joinerBIC), euroAndDollar)
 	if err != nil {
 		t.Fatalf("Admit: %v", err)
 	}
@@ -223,8 +219,8 @@ func TestATwoAssetAdmissionRecordsBothSettlementAccounts(t *testing.T) {
 	// reference cost: a deposit credits the bank's settlement account at the
 	// central bank, read off the bank's OWN row.
 	joiner = h.getBank(t, joiner.ID)
-	for asset, iban := range map[ledger.AssetCode]string{"EUR": joinerIBAN, "USD": joinerUSDIBAN} {
-		acct := h.openCustomer(t, joiner, "Nora", asset, 0, iban)
+	for _, asset := range []ledger.AssetCode{"EUR", "USD"} {
+		acct := h.openCustomer(t, joiner, "Nora", asset, 0)
 		if err := h.bank(joiner.BIC).Deposit(ctx, joiner.ID, acct.ID, harnessFunding, "Opening deposit"); err != nil {
 			t.Errorf("funding the admitted bank in %s: %v", asset, err)
 		}
@@ -270,7 +266,7 @@ func TestAMemberRefusesAnAcknowledgementOfAnotherAdmission(t *testing.T) {
 	h := newMeshHarness(t)
 	ctx := context.Background()
 
-	joiner, err := h.mesh.Admit(ctx, "Nordhaven Bank", joinerBIC, euroOnly)
+	joiner, err := h.mesh.Admit(ctx, "Nordhaven Bank", joinerBIC, storetest.FixtureIssuer(joinerBIC), euroOnly)
 	if err != nil {
 		t.Fatalf("Admit: %v", err)
 	}
@@ -347,7 +343,7 @@ func TestARefusedAdmissionLeavesAFoundedBank(t *testing.T) {
 	h := newMeshHarness(t)
 	ctx := context.Background()
 
-	joiner, err := h.bank(joinerBIC).FoundBank(ctx, "Nordhaven Bank", joinerBIC, euroOnly)
+	joiner, err := h.bank(joinerBIC).FoundBank(ctx, "Nordhaven Bank", joinerBIC, storetest.FixtureIssuer(joinerBIC), euroOnly)
 	if err != nil {
 		t.Fatalf("FoundBank: %v", err)
 	}
@@ -393,7 +389,7 @@ func TestARefusedAdmissionLeavesAFoundedBank(t *testing.T) {
 	// only one there is: the bank was founded in euro and the asset nobody
 	// issues never touched its chart of accounts — it existed only in the message
 	// injected above, which is what the paragraph on this test's own doc explains.
-	if _, err := h.mesh.Admit(ctx, "Nordhaven Bank", joinerBIC, euroOnly); err != nil {
+	if _, err := h.mesh.Admit(ctx, "Nordhaven Bank", joinerBIC, storetest.FixtureIssuer(joinerBIC), euroOnly); err != nil {
 		t.Fatalf("re-driving a refused admission: %v", err)
 	}
 	h.drain(t)
@@ -419,7 +415,7 @@ func TestAnUnknownAssetIsRefusedBeforeAnythingIsWritten(t *testing.T) {
 
 	before := h.bankCount(t)
 	mark := h.messagesSeen()
-	if _, err := h.mesh.Admit(ctx, "Nordhaven Bank", joinerBIC, []ledger.AssetCode{"XYZ"}); err == nil {
+	if _, err := h.mesh.Admit(ctx, "Nordhaven Bank", joinerBIC, storetest.FixtureIssuer(joinerBIC), []ledger.AssetCode{"XYZ"}); err == nil {
 		t.Fatal("Admit accepted an asset nobody issues")
 	}
 	h.drain(t)
@@ -431,7 +427,7 @@ func TestAnUnknownAssetIsRefusedBeforeAnythingIsWritten(t *testing.T) {
 		t.Errorf("a refused admission put %d messages on the wire, want none", n)
 	}
 	// The address is free again, which is what the release on failure buys.
-	if _, err := h.mesh.Admit(ctx, "Nordhaven Bank", joinerBIC, euroOnly); err != nil {
+	if _, err := h.mesh.Admit(ctx, "Nordhaven Bank", joinerBIC, storetest.FixtureIssuer(joinerBIC), euroOnly); err != nil {
 		t.Fatalf("re-admitting after a refused unit of work: %v", err)
 	}
 }
@@ -445,7 +441,7 @@ func TestAdmissionRefusesAnAddressAnotherBankAnswersTo(t *testing.T) {
 	h := newMeshHarness(t)
 	ctx := context.Background()
 	// h.debtorBIC belongs to a bank the harness already admitted.
-	if _, err := h.mesh.Admit(ctx, "Impostor Bank", h.debtorBIC, euroOnly); err == nil {
+	if _, err := h.mesh.Admit(ctx, "Impostor Bank", h.debtorBIC, storetest.FixtureIssuer(h.debtorBIC), euroOnly); err == nil {
 		t.Fatal("admitting a second institution on a member's BIC succeeded")
 	} else if !errors.Is(err, ErrAddressTaken) {
 		t.Fatalf("admitting on a member's BIC: %v, want ErrAddressTaken", err)
@@ -493,7 +489,7 @@ func TestAnAdmissionAlreadyUnderWayIsItsOwnRefusal(t *testing.T) {
 	}
 
 	before := h.bankCount(t)
-	_, err := h.mesh.Admit(ctx, "Nordhaven Bank", joinerBIC, euroOnly)
+	_, err := h.mesh.Admit(ctx, "Nordhaven Bank", joinerBIC, storetest.FixtureIssuer(joinerBIC), euroOnly)
 	if err == nil {
 		t.Fatal("a second admission on an address already claimed succeeded")
 	}
@@ -512,7 +508,7 @@ func TestAnAdmissionAlreadyUnderWayIsItsOwnRefusal(t *testing.T) {
 	// The reservation goes back, and the address was never anybody else's: the
 	// bank whose admission was in flight can still be admitted on it.
 	h.mesh.releaseAddress(joinerBIC)
-	joiner, err := h.mesh.Admit(ctx, "Nordhaven Bank", joinerBIC, euroOnly)
+	joiner, err := h.mesh.Admit(ctx, "Nordhaven Bank", joinerBIC, storetest.FixtureIssuer(joinerBIC), euroOnly)
 	if err != nil {
 		t.Fatalf("admitting once the reservation is released: %v", err)
 	}
@@ -548,7 +544,7 @@ func TestNothingIsWrittenWhenTheAddressIsRefused(t *testing.T) {
 		{"the clearing house's address, which is in no roster", h.cfg.ClearingHouseBIC},
 	} {
 		before := h.bankCount(t)
-		if _, err := h.mesh.Admit(ctx, "Impostor Bank", tc.bic, euroOnly); err == nil {
+		if _, err := h.mesh.Admit(ctx, "Impostor Bank", tc.bic, storetest.FixtureIssuer(tc.bic), euroOnly); err == nil {
 			t.Fatalf("Admit on %s succeeded", tc.what)
 		} else if !errors.Is(err, ErrAddressTaken) {
 			t.Fatalf("Admit on %s: %v, want ErrAddressTaken", tc.what, err)
@@ -580,7 +576,7 @@ func TestTheMessagesAnAdmissionPutsOnTheWire(t *testing.T) {
 	ctx := context.Background()
 
 	mark := h.messagesSeen()
-	if _, err := h.mesh.Admit(ctx, "Nordhaven Bank", joinerBIC, euroOnly); err != nil {
+	if _, err := h.mesh.Admit(ctx, "Nordhaven Bank", joinerBIC, storetest.FixtureIssuer(joinerBIC), euroOnly); err != nil {
 		t.Fatalf("Admit: %v", err)
 	}
 	h.drain(t)
@@ -613,7 +609,7 @@ func TestTheMessagesATwoAssetAdmissionPutsOnTheWire(t *testing.T) {
 	ctx := context.Background()
 
 	mark := h.messagesSeen()
-	if _, err := h.mesh.Admit(ctx, "Nordhaven Bank", joinerBIC, euroAndDollar); err != nil {
+	if _, err := h.mesh.Admit(ctx, "Nordhaven Bank", joinerBIC, storetest.FixtureIssuer(joinerBIC), euroAndDollar); err != nil {
 		t.Fatalf("Admit: %v", err)
 	}
 	h.drain(t)
@@ -687,7 +683,7 @@ func TestABankToldItIsAMemberIsAlreadyRoutable(t *testing.T) {
 		routable = err == nil
 	})
 
-	if _, err := h.mesh.Admit(ctx, "Nordhaven Bank", joinerBIC, euroOnly); err != nil {
+	if _, err := h.mesh.Admit(ctx, "Nordhaven Bank", joinerBIC, storetest.FixtureIssuer(joinerBIC), euroOnly); err != nil {
 		t.Fatalf("Admit: %v", err)
 	}
 	h.drain(t)
@@ -729,7 +725,7 @@ func TestTheClearingHouseRefusesASecondInstitutionOnAnAdmittedAddress(t *testing
 	ctx := context.Background()
 
 	// A member of this scheme, admitted through the mesh's own door.
-	if _, err := h.mesh.Admit(ctx, "Nordhaven Bank", joinerBIC, euroOnly); err != nil {
+	if _, err := h.mesh.Admit(ctx, "Nordhaven Bank", joinerBIC, storetest.FixtureIssuer(joinerBIC), euroOnly); err != nil {
 		t.Fatalf("Admit: %v", err)
 	}
 	h.drain(t)
@@ -872,7 +868,7 @@ func TestAFoundedBankIsNotAdmittedByARestart(t *testing.T) {
 	h := newMeshHarness(t)
 	ctx := context.Background()
 
-	joiner, err := h.bank(joinerBIC).FoundBank(ctx, "Nordhaven Bank", joinerBIC, euroOnly)
+	joiner, err := h.bank(joinerBIC).FoundBank(ctx, "Nordhaven Bank", joinerBIC, storetest.FixtureIssuer(joinerBIC), euroOnly)
 	if err != nil {
 		t.Fatalf("FoundBank: %v", err)
 	}
@@ -897,7 +893,7 @@ func TestAFoundedBankIsNotAdmittedByARestart(t *testing.T) {
 	}
 	// And its address is still free, which is what makes finishing its admission
 	// possible at all.
-	if _, err := h.mesh.Admit(ctx, "Nordhaven Bank", joinerBIC, euroOnly); err != nil {
+	if _, err := h.mesh.Admit(ctx, "Nordhaven Bank", joinerBIC, storetest.FixtureIssuer(joinerBIC), euroOnly); err != nil {
 		t.Errorf("finishing a founded bank's admission after a rejoin: %v", err)
 	}
 }
@@ -929,7 +925,6 @@ func TestAFoundedBankIsNotAdmittedByARestart(t *testing.T) {
 // direction's money in a suspense, because the pacs.002 that would reverse it is
 // addressed through the roster too and dead-letters at the non-member.
 func TestAFoundedBankCanNeitherPayNorBePaid(t *testing.T) {
-	const foundedIBAN = "FR7630006000011234567890189"
 
 	// found builds the state Mesh.Admit's synchronous half leaves: a bank with a
 	// book and an actor, in no roster, whose customer has spendable money from an
@@ -937,14 +932,14 @@ func TestAFoundedBankCanNeitherPayNorBePaid(t *testing.T) {
 	found := func(t *testing.T, h *meshHarness) (*payment.Bank, deposit.Account) {
 		t.Helper()
 		ctx := context.Background()
-		b, err := h.bank(joinerBIC).FoundBank(ctx, "Nordhaven Bank", joinerBIC, euroOnly)
+		b, err := h.bank(joinerBIC).FoundBank(ctx, "Nordhaven Bank", joinerBIC, storetest.FixtureIssuer(joinerBIC), euroOnly)
 		if err != nil {
 			t.Fatalf("FoundBank: %v", err)
 		}
 		if err := h.mesh.AddBank(context.Background(), b); err != nil {
 			t.Fatalf("AddBank: %v", err)
 		}
-		return b, h.openCustomer(t, b, "Nora", "EUR", harnessFunding, foundedIBAN)
+		return b, h.openCustomer(t, b, "Nora", "EUR", harnessFunding)
 	}
 
 	for _, tc := range []struct {
@@ -963,9 +958,9 @@ func TestAFoundedBankCanNeitherPayNorBePaid(t *testing.T) {
 					Scheme: payment.SchemeSEPACT,
 					Debtor: payment.PartyRef{
 						Account:    acct.ID,
-						Identifier: deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: foundedIBAN},
+						Identifier: deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: addressOf(t, acct)},
 					},
-					Creditor:    h.creditorRef(creditorIBAN),
+					Creditor:    h.creditorRef(h.creditorIBAN),
 					Amount:      harnessAmount,
 					Description: "from a bank no scheme has admitted",
 					// BOTH agents, because the founded bank is the one submitting
@@ -991,7 +986,7 @@ func TestAFoundedBankCanNeitherPayNorBePaid(t *testing.T) {
 					Debtor: h.debtorRef(),
 					Creditor: payment.PartyRef{
 						Account:    acct.ID,
-						Identifier: deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: foundedIBAN},
+						Identifier: deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: addressOf(t, acct)},
 					},
 					Amount:          harnessAmount,
 					Description:     "to a bank no scheme has admitted",

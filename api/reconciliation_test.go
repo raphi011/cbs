@@ -99,13 +99,13 @@ func TestAnUnclaimedBalanceIsReportedWithItsDeadline(t *testing.T) {
 	a := admitMember(t, h, `{"bic":"BNKADEFFXXX","name":"Bank A"}`, http.StatusAccepted)["id"].(string)
 	b := admitMember(t, h, `{"bic":"BNKBDEFFXXX","name":"Bank B"}`, http.StatusAccepted)["id"].(string)
 	alice := doJSON(t, bank(h, a), "POST", "/deposit-accounts",
-		`{"name":"Alice","asset":"EUR","productId":"`+prdOf(t, h, a)+`","identifiers":[{"scheme":"IBAN","value":"SE89-UNCL-ALICE-0001"}]}`,
+		`{"name":"Alice","asset":"EUR","productId":"`+prdOf(t, h, a)+`"}`,
 		http.StatusCreated)["id"].(string)
 	// Bob is opened and never funded, so his bank can close the account while the
 	// payment to him is in the cut-off — which is the only way a credit reaches
 	// unclaimed balances.
 	bob := doJSON(t, bank(h, b), "POST", "/deposit-accounts",
-		`{"name":"Bob","asset":"EUR","productId":"`+prdOf(t, h, b)+`","identifiers":[{"scheme":"IBAN","value":"SE89-UNCL-BOB-0001"}]}`,
+		`{"name":"Bob","asset":"EUR","productId":"`+prdOf(t, h, b)+`"}`,
 		http.StatusCreated)["id"].(string)
 	fundAndLodge(t, h, a, alice, 100000)
 
@@ -113,7 +113,7 @@ func TestAnUnclaimedBalanceIsReportedWithItsDeadline(t *testing.T) {
 	pay := doJSON(t, bank(h, a), "POST", "/payments", `{
 		"scheme":"sepa.ct",
 		"debtorAgent":"`+a+`","debtor":{"account":"`+alice+`"},
-		"creditorAgent":"`+b+`","creditor":{"account":"`+bob+`","identifier":{"scheme":"IBAN","value":"SE89-UNCL-BOB-0001"}},
+		"creditorAgent":"`+b+`","creditor":{"account":"`+bob+`","identifier":{"scheme":"IBAN","value":"`+ibanFor(t, h, b, bob)+`"}},
 		"amount":25000,
 		"endToEndId":"unclaimed-e2e",
 		"creditorName":"Bob"

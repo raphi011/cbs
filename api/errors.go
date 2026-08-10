@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	"github.com/raphi011/cbs/deposit"
+	"github.com/raphi011/cbs/iban"
 	"github.com/raphi011/cbs/iso20022"
 	"github.com/raphi011/cbs/ledger"
 	"github.com/raphi011/cbs/lending"
@@ -181,6 +182,31 @@ func errorStatus(err error) int {
 		// structurally valid ISO 9362 code — the same category as an
 		// unaddressable account, not a decoding failure.
 		errors.Is(err, iso20022.ErrBICFormat),
+		// The same category one identifier along: a bank code that is not the
+		// width its country allocates, a country nothing here issues in, or an
+		// address whose check digits do not verify. Every one of them is a
+		// present, well-typed field failing a business rule, and every one is
+		// fixable by the caller. They reach here from POST /members, where a
+		// joining bank names its allocation.
+		//
+		// Listed as a group rather than one by one because the group IS the
+		// category — "this is not a well-formed address or allocation" — and a
+		// caller can do nothing different about any of them. The message says
+		// which.
+		errors.Is(err, iban.ErrUnknownCountry),
+		errors.Is(err, iban.ErrLength),
+		errors.Is(err, iban.ErrCharacter),
+		errors.Is(err, iban.ErrCheckDigits),
+		errors.Is(err, iban.ErrNationalCheck),
+		errors.Is(err, iban.ErrBankCodeWidth),
+		errors.Is(err, iban.ErrSerialTooLarge),
+		// A caller supplying an address the BANK issues. Well-formed, and refused
+		// because it is not the caller's to say — see deposit.ErrIBANIsIssued.
+		errors.Is(err, deposit.ErrIBANIsIssued),
+		// A bank asked to open an account before any registry allocated it a bank
+		// code. A real state, and 422 rather than 409: nothing is contested, the
+		// bank simply has no addresses to give out yet.
+		errors.Is(err, deposit.ErrNoIssuer),
 		// An on-us payment is well formed, names two real accounts and is a
 		// perfectly legitimate thing to want; what refuses it is that this route
 		// does not carry it. Both parties bank at one institution, so nothing

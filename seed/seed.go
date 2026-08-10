@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/raphi011/cbs/deposit"
+	"github.com/raphi011/cbs/iban"
 	"github.com/raphi011/cbs/interest"
 	"github.com/raphi011/cbs/iso20022"
 	"github.com/raphi011/cbs/ledger"
@@ -286,8 +287,8 @@ func check(err error) {
 // is the assertion of that property, and the numbers above are also a warning
 // about it: it compares two builds in one process, so a divergence that appears
 // in one build out of twelve is one it reports rarely rather than reliably.
-func (b *builder) admit(name string, bic iso20022.BIC, assets []ledger.AssetCode) *payment.Bank {
-	founded := must(b.mesh.Admit(b.ctx, name, bic, assets))
+func (b *builder) admit(name string, bic iso20022.BIC, issuer iban.Issuer, assets []ledger.AssetCode) *payment.Bank {
+	founded := must(b.mesh.Admit(b.ctx, name, bic, issuer, assets))
 	check(b.mesh.Drain(b.ctx))
 
 	// The bank's own row, out of the bank's own database. It was read through
@@ -350,26 +351,30 @@ func (b *builder) publish(p *payment.Bank, id product.ID, from time.Time, pricin
 	must(p.Catalogue.PublishVersion(b.ctx, id, from))
 }
 
-// open opens a customer account on the bank's Basic product, records its
-// canonical IBAN, and returns it.
+// open opens a customer account on the bank's Basic product and returns it.
 //
 // It goes through the register rather than p.OpenCustomerAccount because that
 // helper opens from the participant's configured default, and this seed has
 // retired that one in favour of a priced catalogue of its own.
-func (b *builder) open(p *payment.Bank, name, iban string) deposit.Account {
-	return b.openOverdraft(p, name, iban, 0)
+//
+// THE ADDRESS IS NOT AN ARGUMENT. It was, and every account in this file quoted
+// a literal beside its holder's name. A bank issues its customers' addresses out
+// of its own bank code, so the register mints one and the seed reads it back —
+// which is also why the accounts below are numbered by the order they are opened
+// in and not by a digit chosen to say which bank they are at.
+func (b *builder) open(p *payment.Bank, name string) deposit.Account {
+	return b.openOverdraft(p, name, 0)
 }
 
-// openOverdraft opens a customer account with an overdraft limit and gives it
-// the IBAN as its own identifier, so it is resolvable through
-// Register.ResolveIdentifier rather than merely labelled, and so b.ref can
-// read it straight back off the account rather than a second copy. The limit
-// is per account and the PRICE is not: it comes from the Basic product, so the
-// day-30 reprice above reaches every account opened here without touching one
-// of them.
-func (b *builder) openOverdraft(p *payment.Bank, name, iban string, limit ledger.Amount) deposit.Account {
-	ident := deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: iban}
-	return must(p.Deposit.OpenAccount(b.ctx, p.CustomerSubledger, name, seedAsset, b.cats[p.ID].basic, limit, ident))
+// openOverdraft opens a customer account with an overdraft limit. The limit is
+// per account and the PRICE is not: it comes from the Basic product, so the
+// day-30 reprice above reaches every account opened here without touching one of
+// them.
+//
+// The account comes back holding its own minted IBAN, which is what makes it
+// resolvable through Register.ResolveIdentifier and what b.ref reads.
+func (b *builder) openOverdraft(p *payment.Bank, name string, limit ledger.Amount) deposit.Account {
+	return must(p.Deposit.OpenAccount(b.ctx, p.CustomerSubledger, name, seedAsset, b.cats[p.ID].basic, limit))
 }
 
 // openLoan opens a term loan and disburses it in full into the borrower's own
@@ -768,10 +773,19 @@ func (b *builder) build() {
 	// clearing house puts it in the roster. See builder.admit, which waits for
 	// each one to finish before the next bank applies.
 	euro := []ledger.AssetCode{seedAsset}
-	aurora := b.admit("Aurora Bank", "AURODEFFXXX", euro)
-	verde := b.admit("Banca Verde", "VERDITMMXXX", euro)
-	nord := b.admit("Nordhaven Bank", "NORDSESSXXX", euro)
-	soleil := b.admit("Crédit Soleil", "SOLEFRPPXXX", euro)
+	// Each bank issues addresses in the country its BIC names, under a bank code
+	// of its country's own width — eight digits in Germany, five in Italy and
+	// France, three in Sweden. That variety is the point: there is no offset at
+	// which "the bank code" lives, so nothing can extract one without knowing
+	// which country's structure to apply.
+	//
+	// Verde and Soleil share the code 99991 and are two different banks. A bank
+	// code is unique within a COUNTRY and nowhere else, which is why every table
+	// keyed by one is keyed by the pair.
+	aurora := b.admit("Aurora Bank", "AURODEFFXXX", iban.Issuer{Country: iban.DE, BankCode: "99900001"}, euro)
+	verde := b.admit("Banca Verde", "VERDITMMXXX", iban.Issuer{Country: iban.IT, BankCode: "99991"}, euro)
+	nord := b.admit("Nordhaven Bank", "NORDSESSXXX", iban.Issuer{Country: iban.SE, BankCode: "999"}, euro)
+	soleil := b.admit("Crédit Soleil", "SOLEFRPPXXX", iban.Issuer{Country: iban.FR, BankCode: "99991"}, euro)
 
 	// --- Each bank's catalogue ---------------------------------------------
 	// Before any account, because every deposit account is opened FROM a
@@ -781,22 +795,27 @@ func (b *builder) build() {
 		b.products(p)
 	}
 
-	// --- Customer accounts (each gets a canonical IBAN) --------------------
-	alice := b.open(aurora, "Alice Andersson", "SE89-AURORA-1001")
-	aaron := b.open(aurora, "Aaron Apstorp", "SE89-AURORA-1002")
-	annie := b.open(aurora, "Annie Ahlberg", "SE89-AURORA-1003")      // -> Dormant
-	merchant := b.open(aurora, "Aurora Merchant", "SE89-AURORA-1004") // hold-capture counterparty
-	oldAcct := b.open(aurora, "Closed Account", "SE89-AURORA-1005")   // -> Closed
+	// --- Customer accounts (each bank mints its own addresses) -------------
+	//
+	// Serials restart at 1 per bank, because the bank code already says which
+	// bank. The literals these lines used to carry did that job with a leading
+	// digit — 1001 at Aurora, 2001 at Verde — which was a convention this seed
+	// invented and no address anywhere has.
+	alice := b.open(aurora, "Alice Andersson")
+	aaron := b.open(aurora, "Aaron Apstorp")
+	annie := b.open(aurora, "Annie Ahlberg")      // -> Dormant
+	merchant := b.open(aurora, "Aurora Merchant") // hold-capture counterparty
+	oldAcct := b.open(aurora, "Closed Account")   // -> Closed
 
-	bruno := b.openOverdraft(verde, "Bruno Bianchi", "IT60-VERDE-2001", 50_000) // 500.00 overdraft
-	bella := b.open(verde, "Bella Bruno", "IT60-VERDE-2002")
-	bianca := b.open(verde, "Bianca Belli", "IT60-VERDE-2003") // -> Frozen
+	bruno := b.openOverdraft(verde, "Bruno Bianchi", 50_000) // 500.00 overdraft
+	bella := b.open(verde, "Bella Bruno")
+	bianca := b.open(verde, "Bianca Belli") // -> Frozen
 
-	nora := b.open(nord, "Nora Nilsson", "NO93-NORD-3001")
-	niklas := b.open(nord, "Niklas Nyborg", "NO93-NORD-3002")
+	nora := b.open(nord, "Nora Nilsson")
+	niklas := b.open(nord, "Niklas Nyborg")
 
-	chloe := b.open(soleil, "Chloé Caron", "FR76-SOLEIL-4001")
-	claude := b.open(soleil, "Claude Clément", "FR76-SOLEIL-4002")
+	chloe := b.open(soleil, "Chloé Caron")
+	claude := b.open(soleil, "Claude Clément")
 
 	// --- Funding: cash in, which each bank holds as vault cash -------------
 	b.fund(aurora, alice, 200_000)

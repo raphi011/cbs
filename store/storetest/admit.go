@@ -2,9 +2,11 @@ package storetest
 
 import (
 	"context"
+	"fmt"
 	"maps"
 	"slices"
 
+	"github.com/raphi011/cbs/iban"
 	"github.com/raphi011/cbs/iso20022"
 	"github.com/raphi011/cbs/ledger"
 	"github.com/raphi011/cbs/payment"
@@ -70,7 +72,7 @@ func Admit(ctx context.Context, nets *payment.Networks, name string, bic iso2002
 	if err != nil {
 		return nil, err
 	}
-	bank, err := applicant.FoundBank(ctx, name, bic, assets)
+	bank, err := applicant.FoundBank(ctx, name, bic, FixtureIssuer(bic), assets)
 	if err != nil {
 		return nil, err
 	}
@@ -103,3 +105,36 @@ func Admit(ctx context.Context, nets *payment.Networks, name string, bic iso2002
 
 // admissionRef is the process id this stand-in quotes. See Admit.
 func admissionRef(bic iso20022.BIC) string { return "admitted-" + string(bic) }
+
+// FixtureIssuer is the bank code a fixture bank issues addresses under, derived
+// from its BIC exactly as admissionRef above derives a process id — and for the
+// same reason. These suites compose no messages, so no settlement agent has
+// allocated anything, and something has to stand in.
+//
+// IT IS NOT A RULE AND NOTHING IN THE DOMAIN MAY DERIVE THIS WAY. A bank code is
+// allocated by a national registry and travels on a message; deriving one from a
+// BIC is precisely the shortcut the routing directory exists to make impossible.
+// It is confined to fixtures — this function is exported so that mesh's, api's
+// and payment's suites share the one allocator rather than each inventing a
+// convention — where the alternative is threading an allocation through several
+// dozen call sites that have nothing to say about addressing.
+//
+// EVERY FIXTURE BANK IS IN ONE COUNTRY, and deliberately not its BIC's. The
+// suites use addresses like BANKESMMXXX, in countries this system issues no
+// structure for, and an account's country is not its bank's in any case — see
+// iban.Country. One country keeps the fixtures uniform and says nothing untrue.
+//
+// The hash could collide, and two banks on one code would be two banks issuing
+// overlapping addresses. Nothing here refuses that yet; the settlement agent's
+// registry does, once it exists, which turns a silent collision into a refusal
+// at the only institution that can see both.
+func FixtureIssuer(bic iso20022.BIC) iban.Issuer {
+	var h uint32 = 2166136261
+	for _, c := range []byte(bic) {
+		h = (h ^ uint32(c)) * 16777619
+	}
+	return iban.Issuer{
+		Country:  iban.DE,
+		BankCode: iban.BankCode(fmt.Sprintf("%08d", h%100_000_000)),
+	}
+}

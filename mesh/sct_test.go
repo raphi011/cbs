@@ -638,7 +638,7 @@ func TestAnOnUsPaymentIsRefusedBeforeItReachesAClearingHouse(t *testing.T) {
 			ctx := context.Background()
 			// A second customer at the PAYER's bank, so both parties are that
 			// bank's.
-			other := h.openCustomer(t, h.debtor, "Carla", "EUR", 0, onUsIBAN)
+			other := h.openCustomer(t, h.debtor, "Carla", "EUR", 0)
 			otherRef := payment.PartyRef{Account: other.ID, Identifier: other.Identifiers[0]}
 			// A mandate, so that a collection is refused for being on-us and not
 			// for being unauthorised. Without it SDD.ValidateMandate would refuse

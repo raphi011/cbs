@@ -26,6 +26,7 @@ import (
 	"github.com/raphi011/cbs/payment"
 	"github.com/raphi011/cbs/product"
 	"github.com/raphi011/cbs/store/sqlite"
+	"github.com/raphi011/cbs/store/storetest"
 	"github.com/raphi011/cbs/store/testenv"
 )
 
@@ -483,6 +484,11 @@ func (r *recordingTx) ListDepositAccounts(ctx context.Context, book ledger.BookI
 func (r *recordingTx) ListDepositAccountsByIdentifier(ctx context.Context, book ledger.BookID, ident deposit.Identifier) ([]deposit.Account, error) {
 	r.rec.note(book)
 	return r.Tx.ListDepositAccountsByIdentifier(ctx, book, ident)
+}
+
+func (r *recordingTx) NextAddressSerial(ctx context.Context, book ledger.BookID) (uint64, error) {
+	r.rec.note(book)
+	return r.Tx.NextAddressSerial(ctx, book)
 }
 
 func (r *recordingTx) PutHold(ctx context.Context, book ledger.BookID, h deposit.Hold) error {
@@ -1384,7 +1390,7 @@ func TestWhichBooksAdmissionReaches(t *testing.T) {
 	// After the fixture's own two admissions, so what is measured is one
 	// admission and not three.
 	h.rec.reset()
-	joiner, err := h.mesh.Admit(context.Background(), "Nordhaven Bank", joinerBIC, euroOnly)
+	joiner, err := h.mesh.Admit(context.Background(), "Nordhaven Bank", joinerBIC, storetest.FixtureIssuer(joinerBIC), euroOnly)
 	if err != nil {
 		t.Fatalf("Admit: %v", err)
 	}
@@ -1641,7 +1647,7 @@ func TestAFoundedBankCanTakeCashBeforeItHasJoinedAnything(t *testing.T) {
 		t.Fatalf("Settlement = %q, want it empty; a founded bank has no settlement account", accts.Settlement)
 	}
 
-	acct := h.openCustomer(t, founded, "Sole Depositor", "EUR", 0, "DE89370400440532013099")
+	acct := h.openCustomer(t, founded, "Sole Depositor", "EUR", 0)
 	if err := h.bank(founded.BIC).Deposit(ctx, founded.ID, acct.ID, 250_00, "cash over the counter"); err != nil {
 		t.Fatalf("Deposit at a founded bank: %v; a founded bank can open its doors and take money", err)
 	}

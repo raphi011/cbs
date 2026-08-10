@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/raphi011/cbs/deposit"
+	"github.com/raphi011/cbs/iban"
 	"github.com/raphi011/cbs/iso20022"
 	"github.com/raphi011/cbs/ledger"
 	"github.com/raphi011/cbs/payment"
@@ -1444,7 +1445,12 @@ func (m *Mesh) Submit(ctx context.Context, req payment.InitiatePaymentRequest) (
 // Closing it needs a way to re-drive ONE asset of an existing admission, quoting
 // the reference the bank already recorded rather than minting one — a decision
 // about the flow rather than about this function.
-func (m *Mesh) Admit(ctx context.Context, name string, bic iso20022.BIC, assets []ledger.AssetCode) (*payment.Bank, error) {
+// issuer is the country and bank code the joining bank will issue its
+// customers' addresses under. It is supplied by the caller and not derived: a
+// bank code is a national registry's allocation and has no computable
+// relationship to a BIC, which is the fact the routing directory exists because
+// of. See payment.Bank.Issuer.
+func (m *Mesh) Admit(ctx context.Context, name string, bic iso20022.BIC, issuer iban.Issuer, assets []ledger.AssetCode) (*payment.Bank, error) {
 	if m.nets == nil {
 		return nil, errors.New("mesh: no network, so there is no bank to admit")
 	}
@@ -1494,7 +1500,7 @@ func (m *Mesh) Admit(ctx context.Context, name string, bic iso20022.BIC, assets 
 			return nil, fmt.Errorf("mesh: %s is re-driving its own interrupted admission and cannot read its row: %w", bic, err)
 		}
 	} else {
-		if bank, err = applicant.FoundBank(ctx, name, bic, assets); err != nil {
+		if bank, err = applicant.FoundBank(ctx, name, bic, issuer, assets); err != nil {
 			// The reservation goes back before the caller is told, so a refused
 			// unit of work leaves the address exactly as free as it found it.
 			m.releaseAddress(bic)

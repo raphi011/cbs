@@ -1099,6 +1099,33 @@ CREATE TABLE banks (
     -- nobody else's table to do it. The two columns having survived into two
     -- schemas is the check on that: neither could be replaced by a join.
     admission_ref      TEXT NOT NULL,
+    -- The allocation this bank issues its customers' addresses under: a country
+    -- and a bank code, from that country's registry.
+    --
+    -- IT IS A SECOND IDENTIFIER AND NOT A RESTATEMENT OF THE ROW'S KEY. The id
+    -- above is a BIC, which is what a MESSAGE is addressed to; this is what an
+    -- ACCOUNT's address carries. Neither computes the other — AURODEFFXXX and
+    -- 99900001 have no arithmetic between them — which is exactly why a scheme
+    -- has to publish a directory instead of letting every bank derive one.
+    --
+    -- Two columns and not one, because a bank code is unique only within a
+    -- country: 99991 is Banca Verde in Italy and Crédit Soleil in France, and
+    -- they are different banks. Anything keyed by an allocation is keyed by the
+    -- pair.
+    --
+    -- No CHECK on either, for the reason accounts.asset gives above: the rule is
+    -- the country structure table in Go, which knows widths, character classes
+    -- and two national check-digit algorithms, and none of that is expressible
+    -- here. What SQLite could state — "three characters" — would be Sweden's rule
+    -- written in the one place least able to change when a fifth country
+    -- arrives.
+    --
+    -- Empty on a bank that has not been allocated one, which is a real state and
+    -- not a broken row: a bank exists before any registry has heard of it. Such a
+    -- bank can open no customer accounts at all, because every account is opened
+    -- with an address minted under this pair (deposit.ErrNoIssuer).
+    country            TEXT NOT NULL DEFAULT '',
+    bank_code          TEXT NOT NULL DEFAULT '',
     created_at         TEXT,
     seq                INTEGER NOT NULL
 ) STRICT;

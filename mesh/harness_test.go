@@ -9,9 +9,11 @@ import (
 	"time"
 
 	"github.com/raphi011/cbs/deposit"
+	"github.com/raphi011/cbs/iban"
 	"github.com/raphi011/cbs/iso20022"
 	"github.com/raphi011/cbs/ledger"
 	"github.com/raphi011/cbs/payment"
+	"github.com/raphi011/cbs/store/storetest"
 	"github.com/raphi011/cbs/store/testenv"
 )
 
@@ -43,33 +45,33 @@ const (
 // Real, distinct, and in different countries, for the reason
 // payment/message_test.go's addressedBanks gives: a test asserting which bank
 // answered cannot use a fixture in which both banks look the same.
-const (
-	debtorIBAN   = "DE89370400440532013000"
-	creditorIBAN = "IT60X0542811101000000123456"
+// The addresses this fixture's customers hold are NOT written down here any
+// more, and could not be: a bank mints its customers' addresses out of the bank
+// code it was allocated, so the only place one exists is on the account. They
+// are read off the accounts as they are opened — see meshHarness.debtorIBAN and
+// the fields beside it.
+//
+// They remain real, distinct, and in different countries, for the reason
+// payment/message_test.go's addressedBanks gives: a test asserting which bank
+// answered cannot use a fixture in which both banks look the same. That now
+// follows from the ALLOCATIONS the two banks are admitted under rather than from
+// two literals — see harnessIssuers.
 
-	// The same two customers' DOLLAR accounts, used only by the two-asset
-	// fixture. Separate addresses because they are separate accounts: an IBAN
-	// identifies an account and not a person, and the register refuses to hold
-	// one address on two accounts — which is exactly the property that makes
-	// ResolveIdentifier able to answer at all.
-	debtorUSDIBAN   = "DE21301204000000015228"
-	creditorUSDIBAN = "IT40S0542811101000000123457"
+// unknownIBAN is well-formed and belongs to no account in this network. It is
+// the address TestCreditTransferToAnUnknownAccountComesBackAsAC01 sends to, and
+// it has to be well-formed twice over: an IBAN failing the schema's pattern
+// would be refused by the codec on the way out, and one failing mod-97 would be
+// refused by the payer's own bank — either way the message never leaves, and the
+// creditor's bank never gets the chance to answer AC01.
+var unknownIBAN = mustMint(iban.DE, "99900001", 999_999)
 
-	// onUsIBAN addresses a SECOND customer of the payer's own bank, which is the
-	// one arrangement in which a payment has the same institution at both ends.
-	// It is opened only by the test that needs it, because a fixture that carried
-	// a spare account at one bank would quietly change what "the payer's bank"
-	// means everywhere else.
-	onUsIBAN = "DE02120300000000202051"
-
-	// unknownIBAN is well-formed and belongs to no account in this network. It
-	// is the address TestCreditTransferToAnUnknownAccountComesBackAsAC01 sends
-	// to, and it has to be well-formed: an IBAN that failed the schema's own
-	// pattern would be refused by the codec on the way out, so the message would
-	// never leave the debtor's bank and the creditor's bank would never get the
-	// chance to answer AC01.
-	unknownIBAN = "DE00000000000000000000"
-)
+func mustMint(c iban.Country, code iban.BankCode, serial uint64) string {
+	a, err := iban.New(c, code, serial)
+	if err != nil {
+		panic(err)
+	}
+	return string(a)
+}
 
 // tappedMessage is one message an actor received: who from, who to, and the
 // bytes.
@@ -96,8 +98,16 @@ type meshHarness struct {
 	mesh *Mesh
 	cfg  Config
 
-	debtor       *payment.Bank
-	creditor     *payment.Bank
+	debtor   *payment.Bank
+	creditor *payment.Bank
+	// The addresses the fixture's customers were minted, read off their accounts
+	// as they were opened. A test quoting one on an instruction reads it from
+	// here; nothing can write one down in advance.
+	debtorIBAN      string
+	creditorIBAN    string
+	debtorUSDIBAN   string
+	creditorUSDIBAN string
+
 	debtorAcct   deposit.Account
 	creditorAcct deposit.Account
 
@@ -364,8 +374,10 @@ func newHarness(t *testing.T, opts harnessOptions) *meshHarness {
 	if opts.lendToTheDebtor {
 		limit = harnessFunding
 	}
-	h.debtorAcct = h.openCustomer(t, h.debtor, "Alice", "EUR", limit, debtorIBAN)
-	h.creditorAcct = h.openCustomer(t, h.creditor, "Bruno", "EUR", 0, creditorIBAN)
+	h.debtorAcct = h.openCustomer(t, h.debtor, "Alice", "EUR", limit)
+	h.debtorIBAN = addressOf(t, h.debtorAcct)
+	h.creditorAcct = h.openCustomer(t, h.creditor, "Bruno", "EUR", 0)
+	h.creditorIBAN = addressOf(t, h.creditorAcct)
 	// Funding is TWO acts and the fixture has to run both. A deposit gives the
 	// customer a balance and leaves the bank holding vault cash; it does not raise
 	// the bank's reserve, because a bank cannot write in the central bank's book.
@@ -386,8 +398,10 @@ func newHarness(t *testing.T, opts harnessOptions) *meshHarness {
 		h.lodge(t, h.debtor.BIC, "EUR", harnessFunding)
 	}
 	if opts.twoAssets {
-		h.debtorUSDAcct = h.openCustomer(t, h.debtor, "Alice", "USD", 0, debtorUSDIBAN)
-		h.creditorUSDAcct = h.openCustomer(t, h.creditor, "Bruno", "USD", 0, creditorUSDIBAN)
+		h.debtorUSDAcct = h.openCustomer(t, h.debtor, "Alice", "USD", 0)
+		h.debtorUSDIBAN = addressOf(t, h.debtorUSDAcct)
+		h.creditorUSDAcct = h.openCustomer(t, h.creditor, "Bruno", "USD", 0)
+		h.creditorUSDIBAN = addressOf(t, h.creditorUSDAcct)
 		// Funded and lodged on the same terms as the euro side, and separately in
 		// both halves, because each is per asset: a deposit lands in the funded
 		// account's OWN vault, and a lodgement moves one asset's vault onto that
@@ -408,7 +422,7 @@ func newHarness(t *testing.T, opts harnessOptions) *meshHarness {
 	// compares them party by party and a mandate over a different account is a
 	// mismatch rather than an authority. MaxAmount 0 is unlimited, so the amount
 	// is never what refuses a collection here.
-	if h.mandate, err = h.bank(h.creditor.BIC).CreateMandate(ctx, h.debtorBIC, h.debtorRef(), h.creditorRef(creditorIBAN), 0); err != nil {
+	if h.mandate, err = h.bank(h.creditor.BIC).CreateMandate(ctx, h.debtorBIC, h.debtorRef(), h.creditorRef(h.creditorIBAN), 0); err != nil {
 		t.Fatalf("CreateMandate: %v", err)
 	}
 	if opts.revokeMandate {
@@ -450,7 +464,7 @@ func newHarness(t *testing.T, opts harnessOptions) *meshHarness {
 // once for both of them. See newHarness.
 func (h *meshHarness) admit(t *testing.T, name string, bic iso20022.BIC, assets []ledger.AssetCode) *payment.Bank {
 	t.Helper()
-	p, err := h.mesh.Admit(context.Background(), name, bic, assets)
+	p, err := h.mesh.Admit(context.Background(), name, bic, storetest.FixtureIssuer(bic), assets)
 	if err != nil {
 		t.Fatalf("Admit %s (%s): %v", name, bic, err)
 	}
@@ -579,15 +593,26 @@ func assertBankCount(t *testing.T, h *meshHarness, bic iso20022.BIC, want int) {
 // openCustomer opens a deposit account in one asset, addressable by an IBAN, with
 // an overdraft limit of the caller's choosing.
 func (h *meshHarness) openCustomer(t *testing.T, p *payment.Bank, name string,
-	asset ledger.AssetCode, overdraft ledger.Amount, iban string) deposit.Account {
+	asset ledger.AssetCode, overdraft ledger.Amount) deposit.Account {
 
 	t.Helper()
-	acct, err := p.Deposit.OpenAccount(context.Background(), p.CustomerSubledger, name, asset, p.ProductID, overdraft,
-		deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: iban})
+	acct, err := p.Deposit.OpenAccount(context.Background(), p.CustomerSubledger, name, asset, p.ProductID, overdraft)
 	if err != nil {
 		t.Fatalf("OpenAccount %s (%s): %v", name, asset, err)
 	}
 	return acct
+}
+
+// addressOf is the IBAN a register minted for an account.
+func addressOf(t *testing.T, a deposit.Account) string {
+	t.Helper()
+	for _, i := range a.Identifiers {
+		if i.Scheme == deposit.IdentifierIBAN {
+			return i.Value
+		}
+	}
+	t.Fatalf("account %s holds no IBAN", a.ID)
+	return ""
 }
 
 // record is the tap: every message an actor is handed lands here.
@@ -634,7 +659,7 @@ func (h *meshHarness) watch(fn func(to, from iso20022.BIC, raw []byte)) {
 // the whole of the happy path, as a value a test can alter one field of.
 func (h *meshHarness) creditTransferRequest(t *testing.T) payment.InitiatePaymentRequest {
 	t.Helper()
-	return h.creditTransferRequestTo(t, creditorIBAN)
+	return h.creditTransferRequestTo(t, h.creditorIBAN)
 }
 
 // creditTransferRequestTo is the same instruction addressed somewhere else.
@@ -703,7 +728,7 @@ func (h *meshHarness) directDebitRequest(t *testing.T) payment.InitiatePaymentRe
 	return payment.InitiatePaymentRequest{
 		Scheme:      payment.SchemeSEPADD,
 		Debtor:      h.debtorRef(),
-		Creditor:    h.creditorRef(creditorIBAN),
+		Creditor:    h.creditorRef(h.creditorIBAN),
 		Amount:      harnessAmount,
 		MandateID:   h.mandate.ID,
 		Description: "subscription 7",
@@ -738,7 +763,7 @@ func (h *meshHarness) submitDirectDebit(t *testing.T) payment.Payment {
 // seen the payment yet, which is the whole point of the mesh.
 func (h *meshHarness) submitCreditTransfer(t *testing.T) payment.Payment {
 	t.Helper()
-	return h.submitCreditTransferTo(t, creditorIBAN)
+	return h.submitCreditTransferTo(t, h.creditorIBAN)
 }
 
 func (h *meshHarness) submitCreditTransferTo(t *testing.T, iban string) payment.Payment {
@@ -763,11 +788,11 @@ func (h *meshHarness) submitCreditTransferInUSD(t *testing.T) payment.Payment {
 		Scheme: schemeUSDCT,
 		Debtor: payment.PartyRef{
 			Account:    h.debtorUSDAcct.ID,
-			Identifier: deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: debtorUSDIBAN},
+			Identifier: deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: h.debtorUSDIBAN},
 		},
 		Creditor: payment.PartyRef{
 			Account:    h.creditorUSDAcct.ID,
-			Identifier: deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: creditorUSDIBAN},
+			Identifier: deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: h.creditorUSDIBAN},
 		},
 		DebtorDetails: payment.PartyDetails{Agent: h.debtorBIC, Name: h.debtorUSDAcct.Name},
 		Amount:        harnessAmount,

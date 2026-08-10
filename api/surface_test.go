@@ -411,10 +411,10 @@ func settledCycle(t *testing.T, h *Server) string {
 	a := admitMember(t, h, `{"bic":"BNKADEFFXXX","name":"Bank A"}`, http.StatusAccepted)["id"].(string)
 	b := admitMember(t, h, `{"bic":"BNKBDEFFXXX","name":"Bank B"}`, http.StatusAccepted)["id"].(string)
 	alice := doJSON(t, bank(h, a), "POST", "/deposit-accounts",
-		`{"name":"Alice","asset":"EUR","productId":"`+prdOf(t, h, a)+`","identifiers":[{"scheme":"IBAN","value":"SE89-SET-ALICE-0001"}]}`,
+		`{"name":"Alice","asset":"EUR","productId":"`+prdOf(t, h, a)+`"}`,
 		http.StatusCreated)["id"].(string)
 	bob := doJSON(t, bank(h, b), "POST", "/deposit-accounts",
-		`{"name":"Bob","asset":"EUR","productId":"`+prdOf(t, h, b)+`","identifiers":[{"scheme":"IBAN","value":"SE89-SET-BOB-0001"}]}`,
+		`{"name":"Bob","asset":"EUR","productId":"`+prdOf(t, h, b)+`"}`,
 		http.StatusCreated)["id"].(string)
 	fundAndLodge(t, h, a, alice, 100000)
 
@@ -422,7 +422,7 @@ func settledCycle(t *testing.T, h *Server) string {
 	doJSON(t, csm(h), "POST", "/payments", `{
 		"scheme":"sepa.ct",
 		"debtorAgent":"`+a+`","debtor":{"account":"`+alice+`"},
-		"creditorAgent":"`+b+`","creditor":{"account":"`+bob+`","identifier":{"scheme":"IBAN","value":"SE89-SET-BOB-0001"}},
+		"creditorAgent":"`+b+`","creditor":{"account":"`+bob+`","identifier":{"scheme":"IBAN","value":"`+ibanFor(t, h, b, bob)+`"}},
 		"amount":25000,
 		"endToEndId":"settle-e2e",
 		"creditorName":"Bob"
@@ -491,20 +491,22 @@ func threeBanks(t *testing.T, h *Server) (a, b, c seededBank) {
 	// A BIC each: the mesh gives every bank an actor keyed by its address and
 	// refuses two on one, so three banks that shared a BIC could not be admitted
 	// at all — let alone tell each other apart on the wire.
-	mk := func(name, bic, iban string) seededBank {
+	mk := func(name, bic string) seededBank {
 		pid := admitMember(t, h, `{"bic":"`+bic+`","name":"`+name+`"}`, http.StatusAccepted)["id"].(string)
 		accountName := name + " customer"
 		did := doJSON(t, bank(h, pid), "POST", "/deposit-accounts",
 			`{"name":"`+accountName+`","asset":"EUR","productId":"`+prdOf(t, h, pid)+
-				`","identifiers":[{"scheme":"IBAN","value":"`+iban+`"}]}`,
+				`"}`,
 			http.StatusCreated)["id"].(string)
+		// Read back rather than chosen: the bank minted it.
+		iban := ibanFor(t, h, pid, did)
 		doJSON(t, bank(h, pid), "POST", "/deposits",
 			`{"account":"`+did+`","amount":500000,"description":"opening"}`, http.StatusOK)
 		return seededBank{pid: pid, account: did, iban: iban, bic: bic, accountName: accountName}
 	}
-	return mk("Bank A", "BNKADEFFXXX", "SE89-NARROW-A-0001"),
-		mk("Bank B", "BNKBDEFFXXX", "IT60-NARROW-B-0001"),
-		mk("Bank C", "BNKCDEFFXXX", "NO93-NARROW-C-0001")
+	return mk("Bank A", "BNKADEFFXXX"),
+		mk("Bank B", "BNKBDEFFXXX"),
+		mk("Bank C", "BNKCDEFFXXX")
 }
 
 // sct initiates a credit transfer between two seeded banks and returns its id.

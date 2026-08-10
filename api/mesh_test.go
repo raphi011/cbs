@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/raphi011/cbs/deposit"
+	"github.com/raphi011/cbs/iban"
 	"github.com/raphi011/cbs/iso20022"
 	"github.com/raphi011/cbs/mesh"
 	"github.com/raphi011/cbs/payment"
@@ -260,10 +261,28 @@ func payerRoutes(t *testing.T, s *Server) http.Handler {
 }
 
 // The seed's two customers these tests move money between, named by address.
-const (
-	aliceIBAN = "SE89-AURORA-1001"
-	bellaIBAN = "IT60-VERDE-2002"
+//
+// Derived rather than written out, because a bank MINTS its customers'
+// addresses now: these are the allocations the seed founds those two banks
+// under and the order it opens their accounts in, which is the only thing about
+// them a test can depend on. A literal would say what the check digits are
+// today and go stale silently the first time an account is inserted above.
+//
+// Note that they are in different countries, of different lengths, with the
+// bank code at a different offset in each. That is the seed's point, and it is
+// what makes the routing directory a lookup rather than a substring.
+var (
+	aliceIBAN = mustMint(iban.DE, "99900001", 1) // Aurora Bank's first account
+	bellaIBAN = mustMint(iban.IT, "99991", 2)    // Banca Verde's second
 )
+
+func mustMint(c iban.Country, code iban.BankCode, serial uint64) string {
+	a, err := iban.New(c, code, serial)
+	if err != nil {
+		panic(err)
+	}
+	return string(a)
+}
 
 // validSubmission is Alice at Aurora Bank paying Bella at Banca Verde: a credit
 // transfer the seeded network can carry the whole way.
@@ -441,7 +460,7 @@ func TestAdmissionAnswers202WithAFoundedBank(t *testing.T) {
 
 	members := reserveRows(t, srv, "")
 
-	founded := doJSON(t, cb(srv), "POST", "/members", `{"bic":"BNKZDEFFXXX","name":"Bank Z"}`, http.StatusAccepted)
+	founded := doJSON(t, cb(srv), "POST", "/members", `{"bic":"BNKZDEFFXXX","name":"Bank Z","country":"DE","bankCode":"90000850"}`, http.StatusAccepted)
 	pid := founded["id"].(string)
 	assertEqual(t, "status in the 202", founded["status"].(string), "Founded")
 	assets := founded["assets"].([]any)
@@ -535,7 +554,7 @@ func TestABankTheSchemeHasNotAnsweredForCanTakeCashAndCannotLodgeIt(t *testing.T
 	open := holdMessagesTo(t, msh, testMeshConfig.CentralBankBIC)
 	defer open()
 
-	p := doJSON(t, cb(srv), "POST", "/members", `{"bic":"BNKZDEFFXXX","name":"Bank Z"}`, http.StatusAccepted)
+	p := doJSON(t, cb(srv), "POST", "/members", `{"bic":"BNKZDEFFXXX","name":"Bank Z","country":"DE","bankCode":"90000850"}`, http.StatusAccepted)
 	pid := p["id"].(string)
 	if got := doJSON(t, bank(srv, pid), "GET", "/me", "", http.StatusOK)["status"].(string); got != "Founded" {
 		t.Fatalf("the bank is %q; this test is about one the scheme has not answered for", got)
@@ -605,16 +624,18 @@ func TestAFoundedBankIsRefusedAsAPaymentPartyInEitherDirection(t *testing.T) {
 	open := holdMessagesTo(t, msh, testMeshConfig.CentralBankBIC)
 	defer open()
 
-	const zIBAN = "DE89-BANKZ-3003"
-	pid := doJSON(t, cb(srv), "POST", "/members", `{"bic":"BNKZDEFFXXX","name":"Bank Z"}`,
+	pid := doJSON(t, cb(srv), "POST", "/members", `{"bic":"BNKZDEFFXXX","name":"Bank Z","country":"DE","bankCode":"90000850"}`,
 		http.StatusAccepted)["id"].(string)
 	if got := doJSON(t, bank(srv, pid), "GET", "/me", "", http.StatusOK)["status"].(string); got != "Founded" {
 		t.Fatalf("the bank is %q; this test is about one the scheme has not answered for", got)
 	}
 	acct := doJSON(t, bank(srv, pid), "POST", "/deposit-accounts",
-		`{"name":"Nora","asset":"EUR","productId":"`+prdOf(t, srv, pid)+`","overdraftLimit":100000,`+
-			`"identifiers":[{"scheme":"IBAN","value":"`+zIBAN+`"}]}`,
+		`{"name":"Nora","asset":"EUR","productId":"`+prdOf(t, srv, pid)+`","overdraftLimit":100000}`,
 		http.StatusCreated)["id"].(string)
+	// Bank Z minted Nora's address when it opened her account, exactly as an
+	// admitted bank would: founding is what gives a bank a bank code, and
+	// joining a scheme is a separate thing it has not done.
+	zIBAN := ibanFor(t, srv, pid, acct)
 
 	aliceBIC, alice := seededParty(t, srv, aliceIBAN)
 	party := func(ref payment.PartyRef, iban string) string {
@@ -769,10 +790,10 @@ func TestResetRebuildsTheMeshSoAReadmittedBankCanPay(t *testing.T) {
 	b := admit("Bank B again", "BNKBDEFFXXX", http.StatusAccepted)["id"].(string)
 
 	alice := doJSON(t, bank(h, a), "POST", "/deposit-accounts",
-		`{"name":"Alice","asset":"EUR","productId":"`+prdOf(t, h, a)+`","identifiers":[{"scheme":"IBAN","value":"SE89-AFTER-RESET-01"}]}`,
+		`{"name":"Alice","asset":"EUR","productId":"`+prdOf(t, h, a)+`"}`,
 		http.StatusCreated)["id"].(string)
 	bob := doJSON(t, bank(h, b), "POST", "/deposit-accounts",
-		`{"name":"Bob","asset":"EUR","productId":"`+prdOf(t, h, b)+`","identifiers":[{"scheme":"IBAN","value":"IT60-AFTER-RESET-01"}]}`,
+		`{"name":"Bob","asset":"EUR","productId":"`+prdOf(t, h, b)+`"}`,
 		http.StatusCreated)["id"].(string)
 	doJSON(t, bank(h, a), "POST", "/deposits", `{"account":"`+alice+`","amount":100000,"description":"opening"}`, http.StatusOK)
 	doJSON(t, csm(h), "POST", "/cycles", `{"scheme":"sepa.ct"}`, http.StatusCreated)
@@ -783,7 +804,7 @@ func TestResetRebuildsTheMeshSoAReadmittedBankCanPay(t *testing.T) {
 	pay := doJSON(t, bank(h, a), "POST", "/payments", `{
 		"scheme":"sepa.ct",
 		"debtorAgent":"`+a+`","debtor":{"account":"`+alice+`"},
-		"creditorAgent":"`+b+`","creditor":{"account":"`+bob+`","identifier":{"scheme":"IBAN","value":"IT60-AFTER-RESET-01"}},
+		"creditorAgent":"`+b+`","creditor":{"account":"`+bob+`","identifier":{"scheme":"IBAN","value":"`+ibanFor(t, h, b, bob)+`"}},
 		"amount":25000,
 		"creditorName":"Bob"
 	}`, http.StatusAccepted)["paymentId"].(string)
@@ -798,7 +819,7 @@ func TestResetRebuildsTheMeshSoAReadmittedBankCanPay(t *testing.T) {
 	// no row. The remedy is to pick an address of your own, which is the real-world
 	// fix as much as this system's.
 	before := len(participants(t, h))
-	rec := do(t, cb(h), "POST", "/members", `{"bic":"BNKADEFFXXX","name":"Bank A yet again"}`)
+	rec := do(t, cb(h), "POST", "/members", `{"bic":"BNKADEFFXXX","name":"Bank A yet again","country":"DE","bankCode":"90000825"}`)
 	if rec.Code != http.StatusUnprocessableEntity {
 		t.Fatalf("admitting a third bank on Bank A's BIC = %d, want 422", rec.Code)
 	}
@@ -846,7 +867,7 @@ func TestAdmissionDuringAShutdownIsRefusedWithoutTheRemedy(t *testing.T) {
 		t.Fatalf("Stop: %v", err)
 	}
 
-	rec := do(t, cb(h), "POST", "/members", `{"bic":"BNKADEFFXXX","name":"Bank A"}`)
+	rec := do(t, cb(h), "POST", "/members", `{"bic":"BNKADEFFXXX","name":"Bank A","country":"DE","bankCode":"90000825"}`)
 	if rec.Code != http.StatusInternalServerError {
 		t.Fatalf("admitting a bank into a stopped mesh = %d, want 500 (body: %s)", rec.Code, rec.Body.String())
 	}
@@ -924,7 +945,7 @@ func TestWhichRefusalsReachTheCallerAndWhichDoNot(t *testing.T) {
 
 	// Unanswerable: the IBAN is well-formed and belongs to nobody. Only the
 	// payee's bank can know that, and it is not this request's to report.
-	unknown := strings.Replace(validSubmission(t, srv), "IT60-VERDE-2002", "IT60-VERDE-9999", 1)
+	unknown := strings.Replace(validSubmission(t, srv), bellaIBAN, mustMint(iban.IT, "99991", 9999), 1)
 	rec = postJSON(t, payerRoutes(t, srv), "/payments", unknown)
 	if rec.Code != http.StatusAccepted {
 		t.Fatalf("a payment only the far side can refuse answered %d, want 202 (body: %s)", rec.Code, rec.Body.String())

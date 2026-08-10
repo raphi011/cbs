@@ -122,7 +122,24 @@ type createParticipantRequest struct {
 	// (iso20022.BIC.Validate), which is what turns a malformed value into a 422
 	// rather than a 400 — the field is present and well-typed, and what is
 	// wrong with it is a business rule.
-	BIC    string   `json:"bic"`
+	BIC string `json:"bic"`
+
+	// Country and BankCode are the allocation this bank issues its customers'
+	// addresses under, and both are required: an account is opened with an IBAN
+	// minted from them, so a bank founded without one can open no accounts.
+	//
+	// They are SUPPLIED and not derived from the BIC, because there is nothing
+	// to derive from — a bank code is a national registry's allocation and a BIC
+	// is SWIFT's, and "AURODEFFXXX" and "99900001" have no computable
+	// relationship. That is the same argument payment.Bank.BIC already makes
+	// about its own field, one identifier along.
+	//
+	// Validated by iban.Issuer.Validate, through Admit, which is what makes a
+	// wrong-width code a 422 rather than a 400: the field is present and
+	// well-typed, and what is wrong with it is a business rule.
+	Country  string `json:"country"`
+	BankCode string `json:"bankCode"`
+
 	Assets []string `json:"assets"`
 }
 

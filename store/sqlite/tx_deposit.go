@@ -27,6 +27,25 @@ var _ deposit.Tx = (*tx)(nil)
 // Deposit accounts
 // ---------------------------------------------------------------------------
 
+// NextAddressSerial draws from a counter named "iban", beside the book's shared
+// "id" counter in the same table and allocated the same way.
+//
+// inShape("deposit_accounts") and not a table this counter has of its own: the
+// counter is only meaningful where there are accounts to address, and the
+// clearing house's and the settlement agent's shapes have none. A store asked
+// for one there is refused by name rather than handing back a number for a
+// register that cannot exist.
+func (t *tx) NextAddressSerial(ctx context.Context, book ledger.BookID) (uint64, error) {
+	if err := t.inShape("deposit_accounts"); err != nil {
+		return 0, err
+	}
+	n, err := t.nextSeq(ctx, book, "iban")
+	if err != nil {
+		return 0, err
+	}
+	return uint64(n), nil
+}
+
 func (t *tx) PutDepositAccount(ctx context.Context, book ledger.BookID, a deposit.Account) error {
 	if err := t.inShape("deposit_accounts"); err != nil {
 		return err

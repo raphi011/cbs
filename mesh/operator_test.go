@@ -23,12 +23,6 @@ import (
 // with — because an instruction from outside the mesh is not a message arriving
 // in an inbox, and the layer that instructs has somebody to tell.
 
-// joinerIBAN addresses the customer of the bank that joins after Start. A third
-// address, because an IBAN identifies an ACCOUNT: reusing either of the
-// harness's two would be refused by the register, which holds one address on one
-// account.
-const joinerIBAN = "SE4550000000058398257466"
-
 // An operator's rejection is TWO halves in two actors, and only the first one
 // has anybody to answer.
 //
@@ -144,14 +138,14 @@ func TestABankAdmittedAfterStartCanPayAndBePaid(t *testing.T) {
 	if err != nil {
 		t.Fatalf("admitting Nordhaven: %v", err)
 	}
-	acct := h.openCustomer(t, joiner, "Nora", "EUR", 0, joinerIBAN)
+	acct := h.openCustomer(t, joiner, "Nora", "EUR", 0)
 	if err := h.bank(joiner.BIC).Deposit(ctx, joiner.ID, acct.ID, harnessFunding, "Opening deposit"); err != nil {
 		t.Fatalf("Deposit: %v", err)
 	}
 	out := payment.InitiatePaymentRequest{
 		Scheme:      payment.SchemeSEPACT,
 		Debtor:      payment.PartyRef{Account: acct.ID, Identifier: acct.Identifiers[0]},
-		Creditor:    h.creditorRef(creditorIBAN),
+		Creditor:    h.creditorRef(h.creditorIBAN),
 		Amount:      harnessAmount,
 		Description: "invoice 44",
 		// Push: the creditor is the counterparty, so the request must name it —
@@ -184,7 +178,7 @@ func TestABankAdmittedAfterStartCanPayAndBePaid(t *testing.T) {
 	in := h.creditTransferRequest(t)
 	in.Creditor = payment.PartyRef{
 		Account:    acct.ID,
-		Identifier: deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: joinerIBAN},
+		Identifier: deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: addressOf(t, acct)},
 	}
 	in.CreditorDetails = payment.PartyDetails{Agent: joiner.BIC, Name: acct.Name}
 	in.CreditorDetails = payment.PartyDetails{Agent: joiner.BIC, Name: acct.Name}

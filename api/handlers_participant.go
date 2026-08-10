@@ -6,6 +6,7 @@ import (
 	"sort"
 
 	"github.com/raphi011/cbs/deposit"
+	"github.com/raphi011/cbs/iban"
 	"github.com/raphi011/cbs/iso20022"
 	"github.com/raphi011/cbs/ledger"
 	"github.com/raphi011/cbs/mesh"
@@ -65,7 +66,8 @@ func (s *Server) handleAddParticipant(w http.ResponseWriter, r *http.Request) {
 	// run by Admit before it claims the address) rather than a decoding failure,
 	// so a malformed or missing value is left to surface as the 422 writeError
 	// already maps iso20022.ErrBICFormat to, not a 400 raised here.
-	p, err := s.mesh.Admit(r.Context(), req.Name, iso20022.BIC(req.BIC), assets)
+	issuer := iban.Issuer{Country: iban.Country(req.Country), BankCode: iban.BankCode(req.BankCode)}
+	p, err := s.mesh.Admit(r.Context(), req.Name, iso20022.BIC(req.BIC), issuer, assets)
 	if err != nil {
 		// The two refusals about the address, which need different advice.
 		//
