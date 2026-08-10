@@ -50,6 +50,13 @@
       </AcctId>
       <OrgId>
         <AnyBIC>AURODEFFXXX</AnyBIC>
+        <Othr>
+          <Id>99900001</Id>
+          <SchmeNm>
+            <Prtry>DEBLZ</Prtry>
+          </SchmeNm>
+          <Issr>CBSEDEFFXXX</Issr>
+        </Othr>
       </OrgId>
       <AcctSvcrId>
         <FinInstnId>

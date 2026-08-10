@@ -29,13 +29,20 @@ import (
 type BankStatus string
 
 const (
-	// BankFounded is a bank with a licence, a book and a chart of accounts, and
-	// no place in a scheme. It can open customer accounts AND take cash in — the
-	// money lands in its own vault (BankAccounts.VaultCash) and no other
-	// institution is involved. What it cannot do is LODGE that cash: putting it on
-	// reserve needs the central bank to credit an account in the central bank's
-	// book, and no settlement agent holds one for it (LodgeReservesTx,
-	// ErrSettlementMemberNotFound).
+	// BankFounded is a bank with a licence, a book, a chart of accounts and a
+	// product, and no place in a scheme. It has applied to a national registry
+	// for the bank code its customers' addresses would carry and has not been
+	// answered, so it can open no customer account at all: every deposit account
+	// here is opened with an address, an address is minted under a bank code, and
+	// this bank has no range to give one out of (deposit.ErrNoIssuer).
+	//
+	// That is what a bank between its licence and its allocation really is, and
+	// it is stricter than it sounds only because the two arrive together here —
+	// one message asks a settlement agent for a reserve account and a registry for
+	// a code, and one answer carries both. So a founded bank cannot lodge cash
+	// either, and would have none to lodge: no settlement agent holds an account
+	// for it (LodgeReservesTx, ErrSettlementMemberNotFound) and it has no
+	// customer who could have paid any in.
 	//
 	// It is in no routing directory either, so nothing it takes part in can
 	// settle — what a transport does and does not enforce about that is measured
@@ -143,18 +150,18 @@ type BankAccounts struct {
 	// money owed to a counterparty's customer, Unclaimed is owed to somebody
 	// unidentified and ReturnsReceivable is owed by a biller. This is money, held.
 	//
-	// # It is why a founded bank can take a deposit
+	// # It is why taking cash in reaches no other institution
 	//
 	// It exists from FoundBankTx, per asset, alongside the other four — before any
 	// settlement account is opened and independently of whether one ever is. Cash
-	// paid in over the counter lands here, so a bank with no settlement account
-	// can still take deposits.
+	// paid in over the counter lands here, so a deposit is refused for want of a
+	// settlement reference by nothing at all.
 	//
-	// Cash paid in now debits this and credits the customer, in this book and
-	// nowhere else. Nothing about it involves the central bank, because nothing
-	// about a customer handing over notes does: a bank that has founded itself and
-	// joined no scheme can still open its doors and take money, and it holds that
-	// money as cash until it chooses to do something else with it.
+	// Cash paid in debits this and credits the customer, in this book and nowhere
+	// else. Nothing about it involves the central bank, because nothing about a
+	// customer handing over notes does: the bank holds that money as cash until it
+	// chooses to do something else with it. mesh's
+	// TestTakingCashInReachesNoOtherInstitution is what measures the absence.
 	//
 	// # What moves it onward is a conversation
 	//

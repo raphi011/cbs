@@ -53,6 +53,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/raphi011/cbs/iban"
 	"github.com/raphi011/cbs/iso20022"
 	"github.com/raphi011/cbs/ledger"
 	"github.com/raphi011/cbs/payment"
@@ -321,7 +322,13 @@ func RunClearingHouseRaces(t *testing.T, newStore func(*testing.T) payment.Store
 			errs := runConcurrently(len(refs), func(i int) error {
 				ack := payment.AdmissionAcknowledgement{
 					BIC: bic,
-					Ref: refs[i],
+					// One allocation for all eight, because they are eight
+					// admissions of ONE applicant and a code follows the bank
+					// rather than the conversation. Eight different codes would
+					// make the roster's own ErrBankCodeTaken fire and hide the
+					// refusal this case is measuring.
+					Issuer: iban.Issuer{Country: FixtureCountry, BankCode: fixtureBankCode(bic)},
+					Ref:    refs[i],
 					Accounts: map[ledger.AssetCode]ledger.AccountID{
 						"EUR": ledger.AccountID(fmt.Sprintf("200.100.00%d", i)),
 					},
@@ -390,8 +397,9 @@ func RunCentralBankRaces(t *testing.T, newStore func(*testing.T) payment.Store) 
 		assets := []ledger.AssetCode{"EUR", "USD"}
 		errs := runConcurrently(len(assets), func(i int) error {
 			return s.Update(ctx, func(ctx context.Context, tx payment.Tx) error {
-				_, err := cb.OpenSettlementAccountTx(ctx, tx, payment.AdmissionRequest{
-					Name: "Aurora Bank", BIC: "AURODEFFXXX", Asset: assets[i], Ref: "adm-aurora",
+				_, _, err := cb.OpenSettlementAccountTx(ctx, tx, payment.AdmissionRequest{
+					Name: "Aurora Bank", BIC: "AURODEFFXXX", Country: FixtureCountry,
+					Asset: assets[i], Ref: "adm-aurora",
 				})
 				return err
 			})
@@ -811,4 +819,20 @@ func assertNoError(t *testing.T, err error) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
+}
+
+// fixtureBankCode is a distinct, well-formed German bank code per address, for
+// the races above.
+//
+// It stands in for an allocation, which these cases are not about: the registry
+// that really makes one is the settlement agent's, one database over, and no
+// race here reaches it. What each case needs is that two applicants do not
+// collide on a code, because a collision is a DIFFERENT refusal and would mask
+// the one being measured.
+func fixtureBankCode(bic iso20022.BIC) iban.BankCode {
+	var h uint32 = 2166136261
+	for _, c := range []byte(bic) {
+		h = (h ^ uint32(c)) * 16777619
+	}
+	return iban.BankCode(fmt.Sprintf("%08d", h%100_000_000))
 }

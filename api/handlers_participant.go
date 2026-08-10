@@ -18,11 +18,12 @@ import (
 // # 202, and what an operator has when it answers
 //
 // A founded bank. Its book, its chart of accounts and its default product exist,
-// so it can open customer accounts straight away, and it can take cash in: a
-// deposit lands in this bank's own vault and involves nobody else. What it cannot
-// do is LODGE that cash on reserve, since only the central bank can credit an
-// account in the central bank's book and none is held for this bank yet — 422 from
-// POST /lodgements, naming the reserve account it cannot name. It is in no routing
+// and it can open NO customer account yet: an account is opened with an address,
+// an address is minted under a bank code, and the code is what the registry has
+// not answered with. Nor can it LODGE anything on reserve, since only the central
+// bank can credit an account in the central bank's book and none is held for this
+// bank yet — 422 from POST /lodgements, naming the reserve account it cannot
+// name. It is in no routing
 // directory either, and the cost of that is wider than this bank: nothing STOPS
 // a payment being addressed to it, and a cut-off carrying one cannot be
 // instructed at all, so EVERY member in that cycle is left with its payments
@@ -66,8 +67,7 @@ func (s *Server) handleAddParticipant(w http.ResponseWriter, r *http.Request) {
 	// run by Admit before it claims the address) rather than a decoding failure,
 	// so a malformed or missing value is left to surface as the 422 writeError
 	// already maps iso20022.ErrBICFormat to, not a 400 raised here.
-	issuer := iban.Issuer{Country: iban.Country(req.Country), BankCode: iban.BankCode(req.BankCode)}
-	p, err := s.mesh.Admit(r.Context(), req.Name, iso20022.BIC(req.BIC), issuer, assets)
+	p, err := s.mesh.Admit(r.Context(), req.Name, iso20022.BIC(req.BIC), iban.Country(req.Country), assets)
 	if err != nil {
 		// The two refusals about the address, which need different advice.
 		//
@@ -223,7 +223,7 @@ func (s *Server) handleFundDeposit(w http.ResponseWriter, r *http.Request) {
 // A bank that cannot name its own settlement account is refused with
 // payment.ErrSettlementMemberNotFound and a 422: a bank with no reserve account
 // has no reserve to lodge into. Taking cash in is not refused the same way — see
-// TestABankTheSchemeHasNotAnsweredForCanTakeCashAndCannotLodgeIt.
+// TestABankTheSchemeHasNotAnsweredForCanNeitherOpenAnAccountNorLodge.
 func (s *Server) handleLodgeReserves(w http.ResponseWriter, r *http.Request) {
 	p, ok := s.participant(w, r)
 	if !ok {

@@ -220,12 +220,14 @@ func TestPaymentAuditCoversTheNettingFlow(t *testing.T) {
 			ledger.EventPaymentSettled,
 		}, " "))
 
-	// The settlement agent's is three lines long: it opened an account for each
-	// member and it discharged one cut-off. It has never heard of a payment,
-	// which is what netting means.
+	// The settlement agent's is five lines long: it allocated a bank code and
+	// opened an account for each member, and it discharged one cut-off. It has
+	// never heard of a payment, which is what netting means.
 	assertEqual(t, "the settlement agent's trail", eventTypes(cbAudit(t, sys, "")),
 		strings.Join([]string{
+			ledger.EventBankCodeAllocated,
 			ledger.EventSettlementAccountOpened,
+			ledger.EventBankCodeAllocated,
 			ledger.EventSettlementAccountOpened,
 			ledger.EventCycleSettled,
 		}, " "))
@@ -276,7 +278,7 @@ func TestPaymentAuditCoversTheNettingFlow(t *testing.T) {
 	assertEqual(t, "the clearing house on Bank A", eventTypes(csmAudit(t, sys, string(a.ID))),
 		ledger.EventMemberAdmitted)
 	assertEqual(t, "the settlement agent on Bank A", eventTypes(cbAudit(t, sys, string(a.ID))),
-		ledger.EventSettlementAccountOpened)
+		ledger.EventBankCodeAllocated+" "+ledger.EventSettlementAccountOpened)
 	// And Bank B's log says nothing about Bank A at all, which is the claim the
 	// one shared log could not make.
 	assertEqual(t, "Bank B on Bank A", eventTypes(bankAudit(t, sys, b.BIC, string(a.ID))), "")
@@ -593,9 +595,12 @@ func TestEachActOfAnAdmissionLeavesItsOwnAuditEvent(t *testing.T) {
 	// and later recorded what the scheme told it.
 	assertEqual(t, "the bank's own trail", eventTypes(bankAudit(t, sys, testBIC, "")),
 		ledger.EventParticipantAdded+" "+ledger.EventMembershipRecorded)
-	// The settlement agent opened the account.
+	// The settlement agent allocated a bank code and opened the account. Two
+	// events because they are two registers: a reserve account is at a central
+	// bank and a Bankleitzahl comes from a registry, and this institution is
+	// standing in for both.
 	assertEqual(t, "the settlement agent's trail", eventTypes(cbAudit(t, sys, "")),
-		ledger.EventSettlementAccountOpened)
+		ledger.EventBankCodeAllocated+" "+ledger.EventSettlementAccountOpened)
 	// The clearing house put the address in the roster.
 	assertEqual(t, "the clearing house's trail", eventTypes(csmAudit(t, sys, "")),
 		ledger.EventMemberAdmitted)

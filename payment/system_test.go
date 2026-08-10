@@ -46,6 +46,17 @@ var euroOnly = []ledger.AssetCode{testAsset}
 // settlement agent keeps its own records. testBICs below is for those.
 const testBIC iso20022.BIC = "BANKDEFFXXX"
 
+// testAllocation is a bank code these tests can hand to an act that expects one
+// to have arrived on a message, in the country storetest.Admit admits every
+// fixture bank in.
+//
+// It is a plain value and NOT what the settlement agent would allocate. The acts
+// that receive an acknowledgement are separately callable and a test driving one
+// of them directly is standing in for a message; where the allocation itself is
+// what is under test, the fixture goes through storetest.Admit, which runs the
+// registry's own act.
+var testAllocation = iban.Issuer{Country: storetest.FixtureCountry, BankCode: "99999999"}
+
 // testBIC2 is a second, distinct BIC for fixtures where two banks' BICs must
 // be tellable apart — setupTwoBanks uses it for Bank B so that a test planting
 // one bank's BIC where the other's belongs (as
@@ -303,6 +314,37 @@ func addParticipant(t *testing.T, ctx context.Context, sys *testSystem, name str
 	p, err := storetest.Admit(ctx, sys.nets, name, bic, euroOnly)
 	assertNoError(t, err)
 	return p
+}
+
+// admitWithoutTheRoster builds the bank this system can hold and the mesh's own
+// flow does not produce: one the settlement agent has answered — so it has a
+// bank code and can address its customers' accounts — and the clearing house has
+// never admitted.
+//
+// It is three of the four acts, in order, with AdmitMember left out, and it is
+// reachable exactly because the acts are separately callable. A bank in this
+// state issues addresses nobody in this scheme can pay, which is what makes it
+// the fixture for the clearing house's own refusal.
+//
+// It is not what a founded bank is. A bank that has applied to no registry has
+// no address range at all and can open no customer account whatever (see
+// TestFoundingABankTouchesNoOtherInstitution), so a payment between one of its
+// customers and anybody else is a payment with no payee.
+func admitWithoutTheRoster(t *testing.T, ctx context.Context, sys *testSystem, name string, bic iso20022.BIC) *Bank {
+	t.Helper()
+	applicant := sys.bank(bic)
+	_, err := applicant.FoundBank(ctx, name, bic, storetest.FixtureCountry, euroOnly)
+	assertNoError(t, err)
+	ref := "unrostered-" + string(bic)
+	member, issuer, err := sys.cb().OpenSettlementAccount(ctx, AdmissionRequest{
+		Name: name, BIC: bic, Country: storetest.FixtureCountry, Asset: testAsset, Ref: ref,
+	})
+	assertNoError(t, err)
+	bank, err := applicant.RecordMembership(ctx, AdmissionAcknowledgement{
+		BIC: bic, Issuer: issuer, Accounts: member.Accounts, Ref: ref,
+	})
+	assertNoError(t, err)
+	return bank
 }
 
 // auroraBIC and verdeBIC are the two addresses the Aurora/Verde fixtures below
@@ -1941,7 +1983,7 @@ func TestFoundingABankTouchesNoOtherInstitution(t *testing.T) {
 	var b *Bank
 	aurora := sys.bank("AURODEFFXXX")
 	mustUpdateAt(t, ctx, aurora, func(ctx context.Context, tx Tx) (err error) {
-		b, err = aurora.FoundBankTx(ctx, tx, "Aurora Bank", "AURODEFFXXX", storetest.FixtureIssuer("AURODEFFXXX"), euroOnly)
+		b, err = aurora.FoundBankTx(ctx, tx, "Aurora Bank", "AURODEFFXXX", storetest.FixtureCountry, euroOnly)
 		return err
 	})
 
@@ -1951,10 +1993,14 @@ func TestFoundingABankTouchesNoOtherInstitution(t *testing.T) {
 	if got := b.Assets[testAsset].Settlement; got != "" {
 		t.Errorf("a founded bank names settlement account %q; it has not asked for one yet", got)
 	}
-	// It is a working bank all the same: it can open a customer account, which
-	// takes a subledger and a product.
-	if _, err := b.OpenCustomerAccount(ctx, "Alice", testAsset); err != nil {
-		t.Errorf("a founded bank cannot open a customer account: %v", err)
+	// And it can open NO customer account, which is the other half of the same
+	// claim rather than a shortcoming of the fixture. A bank code is a national
+	// registry's to allocate and this bank has applied to no registry yet, so it
+	// has no range to give an address out of — and every deposit account here is
+	// opened with one. That is what a bank between its licence and its
+	// allocation really is.
+	if _, err := b.OpenCustomerAccount(ctx, "Alice", testAsset); !errors.Is(err, deposit.ErrNoIssuer) {
+		t.Errorf("a founded bank opened a customer account: %v, want deposit.ErrNoIssuer", err)
 	}
 
 	// Two institutions, two reads, and that is the point of the test rather than an
@@ -1988,16 +2034,27 @@ func TestOpeningASettlementAccountTwiceOpensOne(t *testing.T) {
 	ctx := context.Background()
 	sys := testNetwork(t)
 
-	in := AdmissionRequest{Name: "Aurora Bank", BIC: "AURODEFFXXX", Asset: testAsset, Ref: "adm-1"}
-	var first, second SettlementMember
+	in := AdmissionRequest{
+		Name: "Aurora Bank", BIC: "AURODEFFXXX", Country: testAllocation.Country, Asset: testAsset, Ref: "adm-1",
+	}
+	var (
+		first, second         SettlementMember
+		firstCode, secondCode iban.Issuer
+	)
 	mustUpdateAt(t, ctx, sys.cb(), func(ctx context.Context, tx Tx) (err error) {
-		first, err = sys.cb().OpenSettlementAccountTx(ctx, tx, in)
+		first, firstCode, err = sys.cb().OpenSettlementAccountTx(ctx, tx, in)
 		return err
 	})
 	mustUpdateAt(t, ctx, sys.cb(), func(ctx context.Context, tx Tx) (err error) {
-		second, err = sys.cb().OpenSettlementAccountTx(ctx, tx, in)
+		second, secondCode, err = sys.cb().OpenSettlementAccountTx(ctx, tx, in)
 		return err
 	})
+	// The registry allocates once per bank per country, so a second request in
+	// the same asset is answered with the code the first was given rather than
+	// with a second range.
+	if firstCode.BankCode == "" || firstCode != secondCode {
+		t.Errorf("the second request was allocated %+v, want the first's %+v", secondCode, firstCode)
+	}
 
 	if first.Accounts[testAsset] == "" {
 		t.Fatal("the first request opened no account at all")
@@ -2012,12 +2069,22 @@ func TestOpeningASettlementAccountTwiceOpensOne(t *testing.T) {
 
 	// A different asset is a different account, and it does not disturb the one
 	// already open.
-	var extended SettlementMember
+	var (
+		extended     SettlementMember
+		extendedCode iban.Issuer
+	)
 	mustUpdateAt(t, ctx, sys.cb(), func(ctx context.Context, tx Tx) (err error) {
-		extended, err = sys.cb().OpenSettlementAccountTx(ctx, tx,
-			AdmissionRequest{Name: "Aurora Bank", BIC: "AURODEFFXXX", Asset: "USD", Ref: "adm-2"})
+		extended, extendedCode, err = sys.cb().OpenSettlementAccountTx(ctx, tx, AdmissionRequest{
+			Name: "Aurora Bank", BIC: "AURODEFFXXX", Country: testAllocation.Country, Asset: "USD", Ref: "adm-2",
+		})
 		return err
 	})
+	// Nor does a second ASSET allocate a second range: one acmt.007 asks for one
+	// currency, and a bank issuing addresses under two codes would be two banks
+	// to anybody routing.
+	if extendedCode != firstCode {
+		t.Errorf("the dollar request was allocated %+v, want the euro one's %+v", extendedCode, firstCode)
+	}
 	if extended.Accounts[testAsset] != first.Accounts[testAsset] {
 		t.Errorf("opening a dollar account moved the euro one: %q, want %q",
 			extended.Accounts[testAsset], first.Accounts[testAsset])
@@ -2043,6 +2110,7 @@ func TestAdmittingABICTwiceIsRefused(t *testing.T) {
 
 	ack := AdmissionAcknowledgement{
 		BIC:      "AURODEFFXXX",
+		Issuer:   testAllocation,
 		Accounts: map[ledger.AssetCode]ledger.AccountID{testAsset: "200.100.001"},
 		Ref:      "adm-1",
 	}
@@ -2115,7 +2183,7 @@ func TestABankRefusesAnAcknowledgementOfAnotherAdmission(t *testing.T) {
 	var bank *Bank
 	own := sys.bank(testBIC)
 	mustUpdateAt(t, ctx, own, func(ctx context.Context, tx Tx) (err error) {
-		bank, err = own.FoundBankTx(ctx, tx, "Aurora Bank", testBIC, storetest.FixtureIssuer(testBIC), euroOnly)
+		bank, err = own.FoundBankTx(ctx, tx, "Aurora Bank", testBIC, storetest.FixtureCountry, euroOnly)
 		return err
 	})
 	if bank.AdmissionRef != "" {
@@ -2124,6 +2192,7 @@ func TestABankRefusesAnAcknowledgementOfAnotherAdmission(t *testing.T) {
 
 	ack := AdmissionAcknowledgement{
 		BIC:      testBIC,
+		Issuer:   testAllocation,
 		Ref:      "adm-1",
 		Accounts: map[ledger.AssetCode]ledger.AccountID{testAsset: "200.100.001"},
 	}
@@ -2202,7 +2271,7 @@ func TestABankRefusesAnAcknowledgementThatWouldLeaveItWrong(t *testing.T) {
 		var bank *Bank
 		own := sys.bank(testBIC)
 		mustUpdateAt(t, ctx, own, func(ctx context.Context, tx Tx) (err error) {
-			bank, err = own.FoundBankTx(ctx, tx, "Aurora Bank", testBIC, storetest.FixtureIssuer(testBIC), euroOnly)
+			bank, err = own.FoundBankTx(ctx, tx, "Aurora Bank", testBIC, storetest.FixtureCountry, euroOnly)
 			return err
 		})
 		return sys, bank
@@ -2215,6 +2284,7 @@ func TestABankRefusesAnAcknowledgementThatWouldLeaveItWrong(t *testing.T) {
 	}
 	real := AdmissionAcknowledgement{
 		BIC:      testBIC,
+		Issuer:   testAllocation,
 		Ref:      "adm-1",
 		Accounts: map[ledger.AssetCode]ledger.AccountID{testAsset: "200.100.001"},
 	}
@@ -2265,7 +2335,7 @@ func TestABankRefusesAnAcknowledgementThatWouldLeaveItWrong(t *testing.T) {
 		var bank *Bank
 		own := sys.bank(testBIC)
 		mustUpdateAt(t, ctx, own, func(ctx context.Context, tx Tx) (err error) {
-			bank, err = own.FoundBankTx(ctx, tx, "Aurora Bank", testBIC, storetest.FixtureIssuer(testBIC), []ledger.AssetCode{testAsset, "USD"})
+			bank, err = own.FoundBankTx(ctx, tx, "Aurora Bank", testBIC, storetest.FixtureCountry, []ledger.AssetCode{testAsset, "USD"})
 			return err
 		})
 		assertNoError(t, record(sys, bank.ID, real))
@@ -2318,12 +2388,13 @@ func TestAnAcknowledgementQuotingNoAdmissionIsRefusedByBothActs(t *testing.T) {
 	var bank *Bank
 	own := sys.bank(testBIC)
 	mustUpdateAt(t, ctx, own, func(ctx context.Context, tx Tx) (err error) {
-		bank, err = own.FoundBankTx(ctx, tx, "Aurora Bank", testBIC, storetest.FixtureIssuer(testBIC), euroOnly)
+		bank, err = own.FoundBankTx(ctx, tx, "Aurora Bank", testBIC, storetest.FixtureCountry, euroOnly)
 		return err
 	})
 
 	noRef := AdmissionAcknowledgement{
 		BIC:      testBIC,
+		Issuer:   testAllocation,
 		Accounts: map[ledger.AssetCode]ledger.AccountID{testAsset: "200.100.001"},
 	}
 
@@ -2421,6 +2492,7 @@ func TestAnUnusableAcknowledgementIsRefusedByBothActs(t *testing.T) {
 	ctx := context.Background()
 	real := AdmissionAcknowledgement{
 		BIC: testBIC, Ref: "adm-1",
+		Issuer:   testAllocation,
 		Accounts: map[ledger.AssetCode]ledger.AccountID{testAsset: "200.100.001"},
 	}
 
@@ -2430,18 +2502,30 @@ func TestAnUnusableAcknowledgementIsRefusedByBothActs(t *testing.T) {
 		want error
 	}{
 		{"no account owner", AdmissionAcknowledgement{
-			Ref: "adm-x", Accounts: map[ledger.AssetCode]ledger.AccountID{testAsset: "200.100.009"}},
+			Issuer: testAllocation, Ref: "adm-x",
+			Accounts: map[ledger.AssetCode]ledger.AccountID{testAsset: "200.100.009"}},
 			iso20022.ErrBICFormat},
 		{"a malformed account owner", AdmissionAcknowledgement{
-			BIC: "nonsense", Ref: "adm-x", Accounts: map[ledger.AssetCode]ledger.AccountID{testAsset: "200.100.009"}},
+			BIC: "nonsense", Issuer: testAllocation, Ref: "adm-x",
+			Accounts: map[ledger.AssetCode]ledger.AccountID{testAsset: "200.100.009"}},
 			iso20022.ErrBICFormat},
-		{"no account at all", AdmissionAcknowledgement{BIC: testBIC, Ref: "adm-x"},
+		{"no allocation", AdmissionAcknowledgement{
+			BIC: testBIC, Ref: "adm-x",
+			Accounts: map[ledger.AssetCode]ledger.AccountID{testAsset: "200.100.009"}},
+			iban.ErrUnknownCountry},
+		{"an allocation of the wrong width", AdmissionAcknowledgement{
+			BIC: testBIC, Issuer: iban.Issuer{Country: testAllocation.Country, BankCode: "1"}, Ref: "adm-x",
+			Accounts: map[ledger.AssetCode]ledger.AccountID{testAsset: "200.100.009"}},
+			iban.ErrBankCodeWidth},
+		{"no account at all", AdmissionAcknowledgement{BIC: testBIC, Issuer: testAllocation, Ref: "adm-x"},
 			ErrAdmittedAccountUnusable},
 		{"an account naming no asset", AdmissionAcknowledgement{
-			BIC: testBIC, Ref: "adm-x", Accounts: map[ledger.AssetCode]ledger.AccountID{"": "200.100.009"}},
+			BIC: testBIC, Issuer: testAllocation, Ref: "adm-x",
+			Accounts: map[ledger.AssetCode]ledger.AccountID{"": "200.100.009"}},
 			ErrAdmittedAccountUnusable},
 		{"an asset naming no account", AdmissionAcknowledgement{
-			BIC: testBIC, Ref: "adm-x", Accounts: map[ledger.AssetCode]ledger.AccountID{testAsset: ""}},
+			BIC: testBIC, Issuer: testAllocation, Ref: "adm-x",
+			Accounts: map[ledger.AssetCode]ledger.AccountID{testAsset: ""}},
 			ErrAdmittedAccountUnusable},
 	} {
 		t.Run(tc.what, func(t *testing.T) {
@@ -2451,7 +2535,7 @@ func TestAnUnusableAcknowledgementIsRefusedByBothActs(t *testing.T) {
 			var bank *Bank
 			own := sys.bank(testBIC)
 			mustUpdateAt(t, ctx, own, func(ctx context.Context, tx Tx) (err error) {
-				bank, err = own.FoundBankTx(ctx, tx, "Aurora Bank", testBIC, storetest.FixtureIssuer(testBIC), euroOnly)
+				bank, err = own.FoundBankTx(ctx, tx, "Aurora Bank", testBIC, storetest.FixtureCountry, euroOnly)
 				return err
 			})
 
@@ -2506,17 +2590,18 @@ func TestABankCannotRecordAnotherBanksMembership(t *testing.T) {
 	var aurora, verde *Bank
 	auroraNet, verdeNet := sys.bank("AURODEFFXXX"), sys.bank("VERDITMMXXX")
 	mustUpdateAt(t, ctx, auroraNet, func(ctx context.Context, tx Tx) (err error) {
-		aurora, err = auroraNet.FoundBankTx(ctx, tx, "Aurora Bank", "AURODEFFXXX", storetest.FixtureIssuer("AURODEFFXXX"), euroOnly)
+		aurora, err = auroraNet.FoundBankTx(ctx, tx, "Aurora Bank", "AURODEFFXXX", storetest.FixtureCountry, euroOnly)
 		return err
 	})
 	mustUpdateAt(t, ctx, verdeNet, func(ctx context.Context, tx Tx) (err error) {
-		verde, err = verdeNet.FoundBankTx(ctx, tx, "Banca Verde", "VERDITMMXXX", storetest.FixtureIssuer("VERDITMMXXX"), euroOnly)
+		verde, err = verdeNet.FoundBankTx(ctx, tx, "Banca Verde", "VERDITMMXXX", storetest.FixtureCountry, euroOnly)
 		return err
 	})
 
 	// The acknowledgement is Aurora's; Verde tries to record it as its own.
 	ack := AdmissionAcknowledgement{
 		BIC:      aurora.BIC,
+		Issuer:   testAllocation,
 		Accounts: map[ledger.AssetCode]ledger.AccountID{testAsset: "200.100.001"},
 		Ref:      "adm-1",
 	}
@@ -3816,27 +3901,22 @@ func TestSubmitLeavesAPushPaymentInitiatedAndOutOfAnyCycle(t *testing.T) {
 // addresses through the roster — which is the row the non-member has none of.
 // That is Mesh.Submit's guard's whole reason for existing.
 func TestTheClearingHouseWillNotClearForANonMember(t *testing.T) {
-	// build returns a network with one member and one founded-but-unadmitted
-	// bank, the push request between them in the caller's direction, and an open
-	// cycle for it to be refused out of.
+	// build returns a network with one member and one bank the settlement agent
+	// has answered and the clearing house has not admitted, the push request
+	// between them in the caller's direction, and an open cycle for it to be
+	// refused out of. See admitWithoutTheRoster.
 	build := func(t *testing.T, foundedPays bool) (*testSystem, InitiatePaymentRequest) {
 		t.Helper()
 		ctx := context.Background()
 		sys := testNetwork(t)
 		member, err := storetest.Admit(ctx, sys.nets, "Member Bank", testBIC, euroOnly)
 		assertNoError(t, err)
-		founded, err := sys.bank(testBIC2).FoundBank(ctx, "Founded Bank", testBIC2, storetest.FixtureIssuer(testBIC2), euroOnly)
-		assertNoError(t, err)
+		founded := admitWithoutTheRoster(t, ctx, sys, "Founded Bank", testBIC2)
 
 		// The founded bank's customer is given an ARRANGED OVERDRAFT rather than
-		// a deposit, because DepositTx refuses a founded bank — and an overdraft
-		// is exactly how such a customer came to have spendable money in the
-		// measurement this test descends from.
-		//
-		// It is addressable, and a founded bank issuing addresses is not a fixture
-		// convenience: a bank mints under the allocation it was founded with, and
-		// membership of a scheme is a separate thing it may not have yet. That is
-		// the state this test is about, seen from the register.
+		// a deposit, because DepositTx refuses a bank the settlement agent holds
+		// no account for — and an overdraft is exactly how such a customer came to
+		// have spendable money in the measurement this test descends from.
 		foundedAcct, err := founded.Deposit.OpenAccount(ctx, founded.CustomerSubledger, "Nora", testAsset,
 			founded.ProductID, 100000)
 		assertNoError(t, err)
@@ -3956,14 +4036,14 @@ func TestTheClearingHouseWillNotClearInAnAssetAMemberWasNotAdmittedIn(t *testing
 	// storetest.Admit: founded in both assets, and the settlement agent asked for
 	// one. Nothing is planted — this is the sequence the mesh runs, stopped where
 	// a refused acmt.007 stops it.
-	half, err := sys.bank(testBIC2).FoundBank(ctx, "Half Bank", testBIC2, storetest.FixtureIssuer(testBIC2), bothAssets)
+	half, err := sys.bank(testBIC2).FoundBank(ctx, "Half Bank", testBIC2, storetest.FixtureCountry, bothAssets)
 	assertNoError(t, err)
 	const ref = "half-admitted"
-	member, err := sys.cb().OpenSettlementAccount(ctx, AdmissionRequest{
-		Name: half.Name, BIC: half.BIC, Asset: testAsset, Ref: ref,
+	member, issuer, err := sys.cb().OpenSettlementAccount(ctx, AdmissionRequest{
+		Name: half.Name, BIC: half.BIC, Country: storetest.FixtureCountry, Asset: testAsset, Ref: ref,
 	})
 	assertNoError(t, err)
-	ack := AdmissionAcknowledgement{BIC: half.BIC, Accounts: member.Accounts, Ref: ref}
+	ack := AdmissionAcknowledgement{BIC: half.BIC, Issuer: issuer, Accounts: member.Accounts, Ref: ref}
 	_, err = sys.AdmitMember(ctx, ack)
 	assertNoError(t, err)
 	half, err = sys.bank(half.BIC).RecordMembership(ctx, ack)

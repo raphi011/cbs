@@ -125,21 +125,21 @@ type createParticipantRequest struct {
 	// wrong with it is a business rule.
 	BIC string `json:"bic"`
 
-	// Country and BankCode are the allocation this bank issues its customers'
-	// addresses under, and both are required: an account is opened with an IBAN
-	// minted from them, so a bank founded without one can open no accounts.
+	// Country is the market this bank means to operate in: which national
+	// registry it applies to for the bank code its customers' addresses will
+	// carry. It is required, because a bank that has applied to no registry can
+	// be allocated nothing and can address no account.
 	//
-	// They are SUPPLIED and not derived from the BIC, because there is nothing
-	// to derive from — a bank code is a national registry's allocation and a BIC
-	// is SWIFT's, and "AURODEFFXXX" and "99900001" have no computable
-	// relationship. That is the same argument payment.Bank.BIC already makes
-	// about its own field, one identifier along.
+	// There is NO bank code beside it, and its absence is the whole of what this
+	// request says about addressing. A code is the registry's to allocate and
+	// arrives on the acknowledgement, so a caller supplying one would be a bank
+	// asserting its own allocation — which is what a routing directory exists
+	// because nobody can do. See payment.Bank.Issuer.
 	//
-	// Validated by iban.Issuer.Validate, through Admit, which is what makes a
-	// wrong-width code a 422 rather than a 400: the field is present and
+	// Validated through Admit, which is what makes a country this system keeps no
+	// IBAN structure for a 422 rather than a 400: the field is present and
 	// well-typed, and what is wrong with it is a business rule.
-	Country  string `json:"country"`
-	BankCode string `json:"bankCode"`
+	Country string `json:"country"`
 
 	Assets []string `json:"assets"`
 }

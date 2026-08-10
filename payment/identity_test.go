@@ -89,7 +89,7 @@ func TestAMemberBanksActsAreRefusedOnAnyOtherInstitutionsNetwork(t *testing.T) {
 		}},
 		{"RecordMembership", func(n *Network) error {
 			_, err := n.RecordMembership(ctx, AdmissionAcknowledgement{
-				BIC: testBIC, Ref: "adm-1",
+				BIC: testBIC, Issuer: testAllocation, Ref: "adm-1",
 				Accounts: map[ledger.AssetCode]ledger.AccountID{testAsset: "200.100.001"},
 			})
 			return err
@@ -153,8 +153,8 @@ func TestTheCentralBanksBookIsReachableOnlyFromTheSettlementAgentsNetwork(t *tes
 		call func(n *Network) error
 	}{
 		{"OpenSettlementAccount", func(n *Network) error {
-			_, err := n.OpenSettlementAccount(ctx, AdmissionRequest{
-				Name: "Aurora Bank", BIC: testBIC, Asset: testAsset, Ref: "adm-1",
+			_, _, err := n.OpenSettlementAccount(ctx, AdmissionRequest{
+				Name: "Aurora Bank", BIC: testBIC, Country: testAllocation.Country, Asset: testAsset, Ref: "adm-1",
 			})
 			return err
 		}},

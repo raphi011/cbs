@@ -1445,12 +1445,19 @@ func (m *Mesh) Submit(ctx context.Context, req payment.InitiatePaymentRequest) (
 // Closing it needs a way to re-drive ONE asset of an existing admission, quoting
 // the reference the bank already recorded rather than minting one — a decision
 // about the flow rather than about this function.
-// issuer is the country and bank code the joining bank will issue its
-// customers' addresses under. It is supplied by the caller and not derived: a
-// bank code is a national registry's allocation and has no computable
-// relationship to a BIC, which is the fact the routing directory exists because
-// of. See payment.Bank.Issuer.
-func (m *Mesh) Admit(ctx context.Context, name string, bic iso20022.BIC, issuer iban.Issuer, assets []ledger.AssetCode) (*payment.Bank, error) {
+// # The bank code is applied for, not brought
+//
+// country is the market the joining bank means to operate in, and it is the
+// whole of what the caller says about addressing. The CODE its customers'
+// addresses will carry is a national registry's allocation, and it arrives on
+// the acknowledgement — which is why the bank this returns can open no
+// addressable account yet (deposit.ErrNoIssuer), and why a re-drive reads the
+// country off the bank's own row rather than off the caller.
+//
+// A caller that could supply the code would make the whole routing directory
+// unnecessary and would be wrong about the world: a bank code has no computable
+// relationship to a BIC, which is why a scheme has to publish the pairing.
+func (m *Mesh) Admit(ctx context.Context, name string, bic iso20022.BIC, country iban.Country, assets []ledger.AssetCode) (*payment.Bank, error) {
 	if m.nets == nil {
 		return nil, errors.New("mesh: no network, so there is no bank to admit")
 	}
@@ -1500,7 +1507,7 @@ func (m *Mesh) Admit(ctx context.Context, name string, bic iso20022.BIC, issuer 
 			return nil, fmt.Errorf("mesh: %s is re-driving its own interrupted admission and cannot read its row: %w", bic, err)
 		}
 	} else {
-		if bank, err = applicant.FoundBank(ctx, name, bic, issuer, assets); err != nil {
+		if bank, err = applicant.FoundBank(ctx, name, bic, country, assets); err != nil {
 			// The reservation goes back before the caller is told, so a refused
 			// unit of work leaves the address exactly as free as it found it.
 			m.releaseAddress(bic)
@@ -1522,7 +1529,12 @@ func (m *Mesh) Admit(ctx context.Context, name string, bic iso20022.BIC, issuer 
 	to := m.cfg.ClearingHouseBIC
 	for _, asset := range slices.Sorted(maps.Keys(bank.Assets)) {
 		env, err := payment.AdmissionMessage(
-			payment.AdmissionRequest{Name: bank.Name, BIC: bank.BIC, Asset: asset, Ref: ref},
+			// The country is the BANK's own, off the row, so a re-drive applies to
+			// the register the interrupted admission applied to rather than to
+			// whichever one this caller named. See payment.Bank.Issuer.
+			payment.AdmissionRequest{
+				Name: bank.Name, BIC: bank.BIC, Country: bank.Issuer.Country, Asset: asset, Ref: ref,
+			},
 			m.cfg.CentralBankBIC,
 			payment.MessageContext{From: bank.BIC, To: to, MsgID: m.nextMsgID(bank.BIC), Now: m.now()},
 		)

@@ -983,6 +983,13 @@ func RunClearingHousePayment(t *testing.T, newStore func(*testing.T) payment.Sto
 	// identifier that would let this institution reach into another's ledger; a
 	// process id reaches nothing.
 	//
+	// Issuer is in the table and is the reason the row exists at all. A bank code
+	// is a national registry's allocation with no computable relationship to a
+	// BIC, so turning the address a payer quotes into the agent a message is sent
+	// to takes a published pairing — and publishing it is what a clearing house
+	// does. It names no account in anybody's book: it says which INSTITUTION
+	// issued a range, which is routing in the most literal sense this table has.
+	//
 	// Name is NOT in the table. The acmt.010 this row is written from identifies
 	// the account owner with an OrganisationIdentification29, which has a BIC and
 	// no name element at all, so a name here could only be filled by the clearing
@@ -993,6 +1000,7 @@ func RunClearingHousePayment(t *testing.T, newStore func(*testing.T) payment.Sto
 
 		allowed := map[string]bool{
 			"BIC":          true,
+			"Issuer":       true,
 			"Assets":       true,
 			"AdmissionRef": true,
 			"AdmittedAt":   true,

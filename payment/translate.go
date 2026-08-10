@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/raphi011/cbs/deposit"
+	"github.com/raphi011/cbs/iban"
 	"github.com/raphi011/cbs/iso20022"
 	"github.com/raphi011/cbs/ledger"
 )
@@ -298,6 +299,21 @@ var reasonTable = []reasonMapping{
 	{ErrAdmittedAccountUnusable, "ErrAdmittedAccountUnusable", ""},
 	{ErrSettlementAccountReplaced, "ErrSettlementAccountReplaced", ""},
 	{ErrNotThisBanksAdmission, "ErrNotThisBanksAdmission", ""},
+	// The three about addressing, and they are on this path for the same reason
+	// the six above are: every one of them is refused during an admission, whose
+	// refusal is an acmt.011 carrying prose. ErrBankCodeNotAllocated and
+	// ErrBankCodeTaken are the settlement agent's and the clearing house's
+	// answers about the registry; ErrBankCodeReplaced is what either the roster
+	// or the joining bank says to an acknowledgement that would move an address
+	// range that is already being quoted.
+	//
+	// None of them reaches a PAYMENT. The refusal a payer meets when an address
+	// will not resolve is ErrBankCodeUnknown, and it has a row of its own with a
+	// code, because it happens to a payment and an answer goes back on a
+	// pacs.002.
+	{ErrBankCodeNotAllocated, "ErrBankCodeNotAllocated", ""},
+	{ErrBankCodeTaken, "ErrBankCodeTaken", ""},
+	{ErrBankCodeReplaced, "ErrBankCodeReplaced", ""},
 }
 
 // borrowedReasons classifies the errors an actor's half produces that this
@@ -2316,7 +2332,9 @@ func AdmissionMessage(in AdmissionRequest, servicer iso20022.BIC, mc MessageCont
 	if in.Ref == "" {
 		return iso20022.Envelope{}, fmt.Errorf("%w: Refs/PrcId/Id", iso20022.ErrMissingElement)
 	}
-	country := countryOf(in.BIC)
+	if in.Country == "" {
+		return iso20022.Envelope{}, fmt.Errorf("%w: Org/CtryOfOpr", iso20022.ErrMissingElement)
+	}
 	doc := &iso20022.Acmt007{AcctOpngReq: iso20022.AccountOpeningRequest{
 		Refs: iso20022.AccountRequestReferences{
 			MsgId: iso20022.MessageIdentification{Id: mc.MsgID, CreDtTm: iso20022.ISODateTime{Time: mc.Now}},
@@ -2331,9 +2349,18 @@ func AdmissionMessage(in AdmissionRequest, servicer iso20022.BIC, mc MessageCont
 		AcctSvcrId: agentOf(servicer),
 		Org: iso20022.AccountOwner{
 			FullLglNm: in.Name,
-			CtryOfOpr: country,
-			LglAdr:    iso20022.PostalAddress{Ctry: country},
-			OrgId:     iso20022.OrganisationIdentification{AnyBIC: in.BIC},
+			// The two countries are separate answers and are written from
+			// separate sources. CtryOfOpr is the register the applicant is
+			// asking for a bank code from, which is a choice; the legal address
+			// is where the institution is established, which its own BIC
+			// already says. They agree for every bank in this repository and are
+			// not required to — see AdmissionRequest.Country.
+			CtryOfOpr: string(in.Country),
+			LglAdr:    iso20022.PostalAddress{Ctry: countryOf(in.BIC)},
+			// No Othr. An applicant holds no allocation to propose, which is
+			// what makes the acknowledgement the only place a bank code
+			// travels — see AdmissionAcknowledgement.Issuer.
+			OrgId: iso20022.OrganisationIdentification{AnyBIC: in.BIC},
 		},
 	}}
 	return iso20022.Envelope{
@@ -2396,11 +2423,22 @@ func ReadAdmissionRequest(doc *iso20022.Acmt007) (AdmissionRequest, error) {
 		return AdmissionRequest{}, fmt.Errorf(
 			"%w: Refs/PrcId/Id; nothing else in this family correlates one admission", iso20022.ErrMissingElement)
 	}
+	if req.Org.CtryOfOpr == "" {
+		return AdmissionRequest{}, fmt.Errorf(
+			"%w: Org/CtryOfOpr; nothing else says which register is being asked for a bank code",
+			iso20022.ErrMissingElement)
+	}
 	return AdmissionRequest{
-		Name:  req.Org.FullLglNm,
-		BIC:   bic,
-		Asset: ledger.AssetCode(req.Acct.Ccy),
-		Ref:   req.Refs.PrcId.Id,
+		Name: req.Org.FullLglNm,
+		BIC:  bic,
+		// Taken as it stands, and NOT checked against the list of countries this
+		// system issues in. Whether a register exists is the settlement agent's
+		// answer, made in its own act where a refusal becomes an acmt.011 the
+		// applicant can read; a reader that refused here would be answering for
+		// the registry out of a table it happens to import.
+		Country: iban.Country(req.Org.CtryOfOpr),
+		Asset:   ledger.AssetCode(req.Acct.Ccy),
+		Ref:     req.Refs.PrcId.Id,
 	}, nil
 }
 
@@ -2442,6 +2480,18 @@ func AdmissionAcknowledgementMessage(ack AdmissionAcknowledgement, mc MessageCon
 		return iso20022.Envelope{}, fmt.Errorf(
 			"%w: AcctId; an acknowledgement naming no account would admit a bank to nothing", iso20022.ErrMissingElement)
 	}
+	// The register the code came out of, named rather than implied. The country
+	// has no element of its own on this message, and a reader given digits alone
+	// holds nothing: a bank code is unique within one country, so the scheme name
+	// is what makes the allocation keyable on the far side. See
+	// iso20022.GenericOrganisationIdentification.
+	scheme, err := iban.Scheme(ack.Issuer.Country)
+	if err != nil {
+		return iso20022.Envelope{}, fmt.Errorf("payment: OrgId/Othr/SchmeNm: %w", err)
+	}
+	if ack.Issuer.BankCode == "" {
+		return iso20022.Envelope{}, fmt.Errorf("%w: OrgId/Othr/Id", iso20022.ErrMissingElement)
+	}
 	accounts := make([]iso20022.OpenedAccount, 0, len(ack.Accounts))
 	for _, asset := range slices.Sorted(maps.Keys(ack.Accounts)) {
 		id := ack.Accounts[asset]
@@ -2467,8 +2517,22 @@ func AdmissionAcknowledgementMessage(ack AdmissionAcknowledgement, mc MessageCon
 			MsgId: iso20022.MessageIdentification{Id: mc.MsgID, CreDtTm: iso20022.ISODateTime{Time: mc.Now}},
 			PrcId: iso20022.MessageIdentification{Id: ack.Ref, CreDtTm: iso20022.ISODateTime{Time: mc.Now}},
 		},
-		AcctId:     accounts,
-		OrgId:      iso20022.OrganisationIdentification{AnyBIC: ack.BIC},
+		AcctId: accounts,
+		OrgId: iso20022.OrganisationIdentification{
+			AnyBIC: ack.BIC,
+			// Issr is the institution whose register this allocation is in, and
+			// it is this sender: the servicer opening the account is the same
+			// institution standing in for the national registry. The two are
+			// separate facts on separate elements even so, because in the world
+			// they are separate institutions — a bank's RTGS account is at its
+			// central bank and its Bankleitzahl comes from a registry — and
+			// AcctSvcrId is the one this message is about.
+			Othr: []iso20022.GenericOrganisationIdentification{{
+				Id:      string(ack.Issuer.BankCode),
+				SchmeNm: iso20022.OrganisationIdentificationScheme{Prtry: scheme},
+				Issr:    string(mc.From),
+			}},
+		},
 		AcctSvcrId: agentOf(mc.From),
 	}}
 	return iso20022.Envelope{
@@ -2521,6 +2585,29 @@ func ReadAdmissionAcknowledgement(doc *iso20022.Acmt010) (AdmissionAcknowledgeme
 		return AdmissionAcknowledgement{}, fmt.Errorf(
 			"%w: AcctId; an acknowledgement naming no account would admit a bank to nothing", iso20022.ErrMissingElement)
 	}
+	// Exactly one allocation, checked here as well as in the codec for the reason
+	// stated below: a document handed to this function need not have come from
+	// Unmarshal. Two would leave three readers to choose between them.
+	if len(ack.OrgId.Othr) != 1 {
+		return AdmissionAcknowledgement{}, fmt.Errorf(
+			"payment: OrgId/Othr names %d allocations; an admission carries exactly one, and a bank that "+
+				"issued addresses under two of them would be two banks to anybody routing", len(ack.OrgId.Othr))
+	}
+	allocation := ack.OrgId.Othr[0]
+	// The country comes off the REGISTER's name, because there is no country
+	// element on this message and a bank code is unique within one country. An
+	// unknown register is a refusal and not a default: filing the code under the
+	// wrong country would give a bank an address range in a market it never
+	// applied to.
+	country, err := iban.CountryForScheme(allocation.SchmeNm.Prtry)
+	if err != nil {
+		return AdmissionAcknowledgement{}, fmt.Errorf("payment: OrgId/Othr/SchmeNm/Prtry: %w", err)
+	}
+	if allocation.Id == "" {
+		return AdmissionAcknowledgement{}, fmt.Errorf(
+			"%w: OrgId/Othr/Id; this acknowledgement admits a bank to a scheme and gives it no address range",
+			iso20022.ErrMissingElement)
+	}
 	accounts := make(map[ledger.AssetCode]ledger.AccountID, len(ack.AcctId))
 	for i, a := range ack.AcctId {
 		if a.Ccy == "" {
@@ -2541,6 +2628,7 @@ func ReadAdmissionAcknowledgement(doc *iso20022.Acmt010) (AdmissionAcknowledgeme
 	}
 	return AdmissionAcknowledgement{
 		BIC:      bic,
+		Issuer:   iban.Issuer{Country: country, BankCode: iban.BankCode(allocation.Id)},
 		Accounts: accounts,
 		Ref:      ack.Refs.PrcId.Id,
 	}, nil

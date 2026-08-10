@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/raphi011/cbs/deposit"
+	"github.com/raphi011/cbs/iban"
 	"github.com/raphi011/cbs/iso20022"
 	"github.com/raphi011/cbs/ledger"
 	"github.com/raphi011/cbs/payment"
@@ -397,8 +398,15 @@ type settlementOps interface {
 	// SettleReturn has for the same reason: everything it acts on came off the
 	// acmt.007 (payment.ReadAdmissionRequest), because a settlement agent holds
 	// no roster and has never heard of this system's bank ids. What it is told is
-	// a BIC, a name and one currency, and a BIC is what it keys its own row by.
-	OpenSettlementAccount(ctx context.Context, in payment.AdmissionRequest) (payment.SettlementMember, error)
+	// a BIC, a name, a country and one currency, and a BIC is what it keys its
+	// own row by.
+	//
+	// It answers with TWO things because it keeps two registers and the request
+	// asked of both: the account it holds, and the bank code it allocated in the
+	// country the request named. The second is not derivable from the first and
+	// nothing on this hop could compute it — see payment.allocateBankCodeTx — so
+	// it is returned rather than looked up afterwards.
+	OpenSettlementAccount(ctx context.Context, in payment.AdmissionRequest) (payment.SettlementMember, iban.Issuer, error)
 
 	// ReceiveLodgement is the fourth: a member has asked this institution to
 	// credit the member's own reserve account, and this institution posts Debit

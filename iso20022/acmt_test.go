@@ -64,7 +64,14 @@ func sample010() Envelope {
 				{Id: AccountIdentification4Choice{Othr: &GenericAccountIdentification{Id: "acc_cb_reserve_bank_1_eur"}}, Ccy: "EUR"},
 				{Id: AccountIdentification4Choice{Othr: &GenericAccountIdentification{Id: "acc_cb_reserve_bank_1_usd"}}, Ccy: "USD"},
 			},
-			OrgId:      OrganisationIdentification{AnyBIC: "AURODEFFXXX"},
+			OrgId: OrganisationIdentification{
+				AnyBIC: "AURODEFFXXX",
+				Othr: []GenericOrganisationIdentification{{
+					Id:      "99900001",
+					SchmeNm: OrganisationIdentificationScheme{Prtry: "DEBLZ"},
+					Issr:    "CBSEDEFFXXX",
+				}},
+			},
 			AcctSvcrId: BranchAndFinancialInstitution{FinInstnId: FinancialInstitutionIdentification{BICFI: "CBSEDEFFXXX"}},
 		}},
 	}
@@ -311,6 +318,14 @@ func TestAcmt010Validate(t *testing.T) {
 			a.AcctId[1].Id.Othr = nil
 		}, ErrInvalidChoice},
 		{"no owner BIC", func(a *AccountRequestAcknowledgement) { a.OrgId.AnyBIC = "" }, ErrMissingElement},
+		{"no allocation", func(a *AccountRequestAcknowledgement) { a.OrgId.Othr = nil }, ErrMissingElement},
+		{"an allocation with no code", func(a *AccountRequestAcknowledgement) { a.OrgId.Othr[0].Id = "" }, ErrMissingElement},
+		{"an allocation naming no register", func(a *AccountRequestAcknowledgement) {
+			a.OrgId.Othr[0].SchmeNm.Prtry = ""
+		}, ErrMissingElement},
+		{"an allocation naming no allocator", func(a *AccountRequestAcknowledgement) {
+			a.OrgId.Othr[0].Issr = ""
+		}, ErrMissingElement},
 		{"no account servicer", func(a *AccountRequestAcknowledgement) { a.AcctSvcrId.FinInstnId.BICFI = "" }, ErrMissingElement},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -320,6 +335,33 @@ func TestAcmt010Validate(t *testing.T) {
 				t.Fatalf("validate() = %v, want it to wrap %v", err, tc.want)
 			}
 		})
+	}
+}
+
+// TestTheAllocationTravelsOnTheAnswerAndNotOnTheRequest is the direction the
+// whole admission conversation rests on: an applicant asks a register for a bank
+// code and does not propose one, so Org/OrgId carries no Othr on the way out and
+// exactly one on the way back.
+//
+// Two would be worse than none and that is the case worth having a name for. The
+// clearing house publishes the code, the applicant mints its customers'
+// addresses under it and the settlement agent holds the register, and a message
+// naming two allocations leaves each of the three to choose — silently, and not
+// necessarily the same way.
+func TestTheAllocationTravelsOnTheAnswerAndNotOnTheRequest(t *testing.T) {
+	req := sample007().Document.(*Acmt007)
+	if got := req.AcctOpngReq.Org.OrgId.Othr; len(got) != 0 {
+		t.Errorf("the request proposes %+v; an applicant holds no allocation to propose", got)
+	}
+	if err := req.validate(); err != nil {
+		t.Errorf("validate() = %v, want a request with no allocation to be valid", err)
+	}
+
+	ack := sample010().Document.(*Acmt010)
+	twice := ack.AcctReqAck.OrgId.Othr[0]
+	ack.AcctReqAck.OrgId.Othr = append(ack.AcctReqAck.OrgId.Othr, twice)
+	if err := ack.validate(); err == nil {
+		t.Error("validate() accepted an acknowledgement naming two allocations")
 	}
 }
 

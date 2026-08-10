@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/raphi011/cbs/deposit"
+	"github.com/raphi011/cbs/iban"
 	"github.com/raphi011/cbs/iso20022"
 	"github.com/raphi011/cbs/ledger"
 	"github.com/raphi011/cbs/lending"
@@ -489,6 +490,11 @@ func (r *recordingTx) ListDepositAccountsByIdentifier(ctx context.Context, book 
 func (r *recordingTx) NextAddressSerial(ctx context.Context, book ledger.BookID) (uint64, error) {
 	r.rec.note(book)
 	return r.Tx.NextAddressSerial(ctx, book)
+}
+
+func (r *recordingTx) NextBankCodeSerial(ctx context.Context, book ledger.BookID, country iban.Country) (uint64, error) {
+	r.rec.note(book)
+	return r.Tx.NextBankCodeSerial(ctx, book, country)
 }
 
 func (r *recordingTx) PutHold(ctx context.Context, book ledger.BookID, h deposit.Hold) error {
@@ -1390,7 +1396,7 @@ func TestWhichBooksAdmissionReaches(t *testing.T) {
 	// After the fixture's own two admissions, so what is measured is one
 	// admission and not three.
 	h.rec.reset()
-	joiner, err := h.mesh.Admit(context.Background(), "Nordhaven Bank", joinerBIC, storetest.FixtureIssuer(joinerBIC), euroOnly)
+	joiner, err := h.mesh.Admit(context.Background(), "Nordhaven Bank", joinerBIC, storetest.FixtureCountry, euroOnly)
 	if err != nil {
 		t.Fatalf("Admit: %v", err)
 	}
@@ -1622,40 +1628,49 @@ func TestABankCannotLodgeCashItDoesNotHold(t *testing.T) {
 	}
 }
 
-// TestAFoundedBankCanTakeCashBeforeItHasJoinedAnything is the domain half of the
-// same change, and it is a reversal rather than a new rule.
+// TestTakingCashInReachesNoOtherInstitution is the domain half of the same
+// change, and it is a reversal rather than a new rule.
 //
-// A bank's counter has nothing to do with its central bank account, so taking
-// cash in is not refused for want of a settlement reference. Lodging it is.
+// A bank's COUNTER has nothing to do with its central bank account. Cash paid in
+// over the desk is the bank's own money in the bank's own hands — Debit Vault
+// Cash, Credit the customer, one book, one institution — and what moves it onward
+// is a LODGEMENT, which is a camt.050 out and a camt.025 back. So a deposit is
+// refused for want of a settlement reference by nothing at all, and this is what
+// says so.
 //
-// So this drives a bank that has been FOUNDED and admitted to nothing, and pays
-// cash in. It is the sharpest form of the claim available: there is no settlement
-// account anywhere in the system for this bank, so a deposit that still wanted
-// one could not possibly succeed by accident.
-//
-// It deliberately does NOT drain. admit returns a Founded bank because the
-// scheme's answer arrives as a message, so leaving the queue alone is what keeps
-// this bank in the state the test is about.
-func TestAFoundedBankCanTakeCashBeforeItHasJoinedAnything(t *testing.T) {
+// It asserts the absence directly rather than by construction: no message leaves
+// the mesh and the settlement agent's book does not move. The sharper fixture
+// this replaces was a bank the scheme had answered for in no way, and it is no
+// longer buildable — a bank mints its customers' addresses under a code the
+// settlement agent allocates, so a bank the agent has never answered has no
+// account to pay anything into. That refusal is
+// TestAFoundedBankCanNeitherPayNorBePaid's neighbour, in admission_test.go.
+func TestTakingCashInReachesNoOtherInstitution(t *testing.T) {
 	h := newMeshHarness(t)
 	ctx := context.Background()
 
-	founded := h.admit(t, "Solo Bank", "SOLODEFFXXX", []ledger.AssetCode{"EUR"})
-	if accts, err := founded.AccountsFor("EUR"); err != nil {
-		t.Fatalf("AccountsFor EUR: %v", err)
-	} else if accts.Settlement != "" {
-		t.Fatalf("Settlement = %q, want it empty; a founded bank has no settlement account", accts.Settlement)
-	}
+	solo := h.admit(t, "Solo Bank", "SOLODEFFXXX", []ledger.AssetCode{"EUR"})
+	h.drain(t)
+	solo = h.getBank(t, solo.ID)
 
-	acct := h.openCustomer(t, founded, "Sole Depositor", "EUR", 0)
-	if err := h.bank(founded.BIC).Deposit(ctx, founded.ID, acct.ID, 250_00, "cash over the counter"); err != nil {
-		t.Fatalf("Deposit at a founded bank: %v; a founded bank can open its doors and take money", err)
+	acct := h.openCustomer(t, solo, "Sole Depositor", "EUR", 0)
+	before := h.centralBankTransactionCount(t)
+	mark := h.messagesSeen()
+
+	if err := h.bank(solo.BIC).Deposit(ctx, solo.ID, acct.ID, 250_00, "cash over the counter"); err != nil {
+		t.Fatalf("Deposit: %v; a bank can open its doors and take money", err)
 	}
-	if got, want := h.balance(t, founded.ID, acct.ID), ledger.Amount(250_00); got != want {
+	if got, want := h.balance(t, solo.ID, acct.ID), ledger.Amount(250_00); got != want {
 		t.Errorf("the depositor's balance is %d, want %d", got, want)
 	}
-	if got, want := h.vaultCash(t, founded.ID), ledger.Amount(250_00); got != want {
+	if got, want := h.vaultCash(t, solo.ID), ledger.Amount(250_00); got != want {
 		t.Errorf("the bank's vault cash is %d, want %d", got, want)
+	}
+	if got := h.centralBankTransactionCount(t) - before; got != 0 {
+		t.Errorf("taking cash in posted %d transactions in the central bank's book, want none", got)
+	}
+	if got := h.messagesSeen() - mark; got != 0 {
+		t.Errorf("taking cash in put %d messages on the wire, want none", got)
 	}
 }
 

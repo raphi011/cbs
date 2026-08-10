@@ -128,9 +128,18 @@ var (
 
 	// ErrNoIssuer is a Register with no bank code, asked to open an account.
 	//
-	// It is a wiring mistake and not a runtime condition: a register that mints
-	// addresses has to know what to mint them under, and there is no sensible
-	// default — every other value would be some other bank's. NewRegister takes
-	// the issuer for that reason, and this fires only for a zero one.
+	// A register that mints addresses has to know what to mint them under, and
+	// there is no sensible default — every other value would be some other
+	// bank's. NewRegister takes the issuer for that reason, and this fires
+	// whenever it has not been allocated one.
+	//
+	// It is a REAL STATE and not only a wiring mistake, which is what makes it
+	// worth a sentinel rather than a panic: a bank code is a national registry's
+	// to give, and a bank that has been licensed and not yet answered has none.
+	// Such a bank works — it holds a book, a chart of accounts and a product —
+	// and cannot give a customer an address, because it has no range to give one
+	// out of. Every account here is opened with one, so what it really cannot do
+	// is take a customer at all. That is what a bank between its licence and its
+	// allocation is, and this is the refusal that says so.
 	ErrNoIssuer = errors.New("this register has no bank code to issue addresses under")
 )

@@ -287,8 +287,8 @@ func check(err error) {
 // is the assertion of that property, and the numbers above are also a warning
 // about it: it compares two builds in one process, so a divergence that appears
 // in one build out of twelve is one it reports rarely rather than reliably.
-func (b *builder) admit(name string, bic iso20022.BIC, issuer iban.Issuer, assets []ledger.AssetCode) *payment.Bank {
-	founded := must(b.mesh.Admit(b.ctx, name, bic, issuer, assets))
+func (b *builder) admit(name string, bic iso20022.BIC, country iban.Country, assets []ledger.AssetCode) *payment.Bank {
+	founded := must(b.mesh.Admit(b.ctx, name, bic, country, assets))
 	check(b.mesh.Drain(b.ctx))
 
 	// The bank's own row, out of the bank's own database. It was read through
@@ -782,10 +782,10 @@ func (b *builder) build() {
 	// Verde and Soleil share the code 99991 and are two different banks. A bank
 	// code is unique within a COUNTRY and nowhere else, which is why every table
 	// keyed by one is keyed by the pair.
-	aurora := b.admit("Aurora Bank", "AURODEFFXXX", iban.Issuer{Country: iban.DE, BankCode: "99900001"}, euro)
-	verde := b.admit("Banca Verde", "VERDITMMXXX", iban.Issuer{Country: iban.IT, BankCode: "99991"}, euro)
-	nord := b.admit("Nordhaven Bank", "NORDSESSXXX", iban.Issuer{Country: iban.SE, BankCode: "999"}, euro)
-	soleil := b.admit("Crédit Soleil", "SOLEFRPPXXX", iban.Issuer{Country: iban.FR, BankCode: "99991"}, euro)
+	aurora := b.admit("Aurora Bank", "AURODEFFXXX", iban.DE, euro)
+	verde := b.admit("Banca Verde", "VERDITMMXXX", iban.IT, euro)
+	nord := b.admit("Nordhaven Bank", "NORDSESSXXX", iban.SE, euro)
+	soleil := b.admit("Crédit Soleil", "SOLEFRPPXXX", iban.FR, euro)
 
 	// --- Each bank's catalogue ---------------------------------------------
 	// Before any account, because every deposit account is opened FROM a

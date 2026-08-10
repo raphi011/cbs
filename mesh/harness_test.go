@@ -464,7 +464,7 @@ func newHarness(t *testing.T, opts harnessOptions) *meshHarness {
 // once for both of them. See newHarness.
 func (h *meshHarness) admit(t *testing.T, name string, bic iso20022.BIC, assets []ledger.AssetCode) *payment.Bank {
 	t.Helper()
-	p, err := h.mesh.Admit(context.Background(), name, bic, storetest.FixtureIssuer(bic), assets)
+	p, err := h.mesh.Admit(context.Background(), name, bic, storetest.FixtureCountry, assets)
 	if err != nil {
 		t.Fatalf("Admit %s (%s): %v", name, bic, err)
 	}
@@ -472,6 +472,52 @@ func (h *meshHarness) admit(t *testing.T, name string, bic iso20022.BIC, assets 
 		t.Fatalf("Admit returned %s as %q; the scheme's answer arrives as a message, not from this call", bic, p.Status)
 	}
 	return p
+}
+
+// admitWithoutTheRoster builds a bank the SETTLEMENT AGENT has answered and the
+// CLEARING HOUSE has never admitted: it holds a bank code, so it can address its
+// customers' accounts, and no member of this scheme can be told where to send
+// anything for it.
+//
+// It is three of admission's four acts driven directly, with AdmitMember left
+// out, and the mesh's own flow cannot produce it — the clearing house writes its
+// roster entry from the acknowledgement before it forwards one. What makes it
+// reachable is that the acts are separately callable, and what makes it worth
+// building is that it is the only state in which a bank has customers with money
+// and no route to anybody.
+//
+// A merely FOUNDED bank is not this. A bank no registry has answered has no
+// address range at all, so it can open no customer account whatever
+// (deposit.ErrNoIssuer) and has nobody to pay with.
+//
+// The bank is given an ACTOR, because the tests using this are about what the
+// mesh refuses rather than about who it can reach: without one, a submission is
+// refused "no bank actor for", which is true and is not the refusal being
+// measured.
+func (h *meshHarness) admitWithoutTheRoster(t *testing.T, name string, bic iso20022.BIC) *payment.Bank {
+	t.Helper()
+	ctx := context.Background()
+	applicant := h.bank(bic)
+	if _, err := applicant.FoundBank(ctx, name, bic, storetest.FixtureCountry, euroOnly); err != nil {
+		t.Fatalf("FoundBank %s: %v", bic, err)
+	}
+	ref := "unrostered-" + string(bic)
+	member, issuer, err := h.cb().OpenSettlementAccount(ctx, payment.AdmissionRequest{
+		Name: name, BIC: bic, Country: storetest.FixtureCountry, Asset: "EUR", Ref: ref,
+	})
+	if err != nil {
+		t.Fatalf("OpenSettlementAccount %s: %v", bic, err)
+	}
+	b, err := applicant.RecordMembership(ctx, payment.AdmissionAcknowledgement{
+		BIC: bic, Issuer: issuer, Accounts: member.Accounts, Ref: ref,
+	})
+	if err != nil {
+		t.Fatalf("RecordMembership %s: %v", bic, err)
+	}
+	if err := h.mesh.AddBank(ctx, b); err != nil {
+		t.Fatalf("AddBank %s: %v", bic, err)
+	}
+	return b
 }
 
 // getBank re-reads a bank from the store, which is the only way to learn what

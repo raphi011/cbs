@@ -106,8 +106,10 @@ func (i IBAN) Validate() error {
 // it is an element in its own right — Org/OrgId on the request, OrgId on the
 // acknowledgement and the rejection — and it is how the applicant bank is named.
 //
-// Only AnyBIC is carried. The standard also allows an LEI and a list of generic
-// identifiers, and neither route needs one.
+// AnyBIC and the generic identifiers are carried; the LEI is not, because
+// nothing in this system holds one. Othr is empty on every message but the
+// acmt.010, where it is how a national bank code reaches the two institutions
+// that route by it — see GenericOrganisationIdentification.
 //
 // AnyBIC's schema type is AnyBICDec2014Identifier, whose pattern is character
 // for character the same as BICFIDec2014Identifier's.
@@ -128,15 +130,92 @@ func (i IBAN) Validate() error {
 // identified by BIC specifically: it is what the settlement agent keys its member
 // record by, what the clearing house keys its routing entry by, and what the
 // acknowledgement is addressed back on. See AccountOwner.
+//
+// Othr is NOT required here, and cannot be: the same type is pacs.002's Orgtr,
+// which carries a BIC and nothing else. Which message wants a generic identifier
+// is the message's own rule, the way LclInstrm's presence is — see
+// PaymentTypeInformation. AccountRequestAcknowledgement is the one that has it.
 type OrganisationIdentification struct {
-	AnyBIC BIC `xml:"AnyBIC"`
+	AnyBIC BIC                                 `xml:"AnyBIC"`
+	Othr   []GenericOrganisationIdentification `xml:"Othr,omitempty"`
 }
 
 func (o OrganisationIdentification) validate() error {
 	if o.AnyBIC == "" {
 		return fmt.Errorf("%w: OrgId/AnyBIC", ErrMissingElement)
 	}
-	return o.AnyBIC.Validate()
+	if err := o.AnyBIC.Validate(); err != nil {
+		return err
+	}
+	for i := range o.Othr {
+		if err := o.Othr[i].validate(); err != nil {
+			return fmt.Errorf("OrgId/Othr[%d]: %w", i, err)
+		}
+	}
+	return nil
+}
+
+// OrganisationIdentificationScheme names the scheme a generic organisation
+// identifier was issued under. Only the proprietary arm is carried, and the
+// reason is a code list rather than a convention.
+//
+// The choice is OrganisationIdentificationSchemeName1Choice, whose Cd is an
+// ExternalOrganisationIdentification1Code — the list of ways to identify an
+// ORGANISATION: a company registration number, a tax reference, a DUNS number. A
+// national bank code is not on it. The codes that name those registries — DEBLZ
+// for Germany's Bankleitzahl, ITNCC for Italy's national clearing code, SESBA
+// for Sweden's — are on ExternalClearingSystemIdentification1Code, which is a
+// different list that this element does not reach. Putting one in Cd would be a
+// value the schema's own enumeration has never heard of.
+//
+// So every scheme this system names here is proprietary, and the asymmetry the
+// real lists carry survives in the VALUE rather than in the arm: three of the
+// four countries name a registry the clearing-system list knows and France names
+// one it does not, because French domestic routing is IBAN-only and no equivalent
+// entry exists. The arm where a code WOULD be right is ClrSysMmbId on a
+// pacs.008's agents, and no message this package builds populates it.
+type OrganisationIdentificationScheme struct {
+	Prtry string `xml:"Prtry"`
+}
+
+func (s OrganisationIdentificationScheme) validate() error {
+	if s.Prtry == "" {
+		return fmt.Errorf("%w: SchmeNm/Prtry", ErrMissingElement)
+	}
+	return nil
+}
+
+// GenericOrganisationIdentification is GenericOrganisationIdentification1: an
+// identifier issued to an organisation, the scheme it was issued under, and the
+// institution that issued it.
+//
+// The three together are what makes it readable by somebody who was not party to
+// the allocation, and that is why all three are required here where the schema
+// requires only the first. An Id alone is digits: "99900001" is a Bankleitzahl,
+// an ABI and a clearing number depending on a scheme nobody stated, and a bank
+// code is unique only within its country. Issr names the institution whose
+// register the allocation is in, which is what a reader would have to ask to
+// check it.
+//
+// SchmeNm and Issr are both minOccurs="0", so requiring them is this package's
+// narrowing and not the standard's.
+type GenericOrganisationIdentification struct {
+	Id      string                           `xml:"Id"`
+	SchmeNm OrganisationIdentificationScheme `xml:"SchmeNm"`
+	Issr    string                           `xml:"Issr"`
+}
+
+func (g GenericOrganisationIdentification) validate() error {
+	if g.Id == "" {
+		return fmt.Errorf("%w: Othr/Id", ErrMissingElement)
+	}
+	if err := g.SchmeNm.validate(); err != nil {
+		return err
+	}
+	if g.Issr == "" {
+		return fmt.Errorf("%w: Othr/Issr", ErrMissingElement)
+	}
+	return nil
 }
 
 // PartyChoice is the standard's Party38Choice: an organisation identification

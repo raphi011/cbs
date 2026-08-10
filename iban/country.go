@@ -32,17 +32,21 @@ type BankCode string
 // only unique within its country, so a code without one names nothing, and every
 // table keyed by an allocation is keyed by the pair.
 //
-// The zero value is a bank that has not been allocated one. That is a real state
-// — a bank exists before any registry has heard of it — and the layers that mint
-// refuse it rather than defaulting, because every default would be some other
-// bank's code.
+// The halves nevertheless arrive at different moments, and that is the state
+// worth knowing about. A bank chooses the market it will operate in when it is
+// licensed; the code is a registry's to give and arrives when the registry gives
+// it. So a country with no code is a bank that has applied and not been
+// answered — a real state, and one in which it can hold a book and address no
+// account at all — and the layers that mint refuse it rather than defaulting,
+// because every default would be some other bank's code.
 type Issuer struct {
 	Country  Country
 	BankCode BankCode
 }
 
-// Zero reports whether this issuer has been allocated anything.
-func (i Issuer) Zero() bool { return i.Country == "" && i.BankCode == "" }
+// Allocated reports whether a registry has answered: both halves present. A
+// country alone is an application, and there is nothing to mint under one.
+func (i Issuer) Allocated() bool { return i.Country != "" && i.BankCode != "" }
 
 // Validate checks that the country is one this package issues in and that the
 // code is the width and character class that country allocates.
@@ -90,14 +94,29 @@ type segment struct {
 	class class
 }
 
-// structure is one country's IBAN, and the four values below are the whole of
-// what this package knows about a country.
+// structure is one country's IBAN, and the fields below are the whole of what
+// this package knows about a country.
 //
 // bankCode, account and national are indices into segments. national is -1 for
 // a country that carries no check character of its own, and compute is nil in
 // exactly the same cases.
 type structure struct {
 	segments []segment
+
+	// scheme names the register a bank code in this country comes out of. It
+	// travels beside the code wherever one leaves an institution, because a code
+	// on its own is digits: 99991 is an ABI and a code banque and there is no
+	// third thing that says which.
+	//
+	// Three of the four are the code the ISO external clearing-system list uses
+	// for that register, and the fourth is not, because France has no entry on
+	// that list — French domestic routing is IBAN-only, which is the same fact
+	// this whole directory exists because of, seen from the standard's side. That
+	// asymmetry is why the values are declared here rather than being assumed
+	// derivable, and why every one of them travels as a PROPRIETARY scheme name;
+	// see iso20022.OrganisationIdentificationScheme for the element that carries
+	// them and the code list it can and cannot reach.
+	scheme string
 
 	bankCode int
 	account  int
@@ -125,6 +144,7 @@ var structures = map[Country]structure{
 			{"blz", 8, digits},
 			{"account", 10, digits},
 		},
+		scheme:   "DEBLZ",
 		bankCode: 0, account: 1, national: -1,
 	},
 
@@ -138,6 +158,7 @@ var structures = map[Country]structure{
 			{"cab", 5, digits},
 			{"account", 12, alnum},
 		},
+		scheme:   "ITNCC",
 		bankCode: 1, account: 3, national: 0,
 		compute: func(get func(string) string) string {
 			return cin(get("abi") + get("cab") + get("account"))
@@ -152,6 +173,7 @@ var structures = map[Country]structure{
 			{"clearing", 3, digits},
 			{"account", 17, digits},
 		},
+		scheme:   "SESBA",
 		bankCode: 0, account: 1, national: -1,
 	},
 
@@ -164,6 +186,7 @@ var structures = map[Country]structure{
 			{"compte", 11, alnum},
 			{"cle", 2, digits},
 		},
+		scheme:   "FRCIB",
 		bankCode: 0, account: 2, national: 3,
 		compute: func(get func(string) string) string {
 			return cleRIB(get("banque"), get("guichet"), get("compte"))
@@ -218,6 +241,37 @@ func structureFor(c Country) (structure, error) {
 		return structure{}, fmt.Errorf("%w: %q", ErrUnknownCountry, string(c))
 	}
 	return s, nil
+}
+
+// Scheme is the name of the register a country's bank codes come out of, for a
+// caller putting one on a message. See structure.scheme.
+func Scheme(c Country) (string, error) {
+	s, err := structureFor(c)
+	if err != nil {
+		return "", err
+	}
+	return s.scheme, nil
+}
+
+// CountryForScheme is Scheme backwards: which country's register a scheme name
+// belongs to.
+//
+// It is the reader's half, and it is what makes a bank code arriving on a
+// message keyable. A code is unique only within a country, so a reader given
+// digits and a scheme has an allocation and a reader given digits alone has
+// nothing — and the scheme is what the message carries, because the country is
+// not on it: an acmt.010 identifies its owner by BIC and no more, and a BIC's
+// country is where the INSTITUTION is rather than where it issues.
+//
+// The search is linear over four entries and the map is not inverted, because an
+// inverted map is a second table to keep true.
+func CountryForScheme(scheme string) (Country, error) {
+	for _, c := range Countries() {
+		if structures[c].scheme == scheme {
+			return c, nil
+		}
+	}
+	return "", fmt.Errorf("%w: no country here allocates under %q", ErrUnknownCountry, scheme)
 }
 
 // BankCodeWidth is what the settlement agent allocates in: the width of a

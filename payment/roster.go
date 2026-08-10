@@ -3,9 +3,53 @@ package payment
 import (
 	"time"
 
+	"github.com/raphi011/cbs/iban"
 	"github.com/raphi011/cbs/iso20022"
 	"github.com/raphi011/cbs/ledger"
 )
+
+// BankCodeAllocation is one row of the NATIONAL REGISTRY's book: which
+// institution holds which bank code, in which country. It lives in the
+// settlement agent's database, and no bank ever reads it.
+//
+// It is what an IBAN's middle digits are a reference into, and it is the fact
+// that makes an address routable at all. A bank code has no computable
+// relationship to a BIC — Aurora is AURODEFFXXX and 99999999 — so somebody has
+// to write the pairing down, and this is that somebody.
+//
+// # It is not the routing directory, and the difference is the whole design
+//
+// This is the ISSUER's record of what it gave out. What a bank routes by is a
+// COPY of the clearing house's published roster, pulled by that bank and
+// possibly behind. The two answer different questions — who issued this address,
+// and may this address be reached — which is why they are two tables in two
+// institutions rather than one table read twice, and why nothing in the domain
+// can reach across from one to the other.
+//
+// # An allocation is never reassigned
+//
+// That is the invariant every subscriber's stale copy rests on. A directory that
+// is behind is then INCOMPLETE and never WRONG: the failure mode is "I cannot
+// route this yet", never "I routed it to the wrong bank". Nothing in this system
+// may introduce a path that gives a code back to be issued again.
+//
+// The settlement agent standing in for four national registries is a fudge, and
+// it is named where the table is: store/sqlite/schema/centralbank/0001_init.sql.
+type BankCodeAllocation struct {
+	// Issuer is the allocation itself: the country whose register it came out
+	// of, and the code. Both, because a code is unique within one country and
+	// nowhere else.
+	Issuer iban.Issuer
+
+	// BIC is the institution it was allocated to, and it is the only thing this
+	// row says about that institution. A registry knows which code belongs to
+	// whom; it does not hold the bank's name, its assets or its accounts — those
+	// are on SettlementMember, one register over in the same database, keyed by
+	// this same BIC and written by the same act.
+	BIC iso20022.BIC
+
+	AllocatedAt time.Time
+}
 
 // SettlementMember is the CENTRAL BANK's own record of a bank it holds a
 // settlement account for. It lives in the central bank's database and in no
@@ -97,6 +141,29 @@ type SettlementMember struct {
 // acmt.007's Org/FullLglNm and names the account it opens after it.
 type RosterEntry struct {
 	BIC iso20022.BIC
+
+	// Issuer is the country and bank code this member issues its customers'
+	// addresses under, learned from the same acmt.010 that writes this row.
+	//
+	// It is what makes this table a ROUTING DIRECTORY rather than a list of
+	// addresses the scheme will talk to. A payer quotes an IBAN and nothing else;
+	// the bank code inside it is a national registry's allocation with no
+	// computable relationship to a BIC, so turning one into the other takes a
+	// published pairing, and this is where this scheme publishes it. Every member
+	// copies these rows and derives from its copy — see the routing directory in
+	// store/sqlite/schema/bank/0001_init.sql.
+	//
+	// The clearing house refuses a second member on a code already here, which
+	// is the settlement agent's refusal made again in another database. It is
+	// belt-and-braces and it earns its place: this row is the one every member
+	// COPIES, so a duplicate would make one address ambiguous for the whole
+	// scheme, and this institution cannot see the registry to check.
+	//
+	// It carries no name beside it, for the reason this row carries none at all.
+	// A member's copy of this table therefore answers a BIC and cannot answer
+	// "Banca Verde", which is the documented absence arriving at the moment a
+	// payer most expects a name.
+	Issuer iban.Issuer
 
 	// Assets is the assets this member clears in. A slice and not a map because
 	// there is nothing to key it by: the clearing house holds no account per

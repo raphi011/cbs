@@ -165,11 +165,12 @@ var (
 		"audit_events", "id_sequences").withPaymentCycle()
 
 	// CentralBank is the settlement agent: a ledger holding the members' reserve
-	// accounts, its own member register, the settlements it discharged, and no
+	// accounts, its own member register, the register of bank codes it allocates
+	// as four national registries in one, the settlements it discharged, and no
 	// customers and no payments.
 	CentralBank = shape("centralbank",
 		"books", "ledgers", "subledgers", "accounts", "transactions", "entries",
-		"settlement_members", "settlement_member_accounts",
+		"bank_codes", "settlement_members", "settlement_member_accounts",
 		"settlements", "settlement_positions",
 		"audit_events", "id_sequences")
 )

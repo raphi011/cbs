@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/raphi011/cbs/deposit"
+	"github.com/raphi011/cbs/iban"
 	"github.com/raphi011/cbs/iso20022"
 	"github.com/raphi011/cbs/ledger"
 	"github.com/raphi011/cbs/lending"
@@ -141,6 +142,33 @@ type Tx interface {
 	GetSettlementMember(ctx context.Context, bic iso20022.BIC) (SettlementMember, error)
 	ListSettlementMembers(ctx context.Context) ([]SettlementMember, error)
 
+	// The settlement agent's SECOND register, and the one no bank ever reads:
+	// which institution holds which bank code. See BankCodeAllocation.
+	//
+	// There are two Gets because there are two questions and each has one
+	// caller. GetBankCode asks "is this code taken", which is the refusal that
+	// stops two banks issuing addresses nobody can tell apart;
+	// GetBankCodeForBIC asks "what has this bank already been allocated", which
+	// is what makes a two-asset admission allocate once. Neither is derivable
+	// from the other, and the row is keyed by the first: (country, code), never
+	// by the code alone, because a code is unique within one country.
+	//
+	// NextBankCodeSerial counts one country's allocations, in the agent's own
+	// id_sequences and not in the shared "id" counter, for the reason
+	// NextAddressSerial has one: a bank code is a number people quote, and one
+	// drawn from a counter every act in the database shares would have gaps in
+	// it saying how much unrelated work happened in between.
+	//
+	// ListBankCodes has one reader and it is not an institution: payment/recon,
+	// which holds the register against every bank's own addresses and against
+	// the clearing house's published roster. No actor in this system may make
+	// either comparison.
+	PutBankCode(ctx context.Context, a BankCodeAllocation) error
+	GetBankCode(ctx context.Context, issuer iban.Issuer) (BankCodeAllocation, error)
+	GetBankCodeForBIC(ctx context.Context, country iban.Country, bic iso20022.BIC) (BankCodeAllocation, error)
+	ListBankCodes(ctx context.Context) ([]BankCodeAllocation, error)
+	NextBankCodeSerial(ctx context.Context, book ledger.BookID, country iban.Country) (uint64, error)
+
 	// Which of these has a production caller, exactly, because the alternative
 	// is a reader guessing from the placement.
 	//
@@ -160,8 +188,17 @@ type Tx interface {
 	// caller is mesh.Mesh.joinRoster, which asks WHO IS A MEMBER rather than
 	// which banks exist, so that a founded and unadmitted bank gets no actor at
 	// startup.
+	//
+	// GetRosterEntryByIssuer is the roster's secondary lookup, and it exists for
+	// one refusal: two members published under one bank code would make one
+	// address ambiguous for every member that copies this table. Same shape as
+	// GetPaymentByEndToEndID — the row is keyed by the identifier this
+	// institution routes on, and the question arrives quoting a different one —
+	// and the same sentinel as the primary, ErrRosterEntryNotFound, because "no
+	// member holds this code" is the answer either lookup gives when it misses.
 	PutRosterEntry(ctx context.Context, e RosterEntry) error
 	GetRosterEntry(ctx context.Context, bic iso20022.BIC) (RosterEntry, error)
+	GetRosterEntryByIssuer(ctx context.Context, issuer iban.Issuer) (RosterEntry, error)
 	ListRosterEntries(ctx context.Context) ([]RosterEntry, error)
 
 	PutPayment(ctx context.Context, p Payment) error

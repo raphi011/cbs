@@ -26,6 +26,17 @@ var (
 	// with its own store gives when it is asked to settle for a stranger.
 	ErrSettlementMemberNotFound = errors.New("payment: the settlement agent holds no account for this BIC")
 
+	// ErrBankCodeNotAllocated is a (country, code) the settlement agent's
+	// registry has no row for.
+	//
+	// It is the ISSUER's answer and it means the code was never given out. That
+	// is not the same statement as a bank's own directory failing to resolve one
+	// — see ErrBankCodeUnknown, which is a subscriber's copy answering about
+	// itself and cannot tell "never allocated" from "allocated since I last
+	// refreshed". This one CAN tell, because the registry is where an allocation
+	// comes into existence.
+	ErrBankCodeNotAllocated = errors.New("payment: no bank code has been allocated under this country and code")
+
 	// ErrRosterEntryNotFound is a BIC the clearing house does not route to.
 	//
 	// Separate from the two above for the reason they are separate from each
@@ -261,6 +272,45 @@ var (
 	// connectivity; this is the statement about membership, made by the
 	// institution that owns routing.
 	ErrBICAlreadyAdmitted = errors.New("payment: this BIC is already admitted under another admission")
+
+	// ErrBankCodeTaken is a bank code already allocated to a DIFFERENT
+	// institution.
+	//
+	// Two banks issuing addresses under one code is the defect the whole routing
+	// directory would sit on top of: every address either of them minted would
+	// resolve to whichever bank the reader's copy named last, and a payer could
+	// not tell, and neither could a receiving bank. So it is refused twice, in
+	// two databases, by two institutions.
+	//
+	// The settlement agent refuses it at ALLOCATION, which is where it can be
+	// refused for good: the registry is keyed by (country, code) and a second
+	// allocation of one code cannot be written. The clearing house refuses it
+	// again on its own roster, and that one is belt-and-braces that earns its
+	// place — the roster is what every member COPIES, so a duplicate there would
+	// make one address ambiguous for the whole scheme, and the clearing house
+	// cannot see the registry to check.
+	//
+	// Not to be confused with ErrBICAlreadyAdmitted, which is two institutions
+	// contending for one ADDRESS. A bank can hold a BIC nobody else wants and
+	// still be handed a code somebody else holds.
+	ErrBankCodeTaken = errors.New("payment: this bank code is already allocated to another institution")
+
+	// ErrBankCodeReplaced is an acknowledgement that would move a bank's address
+	// range: to another country, or to another code in the one it applied to.
+	//
+	// A CODE IS NEVER REASSIGNED, and this is the guard that says so from the
+	// bank's own end. It is the invariant the whole subscribed-copy design rests
+	// on: a member's routing directory can be behind, so it can be INCOMPLETE,
+	// and it must never be WRONG — "I cannot route this yet" is a state a payer
+	// can be told about and "I routed it to the wrong bank" is not. A bank that
+	// accepted a second allocation would leave every address it had already
+	// issued pointing at a range it no longer holds, in every copy of the roster
+	// in the scheme, with nothing anywhere saying so.
+	//
+	// It is ErrSettlementAccountReplaced's sibling and reaches further. That one
+	// costs the bank its own reserve postings; this one costs every customer
+	// their address.
+	ErrBankCodeReplaced = errors.New("payment: this acknowledgement would move the bank's address range")
 
 	// ErrBankAlreadyAdmitted is a bank recording an acknowledgement that belongs
 	// to an admission other than the one it recorded a membership under.

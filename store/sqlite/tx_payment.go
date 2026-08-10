@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/raphi011/cbs/iban"
 	"github.com/raphi011/cbs/iso20022"
 	"github.com/raphi011/cbs/ledger"
 	"github.com/raphi011/cbs/payment"
@@ -371,6 +372,127 @@ func (t *tx) ListSettlementMembers(ctx context.Context) ([]payment.SettlementMem
 	return out, nil
 }
 
+// NextBankCodeSerial counts one country's allocations, from a counter named
+// after that country beside the book's shared "id" counter in the same table.
+//
+// One counter PER COUNTRY, and that is what makes the allocation rule below
+// produce a readable code. A shared counter would still hand out unique numbers
+// and the codes would have holes in them saying how much unrelated work the
+// agent had done in between — the same argument NextAddressSerial makes about an
+// account number, and for the same reason: a bank code is a number people quote.
+func (t *tx) NextBankCodeSerial(ctx context.Context, book ledger.BookID, country iban.Country) (uint64, error) {
+	if err := t.inShape("bank_codes"); err != nil {
+		return 0, err
+	}
+	n, err := t.nextSeq(ctx, book, "bank_code:"+string(country))
+	if err != nil {
+		return 0, err
+	}
+	return uint64(n), nil
+}
+
+func (t *tx) PutBankCode(ctx context.Context, a payment.BankCodeAllocation) error {
+	if err := t.inShape("bank_codes"); err != nil {
+		return err
+	}
+	if err := t.write(); err != nil {
+		return err
+	}
+	// An upsert like every other Put here, and the key it upserts on is
+	// (country, code) — so re-writing an allocation to the SAME bank is a no-op
+	// and moving one to another bank would silently succeed. What forbids that
+	// is the act: payment's OpenSettlementAccountTx reads the row before it
+	// writes and refuses a code held by anybody else (ErrBankCodeTaken). The
+	// store holds the key; a code is never reassigned is a domain rule, and this
+	// is the same division every other row in this file keeps.
+	_, err := t.tx.ExecContext(ctx, `
+		INSERT INTO bank_codes (country, code, bic, allocated_at, seq)
+		VALUES (?, ?, ?, ?, `+nextRowSeq("bank_codes")+`)
+		ON CONFLICT (country, code) DO UPDATE SET
+			bic          = EXCLUDED.bic,
+			allocated_at = EXCLUDED.allocated_at`,
+		string(a.Issuer.Country), string(a.Issuer.BankCode), string(a.BIC), nullTime{a.AllocatedAt})
+	if err != nil {
+		return fmt.Errorf("sqlite: put bank code %s %s: %w", a.Issuer.Country, a.Issuer.BankCode, err)
+	}
+	return nil
+}
+
+func scanBankCode(row interface{ Scan(...any) error }) (payment.BankCodeAllocation, error) {
+	var (
+		a           payment.BankCodeAllocation
+		allocatedAt nullTime
+	)
+	if err := row.Scan(&a.Issuer.Country, &a.Issuer.BankCode, &a.BIC, &allocatedAt); err != nil {
+		return payment.BankCodeAllocation{}, err
+	}
+	a.AllocatedAt = allocatedAt.Time
+	return a, nil
+}
+
+func (t *tx) GetBankCode(ctx context.Context, issuer iban.Issuer) (payment.BankCodeAllocation, error) {
+	if err := t.inShape("bank_codes"); err != nil {
+		return payment.BankCodeAllocation{}, err
+	}
+	a, err := scanBankCode(t.tx.QueryRowContext(ctx,
+		"SELECT country, code, bic, allocated_at FROM bank_codes WHERE country = ? AND code = ?",
+		string(issuer.Country), string(issuer.BankCode)))
+	if errors.Is(err, sql.ErrNoRows) {
+		return payment.BankCodeAllocation{}, payment.ErrBankCodeNotAllocated
+	}
+	if err != nil {
+		return payment.BankCodeAllocation{}, fmt.Errorf("sqlite: get bank code %s %s: %w",
+			issuer.Country, issuer.BankCode, err)
+	}
+	return a, nil
+}
+
+// GetBankCodeForBIC answers the other question this register is asked: what has
+// this institution already been allocated in this country.
+//
+// There is no unique index behind it — the schema argues why at the bic column —
+// so a second row would be invisible here rather than refused. It cannot exist:
+// the act reads this before it allocates. LIMIT 1 on the seq is what makes the
+// answer at least DETERMINISTIC if one ever did, rather than whichever row the
+// query planner reached first.
+func (t *tx) GetBankCodeForBIC(ctx context.Context, country iban.Country, bic iso20022.BIC) (payment.BankCodeAllocation, error) {
+	if err := t.inShape("bank_codes"); err != nil {
+		return payment.BankCodeAllocation{}, err
+	}
+	a, err := scanBankCode(t.tx.QueryRowContext(ctx, `
+		SELECT country, code, bic, allocated_at FROM bank_codes
+		 WHERE country = ? AND bic = ? ORDER BY seq LIMIT 1`, string(country), string(bic)))
+	if errors.Is(err, sql.ErrNoRows) {
+		return payment.BankCodeAllocation{}, payment.ErrBankCodeNotAllocated
+	}
+	if err != nil {
+		return payment.BankCodeAllocation{}, fmt.Errorf("sqlite: get %s's bank code in %s: %w", bic, country, err)
+	}
+	return a, nil
+}
+
+func (t *tx) ListBankCodes(ctx context.Context) ([]payment.BankCodeAllocation, error) {
+	if err := t.inShape("bank_codes"); err != nil {
+		return nil, err
+	}
+	rows, err := t.tx.QueryContext(ctx,
+		"SELECT country, code, bic, allocated_at FROM bank_codes ORDER BY allocated_at ASC NULLS FIRST, seq")
+	if err != nil {
+		return nil, fmt.Errorf("sqlite: list bank codes: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]payment.BankCodeAllocation, 0)
+	for rows.Next() {
+		a, err := scanBankCode(rows)
+		if err != nil {
+			return nil, fmt.Errorf("sqlite: list bank codes: %w", err)
+		}
+		out = append(out, a)
+	}
+	return out, rows.Err()
+}
+
 // PutRosterEntry stores the clearing house's routing row for one member.
 //
 // The assets are a child table like the other two rows', but they are an
@@ -388,12 +510,14 @@ func (t *tx) PutRosterEntry(ctx context.Context, e payment.RosterEntry) error {
 		return err
 	}
 	_, err := t.tx.ExecContext(ctx, `
-		INSERT INTO roster_entries (bic, admission_ref, admitted_at, seq)
-		VALUES (?, ?, ?, `+nextRowSeq("roster_entries")+`)
+		INSERT INTO roster_entries (bic, country, bank_code, admission_ref, admitted_at, seq)
+		VALUES (?, ?, ?, ?, ?, `+nextRowSeq("roster_entries")+`)
 		ON CONFLICT (bic) DO UPDATE SET
+			country       = EXCLUDED.country,
+			bank_code     = EXCLUDED.bank_code,
 			admission_ref = EXCLUDED.admission_ref,
 			admitted_at   = EXCLUDED.admitted_at`,
-		string(e.BIC), e.AdmissionRef, nullTime{e.AdmittedAt})
+		string(e.BIC), string(e.Issuer.Country), string(e.Issuer.BankCode), e.AdmissionRef, nullTime{e.AdmittedAt})
 	if err != nil {
 		return fmt.Errorf("sqlite: put roster entry %s: %w", e.BIC, err)
 	}
@@ -454,7 +578,7 @@ func scanRosterEntry(row interface{ Scan(...any) error }) (payment.RosterEntry, 
 		e          payment.RosterEntry
 		admittedAt nullTime
 	)
-	if err := row.Scan(&e.BIC, &e.AdmissionRef, &admittedAt); err != nil {
+	if err := row.Scan(&e.BIC, &e.Issuer.Country, &e.Issuer.BankCode, &e.AdmissionRef, &admittedAt); err != nil {
 		return payment.RosterEntry{}, err
 	}
 	e.AdmittedAt = admittedAt.Time
@@ -466,7 +590,7 @@ func (t *tx) GetRosterEntry(ctx context.Context, bic iso20022.BIC) (payment.Rost
 		return payment.RosterEntry{}, err
 	}
 	e, err := scanRosterEntry(t.tx.QueryRowContext(ctx,
-		"SELECT bic, admission_ref, admitted_at FROM roster_entries WHERE bic = ?", string(bic)))
+		"SELECT bic, country, bank_code, admission_ref, admitted_at FROM roster_entries WHERE bic = ?", string(bic)))
 	if errors.Is(err, sql.ErrNoRows) {
 		return payment.RosterEntry{}, payment.ErrRosterEntryNotFound
 	}
@@ -481,12 +605,41 @@ func (t *tx) GetRosterEntry(ctx context.Context, bic iso20022.BIC) (payment.Rost
 	return e, nil
 }
 
+// GetRosterEntryByIssuer answers which member is published under one allocation.
+//
+// There is no index behind it and no UNIQUE either — the schema argues both at
+// the bank_code column — so this is a scan of a table with one row per member.
+// ORDER BY seq is what makes the answer deterministic if a duplicate ever
+// existed, which the act that writes these rows is what prevents.
+func (t *tx) GetRosterEntryByIssuer(ctx context.Context, issuer iban.Issuer) (payment.RosterEntry, error) {
+	if err := t.inShape("roster_entries"); err != nil {
+		return payment.RosterEntry{}, err
+	}
+	e, err := scanRosterEntry(t.tx.QueryRowContext(ctx, `
+		SELECT bic, country, bank_code, admission_ref, admitted_at FROM roster_entries
+		 WHERE country = ? AND bank_code = ? ORDER BY seq LIMIT 1`,
+		string(issuer.Country), string(issuer.BankCode)))
+	if errors.Is(err, sql.ErrNoRows) {
+		return payment.RosterEntry{}, payment.ErrRosterEntryNotFound
+	}
+	if err != nil {
+		return payment.RosterEntry{}, fmt.Errorf("sqlite: get roster entry for %s %s: %w",
+			issuer.Country, issuer.BankCode, err)
+	}
+	assets, err := t.rosterEntryAssets(ctx, e.BIC)
+	if err != nil {
+		return payment.RosterEntry{}, err
+	}
+	e.Assets = assets[e.BIC]
+	return e, nil
+}
+
 func (t *tx) ListRosterEntries(ctx context.Context) ([]payment.RosterEntry, error) {
 	if err := t.inShape("roster_entries"); err != nil {
 		return nil, err
 	}
 	rows, err := t.tx.QueryContext(ctx,
-		"SELECT bic, admission_ref, admitted_at FROM roster_entries ORDER BY admitted_at ASC NULLS FIRST, seq")
+		"SELECT bic, country, bank_code, admission_ref, admitted_at FROM roster_entries ORDER BY admitted_at ASC NULLS FIRST, seq")
 	if err != nil {
 		return nil, fmt.Errorf("sqlite: list roster entries: %w", err)
 	}

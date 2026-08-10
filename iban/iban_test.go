@@ -200,3 +200,35 @@ func TestASerialIsRefusedRatherThanTruncated(t *testing.T) {
 		t.Errorf("the last serial that fits was refused: %v", err)
 	}
 }
+
+// TestEveryCountryNamesADistinctRegister is what makes a bank code readable by
+// an institution that was not party to its allocation. The code alone is digits
+// — 99991 is an ABI and a code banque — so the register's name travels beside it
+// and has to come back to one country.
+func TestEveryCountryNamesADistinctRegister(t *testing.T) {
+	seen := map[string]Country{}
+	for _, c := range Countries() {
+		scheme, err := Scheme(c)
+		if err != nil {
+			t.Fatalf("Scheme(%s) = %v", c, err)
+		}
+		if scheme == "" {
+			t.Fatalf("%s names no register", c)
+		}
+		if other, dup := seen[scheme]; dup {
+			t.Fatalf("%s and %s both allocate under %q", other, c, scheme)
+		}
+		seen[scheme] = c
+
+		back, err := CountryForScheme(scheme)
+		if err != nil {
+			t.Fatalf("CountryForScheme(%s) = %v", scheme, err)
+		}
+		if back != c {
+			t.Errorf("CountryForScheme(%s) = %s, want %s", scheme, back, c)
+		}
+	}
+	if _, err := CountryForScheme("GBDSC"); !errors.Is(err, ErrUnknownCountry) {
+		t.Errorf("CountryForScheme of a register nobody here uses = %v, want ErrUnknownCountry", err)
+	}
+}

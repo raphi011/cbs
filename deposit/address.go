@@ -27,7 +27,7 @@ import (
 // every other counter in the schema, and the reason none of them is a database
 // sequence.
 func (r *Register) mintAddressTx(ctx context.Context, tx Tx) (Identifier, error) {
-	if r.issuer.Zero() {
+	if !r.issuer.Allocated() {
 		return Identifier{}, ErrNoIssuer
 	}
 	serial, err := tx.NextAddressSerial(ctx, r.bookID)

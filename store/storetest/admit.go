@@ -2,7 +2,6 @@ package storetest
 
 import (
 	"context"
-	"fmt"
 	"maps"
 	"slices"
 
@@ -44,6 +43,18 @@ import (
 // Every test that wants "a bank in the scheme" says this, and what it gets back
 // is a Member bank.
 //
+// # The bank code is really allocated
+//
+// The settlement agent allocates it, exactly as it does in the conversation, and
+// the acknowledgement below carries it to the other two acts. There used to be a
+// stand-in here that hashed the BIC, because no act allocated anything; what
+// that could not do is refuse a collision, which is precisely what a registry is
+// for. Every fixture bank is admitted in ONE country, and deliberately not its
+// BIC's — the suites use addresses like BANKESMMXXX, in countries this system
+// keeps no IBAN structure for, and an account's country is not its bank's in any
+// case (see iban.Country). One country keeps the fixtures uniform and says
+// nothing untrue.
+//
 // # The admission reference
 //
 // Derived from the BIC rather than left empty. There is no process id because
@@ -72,7 +83,7 @@ func Admit(ctx context.Context, nets *payment.Networks, name string, bic iso2002
 	if err != nil {
 		return nil, err
 	}
-	bank, err := applicant.FoundBank(ctx, name, bic, FixtureIssuer(bic), assets)
+	bank, err := applicant.FoundBank(ctx, name, bic, FixtureCountry, assets)
 	if err != nil {
 		return nil, err
 	}
@@ -83,19 +94,23 @@ func Admit(ctx context.Context, nets *payment.Networks, name string, bic iso2002
 	// central bank's account ids in the same sequence — Go randomises map
 	// iteration, and a fixture whose ids moved between runs would be a fixture
 	// nothing could assert on.
-	var member payment.SettlementMember
+	var (
+		member payment.SettlementMember
+		issuer iban.Issuer
+	)
 	for _, asset := range slices.Sorted(maps.Keys(bank.Assets)) {
-		if member, err = nets.CentralBank().OpenSettlementAccount(ctx, payment.AdmissionRequest{
-			Name: name, BIC: bic, Asset: asset, Ref: admissionRef(bic),
+		if member, issuer, err = nets.CentralBank().OpenSettlementAccount(ctx, payment.AdmissionRequest{
+			Name: name, BIC: bic, Country: FixtureCountry, Asset: asset, Ref: admissionRef(bic),
 		}); err != nil {
 			return nil, err
 		}
 	}
-	// Each answer carries the servicer's whole account set for the address, so
-	// the last is the one the other two acts read — which is true of the real
-	// conversation too: a bank's second acknowledgement lists both accounts.
+	// Each answer carries the servicer's whole account set for the address and
+	// the one allocation it made, so the last is the one the other two acts read
+	// — which is true of the real conversation too: a bank's second
+	// acknowledgement lists both accounts and repeats the code.
 	ack := payment.AdmissionAcknowledgement{
-		BIC: bic, Accounts: member.Accounts, Ref: admissionRef(bic),
+		BIC: bic, Issuer: issuer, Accounts: member.Accounts, Ref: admissionRef(bic),
 	}
 	if _, err := nets.ClearingHouse().AdmitMember(ctx, ack); err != nil {
 		return nil, err
@@ -106,35 +121,5 @@ func Admit(ctx context.Context, nets *payment.Networks, name string, bic iso2002
 // admissionRef is the process id this stand-in quotes. See Admit.
 func admissionRef(bic iso20022.BIC) string { return "admitted-" + string(bic) }
 
-// FixtureIssuer is the bank code a fixture bank issues addresses under, derived
-// from its BIC exactly as admissionRef above derives a process id — and for the
-// same reason. These suites compose no messages, so no settlement agent has
-// allocated anything, and something has to stand in.
-//
-// IT IS NOT A RULE AND NOTHING IN THE DOMAIN MAY DERIVE THIS WAY. A bank code is
-// allocated by a national registry and travels on a message; deriving one from a
-// BIC is precisely the shortcut the routing directory exists to make impossible.
-// It is confined to fixtures — this function is exported so that mesh's, api's
-// and payment's suites share the one allocator rather than each inventing a
-// convention — where the alternative is threading an allocation through several
-// dozen call sites that have nothing to say about addressing.
-//
-// EVERY FIXTURE BANK IS IN ONE COUNTRY, and deliberately not its BIC's. The
-// suites use addresses like BANKESMMXXX, in countries this system issues no
-// structure for, and an account's country is not its bank's in any case — see
-// iban.Country. One country keeps the fixtures uniform and says nothing untrue.
-//
-// The hash could collide, and two banks on one code would be two banks issuing
-// overlapping addresses. Nothing here refuses that yet; the settlement agent's
-// registry does, once it exists, which turns a silent collision into a refusal
-// at the only institution that can see both.
-func FixtureIssuer(bic iso20022.BIC) iban.Issuer {
-	var h uint32 = 2166136261
-	for _, c := range []byte(bic) {
-		h = (h ^ uint32(c)) * 16777619
-	}
-	return iban.Issuer{
-		Country:  iban.DE,
-		BankCode: iban.BankCode(fmt.Sprintf("%08d", h%100_000_000)),
-	}
-}
+// FixtureCountry is the register every fixture bank applies to. See Admit.
+const FixtureCountry = iban.DE

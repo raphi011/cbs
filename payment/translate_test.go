@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/raphi011/cbs/deposit"
+	"github.com/raphi011/cbs/iban"
 	"github.com/raphi011/cbs/iso20022"
 	"github.com/raphi011/cbs/ledger"
 )
@@ -787,8 +788,12 @@ var admissionNow = time.Date(2025, 1, 15, 11, 30, 0, 0, time.UTC)
 
 // admissionRequest is the request these tests build from and read back.
 func admissionRequest() AdmissionRequest {
-	return AdmissionRequest{Name: "Nordhaven Bank", BIC: "NORDSESSXXX", Asset: "EUR", Ref: "adm-1"}
+	return AdmissionRequest{Name: "Nordhaven Bank", BIC: "NORDSESSXXX", Country: iban.SE, Asset: "EUR", Ref: "adm-1"}
 }
+
+// testAllocation is what the settlement agent allocated the applicant in these
+// fixtures: Sweden's register, and a code at the top of its range.
+var testAllocation = iban.Issuer{Country: iban.SE, BankCode: "999"}
 
 func admissionContext() MessageContext {
 	return MessageContext{From: "NORDSESSXXX", To: "CSMXFRPPXXX", MsgID: "nord-1", Now: admissionNow}
@@ -892,7 +897,8 @@ func TestReadAdmissionRequestRefusesWhatWouldKeyARowByNothing(t *testing.T) {
 // address, a set of accounts and the admission they belong to.
 func TestAnAdmissionAcknowledgementSurvivesTheRoundTrip(t *testing.T) {
 	in := AdmissionAcknowledgement{
-		BIC: "NORDSESSXXX",
+		BIC:    "NORDSESSXXX",
+		Issuer: testAllocation,
 		Accounts: map[ledger.AssetCode]ledger.AccountID{
 			"USD": "acc_usd",
 			"EUR": "acc_eur",
@@ -928,6 +934,18 @@ func TestAnAdmissionAcknowledgementSurvivesTheRoundTrip(t *testing.T) {
 	if len(back.Accounts) != 2 || back.Accounts["EUR"] != "acc_eur" || back.Accounts["USD"] != "acc_usd" {
 		t.Errorf("the accounts came back as %v, want both of %v", back.Accounts, in.Accounts)
 	}
+	// The allocation, and the country in particular: it is carried by the
+	// REGISTER's name and by nothing else, because the message has no country
+	// element and a bank code is unique within one country.
+	if back.Issuer != in.Issuer {
+		t.Errorf("the allocation came back as %+v, want %+v", back.Issuer, in.Issuer)
+	}
+	if got := doc.AcctReqAck.OrgId.Othr[0].SchmeNm.Prtry; got != "SESBA" {
+		t.Errorf("the register is named %q, want Sweden's", got)
+	}
+	if got := doc.AcctReqAck.OrgId.Othr[0].Issr; got != "CBXXDEFFXXX" {
+		t.Errorf("the allocation says %q allocated it, want the sender", got)
+	}
 }
 
 // TestReadAdmissionAcknowledgementRefusesAnAccountItCannotFile is the second
@@ -943,6 +961,7 @@ func TestReadAdmissionAcknowledgementRefusesAnAccountItCannotFile(t *testing.T) 
 		t.Helper()
 		env, err := AdmissionAcknowledgementMessage(AdmissionAcknowledgement{
 			BIC:      "NORDSESSXXX",
+			Issuer:   testAllocation,
 			Accounts: map[ledger.AssetCode]ledger.AccountID{"EUR": "acc_eur"},
 			Ref:      "adm-1",
 		}, MessageContext{From: "CBXXDEFFXXX", To: "CSMXFRPPXXX", MsgID: "cb-1", Now: admissionNow})
@@ -1036,11 +1055,12 @@ func TestAnAdmissionMessageRefusesWhatTheSchemaMakesMandatory(t *testing.T) {
 		what string
 		in   AdmissionRequest
 	}{
-		{"no applicant", AdmissionRequest{Name: "N", Asset: "EUR", Ref: "adm-1"}},
-		{"a malformed applicant", AdmissionRequest{Name: "N", BIC: "NORD", Asset: "EUR", Ref: "adm-1"}},
-		{"no legal name", AdmissionRequest{BIC: "NORDSESSXXX", Asset: "EUR", Ref: "adm-1"}},
-		{"no currency", AdmissionRequest{Name: "N", BIC: "NORDSESSXXX", Ref: "adm-1"}},
-		{"no process id", AdmissionRequest{Name: "N", BIC: "NORDSESSXXX", Asset: "EUR"}},
+		{"no applicant", AdmissionRequest{Name: "N", Country: iban.SE, Asset: "EUR", Ref: "adm-1"}},
+		{"a malformed applicant", AdmissionRequest{Name: "N", BIC: "NORD", Country: iban.SE, Asset: "EUR", Ref: "adm-1"}},
+		{"no legal name", AdmissionRequest{BIC: "NORDSESSXXX", Country: iban.SE, Asset: "EUR", Ref: "adm-1"}},
+		{"no currency", AdmissionRequest{Name: "N", BIC: "NORDSESSXXX", Country: iban.SE, Ref: "adm-1"}},
+		{"no process id", AdmissionRequest{Name: "N", BIC: "NORDSESSXXX", Country: iban.SE, Asset: "EUR"}},
+		{"no country of operation", AdmissionRequest{Name: "N", BIC: "NORDSESSXXX", Asset: "EUR", Ref: "adm-1"}},
 	} {
 		if _, err := AdmissionMessage(tc.in, "CBXXDEFFXXX", mc); err == nil {
 			t.Errorf("a request with %s was built", tc.what)
@@ -1053,9 +1073,13 @@ func TestAnAdmissionMessageRefusesWhatTheSchemaMakesMandatory(t *testing.T) {
 		what string
 		in   AdmissionAcknowledgement
 	}{
-		{"no account owner", AdmissionAcknowledgement{Accounts: map[ledger.AssetCode]ledger.AccountID{"EUR": "a"}, Ref: "r"}},
-		{"no process id", AdmissionAcknowledgement{BIC: "NORDSESSXXX", Accounts: map[ledger.AssetCode]ledger.AccountID{"EUR": "a"}}},
-		{"no account", AdmissionAcknowledgement{BIC: "NORDSESSXXX", Ref: "r"}},
+		{"no account owner", AdmissionAcknowledgement{
+			Issuer: testAllocation, Accounts: map[ledger.AssetCode]ledger.AccountID{"EUR": "a"}, Ref: "r"}},
+		{"no process id", AdmissionAcknowledgement{
+			BIC: "NORDSESSXXX", Issuer: testAllocation, Accounts: map[ledger.AssetCode]ledger.AccountID{"EUR": "a"}}},
+		{"no account", AdmissionAcknowledgement{BIC: "NORDSESSXXX", Issuer: testAllocation, Ref: "r"}},
+		{"no allocation", AdmissionAcknowledgement{
+			BIC: "NORDSESSXXX", Accounts: map[ledger.AssetCode]ledger.AccountID{"EUR": "a"}, Ref: "r"}},
 		{"an account with no identifier", AdmissionAcknowledgement{
 			BIC: "NORDSESSXXX", Ref: "r", Accounts: map[ledger.AssetCode]ledger.AccountID{"EUR": ""}}},
 	} {
