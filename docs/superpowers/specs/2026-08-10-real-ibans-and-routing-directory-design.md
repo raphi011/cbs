@@ -183,10 +183,35 @@ pattern. Its regex `^[A-Z]{2}[0-9]{2}[A-Za-z0-9]{1,30}$` already accepts every
 IBAN this design mints, so **no message type changes in Task 20.**
 
 `deposit.Identifier.MatchValue` stops hand-rolling `ibanSeparators` and
-delegates. `TestMatchValueAgreesWithTheWireCompaction` — which exists to pin two
-copies of a rule together — becomes unnecessary and is deleted rather than
-tripled. That deletion is a *result*, and the comment that replaces it should say
-so.
+delegates. `TestMatchValueAgreesWithTheWireCompaction` **survives**, which this
+section predicted wrongly: it assumed the copies collapsing to one, and there are
+still two, because `iso20022` imports nothing from this repository. Two copies
+means the pin is still doing its job.
+
+**The two `Compact`s disagree about CASE, deliberately.** `iban.Compact` folds
+it; `iso20022.IBAN.Compact` does not, because the schema's pattern requires an
+upper-case country code and `Validate` has to be able to refuse one that is not.
+The pin test therefore folds case on one side and says why.
+
+That divergence has a consequence this section did not anticipate, and it is
+where the design was actually wrong rather than merely incomplete: **a quoted
+address has to be canonicalised where a person's typing arrives.** A payer types
+an IBAN grouped and lower-cased; the register accepts it, because comparison is
+canonical; but a quoted address for a party at ANOTHER bank never meets that
+bank's register on the way out, so nothing replaces the spelling and the codec
+refuses the document. `iban.Parse` is the front door, and `partyRefDTO.toDomain`
+is where a request goes through it. A value that will not parse passes through
+unchanged, so the refusal stays the domain's.
+
+Two other things follow from the fold, and both bit:
+
+- The store's `ListDepositAccountsByIdentifier` must `upper()` as well as
+  `replace()`. Its Go counterpart folds case, and every direction the suite drove
+  passed without it — an address is upper-cased everywhere it is minted, so the
+  row that would notice is the one nothing writes.
+- Browser-side validation is mod-97 **only**. The country table stays in Go;
+  copying it into the client would put the rule in two places with nothing
+  holding them together.
 
 ## The country table
 
@@ -548,16 +573,18 @@ Task 21:
 
 ## Tasks
 
-**Task 20**
+**Task 20 — shipped.**
 
 1. `iban` package: country table, mod-97, CIN, clé RIB, `Parse`/`New`/`Grouped`.
 2. `deposit`: mint in `OpenAccountTx`; `AddIdentifier` refuses IBANs;
-   `ReissueIdentifier`; `MatchValue` delegates; delete the pin test.
+   `ReissueIdentifier`; `MatchValue` delegates; the pin test survives (§ above).
 3. `id_sequences`: the `iban` counter.
-4. Regenerate every literal — `seed`, `storetest`, api and payment tests, web
-   fixtures.
-5. Docs: README addressing section, hint keys, quiz, schema comments.
-6. Web: client-side mod-97.
+4. Regenerate every literal — `seed`, `storetest`, api and payment tests, the
+   `iso20022` goldens, web fixtures.
+5. `api`: canonicalise a quoted address at the door (§ above).
+6. `store/sqlite`: `upper()` in the identifier lookup, and a `storetest` case.
+7. Docs: README addressing section, hint keys, quiz, schema comments.
+8. Web: client-side mod-97.
 
 **Task 21**
 
