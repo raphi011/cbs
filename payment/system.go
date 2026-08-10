@@ -4875,11 +4875,13 @@ func addressFor(scheme Scheme, ref PartyRef, acct deposit.Account) (deposit.Iden
 	}
 	// Matches and not ==, and the payment records the account's STORED form.
 	//
-	// The two differ for one reason: an IBAN is stored in its readable display
-	// form and quoted on the wire compact, and those are one address
-	// (deposit.Identifier.MatchValue). A payment translated out of a received
-	// pacs.008 quotes what the message carried, so == would refuse a party this
-	// bank had just resolved BY that address.
+	// The two differ when a PERSON supplied the quote: a customer reads an IBAN
+	// off a statement, where it is grouped in fours, and types it in whatever
+	// case they were in. That is the same address as the compact one the bank
+	// stored (deposit.Identifier.MatchValue), and == would refuse it. A quote
+	// that came off a message needs no such allowance — the wire form and the
+	// stored form are one string — but the check cannot tell the two apart and
+	// does not need to.
 	//
 	// Returning the stored identifier keeps the invariant that a payment's
 	// recorded address is one the account actually holds, in the form this bank

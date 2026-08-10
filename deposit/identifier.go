@@ -78,8 +78,8 @@ func (i Identifier) MatchValue() string {
 //
 // A store must use this for ListDepositAccountsByIdentifier rather than ==, and
 // it is the only thing it may use — a store comparing raw values leaves an
-// account opened as SE89-AURORA-1001 unreachable from a message carrying
-// SE89AURORA1001, which is the same address. A store expressing this in SQL is
+// account holding DE20999000010000000001 unreachable from a customer who typed
+// DE20 9990 0001 0000 0000 01, which is the same address. A store expressing this in SQL is
 // re-implementing this function, so it is pinned by
 // storetest/ListDepositAccountsByIdentifierMatchesAnIBANThroughItsSeparators.
 func (i Identifier) Matches(o Identifier) bool {

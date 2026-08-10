@@ -1537,19 +1537,18 @@ func (s *Network) addressedPartyTx(ctx context.Context, tx Tx, ident deposit.Ide
 // The value is compacted here, which is a no-op for anything that came off the
 // wire — the schema's pattern admits no separators — and is done anyway so that
 // what this returns is in one canonical form regardless of who built the
-// document. What compaction cannot do is run backwards, and this repository
-// stores the DISPLAY form: seed.go writes SE89-AURORA-1001 for an account whose
-// pacs.008 carries SE89AURORA1001.
+// document. A register stores that same form, so what reaches
+// ResolveIdentifierTx from here matches an account's stored address literally.
 //
-// Matching those is not this function's job and must not be, because a fallback
-// here would help no other caller and would mean this package second-guessing
-// the directory it was told to use. It belongs to the comparison itself, and
-// that is where it now lives: deposit.Identifier.MatchValue canonicalises BOTH
-// sides for the IBAN scheme, ListDepositAccountsByIdentifier compares with it,
-// and storetest holds the store's SQL to what that Go function says. What
-// reaches ResolveIdentifierTx from here is therefore an address it can resolve
-// whichever form the account was opened with. See
-// TestCreditTransferRoundTripsThroughTheWireForSeedShapedAddresses.
+// Where the two forms still part company is a person: an IBAN read off a
+// statement is grouped in fours, and one typed may be lower-cased. Reconciling
+// that is not this function's job and must not be — a fallback here would help
+// no other caller and would mean this package second-guessing the directory it
+// was told to use. It belongs to the comparison itself:
+// deposit.Identifier.MatchValue canonicalises BOTH sides for the IBAN scheme,
+// ListDepositAccountsByIdentifier compares with it, and storetest holds the
+// store's SQL to what that Go function says. See
+// TestATypedAddressReachesTheStoredOne.
 func identifierIn(element string, acct iso20022.CashAccount) (deposit.Identifier, error) {
 	if acct.Id.IBAN == nil {
 		return deposit.Identifier{}, fmt.Errorf("%w: %s/Id/IBAN", ErrUnaddressableAccount, element)

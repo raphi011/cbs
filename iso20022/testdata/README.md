@@ -130,12 +130,17 @@ go away, instead of quietly reporting `PASS` for ten checks that never ran.
 
 | Entity | BIC | IBAN |
 | --- | --- | --- |
-| Aurora Bank | `AURTSESSXXX` | `SE89AURORA1001` (Alice Andersson) |
-| Banca Verde | `VERDITMMXXX` | `IT60VERDE2002` (Bella Bruno) |
+| Aurora Bank | `AURTSESSXXX` | `SE0888100000000000000001` (Alice Andersson) |
+| Banca Verde | `VERDITMMXXX` | `IT78K8881200000000000000002` (Bella Bruno) |
 | Clearing house | `CSMBFRPPXXX` | — |
 
-The IBANs are the seed's `SE89-AURORA-1001` and `IT60-VERDE-2002` in compact
-form. They carry no valid mod-97 check digit, on purpose — see `IBAN`.
+The names are the seed's; the addresses are these files' own, under bank codes
+allocated to nobody, and each agrees with its bank's country. They are real
+IBANs — correct length, correct national structure, mod-97 and Italy's CIN both
+computed — so a reader can check one by hand. That is a property of the
+fixtures and not of the codec: `IBAN.Validate` is the schema's pattern and
+passes a value whose check digits are wrong, which is what lets a receiver read
+a mistyped address before refusing it.
 
 `pacs009.xml` uses a different, narrower cast, because it is not a customer
 message: both parties are financial institutions, and one of them is the

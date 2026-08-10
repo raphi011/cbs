@@ -147,17 +147,17 @@ func RunDeposit(t *testing.T, newStore func(*testing.T, ledger.BookID) deposit.S
 	// makes it checkable.
 	t.Run("IdentifiersSurviveAccountRead", func(t *testing.T) {
 		s := openDeposit(t, newStore, bookA)
-		aa := deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "AA-AURORA-0001"}
-		zz := deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "ZZ-AURORA-9999"}
+		lower := deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "DE20999000010000000001"}
+		higher := deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "DE90999000010000000002"}
 
 		updateDeposit(t, s, func(ctx context.Context, tx deposit.Tx) error {
 			return tx.PutDepositAccount(ctx, bookA, deposit.Account{
 				ID: "dep_1", GLAccount: "200.cust.001", Name: "Alice", Asset: "EUR",
-				Identifiers: []deposit.Identifier{zz, aa},
+				Identifiers: []deposit.Identifier{higher, lower},
 			})
 		})
 
-		want := []deposit.Identifier{aa, zz}
+		want := []deposit.Identifier{lower, higher}
 		viewDeposit(t, s, func(ctx context.Context, tx deposit.Tx) error {
 			got, err := tx.GetDepositAccount(ctx, bookA, "dep_1")
 			if err != nil {
@@ -173,7 +173,7 @@ func RunDeposit(t *testing.T, newStore func(*testing.T, ledger.BookID) deposit.S
 			if len(list) != 1 || !slices.Equal(list[0].Identifiers, want) {
 				t.Fatalf("ListDepositAccounts identifiers = %#v, want %#v", list, want)
 			}
-			byIdent, err := tx.ListDepositAccountsByIdentifier(ctx, bookA, zz)
+			byIdent, err := tx.ListDepositAccountsByIdentifier(ctx, bookA, higher)
 			if err != nil {
 				return err
 			}
@@ -225,7 +225,7 @@ func RunDeposit(t *testing.T, newStore func(*testing.T, ledger.BookID) deposit.S
 	// is not a domain question at all: it is the same row written twice.
 	t.Run("DuplicateIdentifiersOnOneAccountCollapse", func(t *testing.T) {
 		s := openDeposit(t, newStore, bookA)
-		iban := deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "SE89-AURORA-1001"}
+		iban := deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "DE20999000010000000001"}
 
 		updateDeposit(t, s, func(ctx context.Context, tx deposit.Tx) error {
 			return tx.PutDepositAccount(ctx, bookA, deposit.Account{
@@ -259,7 +259,7 @@ func RunDeposit(t *testing.T, newStore func(*testing.T, ledger.BookID) deposit.S
 	// which is exactly why the rule needs saying.
 	t.Run("MutatingReadIdentifiersDoesNotReachTheStore", func(t *testing.T) {
 		s := openDeposit(t, newStore, bookA)
-		iban := deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "SE89-AURORA-1001"}
+		iban := deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "DE20999000010000000001"}
 
 		updateDeposit(t, s, func(ctx context.Context, tx deposit.Tx) error {
 			return tx.PutDepositAccount(ctx, bookA, deposit.Account{
@@ -273,7 +273,7 @@ func RunDeposit(t *testing.T, newStore func(*testing.T, ledger.BookID) deposit.S
 			if err != nil {
 				return err
 			}
-			got.Identifiers[0] = deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "STOLEN-0001"}
+			got.Identifiers[0] = deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "DE90999000010000000002"}
 			return nil
 		})
 
@@ -294,7 +294,7 @@ func RunDeposit(t *testing.T, newStore func(*testing.T, ledger.BookID) deposit.S
 	// database and could not honour such a rewrite if it wanted to.
 	t.Run("MutatingWrittenIdentifiersDoesNotReachTheStore", func(t *testing.T) {
 		s := openDeposit(t, newStore, bookA)
-		iban := deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "SE89-AURORA-1001"}
+		iban := deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "DE20999000010000000001"}
 		mine := []deposit.Identifier{iban}
 
 		updateDeposit(t, s, func(ctx context.Context, tx deposit.Tx) error {
@@ -302,7 +302,7 @@ func RunDeposit(t *testing.T, newStore func(*testing.T, ledger.BookID) deposit.S
 				ID: "dep_1", Name: "Alice", Asset: "EUR", Identifiers: mine,
 			})
 		})
-		mine[0] = deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "STOLEN-0001"}
+		mine[0] = deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "DE90999000010000000002"}
 
 		viewDeposit(t, s, func(ctx context.Context, tx deposit.Tx) error {
 			got, err := tx.GetDepositAccount(ctx, bookA, "dep_1")
@@ -321,8 +321,8 @@ func RunDeposit(t *testing.T, newStore func(*testing.T, ledger.BookID) deposit.S
 	// be the one part of it that accumulates.
 	t.Run("IdentifiersAreReplacedByAnUpsert", func(t *testing.T) {
 		s := openDeposit(t, newStore, bookA)
-		first := deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "SE89-AURORA-1001"}
-		second := deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "SE89-AURORA-9999"}
+		first := deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "DE20999000010000000001"}
+		second := deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "DE90999000010000000002"}
 
 		updateDeposit(t, s, func(ctx context.Context, tx deposit.Tx) error {
 			return tx.PutDepositAccount(ctx, bookA, deposit.Account{
@@ -358,7 +358,7 @@ func RunDeposit(t *testing.T, newStore func(*testing.T, ledger.BookID) deposit.S
 	// ListDepositAccountsByIdentifierMatchesAnIBANThroughItsSeparators.
 	t.Run("ListDepositAccountsByIdentifierMatchesTheSchemeExactlyAndIsBookScoped", func(t *testing.T) {
 		s := openDeposit(t, newStore, bookA)
-		iban := deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "SHARED-0001"}
+		iban := deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "DE20999000010000000001"}
 
 		// The second bank's account, in the second bank's database. One IBAN at
 		// two banks is what the book scoping is about, and it is now two
@@ -387,7 +387,7 @@ func RunDeposit(t *testing.T, newStore func(*testing.T, ledger.BookID) deposit.S
 			}
 
 			// Same value, different scheme: no match.
-			other := deposit.Identifier{Scheme: deposit.IdentifierScheme("PAN"), Value: "SHARED-0001"}
+			other := deposit.Identifier{Scheme: deposit.IdentifierScheme("PAN"), Value: "DE20999000010000000001"}
 			none, err := tx.ListDepositAccountsByIdentifier(ctx, bookA, other)
 			if err != nil {
 				return err
@@ -397,7 +397,7 @@ func RunDeposit(t *testing.T, newStore func(*testing.T, ledger.BookID) deposit.S
 			}
 
 			// A miss is an empty slice and a nil error, not a sentinel.
-			missing := deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "NOPE"}
+			missing := deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "DE63999000010000000003"}
 			gone, err := tx.ListDepositAccountsByIdentifier(ctx, bookA, missing)
 			if err != nil {
 				return err
@@ -424,24 +424,25 @@ func RunDeposit(t *testing.T, newStore func(*testing.T, ledger.BookID) deposit.S
 
 	// An IBAN matches through its display separators, in BOTH directions.
 	//
-	// This is the case that makes a received payment message resolvable at all.
-	// An IBAN is canonically transmitted compact and this repository stores the
-	// readable form — seed.go writes SE89-AURORA-1001, and a pacs.008 for that
-	// account carries SE89AURORA1001 — so a store comparing raw values leaves
-	// every seeded account unreachable from the wire, and the system emits an
-	// address it cannot then resolve. The rule is deposit.Identifier.MatchValue,
-	// and a store expressing it in SQL is re-implementing a Go function: the
-	// case below is what says the two agree.
+	// This is the case that makes a customer's own address findable. A bank
+	// mints and stores the canonical compact form, and what a person types is
+	// whatever their statement prints — grouped in fours, sometimes hyphenated —
+	// so a store comparing raw values answers "no such account" to somebody
+	// holding the account. The rule is deposit.Identifier.MatchValue, and a store
+	// expressing it in SQL is re-implementing a Go function: the case below is
+	// what says the two agree.
 	//
-	// The fixture stores one form and looks up the other, then the reverse. A
-	// fixture whose two sides were both compact would pass against the unfixed
-	// code and prove nothing.
+	// BOTH directions, because a store must compact its ROWS and not only its
+	// query. A canonical query against a separated row is not a state the
+	// register writes, and the store may not assume that: it is handed rows, and
+	// a comparison that held only when one side was canonical would be a rule
+	// with a precondition nothing states.
 	t.Run("ListDepositAccountsByIdentifierMatchesAnIBANThroughItsSeparators", func(t *testing.T) {
 		s := openDeposit(t, newStore, bookA)
 		const pan = deposit.IdentifierScheme("PAN")
-		stored := deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "SE89-AURORA-1001"}
-		compact := deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "SE89AURORA1001"}
-		spaced := deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "SE89 AURORA 1001"}
+		stored := deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "DE20999000010000000001"}
+		grouped := deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "DE20 9990 0001 0000 0000 01"}
+		hyphenated := deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "DE20-9990-0001-0000-0000-01"}
 
 		// dep_2 is a SECOND BANK's account, in a second bank's database, because
 		// a store answers for one book. It could have been a second account in
@@ -449,7 +450,7 @@ func RunDeposit(t *testing.T, newStore func(*testing.T, ledger.BookID) deposit.S
 		// pair of directions being read off two independent stores.
 		otherBank := openDeposit(t, newStore, bookB)
 		updateDeposit(t, s, func(ctx context.Context, tx deposit.Tx) error {
-			// dep_1 holds the readable form, dep_2 the compact one. Two accounts
+			// dep_1 holds the canonical form, dep_2 a separated one. Two accounts
 			// so that each direction is tested against a row stored the other
 			// way, rather than both times against the same one.
 			if err := tx.PutDepositAccount(ctx, bookA, deposit.Account{
@@ -468,31 +469,30 @@ func RunDeposit(t *testing.T, newStore func(*testing.T, ledger.BookID) deposit.S
 		updateDeposit(t, otherBank, func(ctx context.Context, tx deposit.Tx) error {
 			return tx.PutDepositAccount(ctx, bookB, deposit.Account{
 				ID: "dep_2", Name: "Bruno", Asset: "EUR",
-				Identifiers: []deposit.Identifier{compact},
+				Identifiers: []deposit.Identifier{grouped},
 			})
 		})
 
 		viewDeposit(t, s, func(ctx context.Context, tx deposit.Tx) error {
-			// Compact query, hyphenated row: the payment-message direction.
-			hit, err := tx.ListDepositAccountsByIdentifier(ctx, bookA, compact)
+			// Grouped query, canonical row: the direction a customer arrives from.
+			hit, err := tx.ListDepositAccountsByIdentifier(ctx, bookA, grouped)
 			if err != nil {
 				return err
 			}
 			if len(hit) != 1 || hit[0].ID != "dep_1" {
-				t.Fatalf("compact lookup of a hyphenated row = %#v, want just dep_1", hit)
+				t.Fatalf("grouped lookup of a canonical row = %#v, want just dep_1", hit)
 			}
-			// Spaces are separators too, and the group-of-four display form uses
-			// them rather than hyphens.
-			hit, err = tx.ListDepositAccountsByIdentifier(ctx, bookA, spaced)
+			// Hyphens are separators too. A form field is where they come from.
+			hit, err = tx.ListDepositAccountsByIdentifier(ctx, bookA, hyphenated)
 			if err != nil {
 				return err
 			}
 			if len(hit) != 1 || hit[0].ID != "dep_1" {
-				t.Fatalf("spaced lookup of a hyphenated row = %#v, want just dep_1", hit)
+				t.Fatalf("hyphenated lookup of a canonical row = %#v, want just dep_1", hit)
 			}
 			// What must NOT happen: the separators are removed, not treated as
 			// wildcards, and a different account number stays a different one.
-			other := deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "SE89-AURORA-1002"}
+			other := deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "DE90999000010000000002"}
 			none, err := tx.ListDepositAccountsByIdentifier(ctx, bookA, other)
 			if err != nil {
 				return err
@@ -522,9 +522,9 @@ func RunDeposit(t *testing.T, newStore func(*testing.T, ledger.BookID) deposit.S
 			return nil
 		})
 
-		// Hyphenated query, compact row: the reverse direction, which a store
-		// that only compacted the QUERY would fail. It is the other bank's
-		// database, which is where the compact row lives.
+		// Canonical query, separated row: the reverse direction, which a store
+		// that compacted only the QUERY would fail. It is the other bank's
+		// database, which is where the separated row lives.
 		viewDeposit(t, otherBank, func(ctx context.Context, tx deposit.Tx) error {
 			hit, err := tx.ListDepositAccountsByIdentifier(ctx, bookB, stored)
 			if err != nil {
@@ -548,7 +548,7 @@ func RunDeposit(t *testing.T, newStore func(*testing.T, ledger.BookID) deposit.S
 	// ambiguity is caught at READ time instead, by Register.ResolveIdentifier.
 	t.Run("IdentifierUniquenessIsNotEnforced", func(t *testing.T) {
 		s := openDeposit(t, newStore, bookA)
-		iban := deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "SE89-AURORA-1001"}
+		iban := deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "DE20999000010000000001"}
 
 		updateDeposit(t, s, func(ctx context.Context, tx deposit.Tx) error {
 			if err := tx.PutDepositAccount(ctx, bookA, deposit.Account{
@@ -594,13 +594,13 @@ func RunDeposit(t *testing.T, newStore func(*testing.T, ledger.BookID) deposit.S
 	// above it) rather than lost in a constraint violation.
 	t.Run("IdentifierUniquenessIsNotEnforcedAcrossSpellings", func(t *testing.T) {
 		s := openDeposit(t, newStore, bookA)
-		display := deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "SE89-AURORA-1001"}
-		compact := deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "SE89AURORA1001"}
+		canonical := deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "DE20999000010000000001"}
+		grouped := deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "DE20 9990 0001 0000 0000 01"}
 
 		updateDeposit(t, s, func(ctx context.Context, tx deposit.Tx) error {
 			if err := tx.PutDepositAccount(ctx, bookA, deposit.Account{
 				ID: "dep_1", Name: "Alice", Asset: "EUR",
-				Identifiers: []deposit.Identifier{display},
+				Identifiers: []deposit.Identifier{canonical},
 			}); err != nil {
 				return err
 			}
@@ -608,12 +608,12 @@ func RunDeposit(t *testing.T, newStore func(*testing.T, ledger.BookID) deposit.S
 			// stores; a constraint refusing it here is the divergence.
 			return tx.PutDepositAccount(ctx, bookA, deposit.Account{
 				ID: "dep_2", Name: "Aaron", Asset: "EUR",
-				Identifiers: []deposit.Identifier{compact},
+				Identifiers: []deposit.Identifier{grouped},
 			})
 		})
 
 		viewDeposit(t, s, func(ctx context.Context, tx deposit.Tx) error {
-			for _, quoted := range []deposit.Identifier{display, compact} {
+			for _, quoted := range []deposit.Identifier{canonical, grouped} {
 				both, err := tx.ListDepositAccountsByIdentifier(ctx, bookA, quoted)
 				if err != nil {
 					return err

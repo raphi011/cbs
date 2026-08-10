@@ -225,16 +225,16 @@ func (r *Register) OpenAccountTx(ctx context.Context, tx Tx, subledger ledger.Su
 		// store's identifier rows carry (scheme, value) in their primary key, so
 		// the list means ONE address once it is written and two while it is in a
 		// Go slice. Refusing beats collapsing silently: a caller who listed one
-		// address twice
-		// either meant two different addresses and mistyped one, or is sending
-		// a list it has not deduplicated, and both are worth being told about.
+		// address twice either meant two different addresses and mistyped one,
+		// or is sending a list it has not deduplicated, and both are worth being
+		// told about.
 		//
-		// ContainsFunc over Matches and not Contains over ==, because
-		// [SE89-AURORA-1001, SE89AURORA1001] is that same list written twice —
-		// see Identifier.MatchValue. Comparing literally here would let one
-		// call open an account holding two spellings of one address, which is
-		// exactly what this check exists to refuse, and would then be caught by
-		// nothing: the account resolves, so no lookup ever complains.
+		// ContainsFunc over Matches, which for everything reaching here is ==:
+		// the loop above has already refused the only scheme with a second
+		// spelling. Matches anyway, because "the same address" is one rule and
+		// Identifier.Matches is where it lives — comparing literally would be a
+		// second definition of it, correct only until some other scheme grows a
+		// display form.
 		if slices.ContainsFunc(identifiers[:i], ident.Matches) {
 			return Account{}, ErrIdentifierTaken
 		}
@@ -694,12 +694,12 @@ func (r *Register) ListAccountsWithTerms(ctx context.Context) ([]AccountWithTerm
 // collision, which is what makes a retried AddIdentifier succeed twice.
 //
 // "Already holds" is Identifier.Matches, because the lookup this delegates to
-// is: a bank that has issued SE89-AURORA-1001 has issued SE89AURORA1001, and
-// letting a second account take the other spelling would mint an ambiguous
-// address that every subsequent resolution refuses. The rule is one rule —
-// two identifiers that compact equal are one address — and it is the same one
-// on the read side, so uniqueness and routing cannot disagree about what has
-// been issued. See TestAddIdentifierRefusesAnotherSpellingOfAnAddressTheBankHasIssued.
+// is. No IBAN reaches here — a minted address is not checked against the
+// register, because a serial is handed out once, and every other door refuses
+// the scheme — so the two comparisons coincide on everything this actually
+// sees. It is written as the shared rule regardless: uniqueness and routing
+// disagreeing about what counts as one address is the defect this whole cluster
+// of comparisons exists to prevent.
 //
 // The check is a read followed by a write with no constraint behind it and no
 // lock above it, so two concurrent adds can both pass. That is deliberate. A
@@ -755,19 +755,18 @@ func (r *Register) AddIdentifierTx(ctx context.Context, tx Tx, id AccountID, ide
 	if err := r.checkIdentifierFreeTx(ctx, tx, id, ident); err != nil {
 		return err
 	}
-	// Matches and not ==: an account holds an ADDRESS, and the two spellings of
-	// one IBAN are one address. Comparing literally would append the compact
-	// form beside the display form and leave the account holding what looks
-	// like two addresses — which nothing downstream would report, because both
-	// resolve to it, but which makes a payment quoting neither of them
-	// ErrAmbiguousAddress: the account would have lost the ability to be paid
-	// without an address being named. See addressFor in the payment package,
-	// and TestAddIdentifierIsANoOpForAnotherSpellingTheAccountAlreadyHolds.
+	// Matches and not ==: an account holds an ADDRESS, and a scheme with two
+	// spellings of one would otherwise leave the account holding what looks like
+	// two. Nothing downstream would report that, because both resolve to it, but
+	// a payment quoting neither becomes ErrAmbiguousAddress — the account would
+	// have lost the ability to be paid without an address being named. See
+	// addressFor in the payment package. No scheme reaching here has two
+	// spellings today; the one that did is the one this method refuses.
 	//
-	// The stored form is the one KEPT. A caller adding the compact spelling of
-	// an address the account holds hyphenated has told this bank nothing new,
-	// and rewriting the stored value would edit what a statement shows and what
-	// every earlier payment recorded on the strength of a no-op.
+	// The stored form is the one KEPT. A caller re-adding an address the account
+	// already holds has told this bank nothing new, and rewriting the stored
+	// value would edit what a statement shows and what every earlier payment
+	// recorded, on the strength of a no-op.
 	for _, got := range acct.Identifiers {
 		if got.Matches(ident) {
 			return nil // already held by this account: a no-op, not an error
@@ -783,13 +782,13 @@ func (r *Register) AddIdentifierTx(ctx context.Context, tx Tx, id AccountID, ide
 // RemoveIdentifier withdraws an external address. Removing one that is not held
 // is a no-op, for the same reason adding one twice is.
 //
-// It withdraws the address in EITHER spelling: a caller quoting SE89AURORA1001
-// withdraws an account's SE89-AURORA-1001, because they are one address and the
-// rest of the system already treats them as one. The alternative is worse than
-// inconsistent — removal of an unheld identifier is a no-op by design, so a
-// literal comparison would leave a bank that quoted the compact form believing
-// it had withdrawn an address that is still live and still payable, with no
-// error to say otherwise. See
+// It withdraws the address in EITHER spelling: a caller quoting
+// DE20 9990 0001 0000 0000 01 withdraws the account's DE20999000010000000001,
+// because they are one address and the rest of the system already treats them as
+// one. The alternative is worse than inconsistent — removal of an unheld
+// identifier is a no-op by design, so a literal comparison would leave a bank
+// that quoted the grouped form believing it had withdrawn an address that is
+// still live and still payable, with no error to say otherwise. See
 // TestRemoveIdentifierWithdrawsTheAddressInEitherSpelling.
 //
 // What the audit event records is the identifier as STORED, not as quoted. The

@@ -131,10 +131,9 @@ func TestIBANCompact(t *testing.T) {
 		in   IBAN
 		want IBAN
 	}{
-		{"seed value with hyphens", "SE89-AURORA-1001", "SE89AURORA1001"},
-		{"seed value for Banca Verde", "IT60-VERDE-2002", "IT60VERDE2002"},
-		{"displayed in groups of four", "SE89 AURO RA10 01", "SE89AURORA1001"},
-		{"already compact", "NO93NORD3001", "NO93NORD3001"},
+		{"grouped as a statement prints it", "DE20 9990 0001 0000 0000 01", "DE20999000010000000001"},
+		{"hyphenated on a form", "DE20-9990-0001-0000-0000-01", "DE20999000010000000001"},
+		{"already compact", "IT50R9999100000000000000001", "IT50R9999100000000000000001"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -145,11 +144,20 @@ func TestIBANCompact(t *testing.T) {
 	}
 }
 
-// TestIBANValidateAcceptsTheSeedsReadableIdentifiers is the claim this package
-// must not quietly break: the seed's IBANs carry no valid mod-97 check digit,
-// and they must still produce schema-valid documents.
-func TestIBANValidateAcceptsTheSeedsReadableIdentifiers(t *testing.T) {
-	for _, v := range []IBAN{"SE89-AURORA-1001", "IT60-VERDE-2002", "NO93-NORD-3001"} {
+// TestIBANValidateAcceptsAValueWhoseCheckDigitsAreWrong is the claim this
+// package must not quietly break, and the reason ErrIBANPattern is not a
+// checksum error.
+//
+// Validate here is the SCHEMA's rule and nothing more. A document carrying a
+// structurally well-formed address whose mod-97 does not come out at 1 is
+// schema-valid, and a receiver has to be able to READ one before it can refuse
+// it — a codec that rejected it would turn a payment this system answers AC01 to
+// into a document it cannot parse. The checksum is package iban's, one package
+// away and deliberately unreachable from here.
+func TestIBANValidateAcceptsAValueWhoseCheckDigitsAreWrong(t *testing.T) {
+	// Real addresses with their check digits overwritten, which is the shape a
+	// mistyped one arrives in.
+	for _, v := range []IBAN{"DE00999000010000000001", "IT00R9999100000000000000001"} {
 		if err := v.Validate(); err != nil {
 			t.Fatalf("Validate(%q) = %v, want nil", v, err)
 		}
@@ -161,11 +169,11 @@ func TestIBANValidateRejects(t *testing.T) {
 		name string
 		in   IBAN
 	}{
-		{"lowercase country code", "se89AURORA1001"},
-		{"no check digits", "SEXXAURORA1001"},
-		{"country code only", "SE89"},
-		{"too long", "SE89" + "A123456789012345678901234567890X"},
-		{"punctuation that is not a separator", "SE89/AURORA/1001"},
+		{"lowercase country code", "de20999000010000000001"},
+		{"no check digits", "DEXX999000010000000001"},
+		{"country code only", "DE20"},
+		{"too long", "DE20" + "A123456789012345678901234567890X"},
+		{"punctuation that is not a separator", "DE20/9990/0001/0000/0000/01"},
 		{"empty", ""},
 	}
 	for _, tt := range tests {
@@ -182,7 +190,7 @@ func TestIBANValidateRejects(t *testing.T) {
 }
 
 func TestAccountIdentificationChoice(t *testing.T) {
-	iban := IBAN("SE89AURORA1001")
+	iban := IBAN("SE0888100000000000000001")
 	other := GenericAccountIdentification{Id: "internal-1"}
 
 	t.Run("IBAN only is valid", func(t *testing.T) {

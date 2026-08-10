@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/raphi011/cbs/deposit"
+	"github.com/raphi011/cbs/iban"
 	"github.com/raphi011/cbs/interest"
 	"github.com/raphi011/cbs/iso20022"
 	"github.com/raphi011/cbs/ledger"
@@ -351,6 +352,39 @@ func openCustomerWithoutIdentifier(t *testing.T, ctx context.Context, p *Bank, n
 	got, err := p.Deposit.GetAccount(ctx, acct.ID)
 	assertNoError(t, err)
 	return got
+}
+
+// mintAt is an address in a bank's own range, minted outside its register.
+//
+// The serial is far above anything these fixtures open, so the result is
+// well-formed, carries the bank's own code, and belongs to nobody. Both halves
+// matter for the tests that want an address a lookup will not find: one failing
+// mod-97 is refused for its check digits instead, so the lookup under test never
+// runs.
+func mintAt(t *testing.T, p *Bank, serial uint64) deposit.Identifier {
+	t.Helper()
+	a, err := iban.New(p.Issuer.Country, p.Issuer.BankCode, serial)
+	assertNoError(t, err)
+	return deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: string(a)}
+}
+
+// plantAddress writes an address onto an account past the register's write-time
+// check.
+//
+// Nothing in the domain does this and no call could: a bank issues one address
+// per account and refuses one offered to it. Both collision fixtures need it,
+// and each names the state it is standing in for — a race between two writers,
+// or a bank code allocated twice.
+func plantAddress(t *testing.T, ctx context.Context, p *Bank, id deposit.AccountID, ident deposit.Identifier) {
+	t.Helper()
+	assertNoError(t, p.Deposit.Store().Update(ctx, func(ctx context.Context, tx deposit.Tx) error {
+		a, err := tx.GetDepositAccount(ctx, p.Deposit.BookID(), id)
+		if err != nil {
+			return err
+		}
+		a.Identifiers = append(a.Identifiers, ident)
+		return tx.PutDepositAccount(ctx, p.Deposit.BookID(), a)
+	}))
 }
 
 // openCycle opens a clearing cycle for the given scheme, failing the test on
@@ -1398,8 +1432,10 @@ func newClosedCycleWithUnderfundedMember(t *testing.T) (*testSystem, CycleID) {
 
 	alice := openCustomer(t, ctx, a, "Alice")
 	bob := openCustomer(t, ctx, b, "Bob")
-	carol, err := c.Deposit.OpenAccount(ctx, c.CustomerSubledger, "Carol", testAsset, c.ProductID, 100000,
-		deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "SE89-BANKC-0001"})
+	// Carol is opened here rather than through openCustomer because she needs an
+	// overdraft: the fixture wants a customer who can afford a payment her bank
+	// cannot settle.
+	carol, err := c.Deposit.OpenAccount(ctx, c.CustomerSubledger, "Carol", testAsset, c.ProductID, 100000)
 	assertNoError(t, err)
 
 	fundAccount(t, ctx, sys, a, alice, 100000)
@@ -2599,10 +2635,11 @@ func TestPaymentRejectsCreditorAccountNotInSchemeAsset(t *testing.T) {
 	// the asset check under test would never run.
 	from := openCustomer(t, ctx, alpha, "Anna")
 	fundAccount(t, ctx, sys, alpha, from, 100000)
+	// Addressable despite the asset: a bank mints an account's IBAN when it opens
+	// it, whatever the account is denominated in. An address says who holds the
+	// account, and says nothing about what is in it.
 	to, err := beta.OpenCustomerAccount(ctx, "Bruno", "BTC")
 	assertNoError(t, err)
-	assertNoError(t, beta.Deposit.AddIdentifier(ctx, to.ID,
-		deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "IT60-BETA-0001"}))
 
 	_, err = sys.OpenCycle(ctx, SchemeSEPACT)
 	assertNoError(t, err)
@@ -2636,8 +2673,6 @@ func TestPaymentRejectsDebtorAccountNotInSchemeAsset(t *testing.T) {
 	// counterfactual on this test sharp.
 	from, err := alpha.OpenCustomerAccount(ctx, "Anna", "BTC")
 	assertNoError(t, err)
-	assertNoError(t, alpha.Deposit.AddIdentifier(ctx, from.ID,
-		deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "SE89-ALPHA-0001"}))
 	to := openCustomer(t, ctx, beta, "Bruno")
 
 	_, err = sys.OpenCycle(ctx, SchemeSEPACT)
@@ -3070,7 +3105,7 @@ func TestResolveIdentifierAnswersOnlyForTheAskingBanksOwnRegister(t *testing.T) 
 
 	alice := openCustomer(t, ctx, aurora, "Alice")
 	_ = openCustomer(t, ctx, verde, "Bruno")
-	alicesIBAN := deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "SE89-AURORA-1001"}
+	alicesIBAN := addressOf(t, alice)
 
 	// The bank that holds the account answers about it.
 	ref, err := net.bank(aurora.BIC).ResolveIdentifier(ctx, alicesIBAN)
@@ -3097,9 +3132,10 @@ func TestResolveIdentifierNotFound(t *testing.T) {
 	net := testNetwork(t)
 	aurora := addParticipant(t, ctx, net, "Aurora Bank", auroraBIC)
 
-	_, err := net.bank(aurora.BIC).ResolveIdentifier(ctx, deposit.Identifier{
-		Scheme: deposit.IdentifierIBAN, Value: "NOBODY-0001",
-	})
+	// An address Aurora could have issued and has not. It has to be well-formed:
+	// a value that failed its check digits would be refused for that, and the
+	// lookup this test is about would never run.
+	_, err := net.bank(aurora.BIC).ResolveIdentifier(ctx, mintAt(t, aurora, 999_999))
 	if !errors.Is(err, deposit.ErrIdentifierNotFound) {
 		t.Fatalf("ResolveIdentifier = %v, want ErrIdentifierNotFound", err)
 	}
@@ -3109,26 +3145,37 @@ func TestResolveIdentifierNotFound(t *testing.T) {
 // does not have, which is why it is a test rather than a deletion.
 //
 // Uniqueness is enforced per bank, which is the widest scope a register can see,
-// so two banks issuing one IBAN is representable and nothing refuses it. Only a
+// so two banks holding one IBAN is representable and nothing refuses it. Only a
 // sweep over every bank's register could SEE both, and no bank may make one — so
 // each bank answers confidently about its own account and neither can know the
 // other exists.
 //
-// That is not a regression introduced by the narrowing; it is the narrowing's
-// price, stated. In life it is the IBAN's issuer registry — the national
-// numbering authority, and the bank code inside the IBAN itself — that stops two
-// banks issuing one address, not a directory noticing afterwards. This system
-// has no such authority, so nothing here refuses it. The within-bank half below
-// is what survives, and it is the half a register can actually police.
+// # What minting now rules out, and what it does not
+//
+// The address below is AURORA'S — its country and its bank code — and Verde is
+// holding it. No call at Verde produces that: a bank mints under its own
+// allocation, so two banks minting one address would take two banks allocated
+// one code. That is a defect in an ALLOCATION rather than in a register, which
+// is why neither register can see it and why the instrument that catches it has
+// to open every institution's database at once.
+//
+// So the collision has moved rather than gone. What used to require nothing at
+// all now requires a duplicate allocation, and nothing here refuses one — this
+// network has no registry of who issued what. The within-bank half below is
+// what a register can police, and it is all it can police.
 func TestACrossBankCollisionIsNoLongerObservable(t *testing.T) {
 	ctx := context.Background()
 	net := testNetwork(t)
 	aurora := addParticipant(t, ctx, net, "Aurora Bank", auroraBIC)
 	verde := addParticipant(t, ctx, net, "Banca Verde", verdeBIC)
 
-	shared := deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "SHARED-0001"}
 	alice := openCustomer(t, ctx, aurora, "Alice")
 	bruno := openCustomer(t, ctx, verde, "Bruno")
+
+	// Alice's own address, planted at Verde as well. Each bank holds it once, so
+	// neither is ambiguous; what neither can tell is that the other holds it too.
+	shared := addressOf(t, alice)
+	plantAddress(t, ctx, verde, bruno.ID, shared)
 
 	for _, c := range []struct {
 		bank *Bank
@@ -3151,26 +3198,20 @@ func TestACrossBankCollisionIsNoLongerObservable(t *testing.T) {
 // constraint safe. The cross-bank half above is covered by nothing.
 //
 // The duplicate is written straight through the store, past the register's
-// write-time check, because that is the only way it arises: a race between two
-// AddIdentifier calls that both read before either wrote.
+// write-time check, because that is the only way it arises: two writers that
+// both read before either wrote. A serial is handed out once, so the minting
+// path cannot reach this state at all.
 func TestResolveIdentifierRefusesAWithinBankCollision(t *testing.T) {
 	ctx := context.Background()
 	net := testNetwork(t)
 	aurora := addParticipant(t, ctx, net, "Aurora Bank", auroraBIC)
 	addParticipant(t, ctx, net, "Banca Verde", verdeBIC)
 
-	shared := deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "SHARED-0001"}
-	openCustomer(t, ctx, aurora, "Alice")
+	alice := openCustomer(t, ctx, aurora, "Alice")
 	aaron := openCustomer(t, ctx, aurora, "Aaron")
 
-	assertNoError(t, aurora.Deposit.Store().Update(ctx, func(ctx context.Context, tx deposit.Tx) error {
-		a, err := tx.GetDepositAccount(ctx, aurora.Deposit.BookID(), aaron.ID)
-		if err != nil {
-			return err
-		}
-		a.Identifiers = append(a.Identifiers, shared)
-		return tx.PutDepositAccount(ctx, aurora.Deposit.BookID(), a)
-	}))
+	shared := addressOf(t, alice)
+	plantAddress(t, ctx, aurora, aaron.ID, shared)
 
 	if _, err := net.bank(aurora.BIC).ResolveIdentifier(ctx, shared); !errors.Is(err, deposit.ErrIdentifierAmbiguous) {
 		t.Fatalf("ResolveIdentifier = %v, want ErrIdentifierAmbiguous", err)
@@ -3248,7 +3289,7 @@ func TestTheFarLegsAddressAndAccountCannotDisagree(t *testing.T) {
 		Scheme: SchemeSEPACT,
 		Debtor: PartyRef{Account: alice.ID},
 		Creditor: PartyRef{
-			Identifier: deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "SE89-AURORA-1001"},
+			Identifier: addressOf(t, alice),
 		},
 		Amount:          10_00,
 		CreditorDetails: PartyDetails{Agent: verde.BIC, Name: bruno.Name},
@@ -3277,7 +3318,7 @@ func TestInitiateRefusesAQuotedIdentifierOnTheDebtorLeg(t *testing.T) {
 		Debtor: PartyRef{
 			Account: alice.ID,
 			// Bruno's address, pointing at Alice's account.
-			Identifier: deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "IT60-VERDE-2001"},
+			Identifier: addressOf(t, bruno),
 		},
 		Creditor:        PartyRef{Account: bruno.ID},
 		Amount:          10_00,
@@ -3356,11 +3397,9 @@ func TestInitiateRefusesAnAddressFromAnotherIdentifierScheme(t *testing.T) {
 	})
 	// Each on the copy that makes it; see TestInitiateBackFillsTheAddressOnBothLegs.
 	assertEqual(t, "back-filled debtor address",
-		mustGetPaymentAt(t, ctx, net.bank(aurora.BIC), pay.ID).Debtor.Identifier,
-		deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "SE89-AURORA-1001"})
+		mustGetPaymentAt(t, ctx, net.bank(aurora.BIC), pay.ID).Debtor.Identifier, addressOf(t, alice))
 	assertEqual(t, "back-filled creditor address",
-		mustGetPaymentAt(t, ctx, net.bank(verde.BIC), pay.ID).Creditor.Identifier,
-		deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "IT60-VERDE-2001"})
+		mustGetPaymentAt(t, ctx, net.bank(verde.BIC), pay.ID).Creditor.Identifier, addressOf(t, bruno))
 }
 
 // A payment that quotes no address still records one. Before this, the
@@ -3406,8 +3445,8 @@ func TestInitiateBackFillsTheAddressOnBothLegs(t *testing.T) {
 		assertNoError(t, err)
 	})
 
-	alicesIBAN := deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "SE89-AURORA-1001"}
-	brunosIBAN := deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "IT60-VERDE-2001"}
+	alicesIBAN := addressOf(t, alice)
+	brunosIBAN := addressOf(t, bruno)
 
 	// Each bank's own leg, on that bank's own copy, read back out of storage
 	// rather than taken from the value a call returned.
@@ -3438,11 +3477,15 @@ func TestInitiateRefusesToChooseBetweenTwoAddresses(t *testing.T) {
 	alice := openCustomer(t, ctx, aurora, "Alice")
 	fundAccount(t, ctx, net, aurora, alice, 100_00)
 	bruno := openCustomer(t, ctx, verde, "Bruno")
-	// A second IBAN on the debtor: legal, and it makes the debtor leg the one
-	// that has to refuse. No cycle is open yet, which is harmless — the
-	// addressing checks run before initiation looks for one.
-	assertNoError(t, aurora.Deposit.AddIdentifier(ctx, alice.ID,
-		deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "SE89-AURORA-1002"}))
+	// A second IBAN on the debtor, which makes the debtor leg the one that has to
+	// refuse. No cycle is open yet, which is harmless — the addressing checks run
+	// before initiation looks for one.
+	//
+	// Planted, because no call gives an account a second address: the bank issues
+	// one and refuses one offered to it. The state is still reachable through a
+	// race, and it is the one ErrAmbiguousAddress is for.
+	second := mintAt(t, aurora, 999_999)
+	plantAddress(t, ctx, aurora, alice.ID, second)
 
 	_, err := initiate(ctx, net, InitiatePaymentRequest{
 		Scheme:          SchemeSEPACT,
@@ -3462,7 +3505,7 @@ func TestInitiateRefusesToChooseBetweenTwoAddresses(t *testing.T) {
 			Scheme: SchemeSEPACT,
 			Debtor: PartyRef{
 				Account:    alice.ID,
-				Identifier: deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "SE89-AURORA-1002"},
+				Identifier: second,
 			},
 			Creditor:        PartyRef{Account: bruno.ID},
 			Amount:          10_00,
@@ -3475,19 +3518,23 @@ func TestInitiateRefusesToChooseBetweenTwoAddresses(t *testing.T) {
 		// one of them is where the fact is made. See
 		// TestInitiateBackFillsTheAddressOnBothLegs.
 		assertEqual(t, "chosen debtor address",
-			mustGetPaymentAt(t, ctx, net.bank(aurora.BIC), pay.ID).Debtor.Identifier,
-			deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "SE89-AURORA-1002"})
+			mustGetPaymentAt(t, ctx, net.bank(aurora.BIC), pay.ID).Debtor.Identifier, second)
 	})
 }
 
 // Reissuing an address must not kill the mandates on the account.
 //
-// A remove plus an add is the documented way to reissue a card, and it moves
-// neither balance nor history. Comparing whole PartyRefs would make it move
-// something else: after the reissue there would be NO address the payment could
-// quote that worked — the new one differs from the mandate's, the old one no
-// longer belongs to the account, and quoting nothing back-fills the new one.
-// With no UpdateMandate, the mandate would be dead for good.
+// Reissuing moves neither balance nor history. Comparing whole PartyRefs would
+// make it move something else: after the reissue there would be NO address the
+// payment could quote that worked — the new one differs from the mandate's, the
+// old one no longer belongs to the account, and quoting nothing back-fills the
+// new one. With no UpdateMandate, the mandate would be dead for good.
+//
+// The reissue is one act, which is what a bank issuing its own addresses leaves:
+// there is no call that hands an account a replacement, so withdrawing and
+// minting cannot be composed by a caller. The lesson is unchanged — a mandate
+// compares its parties by (participant, account), and the address is not part of
+// the comparison.
 func TestMandateSurvivesAReissuedDebtorIdentifier(t *testing.T) {
 	ctx := context.Background()
 	sys := testNetwork(t)
@@ -3498,10 +3545,14 @@ func TestMandateSurvivesAReissuedDebtorIdentifier(t *testing.T) {
 	m, err := sys.bank(b.BIC).CreateMandate(ctx, a.BIC, debtor, creditor, 0)
 	assertNoError(t, err)
 
-	old := deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "SE89-BANKA-0001"}
-	reissued := deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "SE89-BANKA-0002"}
-	assertNoError(t, a.Deposit.RemoveIdentifier(ctx, alice, old))
-	assertNoError(t, a.Deposit.AddIdentifier(ctx, alice, reissued))
+	before, err := a.Deposit.GetAccount(ctx, alice)
+	assertNoError(t, err)
+	old := addressOf(t, before)
+	reissued, err := a.Deposit.ReissueIdentifier(ctx, alice)
+	assertNoError(t, err)
+	if reissued == old {
+		t.Fatalf("reissue returned the address it replaced: %v", reissued)
+	}
 
 	var pay Payment
 	runCycle(t, sys, SchemeSEPADD, func() {
@@ -3781,8 +3832,13 @@ func TestTheClearingHouseWillNotClearForANonMember(t *testing.T) {
 		// a deposit, because DepositTx refuses a founded bank — and an overdraft
 		// is exactly how such a customer came to have spendable money in the
 		// measurement this test descends from.
+		//
+		// It is addressable, and a founded bank issuing addresses is not a fixture
+		// convenience: a bank mints under the allocation it was founded with, and
+		// membership of a scheme is a separate thing it may not have yet. That is
+		// the state this test is about, seen from the register.
 		foundedAcct, err := founded.Deposit.OpenAccount(ctx, founded.CustomerSubledger, "Nora", testAsset,
-			founded.ProductID, 100000, deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "SE89-FOUND-0001"})
+			founded.ProductID, 100000)
 		assertNoError(t, err)
 		memberAcct := openCustomer(t, ctx, member, "Alice")
 		fundAccount(t, ctx, sys, member, memberAcct, 100000)
@@ -3921,12 +3977,13 @@ func TestTheClearingHouseWillNotClearInAnAssetAMemberWasNotAdmittedIn(t *testing
 		t.Fatalf("the roster entry clears in %v; this test needs it admitted in one asset only", entry.Assets)
 	}
 
-	payerAcct, err := payer.Deposit.OpenAccount(ctx, payer.CustomerSubledger, "Alice", "USD",
-		payer.ProductID, 0, deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "SE89-MEMBR-9001"})
+	// Opened through the register rather than through OpenCustomerAccount because
+	// the asset is the scheme's and not the bank's default. Each comes out
+	// addressed by its own bank, which is all this fixture needs of an address.
+	payerAcct, err := payer.Deposit.OpenAccount(ctx, payer.CustomerSubledger, "Alice", "USD", payer.ProductID, 0)
 	assertNoError(t, err)
 	fundAccount(t, ctx, sys, payer, payerAcct, 100000)
-	payeeAcct, err := half.Deposit.OpenAccount(ctx, half.CustomerSubledger, "Nora", "USD",
-		half.ProductID, 0, deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "SE89-HALFB-9001"})
+	payeeAcct, err := half.Deposit.OpenAccount(ctx, half.CustomerSubledger, "Nora", "USD", half.ProductID, 0)
 	assertNoError(t, err)
 	openCycle(t, ctx, sys, dollarPush{}.ID())
 

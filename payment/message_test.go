@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/raphi011/cbs/deposit"
+	"github.com/raphi011/cbs/iban"
 	"github.com/raphi011/cbs/iso20022"
 	"github.com/raphi011/cbs/ledger"
 	. "github.com/raphi011/cbs/payment"
@@ -44,11 +45,10 @@ var messageNow = time.Date(2026, 8, 1, 9, 0, 0, 0, time.UTC)
 //
 // It reuses system_test.go's harness — testNetwork, openCustomer, fundAccount,
 // assertNoError — rather than standing up a second one. What it does NOT reuse
-// is setupTwoBanks, and for a reason that is the whole subject here: that
-// fixture gives both banks the same placeholder BIC and addresses its accounts
-// by readable identifiers like SE89-BANKA-0001. A test asserting which bank and
-// which address reached the wire cannot use a fixture where both banks are the
-// same bank.
+// is setupTwoBanks, whose banks sit at placeholder BICs: a test asserting which
+// bank reached the wire wants two a reader can tell apart at sight, and their
+// countries agreeing with the addresses their registers mint is what makes the
+// documents below readable as real ones.
 func addressedBanks(t *testing.T) (sys *testSystem, aurora, verde *Bank, alice, bruno deposit.Account) {
 	t.Helper()
 	ctx := context.Background()
@@ -944,7 +944,15 @@ func TestCreditTransferRequestRefusesAnUnknownIBAN(t *testing.T) {
 		t.Fatalf("CreditTransferMessage: %v", err)
 	}
 	doc := env.Document.(*iso20022.Pacs008)
-	unknown := iso20022.IBAN("DE00000000000000000000")
+
+	// An address in the RECEIVING bank's own range that no account of its holds.
+	// It has to be well-formed, and at that bank: a value failing its check
+	// digits is refused for that instead, and one carrying another bank's code
+	// would be a different refusal again. What is under test is a lookup that
+	// finds nothing.
+	verde, err := n.bank(p.CreditorDetails.Agent).GetBank(ctx, ParticipantID(p.CreditorDetails.Agent))
+	assertNoError(t, err)
+	unknown := iso20022.IBAN(mintAt(t, verde, 999_999).Value)
 	doc.FIToFICstmrCdtTrf.CdtTrfTxInf[0].CdtrAcct.Id.IBAN = &unknown
 
 	_, err = n.bank(p.CreditorDetails.Agent).CreditTransferRequest(ctx, doc)
@@ -1340,29 +1348,32 @@ func TestDirectDebitRequestRefusesACollectionWithNoMandate(t *testing.T) {
 	}
 }
 
-// The round trip over SEED-SHAPED addresses, which is the one that would have
-// caught the gap this task closed.
+// An address a PERSON typed reaches the account a bank stored.
 //
-// Every other test here uses accounts stored with canonical compact IBANs, and
-// they all passed while the system was emitting an address it could not then
-// resolve: seed.go stores the readable SE89-AURORA-1001, ibanOf compacts it to
-// SE89AURORA1001 for the wire, and compaction does not run backwards. Matching
-// the two forms is now split across two different comparisons, and this test
-// drives both of them.
+// # The register and the wire cannot drift
 //
-// Both banks' accounts are stored separated, and differently: hyphens on
-// Aurora's side, spaces on Verde's. Only ONE of the two goes through the
-// DIRECTORY here: CreditTransferRequest resolves the CREDITOR, so Verde's
-// space-separated form is what deposit.Identifier.MatchValue proves survives the
-// round trip through ResolveIdentifierTx. Aurora's hyphen-separated form is not
-// resolved by this call at all — the debtor is recorded, not looked up — so its
-// coverage is the second comparison this test drives: addressFor's own
-// deposit.Identifier.Matches, exercised below when the debtor's own bank
-// resubmits with the wire's compact form and the result is checked against the
-// account's stored, hyphenated one. A fix that learned only one comparison would
-// still resolve the creditor and still normalize the debtor — this test is what
-// tells the two apart.
-func TestCreditTransferRoundTripsThroughTheWireForSeedShapedAddresses(t *testing.T) {
+// A register that stored a readable form while its messages carried a compact
+// one would let a bank emit an address it could not then resolve — compaction
+// does not run backwards, and a suite whose fixtures were all stored compact
+// would not notice. There is ONE stored form, minted in what the standard calls
+// canonical, so the assertion below is that the message carries the stored
+// string VERBATIM.
+//
+// # What a comparison is still for: a person with a statement in front of them
+//
+// A statement prints an IBAN grouped in fours, and a keyboard produces whatever
+// case the typist was in. Both are the same address as the compact one, and
+// deposit.Identifier.MatchValue is what makes them so — reached by two different
+// comparisons, which is why one test drives both:
+//
+//   - resolution, which finds an account FROM an address, through
+//     ResolveIdentifierTx;
+//   - addressFor's own deposit.Identifier.Matches, which checks an address
+//     QUOTED against an account already named.
+//
+// A fix that taught only one would still resolve a typed address and still
+// refuse it as a quote.
+func TestATypedAddressReachesTheStoredOne(t *testing.T) {
 	ctx := context.Background()
 	n := testNetwork(t)
 	aurora, err := storetest.Admit(ctx, n.nets, "Aurora Bank", "AURODEFFXXX", euroOnly)
@@ -1375,20 +1386,53 @@ func TestCreditTransferRoundTripsThroughTheWireForSeedShapedAddresses(t *testing
 	fundAccount(t, ctx, n, aurora, alice, 500000)
 	openCycle(t, ctx, n, SchemeSEPACT)
 
+	alicesStored := addressOf(t, alice)
+	brunosStored := addressOf(t, bruno)
+
+	// Off a statement, and off a keyboard. Neither can travel on a message — the
+	// schema's pattern admits no separators and an upper-case country code only —
+	// so both arrive the way a person's does: through a request.
+	grouped := deposit.Identifier{
+		Scheme: deposit.IdentifierIBAN,
+		Value:  iban.IBAN(brunosStored.Value).Grouped(),
+	}
+	lowered := deposit.Identifier{
+		Scheme: deposit.IdentifierIBAN,
+		Value:  strings.ToLower(alicesStored.Value),
+	}
+
+	// Resolution: Verde finds its own customer from the address as printed.
+	ref, err := n.bank(verde.BIC).ResolveIdentifier(ctx, grouped)
+	if err != nil {
+		t.Fatalf("resolving Bruno's address as a statement prints it: %v", err)
+	}
+	if ref.Account != bruno.ID {
+		t.Errorf("resolved %s, want %s", ref.Account, bruno.ID)
+	}
+
+	// Quoting: Alice names her own address in the case she typed it in.
 	p, err := initiate(ctx, n, InitiatePaymentRequest{
-		Scheme:   SchemeSEPACT,
-		Debtor:   PartyRef{Account: alice.ID, Identifier: alice.Identifiers[0]},
-		Creditor: PartyRef{Account: bruno.ID, Identifier: bruno.Identifiers[0]},
-		// No end-to-end id, so that the translated request can be initiated
-		// against this same network below without colliding with the payment
-		// it was built from — the dedup ErrDuplicateEndToEndID is real and is
-		// pinned elsewhere.
+		Scheme: SchemeSEPACT,
+		Debtor: PartyRef{Account: alice.ID, Identifier: lowered},
+		// The payee's address as the payer typed it, which is the only thing the
+		// payer has: Aurora cannot reach Verde's register to normalise it, so the
+		// grouped form is what its copy records and what the codec compacts on
+		// the way out.
+		Creditor:        PartyRef{Account: bruno.ID, Identifier: grouped},
 		Amount:          250000,
 		CreditorDetails: PartyDetails{Agent: verde.BIC, Name: bruno.Name},
 		DebtorDetails:   PartyDetails{Agent: aurora.BIC}})
 	assertNoError(t, err)
 
-	env, err := n.CreditTransferMessage(p, MessageContext{From: "AURODEFFXXX", To: "CSMXFRPPXXX", MsgID: "x", Now: messageNow})
+	// What the payment RECORDS is the account's stored form and not the typed
+	// one: a payment's recorded address is one the account actually holds. See
+	// addressFor.
+	atAurora := mustGetPaymentAt(t, ctx, n.bank(aurora.BIC), p.ID)
+	assertEqual(t, "the debtor address on the payer's bank's copy", atAurora.Debtor.Identifier, alicesStored)
+
+	// And the message carries that same string, character for character. One
+	// form, so there is nothing for the wire to normalise.
+	env, err := n.CreditTransferMessage(atAurora, MessageContext{From: "AURODEFFXXX", To: "CSMXFRPPXXX", MsgID: "x", Now: messageNow})
 	if err != nil {
 		t.Fatalf("CreditTransferMessage: %v", err)
 	}
@@ -1396,87 +1440,24 @@ func TestCreditTransferRoundTripsThroughTheWireForSeedShapedAddresses(t *testing
 	if err != nil {
 		t.Fatalf("Marshal: %v", err)
 	}
-	// The document carries the compact form and nothing else: that is what makes
-	// the resolution below a real question rather than a lookup of the string
-	// that was stored.
-	if strings.Contains(string(raw), "SE89-AURORA-1001") {
-		t.Errorf("the message carries the display form of the debtor's IBAN:\n%s", raw)
+	if !strings.Contains(string(raw), alicesStored.Value) {
+		t.Errorf("the message does not carry the debtor's stored address %q:\n%s", alicesStored.Value, raw)
 	}
-	if !strings.Contains(string(raw), "SE89AURORA1001") {
-		t.Errorf("the message does not carry the compact form of the debtor's IBAN:\n%s", raw)
-	}
+
+	// The whole way round: the message resolves at Verde against the same stored
+	// address the grouped form reached above.
 	back, err := iso20022.Unmarshal(raw)
 	if err != nil {
 		t.Fatalf("Unmarshal: %v", err)
 	}
-
-	got, err := n.bank(p.CreditorDetails.Agent).CreditTransferRequest(ctx, back.Document.(*iso20022.Pacs008))
+	got, err := n.bank(verde.BIC).CreditTransferRequest(ctx, back.Document.(*iso20022.Pacs008))
 	if err != nil {
-		t.Fatalf("CreditTransferRequest on seed-shaped addresses: %v", err)
+		t.Fatalf("CreditTransferRequest: %v", err)
 	}
-	// The CREDITOR is Verde's own customer on this push, so it is what this call
-	// resolves — against the SPACE-separated stored form, which is the half of
-	// "hyphens on one side and spaces on the other" that CreditTransferRequest
-	// exercises.
-	if !got.Creditor.SameParty(p.Creditor) {
-		t.Errorf("creditor resolved to %+v, want %+v", got.Creditor, p.Creditor)
+	if got.Creditor.Account != bruno.ID {
+		t.Errorf("the creditor resolved to %s, want %s", got.Creditor.Account, bruno.ID)
 	}
-	// The DEBTOR is Aurora's customer, not Verde's, so it comes back recorded —
-	// the address the message quoted — and not resolved. Its AGENT is on the
-	// message; see TestCreditTransferRoundTripsThroughTheWire.
-	if got.Debtor.Account != "" {
-		t.Errorf("debtor resolved to %+v, want it recorded rather than resolved", got.Debtor)
-	}
-	// The request records the address the MESSAGE quoted, which is the compact
-	// form — not the stored one. Both name the same account, and it is the
-	// quoted one that is true of this payment.
-	if got.Debtor.Identifier.Value != "SE89AURORA1001" {
-		t.Errorf("debtor address = %q, want the compact form the message carried", got.Debtor.Identifier.Value)
-	}
-	// CreditorDetails now comes off the message itself — the real translator,
-	// not a value carried forward from the payment this fixture already knows
-	// about.
-	if got.CreditorDetails != p.CreditorDetails {
-		t.Errorf("creditor details = %+v, want %+v", got.CreditorDetails, p.CreditorDetails)
-	}
-	// The debtor's own bank — the only one with standing to submit on Aurora's
-	// customer's behalf — is what would resubmit with the wire's compact
-	// address. Aurora is not resolved by CreditTransferRequest (Verde has no
-	// business doing that), so the participant and account it already knows for
-	// its own customer are supplied directly here; what is under test is
-	// addressFor's own normalization, for BOTH separator styles, given a
-	// correctly-identified account on each side. A fix that stopped at
-	// resolution would fail here with ErrIdentifierMismatch — the directory and
-	// addressFor disagreeing about what an address is.
-	accepted, err := initiate(ctx, n, InitiatePaymentRequest{
-		Scheme: got.Scheme,
-		Debtor: PartyRef{
-			Account:    alice.ID,
-			Identifier: got.Debtor.Identifier,
-		},
-		Creditor:        got.Creditor,
-		Amount:          got.Amount,
-		CreditorDetails: got.CreditorDetails,
-		DebtorDetails:   PartyDetails{Agent: aurora.BIC}})
-	if err != nil {
-		t.Fatalf("initiating the translated payment: %v", err)
-	}
-	// What the accepted payment RECORDS is each account's stored form, which is
-	// addressFor's choice: a payment's recorded address is one the account
-	// actually holds, written the way its own bank writes it. See addressFor.
-	if accepted.Debtor.Identifier.Value != "SE89-AURORA-1001" {
-		t.Errorf("the accepted payment records the debtor address %q, want the account's stored form",
-			accepted.Debtor.Identifier.Value)
-	}
-	// The creditor's, on VERDE's copy: normalizing the payee's address is the
-	// payee's bank's own act on its own register, made when the instruction
-	// arrives, and nothing carries it back upstream. See
-	// TestInitiateBackFillsTheAddressOnBothLegs.
-	atVerde := mustGetPaymentAt(t, ctx, n.bank(verde.BIC), accepted.ID)
-	if atVerde.Creditor.Identifier.Value != "IT60 X054 2811 1010 0000 0123 456" {
-		t.Errorf("the accepted payment records the creditor address %q, want the account's stored form",
-			atVerde.Creditor.Identifier.Value)
-	}
+	assertEqual(t, "the debtor address the message carried", got.Debtor.Identifier, alicesStored)
 }
 
 // A status report about no transactions leaves GrpSts empty, and the document is

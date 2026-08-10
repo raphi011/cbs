@@ -6,7 +6,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/raphi011/cbs/deposit"
 	"github.com/raphi011/cbs/iso20022"
 	"github.com/raphi011/cbs/ledger"
 	. "github.com/raphi011/cbs/payment"
@@ -65,8 +64,11 @@ func TestAMemberBanksActsAreRefusedOnAnyOtherInstitutionsNetwork(t *testing.T) {
 		name string
 		call func(n *Network) error
 	}{
+		// A well-formed address, so that what refuses the act is the identity
+		// guard. A malformed one is refused for its check digits by every
+		// institution alike, which would make this row pass without the guard.
 		{"ResolveIdentifier", func(n *Network) error {
-			_, err := n.ResolveIdentifier(ctx, deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "SE89-ALICE-0001"})
+			_, err := n.ResolveIdentifier(ctx, mintAt(t, a, 999_999))
 			return err
 		}},
 		{"AcceptInbound", func(n *Network) error { return n.AcceptInbound(ctx, pay.ID, relayedFrom(pay)) }},

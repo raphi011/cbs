@@ -136,10 +136,10 @@ func SnapshotDateKey(date time.Time) string { return date.Format("2006-01-02") }
 //     subledgers in store/sqlite/schema/bank/0001_init.sql.
 //   - ListDepositAccountsByIdentifier matches with Identifier.Matches — the
 //     scheme exactly, and the value under that scheme's comparison rule, which
-//     for an IBAN means with display separators stripped from BOTH sides. A
+//     for an IBAN means separators stripped and case folded on BOTH sides. A
 //     store that compared raw values would leave an account stored as
-//     SE89-AURORA-1001 unreachable from a message carrying SE89AURORA1001 —
-//     which is the same address.
+//     DE20999000010000000001 unreachable from a customer who typed it
+//     DE20 9990 0001 0000 0000 01, the way their statement prints it.
 //     (ListDepositAccountsByIdentifierMatchesAnIBANThroughItsSeparators.) It is
 //     book-scoped like everything else here, orders created_at then seq, and
 //     returns an empty slice — never a sentinel — when nothing matches. It must
