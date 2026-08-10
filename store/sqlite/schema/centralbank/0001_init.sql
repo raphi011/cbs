@@ -6,7 +6,10 @@
 --
 -- What is absent is again the substance. THE CENTRAL BANK HAS NO CUSTOMERS: no
 -- deposit register, no deposit account identifiers, no holds, no snapshots, no
--- overdraft terms, no product catalogue, no lending. Its account holders are
+-- overdraft terms, no product catalogue, no lending, and no slot_accounts —
+-- that table says which account a customer-facing FLOW posts to, and every
+-- posting here is the settlement agent's own act against an account it names
+-- itself. Its account holders are
 -- member banks and its accounts are their reserves, so a table of retail
 -- deposit accounts would be a table it could never write a row into. AND IT
 -- HOLDS NO PAYMENTS: there is no payments table and no cycles table here. It

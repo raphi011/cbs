@@ -51,6 +51,23 @@ type Tx interface {
 	GetAccount(ctx context.Context, book BookID, id AccountID) (Account, error)
 	ListAccounts(ctx context.Context, book BookID) ([]Account, error)
 
+	// The slot mapping: which account a posting flow writes to. PutSlotAccount
+	// is an upsert keyed by (book, product, slot, asset) — repointing a slot is
+	// the same act as pointing it, and a store that appended instead would leave
+	// two answers to a question that has one.
+	//
+	// GetSlotAccount returns ErrSlotNotMapped for a triple with no row. It does
+	// NOT fall back to the bank-wide row: the fallback is Book.SlotAccountTx's
+	// rule, stated once there, and a store that also implemented it would make
+	// "this product has its own line" unaskable.
+	//
+	// ListSlotAccounts orders by slot, then product, then asset — a stated order
+	// rather than insertion, because the mapping is read as a configuration
+	// listing and nothing about when a row was written belongs in it.
+	PutSlotAccount(ctx context.Context, book BookID, row SlotAccount) error
+	GetSlotAccount(ctx context.Context, book BookID, product, slot string, asset AssetCode) (AccountID, error)
+	ListSlotAccounts(ctx context.Context, book BookID) ([]SlotAccount, error)
+
 	// LockAccounts asks that a balance check and the posting that follows it be
 	// one serialized step, taking the accounts in a deterministic order so that
 	// two callers over overlapping sets cannot each hold what the other needs.

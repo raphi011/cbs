@@ -151,7 +151,7 @@ var (
 	// the mandates it holds as creditor bank, its own copy of each payment it is
 	// a party to, and the advices it was sent.
 	Bank = shape("bank",
-		"books", "ledgers", "subledgers", "accounts", "transactions", "entries",
+		"books", "ledgers", "subledgers", "accounts", "slot_accounts", "transactions", "entries",
 		"deposit_accounts", "deposit_account_identifiers", "holds", "snapshots", "overdraft_terms",
 		"products", "product_versions",
 		"facilities", "installments", "facility_terms",

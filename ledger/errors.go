@@ -89,6 +89,26 @@ var (
 	// caller's belief that it had recorded whose money this is would be false.
 	ErrSubsidiaryNotAllowed = errors.New("only a control account takes an entry with a subsidiary")
 
+	// ErrSlotNotMapped is returned when no row says which account a flow posts
+	// to. It is a chart of accounts that has not been configured for this
+	// asset, seen from a posting path — a refusal rather than a fallback,
+	// because the only fallback available would be to guess a line and the
+	// money would land somewhere nobody chose.
+	ErrSlotNotMapped = errors.New("no account is mapped to this slot")
+
+	// ErrSlotAccountMismatch is returned when the account a slot is being
+	// pointed at is not the kind of account the slot requires: wrong asset,
+	// wrong type, or plain where the flow posts obligors. Refused at the WRITE,
+	// because the alternative is a posting that fails weeks later at a moment
+	// nobody connects to the configuration change that caused it.
+	ErrSlotAccountMismatch = errors.New("account does not satisfy the slot")
+
+	// ErrSlotNotProductScoped is returned when a product-specific row is
+	// written for a slot that holds a balance. See Slot.ByProduct: the money
+	// already posted would stay in the old line while every later posting went
+	// to the new one.
+	ErrSlotNotProductScoped = errors.New("this slot takes no product-specific mapping")
+
 	// ErrUnbalancedAsset is returned when the debits and credits of one
 	// asset within a transaction do not net to zero.
 	//

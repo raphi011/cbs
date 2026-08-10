@@ -371,6 +371,21 @@ func (r *recordingTx) ListAccounts(ctx context.Context, book ledger.BookID) ([]l
 	return r.Tx.ListAccounts(ctx, book)
 }
 
+func (r *recordingTx) PutSlotAccount(ctx context.Context, book ledger.BookID, row ledger.SlotAccount) error {
+	r.rec.note(book)
+	return r.Tx.PutSlotAccount(ctx, book, row)
+}
+
+func (r *recordingTx) GetSlotAccount(ctx context.Context, book ledger.BookID, product, slot string, asset ledger.AssetCode) (ledger.AccountID, error) {
+	r.rec.note(book)
+	return r.Tx.GetSlotAccount(ctx, book, product, slot, asset)
+}
+
+func (r *recordingTx) ListSlotAccounts(ctx context.Context, book ledger.BookID) ([]ledger.SlotAccount, error) {
+	r.rec.note(book)
+	return r.Tx.ListSlotAccounts(ctx, book)
+}
+
 func (r *recordingTx) LockAccounts(ctx context.Context, book ledger.BookID, ids []ledger.AccountID) error {
 	r.rec.note(book)
 	return r.Tx.LockAccounts(ctx, book, ids)

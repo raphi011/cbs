@@ -3,6 +3,7 @@ package lending
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -19,8 +20,10 @@ const loansSubledgerName = "Loans and Advances"
 // incomeSubledgerName and interestIncomeName mirror the deposit layer's. The
 // two are deliberately not shared: lending does not import deposit, and a
 // shared constant would be the first thread of exactly that dependency. Both
-// resolve the same account by name, so a bank ends up with one interest-income
-// account per asset however its interest was earned.
+// OPEN the same account, whichever layer gets there first, so a bank ends up
+// with one interest-income account per asset however its interest was earned —
+// and the mapping then holds two rows pointing at it, one per slot, which is
+// where a reader can see that the two layers agree.
 const incomeSubledgerName = "Income"
 
 // payablesSubledgerName is where the bank's own obligations to borrowers are
@@ -29,10 +32,9 @@ const incomeSubledgerName = "Income"
 // or as an asset.
 const payablesSubledgerName = "Payables"
 
-// The four lines an asset's facilities post to. Three of them are CONTROL
-// accounts and carry the facility on every entry, so a bank lending to ten
-// thousand borrowers has three chart-of-accounts rows for them rather than
-// thirty thousand.
+// The four slots this layer posts to. Three of them are CONTROL accounts and
+// carry the facility on every entry, so a bank lending to ten thousand borrowers
+// has three chart-of-accounts rows for them rather than thirty thousand.
 //
 // The refunds payable is one of the three, and it is the line that most looks
 // like it should not be. A balance pooled with NO obligor cannot say who is owed
@@ -41,6 +43,24 @@ const payablesSubledgerName = "Payables"
 // sufficiency check. Both objections are about the pooling and not about the
 // account: the obligor is on every entry, and Book.checkSufficientBalance reads
 // a Position, so what stops the unbounded discharge is the dimension.
+//
+// The income slot is ByProduct and none of the other three is, for the reason
+// ledger.Slot.ByProduct gives. This layer has no product to resolve one with —
+// a facility's terms are its own timeline, not a catalogue entry — so it always
+// asks for the bank-wide row; the field is what the slot ACCEPTS, not what this
+// caller passes.
+var (
+	principalSlot  = ledger.Slot{Key: "lending.principal", Type: ledger.Asset, Control: true}
+	receivableSlot = ledger.Slot{Key: "lending.interest_receivable", Type: ledger.Asset, Control: true}
+	payableSlot    = ledger.Slot{Key: "lending.interest_refunds_payable", Type: ledger.Liability, Control: true}
+	incomeSlot     = ledger.Slot{Key: "lending.interest_income", Type: ledger.Revenue, ByProduct: true}
+)
+
+// The names the first facility in an asset opens those four lines under: the
+// bootstrap, and not the resolution. The income line resolves to the same
+// account deposit's does, because both are ensured by name here and the names
+// agree — which is now a row in the mapping rather than a coincidence between
+// two packages that cannot import each other.
 func loanPrincipalName(asset ledger.AssetCode) string {
 	return "Loan Principal (" + string(asset) + ")"
 }
@@ -804,54 +824,28 @@ func (p *Portfolio) Positions(ctx context.Context, id FacilityID) (FacilityPosit
 	return out, err
 }
 
-// accountsTx resolves all three by name, in the folder this portfolio files
-// them in. openTx created them when the first facility in the asset was opened,
-// so a missing line is a chart that has been tampered with rather than a first
-// use — which is why these RESOLVE and only openTx ensures.
+// accountsTx resolves all three from the slot mapping. openTx mapped them when
+// the first facility in the asset was opened, so ErrSlotNotMapped here is a
+// chart that has been tampered with rather than a first use — which is why these
+// RESOLVE and only openTx ensures.
 //
-// The three together rather than one at a time: they share the folder lookup,
-// and every caller that wants one of them is one line from wanting another.
+// The three together rather than one at a time, because every caller that wants
+// one of them is one line from wanting another.
 func (p *Portfolio) accountsTx(ctx context.Context, tx Tx, f Facility) (FacilityPositions, error) {
-	loans, payables, err := p.foldersTx(ctx, tx)
-	if err != nil {
-		return FacilityPositions{}, err
-	}
-	principal, err := p.gl.FindControlAccountTx(ctx, tx, loans, loanPrincipalName(f.Asset), ledger.Asset, f.Asset)
-	if err != nil {
-		return FacilityPositions{}, err
-	}
-	receivable, err := p.gl.FindControlAccountTx(ctx, tx, loans, accruedInterestName(f.Asset), ledger.Asset, f.Asset)
-	if err != nil {
-		return FacilityPositions{}, err
-	}
-	payable, err := p.gl.FindControlAccountTx(ctx, tx, payables, interestRefundPayableName(f.Asset), ledger.Liability, f.Asset)
-	if err != nil {
-		return FacilityPositions{}, err
-	}
 	obligor := string(f.ID)
-	return FacilityPositions{
-		Principal:  principal.ID.For(obligor),
-		Receivable: receivable.ID.For(obligor),
-		Payable:    payable.ID.For(obligor),
-	}, nil
-}
-
-// foldersTx resolves the two folders this portfolio files its lines in, both
-// under the ledger the register's own subledger belongs to.
-func (p *Portfolio) foldersTx(ctx context.Context, tx Tx) (loans, payables ledger.SubledgerID, err error) {
-	ledgerID, err := p.ledgerIDTx(ctx, tx)
+	principal, err := p.gl.SlotPositionTx(ctx, tx, "", principalSlot, f.Asset, obligor)
 	if err != nil {
-		return "", "", err
+		return FacilityPositions{}, err
 	}
-	loansSub, err := p.gl.FindSubledgerTx(ctx, tx, ledgerID, loansSubledgerName)
+	receivable, err := p.gl.SlotPositionTx(ctx, tx, "", receivableSlot, f.Asset, obligor)
 	if err != nil {
-		return "", "", err
+		return FacilityPositions{}, err
 	}
-	payablesSub, err := p.gl.FindSubledgerTx(ctx, tx, ledgerID, payablesSubledgerName)
+	payable, err := p.gl.SlotPositionTx(ctx, tx, "", payableSlot, f.Asset, obligor)
 	if err != nil {
-		return "", "", err
+		return FacilityPositions{}, err
 	}
-	return loansSub.ID, payablesSub.ID, nil
+	return FacilityPositions{Principal: principal, Receivable: receivable, Payable: payable}, nil
 }
 
 // ledgerIDTx resolves the ledger this portfolio's folders hang off.
@@ -863,10 +857,21 @@ func (p *Portfolio) ledgerIDTx(ctx context.Context, tx Tx) (ledger.LedgerID, err
 	return sub.LedgerID, nil
 }
 
-// ensureChartTx creates the four lines an asset's facilities post to, on the
-// first facility opened in that asset. Three are control accounts and one — the
-// income line — is the bank's own, so it takes no obligor.
+// ensureChartTx opens the four lines an asset's facilities post to and maps this
+// layer's slots onto them, on the first facility opened in that asset. Three are
+// control accounts and one — the income line — is the bank's own, so it takes no
+// obligor.
+//
+// It returns once the principal slot answers, so the ten thousandth facility in
+// an asset costs one lookup and writes nothing.
 func (p *Portfolio) ensureChartTx(ctx context.Context, tx Tx, asset ledger.AssetCode) error {
+	switch _, err := p.gl.SlotAccountTx(ctx, tx, "", principalSlot, asset); {
+	case err == nil:
+		return nil
+	case !errors.Is(err, ledger.ErrSlotNotMapped):
+		return err
+	}
+
 	ledgerID, err := p.ledgerIDTx(ctx, tx)
 	if err != nil {
 		return err
@@ -875,42 +880,47 @@ func (p *Portfolio) ensureChartTx(ctx context.Context, tx Tx, asset ledger.Asset
 	if err != nil {
 		return err
 	}
-	if _, err := p.gl.EnsureControlAccountTx(ctx, tx, loans.ID, loanPrincipalName(asset), ledger.Asset, asset); err != nil {
-		return err
-	}
-	if _, err := p.gl.EnsureControlAccountTx(ctx, tx, loans.ID, accruedInterestName(asset), ledger.Asset, asset); err != nil {
-		return err
+	for _, line := range []struct {
+		slot      ledger.Slot
+		subledger ledger.SubledgerID
+		name      string
+	}{
+		{principalSlot, loans.ID, loanPrincipalName(asset)},
+		{receivableSlot, loans.ID, accruedInterestName(asset)},
+	} {
+		account, err := p.gl.EnsureControlAccountTx(ctx, tx, line.subledger, line.name, line.slot.Type, asset)
+		if err != nil {
+			return err
+		}
+		if err := p.gl.MapSlotTx(ctx, tx, "", line.slot, asset, account.ID); err != nil {
+			return err
+		}
 	}
 	payables, err := p.gl.EnsureSubledgerTx(ctx, tx, ledgerID, payablesSubledgerName)
 	if err != nil {
 		return err
 	}
-	if _, err := p.gl.EnsureControlAccountTx(ctx, tx, payables.ID, interestRefundPayableName(asset), ledger.Liability, asset); err != nil {
-		return err
-	}
-	income, err := p.gl.EnsureSubledgerTx(ctx, tx, ledgerID, incomeSubledgerName)
+	payable, err := p.gl.EnsureControlAccountTx(ctx, tx, payables.ID, interestRefundPayableName(asset), payableSlot.Type, asset)
 	if err != nil {
 		return err
 	}
-	_, err = p.gl.EnsureAccountTx(ctx, tx, income.ID, interestIncomeName(asset), ledger.Revenue, asset)
-	return err
+	if err := p.gl.MapSlotTx(ctx, tx, "", payableSlot, asset, payable.ID); err != nil {
+		return err
+	}
+	incomeSub, err := p.gl.EnsureSubledgerTx(ctx, tx, ledgerID, incomeSubledgerName)
+	if err != nil {
+		return err
+	}
+	income, err := p.gl.EnsureAccountTx(ctx, tx, incomeSub.ID, interestIncomeName(asset), incomeSlot.Type, asset)
+	if err != nil {
+		return err
+	}
+	return p.gl.MapSlotTx(ctx, tx, "", incomeSlot, asset, income.ID)
 }
 
 // incomeTx resolves the bank's interest-income line for an asset. Plain rather
 // than control: what the bank has earned is the bank's own and stands in for
 // nobody.
 func (p *Portfolio) incomeTx(ctx context.Context, tx Tx, asset ledger.AssetCode) (ledger.AccountID, error) {
-	ledgerID, err := p.ledgerIDTx(ctx, tx)
-	if err != nil {
-		return "", err
-	}
-	income, err := p.gl.FindSubledgerTx(ctx, tx, ledgerID, incomeSubledgerName)
-	if err != nil {
-		return "", err
-	}
-	acct, err := p.gl.FindAccountTx(ctx, tx, income.ID, interestIncomeName(asset), ledger.Revenue, asset)
-	if err != nil {
-		return "", err
-	}
-	return acct.ID, nil
+	return p.gl.SlotAccountTx(ctx, tx, "", incomeSlot, asset)
 }

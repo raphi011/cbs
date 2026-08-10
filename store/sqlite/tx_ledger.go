@@ -422,6 +422,81 @@ func (t *tx) GetAccount(ctx context.Context, book ledger.BookID, id ledger.Accou
 	return a, nil
 }
 
+func (t *tx) PutSlotAccount(ctx context.Context, book ledger.BookID, row ledger.SlotAccount) error {
+	if err := t.inShape("slot_accounts"); err != nil {
+		return err
+	}
+	if err := t.own(book); err != nil {
+		return err
+	}
+	if err := t.write(); err != nil {
+		return err
+	}
+	if err := t.ensureBook(ctx, book); err != nil {
+		return err
+	}
+	_, err := t.tx.ExecContext(ctx, `
+		INSERT INTO slot_accounts (book_id, product, slot, asset, account_id)
+		VALUES (?, ?, ?, ?, ?)
+		ON CONFLICT (book_id, product, slot, asset) DO UPDATE
+		SET account_id = EXCLUDED.account_id`,
+		string(book), row.Product, row.Slot, string(row.Asset), string(row.Account))
+	if err != nil {
+		return fmt.Errorf("sqlite: put slot account %s/%s: %w", row.Slot, row.Asset, err)
+	}
+	return nil
+}
+
+func (t *tx) GetSlotAccount(ctx context.Context, book ledger.BookID, product, slot string, asset ledger.AssetCode) (ledger.AccountID, error) {
+	if err := t.inShape("slot_accounts"); err != nil {
+		return "", err
+	}
+	if err := t.own(book); err != nil {
+		return "", err
+	}
+	var account ledger.AccountID
+	err := t.tx.QueryRowContext(ctx, `
+		SELECT account_id FROM slot_accounts
+		WHERE book_id = ? AND product = ? AND slot = ? AND asset = ?`,
+		string(book), product, slot, string(asset)).Scan(&account)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", fmt.Errorf("%w: %s/%s for product %q", ledger.ErrSlotNotMapped, slot, asset, product)
+	}
+	if err != nil {
+		return "", fmt.Errorf("sqlite: get slot account %s/%s: %w", slot, asset, err)
+	}
+	return account, nil
+}
+
+func (t *tx) ListSlotAccounts(ctx context.Context, book ledger.BookID) ([]ledger.SlotAccount, error) {
+	if err := t.inShape("slot_accounts"); err != nil {
+		return nil, err
+	}
+	if err := t.own(book); err != nil {
+		return nil, err
+	}
+	rows, err := t.tx.QueryContext(ctx, `
+		SELECT product, slot, asset, account_id FROM slot_accounts WHERE book_id = ?
+		ORDER BY slot, product, asset`, string(book))
+	if err != nil {
+		return nil, fmt.Errorf("sqlite: list slot accounts: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]ledger.SlotAccount, 0)
+	for rows.Next() {
+		var row ledger.SlotAccount
+		if err := rows.Scan(&row.Product, &row.Slot, &row.Asset, &row.Account); err != nil {
+			return nil, fmt.Errorf("sqlite: list slot accounts: %w", err)
+		}
+		out = append(out, row)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("sqlite: list slot accounts: %w", err)
+	}
+	return out, nil
+}
+
 func (t *tx) ListAccounts(ctx context.Context, book ledger.BookID) ([]ledger.Account, error) {
 	if err := t.inShape("accounts"); err != nil {
 		return nil, err

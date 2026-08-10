@@ -363,11 +363,31 @@ const receivableSubledgerName = "Accrued Interest"
 // incomeSubledgerName is where interest income is filed.
 const incomeSubledgerName = "Income"
 
-// The three lines an asset's deposit accounts post to. One set per asset, and
-// one set per BANK: what makes them one line rather than one per customer is the
-// obligor named on every entry against the first two. The asset is in each name
-// because an account and its asset are inseparable, and a chart of accounts
-// holding several of each needs to tell them apart.
+// The three slots this layer posts to: where a customer's money pools, where
+// what they owe in interest sits, and where the bank earns it.
+//
+// A slot is the ROLE, and which account fills it is a row in the mapping rather
+// than a name matched here — see ledger.Slot. What each declares is the account
+// it will accept: two control accounts holding obligors' balances, and one
+// Revenue line that is the bank's own.
+//
+// Only the income slot is ByProduct. A bank may earn a savings product's
+// interest into its own revenue line; it may NOT pool that product's deposits
+// somewhere else, because the money already posted under a customer would stay
+// where it was posted while every later posting went elsewhere.
+var (
+	principalSlot  = ledger.Slot{Key: "deposit.principal", Type: ledger.Liability, Control: true}
+	receivableSlot = ledger.Slot{Key: "deposit.interest_receivable", Type: ledger.Asset, Control: true}
+	incomeSlot     = ledger.Slot{Key: "deposit.interest_income", Type: ledger.Revenue, ByProduct: true}
+)
+
+// The names the first account in an asset opens those three lines under. They
+// are the BOOTSTRAP and not the resolution: nothing reads an account by name
+// afterwards, and an operator who repoints a slot at another account changes
+// where the flow posts without renaming anything.
+//
+// The asset is in each name because an account and its asset are inseparable,
+// and a chart of accounts holding several of each needs to tell them apart.
 func customerDepositsName(asset ledger.AssetCode) string {
 	return "Customer Deposits (" + string(asset) + ")"
 }
@@ -564,19 +584,32 @@ func (r *Register) ledgerIDTx(ctx context.Context, tx Tx) (ledger.LedgerID, erro
 	return sub.LedgerID, nil
 }
 
-// ensureChartTx creates the three lines an asset's deposit accounts post to, on
-// the first account opened in that asset.
+// ensureChartTx opens the three lines an asset's deposit accounts post to and
+// maps this layer's slots onto them, on the first account opened in that asset.
+//
+// It returns immediately once the principal slot answers, so the ten thousandth
+// account in an asset costs one lookup: the chart of accounts is configuration,
+// and configuring it repeatedly would write an audit event per account opened.
 //
 // All three at once, including the income account, although an account that
 // never goes overdrawn will never post to it. A bank that takes deposits in an
 // asset earns interest in it, and the line is a statement about the bank rather
-// than about any customer; creating them together is also what lets every other
-// path here RESOLVE rather than ensure, so no read is one caller away from a
-// write. The receivable is one of the three and not one per customer, because a
-// shared one duplicates nothing: the per-customer detail is the entries under
-// the dimension rather than a figure that would have to be stored beside it.
+// than about any customer. The receivable is one of the three and not one per
+// customer, because a shared one duplicates nothing: the per-customer detail is
+// the entries under the dimension rather than a figure stored beside it.
 func (r *Register) ensureChartTx(ctx context.Context, tx Tx, asset ledger.AssetCode) error {
-	if _, err := r.gl.EnsureControlAccountTx(ctx, tx, r.customers, customerDepositsName(asset), ledger.Liability, asset); err != nil {
+	switch _, err := r.gl.SlotAccountTx(ctx, tx, "", principalSlot, asset); {
+	case err == nil:
+		return nil
+	case !errors.Is(err, ledger.ErrSlotNotMapped):
+		return err
+	}
+
+	principal, err := r.gl.EnsureControlAccountTx(ctx, tx, r.customers, customerDepositsName(asset), ledger.Liability, asset)
+	if err != nil {
+		return err
+	}
+	if err := r.gl.MapSlotTx(ctx, tx, "", principalSlot, asset, principal.ID); err != nil {
 		return err
 	}
 	ledgerID, err := r.ledgerIDTx(ctx, tx)
@@ -587,42 +620,35 @@ func (r *Register) ensureChartTx(ctx context.Context, tx Tx, asset ledger.AssetC
 	if err != nil {
 		return err
 	}
-	if _, err := r.gl.EnsureControlAccountTx(ctx, tx, receivables.ID, accruedInterestName(asset), ledger.Asset, asset); err != nil {
-		return err
-	}
-	income, err := r.gl.EnsureSubledgerTx(ctx, tx, ledgerID, incomeSubledgerName)
+	receivable, err := r.gl.EnsureControlAccountTx(ctx, tx, receivables.ID, accruedInterestName(asset), ledger.Asset, asset)
 	if err != nil {
 		return err
 	}
-	_, err = r.gl.EnsureAccountTx(ctx, tx, income.ID, interestIncomeName(asset), ledger.Revenue, asset)
-	return err
+	if err := r.gl.MapSlotTx(ctx, tx, "", receivableSlot, asset, receivable.ID); err != nil {
+		return err
+	}
+	incomeSub, err := r.gl.EnsureSubledgerTx(ctx, tx, ledgerID, incomeSubledgerName)
+	if err != nil {
+		return err
+	}
+	income, err := r.gl.EnsureAccountTx(ctx, tx, incomeSub.ID, interestIncomeName(asset), ledger.Revenue, asset)
+	if err != nil {
+		return err
+	}
+	return r.gl.MapSlotTx(ctx, tx, "", incomeSlot, asset, income.ID)
 }
 
 // depositControlTx resolves the control account this bank's customer money in
-// an asset is pooled in.
-//
-// Resolved by NAME on every call, which is what a chart of accounts bounded by
-// the institution buys: the listing behind it is one control line per asset plus
-// the bank's own positions — tens of rows, not one per customer, which is the
-// condition ledger.EnsureSubledgerTx states this idiom is cheap under. The
-// alternative is an id on the account row, and that is a pointer into the chart
-// of accounts, which is precisely what a customer account does not have.
+// an asset is pooled in: one read of the mapping, and no account name anywhere
+// on the path.
 func (r *Register) depositControlTx(ctx context.Context, tx Tx, asset ledger.AssetCode) (ledger.AccountID, error) {
-	acct, err := r.gl.FindControlAccountTx(ctx, tx, r.customers, customerDepositsName(asset), ledger.Liability, asset)
-	if err != nil {
-		return "", err
-	}
-	return acct.ID, nil
+	return r.gl.SlotAccountTx(ctx, tx, "", principalSlot, asset)
 }
 
-// positionTx is where an account's money is: the control account for its asset,
-// under the account's own id.
+// positionTx is where an account's money is: the account filling the principal
+// slot for its asset, under the account's own id.
 func (r *Register) positionTx(ctx context.Context, tx Tx, acct Account) (ledger.Position, error) {
-	control, err := r.depositControlTx(ctx, tx, acct.Asset)
-	if err != nil {
-		return ledger.Position{}, err
-	}
-	return control.For(string(acct.ID)), nil
+	return r.gl.SlotPositionTx(ctx, tx, "", principalSlot, acct.Asset, string(acct.ID))
 }
 
 // Position is where a deposit account's money is in the general ledger, for a
@@ -671,52 +697,44 @@ func (r *Register) PositionTx(ctx context.Context, tx Tx, id AccountID) (ledger.
 	return r.positionTx(ctx, tx, acct)
 }
 
-// interestAccounts is where one account's overdraft interest moves: the
-// customer's own position, their share of the bank's accrued-interest
-// receivable, and the income line the bank earns it into.
+// interestAccounts is where one account's overdraft interest moves between: the
+// customer's own position, and their share of the bank's accrued-interest
+// receivable. Both carry the same obligor, which is what makes one shared
+// receivable answer "what does THIS customer owe".
 //
-// Two positions and one bare account, which is this whole arrangement in one
-// type: what is owed BY a named customer carries their id, and what the bank has
-// earned is the bank's own and carries nobody's.
+// The income line is not here. It is the bank's own, it takes no obligor, and it
+// is the one of the three a product may have its own of — so it is resolved
+// where the product is known, which is inside the accrual.
 type interestAccounts struct {
 	Customer   ledger.Position
 	Receivable ledger.Position
-	Income     ledger.AccountID
 }
 
-// interestAccountsTx resolves all three for one account. ensureChartTx created
-// them when the first account in the asset was opened, so a missing one here is
-// a chart that has been tampered with rather than a first use.
+// interestAccountsTx resolves both for one account. ensureChartTx mapped the
+// slots when the first account in the asset was opened, so ErrSlotNotMapped here
+// is a chart that has been tampered with rather than a first use.
 func (r *Register) interestAccountsTx(ctx context.Context, tx Tx, acct Account) (interestAccounts, error) {
 	customer, err := r.positionTx(ctx, tx, acct)
 	if err != nil {
 		return interestAccounts{}, err
 	}
-	ledgerID, err := r.ledgerIDTx(ctx, tx)
+	receivable, err := r.gl.SlotPositionTx(ctx, tx, "", receivableSlot, acct.Asset, string(acct.ID))
 	if err != nil {
 		return interestAccounts{}, err
 	}
-	receivables, err := r.gl.FindSubledgerTx(ctx, tx, ledgerID, receivableSubledgerName)
-	if err != nil {
-		return interestAccounts{}, err
-	}
-	receivable, err := r.gl.FindControlAccountTx(ctx, tx, receivables.ID, accruedInterestName(acct.Asset), ledger.Asset, acct.Asset)
-	if err != nil {
-		return interestAccounts{}, err
-	}
-	income, err := r.gl.FindSubledgerTx(ctx, tx, ledgerID, incomeSubledgerName)
-	if err != nil {
-		return interestAccounts{}, err
-	}
-	incomeAcct, err := r.gl.FindAccountTx(ctx, tx, income.ID, interestIncomeName(acct.Asset), ledger.Revenue, acct.Asset)
-	if err != nil {
-		return interestAccounts{}, err
-	}
-	return interestAccounts{
-		Customer:   customer,
-		Receivable: receivable.ID.For(string(acct.ID)),
-		Income:     incomeAcct.ID,
-	}, nil
+	return interestAccounts{Customer: customer, Receivable: receivable}, nil
+}
+
+// interestIncomeTx resolves the revenue line an account's overdraft interest is
+// earned into, for the product pricing the day being accrued.
+//
+// The product is passed rather than read off the account because it is
+// effective-dated: an account migrated last month accrued under its old product
+// until it moved, and the line the interest was earned into is a fact about the
+// day. A product with no line of its own falls back to the bank's, which is what
+// every account here resolves.
+func (r *Register) interestIncomeTx(ctx context.Context, tx Tx, productID product.ID, asset ledger.AssetCode) (ledger.AccountID, error) {
+	return r.gl.SlotAccountTx(ctx, tx, string(productID), incomeSlot, asset)
 }
 
 // GetAccount retrieves a deposit account by its ID.
@@ -1856,10 +1874,17 @@ func (r *Register) accrueOverdraftAccountTx(ctx context.Context, tx Tx, acct Acc
 		return r.appendAuditTx(ctx, tx, ledger.EventOverdraftAccrued, string(acct.ID), acct)
 	}
 
+	// The revenue line for the product pricing THIS DAY — `current` is the row
+	// the walk above priced its last span at.
+	income, err := r.interestIncomeTx(ctx, tx, current.ProductID, acct.Asset)
+	if err != nil {
+		return err
+	}
+
 	// A correction can settle part of the record in cash, which moves Accrued
 	// again, so it owns the write the way ChargeOverdraftInterestTx does.
 	if delta < 0 {
-		return r.correctOverdraftAccrualTx(ctx, tx, &acct, at, -delta, date)
+		return r.correctOverdraftAccrualTx(ctx, tx, &acct, at, income, -delta, date)
 	}
 
 	if _, err := r.gl.PostTransactionTx(ctx, tx, ledger.PostTransactionRequest{
@@ -1868,7 +1893,7 @@ func (r *Register) accrueOverdraftAccountTx(ctx context.Context, tx Tx, acct Acc
 		ValueDate:   date,
 		Entries: []ledger.Entry{
 			{AccountID: at.Receivable.Account, Subsidiary: at.Receivable.Subsidiary, Amount: delta, Direction: ledger.Debit},
-			{AccountID: at.Income, Amount: delta, Direction: ledger.Credit},
+			{AccountID: income, Amount: delta, Direction: ledger.Credit},
 		},
 	}); err != nil {
 		return err
@@ -1906,7 +1931,7 @@ func (r *Register) accrueOverdraftAccountTx(ctx context.Context, tx Tx, acct Acc
 // It takes acct by pointer for that reason, and writes the account itself —
 // the same shape as ChargeOverdraftInterestTx, which also posts, moves Accrued
 // by what settled, and persists. Only this function knows the split.
-func (r *Register) correctOverdraftAccrualTx(ctx context.Context, tx Tx, acct *Account, at interestAccounts, amount ledger.Amount, date time.Time) error {
+func (r *Register) correctOverdraftAccrualTx(ctx context.Context, tx Tx, acct *Account, at interestAccounts, income ledger.AccountID, amount ledger.Amount, date time.Time) error {
 	// What THIS customer's interest can be credited back out of. The pool holds
 	// every other customer's accrual too, and absorbing against that would give
 	// this one their money back out of somebody else's receivable.
@@ -1923,7 +1948,7 @@ func (r *Register) correctOverdraftAccrualTx(ctx context.Context, tx Tx, acct *A
 	}
 	refund := amount - absorbed
 
-	entries := []ledger.Entry{{AccountID: at.Income, Amount: amount, Direction: ledger.Debit}}
+	entries := []ledger.Entry{{AccountID: income, Amount: amount, Direction: ledger.Debit}}
 	if absorbed > 0 {
 		entries = append(entries, ledger.Entry{AccountID: at.Receivable.Account, Subsidiary: at.Receivable.Subsidiary, Amount: absorbed, Direction: ledger.Credit})
 	}

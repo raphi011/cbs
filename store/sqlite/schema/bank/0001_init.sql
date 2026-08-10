@@ -298,6 +298,45 @@ CREATE TABLE accounts (
     PRIMARY KEY (book_id, id)
 ) STRICT;
 
+CREATE TABLE slot_accounts (
+    -- Which account a posting flow writes to: the line a customer's money pools
+    -- in, the receivable an accrual debits, the revenue it credits. A slot is
+    -- the ROLE and this table says which account fills it, so the answer is a
+    -- row an operator can read rather than a string literal in two Go packages
+    -- that must not import each other.
+    --
+    -- What is ABSENT is a foreign key to accounts, and a CHECK on any of these
+    -- columns. account_id carries none for the reason given on accounts.asset;
+    -- the constraints that matter here are not expressible in SQL anyway. A slot
+    -- declares the account TYPE it requires and whether that account must pool
+    -- obligors, both of which live in Go (ledger.Slot), and
+    -- ledger.Book.MapSlotTx checks them at the write — which is the point of
+    -- checking there at all. A mapping is configuration, so the alternative to
+    -- refusing a wrong account now is a posting that fails weeks later, at a
+    -- moment nobody connects to the change that caused it.
+    book_id    TEXT NOT NULL REFERENCES books (id) ON DELETE CASCADE,
+    -- The product this row is for, EMPTY on the bank-wide row that every flow
+    -- resolves unless a product overrides it. It is an opaque string here and
+    -- in the ledger both: the general ledger does not know what a product is,
+    -- exactly as it does not know what a customer is (entries.subsidiary_id).
+    --
+    -- A product may only override a slot that carries NO BALANCE — an income or
+    -- expense line. That rule is ledger.Slot.ByProduct and it is not written
+    -- here because it is a property of the slot rather than of the row: a
+    -- product-scoped balance line would leave what a customer has already
+    -- posted in the old account while every later posting went to the new one,
+    -- and the balance anybody read would be the second half only. Moving a
+    -- balance between control accounts is a reclassification journal, which
+    -- this system does not have.
+    product    TEXT NOT NULL DEFAULT '',
+    slot       TEXT NOT NULL,
+    asset      TEXT NOT NULL,
+    account_id TEXT NOT NULL,
+    -- The key is the whole row bar the account, so pointing a slot somewhere
+    -- else is an upsert rather than a second answer to a question that has one.
+    PRIMARY KEY (book_id, product, slot, asset)
+) STRICT;
+
 CREATE TABLE transactions (
     book_id         TEXT NOT NULL REFERENCES books (id) ON DELETE CASCADE,
     id              TEXT NOT NULL,

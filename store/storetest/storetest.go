@@ -258,6 +258,94 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Sto
 		})
 	})
 
+	t.Run("SlotAccountsUpsertPerProductAndAreBookScoped", func(t *testing.T) {
+		s := open(t, newStore, bookA)
+		other := open(t, newStore, bookB)
+
+		// The mapping is keyed by (product, slot, asset) and the bank-wide row
+		// is the one with an empty product. A store that keyed on the slot alone
+		// would collapse a product's own revenue line onto the bank's; one that
+		// appended instead of upserting would leave two answers to a question
+		// that has one, and which of them a flow posted to would be whichever
+		// the store listed first.
+		update(t, s, func(ctx context.Context, tx ledger.Tx) error {
+			for _, row := range []ledger.SlotAccount{
+				{Slot: "deposit.principal", Asset: "EUR", Account: "200.100.001"},
+				{Slot: "deposit.principal", Asset: "BTC", Account: "200.100.002"},
+				{Slot: "deposit.interest_income", Asset: "EUR", Account: "400.300.001"},
+				{Product: "prd_savings", Slot: "deposit.interest_income", Asset: "EUR", Account: "400.300.002"},
+			} {
+				if err := tx.PutSlotAccount(ctx, bookA, row); err != nil {
+					return err
+				}
+			}
+			// Repointing a slot is the same act as pointing it.
+			return tx.PutSlotAccount(ctx, bookA, ledger.SlotAccount{
+				Slot: "deposit.principal", Asset: "EUR", Account: "200.100.009",
+			})
+		})
+		update(t, other, func(ctx context.Context, tx ledger.Tx) error {
+			return tx.PutSlotAccount(ctx, bookB, ledger.SlotAccount{
+				Slot: "deposit.principal", Asset: "EUR", Account: "200.500.001",
+			})
+		})
+
+		view(t, s, func(ctx context.Context, tx ledger.Tx) error {
+			repointed, err := tx.GetSlotAccount(ctx, bookA, "", "deposit.principal", "EUR")
+			if err != nil {
+				return err
+			}
+			assertEqual(t, "the repointed slot", string(repointed), "200.100.009")
+
+			perProduct, err := tx.GetSlotAccount(ctx, bookA, "prd_savings", "deposit.interest_income", "EUR")
+			if err != nil {
+				return err
+			}
+			assertEqual(t, "the product's own line", string(perProduct), "400.300.002")
+
+			// A product with no row of its own is NOT the bank-wide row here.
+			// The fallback is the domain's rule, stated once in
+			// ledger.Book.SlotAccountTx; a store that also implemented it would
+			// make "this product has its own line" unaskable.
+			_, err = tx.GetSlotAccount(ctx, bookA, "prd_basic", "deposit.interest_income", "EUR")
+			assertErrorIs(t, "an unmapped product", err, ledger.ErrSlotNotMapped)
+
+			_, err = tx.GetSlotAccount(ctx, bookA, "", "deposit.principal", "USD")
+			assertErrorIs(t, "an unmapped asset", err, ledger.ErrSlotNotMapped)
+
+			// Ordered by slot, then product, then asset — a configuration
+			// listing, so nothing about when a row was written belongs in it.
+			list, err := tx.ListSlotAccounts(ctx, bookA)
+			if err != nil {
+				return err
+			}
+			var got []string
+			for _, row := range list {
+				got = append(got, row.Slot+"/"+row.Product+"/"+string(row.Asset)+"="+string(row.Account))
+			}
+			assertEqual(t, "the mapping", sliceString(got),
+				"[deposit.interest_income//EUR=400.300.001 deposit.interest_income/prd_savings/EUR=400.300.002 "+
+					"deposit.principal//BTC=200.100.002 deposit.principal//EUR=200.100.009]")
+			return nil
+		})
+
+		// Another institution's database answers for its own mapping and holds
+		// none of this one's.
+		view(t, other, func(ctx context.Context, tx ledger.Tx) error {
+			mine, err := tx.GetSlotAccount(ctx, bookB, "", "deposit.principal", "EUR")
+			if err != nil {
+				return err
+			}
+			assertEqual(t, "the other bank's line", string(mine), "200.500.001")
+			list, err := tx.ListSlotAccounts(ctx, bookB)
+			if err != nil {
+				return err
+			}
+			assertEqual(t, "rows in the other bank's mapping", len(list), 1)
+			return nil
+		})
+	})
+
 	t.Run("SubsidiaryScopedReadsSumToTheWholeAccount", func(t *testing.T) {
 		s := open(t, newStore, bookA)
 
