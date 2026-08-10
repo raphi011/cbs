@@ -4,27 +4,27 @@ import { Input } from "@/components/ui/input";
 import { FieldLabel } from "@/components/field-label";
 import { ParticipantPicker } from "@/components/pickers/participant-picker";
 import { DepositAccountPicker } from "@/components/pickers/deposit-account-picker";
-import { useParticipants } from "@/lib/api/hooks";
 import type { PartyRef } from "@/lib/types";
 
-// What a FORM holds about one side of a payment or mandate, which is more than
-// the wire carries. `ref` is the party as it goes out — an account and an
-// optional IBAN, naming no bank. `agent` is the BIC, which travels beside the
-// ref on the enclosing request. `pid` is neither: it is the handle this console
-// picked the bank by, kept because the account picker needs a register to search
-// and a BIC is not what that route is keyed on.
+// What a FORM holds about one side of a payment or mandate. `ref` is the party
+// as it goes out — an account and an optional IBAN, naming no bank. `pid` never
+// leaves this console: it is the handle the bank was picked by, kept only
+// because the account picker needs a register to search.
+//
+// There is no `agent`. The BIC is not a field on either request any more — it is
+// derived from the party's own address, through the submitting bank's copy of
+// the scheme's routing directory — so a draft holding one would be a value this
+// form could not send anywhere.
 export interface PartyDraft {
   pid: string;
-  agent: string;
   ref: PartyRef;
 }
 
-export const emptyParty: PartyDraft = { pid: "", agent: "", ref: { account: "" } };
+export const emptyParty: PartyDraft = { pid: "", ref: { account: "" } };
 
 // A party in a payment or mandate: the bank plus the customer's deposit account
-// within it, and an optional IBAN. Picking a bank scopes the account picker to
-// it and fixes the agent BIC; changing the bank clears the account so the two
-// can't disagree.
+// within it, and an IBAN. Picking a bank scopes the account picker to it;
+// changing the bank clears the account so the two can't disagree.
 export function PartyRefFields({
   legend,
   value,
@@ -41,15 +41,13 @@ export function PartyRefFields({
   // knows about the other side — and a mandate records no name at all.
   name?: string;
   onNameChange?: (next: string) => void;
-  // Whether the scheme addresses this side by IBAN. It does for a payment's
-  // COUNTERPARTY: the message quotes CdtrAcct/DbtrAcct and the submitting bank
-  // has no register to resolve the other side's account in, so an unaddressed
-  // party is refused. The submitting side is resolved from its own bank's
-  // register and needs none.
+  // Whether the enclosing request needs an address for this side. The reason
+  // differs by side and by console, so the decision is the caller's — see
+  // InitiatePaymentForm, where both sides need one and for two different
+  // reasons.
   addressRequired?: boolean;
 }) {
   const idBase = legend.toLowerCase();
-  const { data: participants } = useParticipants();
   return (
     <fieldset className="space-y-3 rounded-md border p-3">
       <legend className="px-1 text-sm font-medium">{legend}</legend>
@@ -61,13 +59,7 @@ export function PartyRefFields({
           <ParticipantPicker
             id={`${idBase}-participant`}
             value={value.pid}
-            onChange={(pid) =>
-              onChange({
-                pid,
-                agent: participants?.find((p) => p.id === pid)?.bic ?? "",
-                ref: { account: "" },
-              })
-            }
+            onChange={(pid) => onChange({ pid, ref: { account: "" } })}
           />
         </div>
         <div className="space-y-1.5">

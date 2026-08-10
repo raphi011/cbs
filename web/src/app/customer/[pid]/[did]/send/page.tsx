@@ -16,6 +16,7 @@ import { MoneyInput, Money } from "@/components/money";
 import { ErrorState } from "@/components/error-state";
 import { Hint } from "@/components/hint";
 import {
+  useAddressRoute,
   useAssetLookup,
   useBankPayment,
   useDepositAccount,
@@ -23,7 +24,8 @@ import {
   useSchemes,
   useSubmitPayment,
 } from "@/lib/api/hooks";
-import { describeError } from "@/lib/api/errors";
+import { ApiError, describeError } from "@/lib/api/errors";
+import { useDebouncedValue } from "@/lib/use-debounced-value";
 import { checkDigitsPass, compactIban, groupIban } from "@/lib/iban";
 
 // A retail "send money" is a SEPA credit transfer: a push scheme needing no
@@ -48,38 +50,27 @@ export default function CustomerSend() {
   const [iban, setIban] = useState("");
   const [amount, setAmount] = useState<number | null>(null);
   const [reference, setReference] = useState("");
-  // What the payer says about the payee, and it is three things: the IBAN, the
-  // NAME and the BIC.
+  // What the payer says about the payee is TWO things: the IBAN and the NAME.
   //
-  // # Why the payer types the BIC
+  // # There is no BIC field, and its absence is the whole lesson
   //
-  // The submitting bank cannot derive it. That would read the payee's own bank
-  // record, and a bank holds only its own; there is no other source, because the
-  // clearing house's roster is keyed by the BIC being asked for and this network
-  // has no IBAN-to-BIC directory service — which is the thing SEPA's IBAN-only
-  // rule actually rests on. So the address a payer gives is an IBAN AND a BIC, as
-  // it was before 2016 and as it still is for a payment outside SEPA.
+  // The payee's bank is derived, from the bank code inside the address, through
+  // this bank's own copy of the scheme's routing directory. That is what
+  // IBAN-only means, and it is what SEPA has been since February 2016 — not
+  // because routing is computable from an address, but because every bank
+  // subscribes to a table that pairs the two. A payer able to type the BIC is a
+  // payer able to choose which bank receives their money, since that element is
+  // what the clearing house relays on.
   //
-  // What makes that safe is not this form. A wrong BIC sends the payment to the
-  // bank that was named, and THAT bank refuses it — it holds no such IBAN in its
-  // own register, so it answers AC01 and the payer's debit is reversed. It is the
-  // narrowing of the address lookup, not the presence or absence of the field,
-  // that stops a typed BIC misapplying somebody's money.
+  // # The NAME is still typed, and no lookup will ever fill it in
   //
-  // # There is no payee lookup here
-  //
-  // Resolving the typed IBAN across the whole network would mean reading every
-  // bank's deposit register. A bank's own directory answers only for its own
-  // customers, so a lookup here would confirm exactly the payees this form is
-  // not for.
-  //
-  // Nothing is lost that a payer really had. A real payer is not told their
-  // payee's name back by their bank before they pay — they read it off an
-  // invoice — and rendering a resolved bank one line above the fields asking the
-  // payer to type the payee's details teaches the opposite of what the system
-  // does.
+  // Resolving the typed IBAN to a person would mean reading the payee's bank's
+  // deposit register, which no bank here may do. So a real payer reads the name
+  // off an invoice, and so does this one. What the resolution below CAN show is
+  // the institution — and it shows a BIC and no name, because the copy holds
+  // none, because the roster holds none, because the acknowledgement it is
+  // written from delivers none.
   const [creditorName, setCreditorName] = useState("");
-  const [creditorAgent, setCreditorAgent] = useState("");
   // The identifier the bank accepted. Holding it is what makes this form the
   // shape 7b needs: the answer to "did it work?" is a second request, not a
   // return value.
@@ -107,6 +98,26 @@ export default function CustomerSend() {
   const payingSelf =
     ownIban != null && typed !== "" && compactIban(ownIban.value) === compactIban(typed);
 
+  // The routing half, and it runs only once the OFFLINE half has passed: the
+  // check digits are what makes it worth asking anybody, so an address that
+  // fails them costs no request at all. Debounced because the field is typed
+  // into, and settled on the compact form so grouping does not make two cache
+  // entries out of one address.
+  //
+  // This is the same read submission makes, out of the same copy, so the bank
+  // this shows and the bank the payment reaches cannot disagree. What it cannot
+  // show is a NAME — the copy holds none — which is the documented absence
+  // arriving at the moment a payer most expects one.
+  const settledIban = useDebouncedValue(
+    !malformed && !payingSelf && typed !== "" ? compactIban(typed) : "",
+    300,
+  );
+  const route = useAddressRoute(pid, settledIban);
+  // A 422 from that lookup is an ANSWER — this bank's copy holds no entry for
+  // the address's bank code — and it is the one refusal on this form worth
+  // spelling out rather than summarising. Anything else is a failure to ask.
+  const unroutable = route.error instanceof ApiError && route.error.status === 422;
+
   // Folding an assets failure into "still loading" would leave a customer
   // staring at a skeleton with no error and no retry — the account can be
   // fine while /assets is the thing that is down.
@@ -123,11 +134,14 @@ export default function CustomerSend() {
     !assetMismatch &&
     !payingSelf &&
     !malformed &&
+    // Not a second copy of the rule: this IS the bank's own answer, already
+    // fetched, out of the same copy submission will read. Pressing Send would
+    // ask the same question again and get the same refusal.
+    !unroutable &&
     typed !== "" &&
     amount != null &&
     amount > 0 &&
-    creditorName.trim() !== "" &&
-    creditorAgent.trim() !== "";
+    creditorName.trim() !== "";
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -151,17 +165,15 @@ export default function CustomerSend() {
         },
         amount: amount!,
         description: reference.trim() || undefined,
-        // The payer's own account of who they are paying, and where. See the
-        // state declaration above for why both are the payer's to give.
+        // The payer's own account of who they are paying. There is no bank
+        // beside it: see the state declaration above.
         creditorName: creditorName.trim(),
-        creditorAgent: creditorAgent.trim(),
       });
       setAcceptedId(accepted.paymentId);
       setIban("");
       setAmount(null);
       setReference("");
       setCreditorName("");
-      setCreditorAgent("");
     } catch (err) {
       toast.error(describeError(err));
     }
@@ -233,6 +245,41 @@ export default function CustomerSend() {
                   <Hint id="iban-check-digit" />
                 </p>
               ) : null}
+              {/* The routing answer, one line under the address it came out
+                  of. It is a BIC and it is not a name, and saying so is the
+                  point: the copy this came from holds none, because the roster
+                  holds none. A payer who expected "Banca Verde" is meeting the
+                  documented absence at the moment it is sharpest. */}
+              {settledIban !== "" && (
+                <p className="text-xs text-muted-foreground">
+                  {route.isPending ? (
+                    "Asking your bank where this address goes…"
+                  ) : unroutable ? (
+                    // Deliberately NOT describeError: its 422 line offers
+                    // "insufficient funds, frozen account", which is a list this
+                    // refusal is not on. What a payer needs is the honest
+                    // ambiguity, and the honest ambiguity is the whole point.
+                    <span className="text-destructive">
+                      Your bank cannot route this address. It routes from a copy
+                      of the scheme&apos;s directory that it pulled, so it cannot
+                      tell you whether no bank holds that code or whether its own
+                      copy is simply behind — the remedy is a refresh, or a payee
+                      who is not in this scheme. <Hint id="routing-directory" />
+                    </span>
+                  ) : route.error ? (
+                    <span className="text-destructive">
+                      {describeError(route.error)}
+                    </span>
+                  ) : route.data ? (
+                    <>
+                      Routes to <span className="font-mono">{route.data.bic}</span>{" "}
+                      — a bank code, resolved in your bank&apos;s copy of the
+                      scheme&apos;s directory. There is no name to show: nothing
+                      ever told the scheme one. <Hint id="routing-directory" />
+                    </>
+                  ) : null}
+                </p>
+              )}
             </div>
 
             <div className="space-y-1.5">
@@ -245,25 +292,6 @@ export default function CustomerSend() {
                 disabled={frozen || closed}
                 onChange={(e) => setCreditorName(e.target.value)}
               />
-            </div>
-
-            <div className="space-y-1.5">
-              <FieldLabel htmlFor="send-creditor-agent" hint="account-addressing" required>
-                Payee&apos;s bank (BIC)
-              </FieldLabel>
-              <Input
-                id="send-creditor-agent"
-                value={creditorAgent}
-                placeholder="VERDITMMXXX"
-                className="font-mono"
-                disabled={frozen || closed}
-                onChange={(e) => setCreditorAgent(e.target.value.toUpperCase())}
-              />
-              <p className="text-xs text-muted-foreground">
-                Off the invoice, with the IBAN. Your bank cannot look this up —
-                nothing here holds an index of who banks where — and a payment
-                sent to the wrong bank comes back refused.
-              </p>
             </div>
 
             <div className="space-y-1.5">

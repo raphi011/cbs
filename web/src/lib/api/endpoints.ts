@@ -28,6 +28,7 @@ import type {
   DescriptionRequest,
   DirectoryEntry,
   RosterEntry,
+  RoutingEntry,
   Facility,
   FundRequest,
   Lodgement,
@@ -122,8 +123,8 @@ export function listSchemes(): Promise<Scheme[]> {
 // There is no way to ask the clearing house the second question: answering it
 // would mean sweeping every bank's deposit register, and that institution holds
 // none — see api/surface.go and payment.ResolveIdentifier. Nothing in this system
-// answers "which bank holds this IBAN"; a payer is told the BIC the way they are
-// told the IBAN.
+// answers "which bank holds this IBAN". What it does answer is where an address
+// ROUTES, and each bank answers that from its own copy of this list.
 export function listRoster(): Promise<RosterEntry[]> {
   return request("GET", csm("/roster"));
 }
@@ -140,7 +141,43 @@ export function resolveIdentifierAtBank(
   scheme: string,
   value: string,
 ): Promise<DirectoryEntry> {
-  return request("GET", bank(pid, `/directory${qs({ scheme, value })}`));
+  return request("GET", bank(pid, `/directory/accounts${qs({ scheme, value })}`));
+}
+
+// The sibling question, on the same bank's listener: which institution does this
+// address route to. Out of THIS bank's copy of the scheme's published directory
+// and nothing else, which is why it is a bank's route and not the clearing
+// house's.
+//
+// The whole ADDRESS goes over, rather than the allocation inside it, and that is
+// not laziness. Reading a bank code out of an IBAN takes the country structure
+// table — variable-length codes at country-dependent offsets — and that table is
+// the backend's; a second copy here with nothing holding the two together is
+// exactly what `lib/iban.ts` refuses to be. So this client keeps mod-97, which
+// needs no table, and asks for the rest.
+//
+// 422 on a miss, and the refusal cannot say whether no such bank is in the
+// scheme or this copy is simply behind — telling those apart would mean asking
+// the clearing house, which is the lookup the subscription replaces. 422 as well
+// for an address that does not parse, which is why a caller runs the check
+// digits before it gets here.
+export function routeForAddress(pid: string, iban: string): Promise<RoutingEntry> {
+  return request("GET", bank(pid, `/directory/banks${qs({ iban })}`));
+}
+
+// The same route unnarrowed: the whole copy this bank holds, every row carrying
+// the instant of the pull that wrote it.
+export function listRoutingDirectory(pid: string): Promise<RoutingEntry[]> {
+  return request("GET", bank(pid, "/directory/banks"));
+}
+
+// This bank subscribing: pull the scheme's published roster and replace this
+// bank's copy with it, wholesale. 200 with the new copy rather than 202, and
+// that is the difference between this and every other act here that reaches two
+// institutions — nothing is sent, nobody answers later, and by the time it
+// resolves the copy is the one the next payment will route from.
+export function refreshRoutingDirectory(pid: string): Promise<RoutingEntry[]> {
+  return request("POST", bank(pid, "/directory/banks/refresh"));
 }
 
 // --- Central bank ---------------------------------------------------------

@@ -108,6 +108,15 @@ export const qk = {
   bankDirectory: (pid: string, scheme: string, value: string) =>
     ["participants", pid, "directory", scheme, value] as const,
 
+  // One bank's COPY of the scheme's directory. Nested under the participant
+  // because it is that bank's table and two banks' copies are two different
+  // answers — one may be behind the other, which is the whole subscription
+  // model. A refresh invalidates the subtree, so the list and every resolved
+  // bank code refetch together.
+  bankRouting: (pid: string) => ["participants", pid, "routing"] as const,
+  bankRoutingFor: (pid: string, iban: string) =>
+    ["participants", pid, "routing", "iban", iban] as const,
+
   // Payment network (global — each object spans two participants).
   // Keyed by BANK, because a mandate is one bank's row and two banks' listings
   // are two different answers rather than one cache entry.

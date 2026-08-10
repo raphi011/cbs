@@ -10,7 +10,8 @@ import { useRoster, useParticipants } from "@/lib/api/hooks";
 import type { RosterEntry } from "@/lib/types";
 
 // The clearing house's ROUTING directory: every address the scheme will send a
-// message to.
+// message to, and the allocation each member issues its customers' addresses
+// under.
 //
 // It does NOT answer "type an IBAN, see which bank holds it". The two questions
 // look alike and are not.
@@ -18,15 +19,13 @@ import type { RosterEntry } from "@/lib/types";
 // That lookup is a SWEEP. The clearing house holds no deposit register of its
 // own, so answering "who holds this IBAN" meant reading every member bank's
 // register in turn, on an operator's screen. No institution in this network can
-// do that: a bank holds its own register and no other, and there is no directory
-// SERVICE here to hold the network-wide index. Real networks have one — SEPA
-// banks subscribe to an IBAN-to-BIC table, and non-bank aliases go to a separate
-// central service — and this system deliberately does not pretend to.
+// do that: a bank holds its own register and no other, and nothing anywhere here
+// holds a network-wide index of accounts.
 //
-// What the clearing house genuinely owns is this: the roster, written from each
-// admission's acknowledgement, keyed by BIC. It answers "where may a message
-// addressed to this member go", which is the question a clearing house actually
-// has to answer in order to route.
+// What it DOES hold is the pairing a payer's bank needs — country and bank code
+// to BIC — and this screen is where it is PUBLISHED. Each member copies it into
+// a directory of its own and routes from that copy; see
+// /bank/[pid]/directory for the other end of the same table.
 export default function DirectoryPage() {
   const { data, isLoading, error } = useRoster();
   const { data: participants } = useParticipants();
@@ -43,7 +42,7 @@ export default function DirectoryPage() {
       <PageHeader
         title="Routing directory"
         hint="routing-roster"
-        description="Where a message addressed to a member may be sent. It is a list of addresses, not a register of accounts — the clearing house holds no book and no customer."
+        description="Where a message addressed to a member may be sent, and which allocation that member issues its customers' addresses under. It is a list of addresses, not a register of accounts — the clearing house holds no book and no customer."
       />
 
       {error ? (
@@ -69,6 +68,13 @@ export default function DirectoryPage() {
                   render: (e: RosterEntry) => nameFor(e.bic),
                 },
                 {
+                  key: "allocation",
+                  header: "Issues under",
+                  render: (e: RosterEntry) => (
+                    <IdText id={`${e.country} ${e.bankCode}`} />
+                  ),
+                },
+                {
                   key: "assets",
                   header: "Clears in",
                   render: (e: RosterEntry) => e.assets.join(", "),
@@ -85,12 +91,14 @@ export default function DirectoryPage() {
       )}
 
       <p className="max-w-prose text-xs text-muted-foreground">
-        There is no address lookup here, and its absence is the teaching point.
-        Asking &ldquo;whose IBAN is this?&rdquo; means reading somebody&apos;s
-        deposit register, and the only institution entitled to read one is the
-        bank that keeps it. A payer is told the payee&apos;s BIC the same way they
-        are told the IBAN — off an invoice — and a payment sent to the wrong bank
-        comes back refused rather than quietly re-routed.
+        This is a publication, not a service. Nothing pushes it at anybody and no
+        bank asks it per payment: each member pulls a snapshot onto its own
+        console and routes from that copy until it asks again, which is why a
+        bank admitted this morning cannot be paid by a member that refreshed
+        yesterday. There is no address lookup here either, and its absence is the
+        teaching point — asking &ldquo;whose IBAN is this?&rdquo; means reading
+        somebody&apos;s deposit register, and the only institution entitled to
+        read one is the bank that keeps it.
       </p>
     </div>
   );

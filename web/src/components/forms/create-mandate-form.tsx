@@ -46,11 +46,14 @@ export function CreateMandateForm({ pid }: { pid: string }) {
   const { byCode } = useAssetLookup();
   const resolvedAsset = creditorAcct ? byCode.get(creditorAcct.asset) : undefined;
   // The creditor names no bank: this listener IS the creditor's bank, and a
-  // mandate carries no creditorAgent for that reason.
+  // mandate carries no creditor agent for that reason.
   const creditor: PartyRef = { account: creditorAccount };
 
+  // The debtor's IBAN is what makes this mandate collectable, because the bank a
+  // collection is sent to is derived from it. Without one there is nothing to
+  // derive from and the backend refuses.
   const valid =
-    debtor.agent.trim() &&
+    debtor.ref.identifier?.value.trim() &&
     debtor.ref.account.trim() &&
     creditorAccount.trim() &&
     resolvedAsset != null &&
@@ -62,9 +65,6 @@ export function CreateMandateForm({ pid }: { pid: string }) {
     try {
       const m = await create.mutateAsync({
         debtor: debtor.ref,
-        // The address the collection is sent to. The debtor's account is in the
-        // debtor bank's own register, so this bank has nothing to derive it from.
-        debtorAgent: debtor.agent,
         creditor,
         maxAmount: maxAmount!,
       });
@@ -98,8 +98,14 @@ export function CreateMandateForm({ pid }: { pid: string }) {
           {/* The debtor is somebody else's customer, so it is TYPED rather
               than chosen: this bank has no register to pick it out of, which is
               the whole reason CreateMandateTx records it instead of checking
-              it. */}
-          <PartyRefFields legend="Debtor" value={debtor} onChange={setDebtor} />
+              it. Its IBAN is required, because the bank to collect from is
+              derived from it once, here, and never re-derived. */}
+          <PartyRefFields
+            legend="Debtor"
+            value={debtor}
+            onChange={setDebtor}
+            addressRequired
+          />
           {/* The creditor is one of this bank's own accounts, so it is a
               choice. It is also what fixes the mandate's asset. */}
           <div className="space-y-2">

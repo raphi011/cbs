@@ -357,10 +357,10 @@ export interface AccountIdentifier {
   value: string;
 }
 
-// What GET /directory answers: which of the ASKING BANK's own accounts holds
-// the address. `identifier` is echoed back so a client that fired several
+// What GET /directory/accounts answers: which of the ASKING BANK's own accounts
+// holds the address. `identifier` is echoed back so a client that fired several
 // lookups at once can tell the answers apart. See api/handlers_directory.go's
-// directoryEntryDTO.
+// accountDirectoryEntryDTO.
 //
 // It carries no `name` and no `asset`, and it is not answerable network-wide.
 // Either would be a join into whichever bank turns out to hold the address — one
@@ -376,15 +376,45 @@ export interface DirectoryEntry {
   identifier: AccountIdentifier;
 }
 
+// One row of the copy of the scheme's routing directory that ONE BANK holds, as
+// GET /directory/banks answers it. See api/handlers_directory.go's
+// routingEntryDTO.
+//
+// A BIC and no name, which is the whole of what the roster it was copied from
+// carries. A send form resolving an IBAN shows `AURODEFFXXX` and cannot show
+// "Aurora Bank"; that is the documented absence arriving where a payer most
+// expects a name, not a field this type trims.
+//
+// `refreshedAt` is on every row rather than beside the list because a snapshot
+// replaces the copy wholesale, so every row of one pull carries one instant and
+// any of them renders "refreshed 3 days ago". It is the only field here about
+// the COPY rather than about the member, and it is what makes the subscription
+// visible in a console.
+export interface RoutingEntry {
+  country: string;
+  bankCode: string;
+  bic: string;
+  refreshedAt: string;
+}
+
 // One row of the clearing house's ROUTING directory: an address the scheme will
-// send to, the assets it clears in, the admission it was admitted under, and
-// when. See api/handlers_directory.go's rosterEntryDTO.
+// send to, the allocation that member issues its customers' addresses under, the
+// assets it clears in, the admission it was admitted under, and when. See
+// api/handlers_directory.go's rosterEntryDTO.
+//
+// `country`/`bankCode` are what each member COPIES into its own RoutingEntry.
+// The assets and the admission reference stay here: a copy of the assets would
+// let a subscriber whose copy is behind refuse what the clearing house would
+// accept, and the reference decides between two institutions contending for an
+// address, which is nobody's question but this one's.
 //
 // No name. An acmt.010 carries none, so the clearing house has never been told
 // one — the name beside a BIC on this screen comes from GET /members, which is a
 // different question asked of a different table.
 export interface RosterEntry {
   bic: string;
+  country: string;
+  bankCode: string;
   assets: string[];
   admissionRef: string;
   admittedAt: string;
@@ -783,12 +813,14 @@ export interface ChargeFacilityInterestRequest {
   date: string;
 }
 
+// It names the two accounts and the ceiling, and it names NO BANK. The address a
+// collection is sent to is derived from the debtor's own IBAN through the
+// creditor bank's copy of the routing directory, and it is derived ONCE: a
+// mandate authorises debits from an account at the bank the debtor signed up
+// against, so an authorisation that silently followed a directory to a different
+// institution is a behaviour no real scheme has.
 export interface CreateMandateRequest {
   debtor: PartyRef;
-  // Required: it is the address the collection is sent to, and the creditor's
-  // bank cannot derive it — the debtor's account is in the debtor bank's own
-  // register. It is the mandate's version of a payment's counterparty agent.
-  debtorAgent: string;
   creditor: PartyRef;
   maxAmount: number;
 }
@@ -802,31 +834,26 @@ export interface InitiatePaymentRequest {
   endToEndId?: string;
   description?: string;
   metadata?: Record<string, string> | null;
-  // The names on the two accounts, and the BICs of the two banks. Only the
-  // COUNTERPARTY's pair is required — the creditor's on a push, the debtor's on
-  // a pull — because submission looks neither up: the account is at another
-  // bank, and nothing on the path that builds a payment reads another bank's
-  // register.
+  // The names on the two accounts. Only the COUNTERPARTY's is required — the
+  // creditor's on a push, the debtor's on a pull — because nothing looks it up:
+  // the account is at another bank, so the name a payer types is the only one
+  // there is. The submitting bank's own name is ignored, because a payer does
+  // not rename themselves.
   //
-  // The agent fields were REMOVED and are back, and the reversal is domain
-  // content rather than churn. They went because a payer who typed the BIC chose
-  // which bank got paid — the clearing house routes on that element — and the
-  // submitting bank derived it instead, from the counterparty's own bank record.
-  // That record is the counterparty's, and under a store per entity a bank holds
-  // only its own, so there is nothing left to derive from and no directory
-  // service here to derive it with. SEPA is IBAN-only because every bank
-  // subscribes to an IBAN-to-BIC table; without one, an address is an IBAN and a
-  // BIC.
+  // THERE IS NO AGENT FIELD, and its absence is what makes this IBAN-only. The
+  // BIC goes on the wire as CdtrAgt/DbtrAgt and the clearing house routes on it,
+  // so a payer able to type one is a payer able to choose which bank receives
+  // their money. It is derived instead, from the counterparty's own address
+  // through the submitting bank's copy of the scheme's routing directory — see
+  // api/dto_payment.go's initiatePaymentRequest and payment.SubmitPaymentTx.
+  // Sending one is a 400: the backend rejects unknown fields.
   //
-  // What makes that safe is the other half of the same change: a bank resolves
-  // an address in its own register only, so a payment addressed to the wrong
-  // bank comes back AC01 from the bank that was named rather than being quietly
-  // accepted for another bank's customer. See api/dto_payment.go's
-  // initiatePaymentRequest and payment.SubmitPaymentTx.
+  // What that costs is a refusal a form has to be able to show: an address whose
+  // bank code is not in this bank's copy is a 422, and the remedy is a refresh
+  // or giving up, because a subscriber cannot tell "no such bank" from "my copy
+  // is behind".
   debtorName?: string;
   creditorName?: string;
-  debtorAgent?: string;
-  creditorAgent?: string;
 }
 
 export interface OpenCycleRequest {

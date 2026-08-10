@@ -103,6 +103,44 @@ export function useBankDirectory(pid: string, scheme: string, value: string) {
   });
 }
 
+// One bank's copy of the scheme's routing directory, every row carrying the
+// instant of the pull that wrote it.
+export function useRoutingDirectory(pid: string) {
+  return useQuery({
+    queryKey: qk.bankRouting(pid),
+    queryFn: () => api.listRoutingDirectory(pid),
+    enabled: pid !== "",
+  });
+}
+
+// Where one address routes, out of this bank's copy. `retry: false` for the same
+// reason as the register lookup: a 422 here is an answer — this copy holds no
+// entry for that bank code — and retrying only delays saying so. A send form
+// calls this once an IBAN's check digits pass, and it is deliberately the same
+// read submission makes, so what the form shows and where the payment goes
+// cannot disagree.
+export function useAddressRoute(pid: string, iban: string) {
+  return useQuery({
+    queryKey: qk.bankRoutingFor(pid, iban),
+    queryFn: () => api.routeForAddress(pid, iban),
+    enabled: pid !== "" && iban !== "",
+    retry: false,
+  });
+}
+
+// The subscription. It invalidates the whole of this bank's routing subtree,
+// so the console's list and any address a form has resolved are both re-read
+// from the copy the pull just wrote.
+export function useRefreshRoutingDirectory(pid: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => api.refreshRoutingDirectory(pid),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: qk.bankRouting(pid) });
+    },
+  });
+}
+
 // --- Central bank ---------------------------------------------------------
 
 export function useReserves() {

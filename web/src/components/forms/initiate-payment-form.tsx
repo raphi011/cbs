@@ -35,11 +35,12 @@ import { describeError } from "@/lib/api/errors";
 // Initiates a payment under a scheme. The form is scheme-aware: a mandate is
 // required only when the chosen scheme requires one (pull/direct-debit).
 //
-// Both sides carry a name and a BIC, and only the COUNTERPARTY's pair is what
-// the submission needs — the creditor's on a push, the debtor's on a pull,
-// because the submitting bank overwrites its own side from its own register
-// either way. Which side that is belongs to the scheme, so this form sends both
-// rather than guessing the direction a second time.
+// Neither side carries a BIC. The counterparty's bank is derived from the
+// counterparty's IBAN, through the submitting bank's copy of the scheme's
+// routing directory, so this form asks for an address and a name and there is no
+// field left to put a bank in. What it sends is both names, because which side
+// is the counterparty belongs to the scheme and the backend already knows the
+// direction — guessing it a second time here would be a rule in two places.
 export function InitiatePaymentForm() {
   const [open, setOpen] = useState(false);
   const schemes = useSchemes();
@@ -64,23 +65,33 @@ export function InitiatePaymentForm() {
   const { byCode } = useAssetLookup();
   const resolvedAsset = selected ? byCode.get(selected.asset) : undefined;
 
-  // The counterparty is whichever side the submitting bank is not, and it is the
-  // side an omission is refused on: its NAME because nothing else says who is
-  // being paid (payment.ErrCounterpartyNotNamed), its IBAN because the message
-  // quotes an address the submitting bank cannot resolve. So the form asks for
-  // the pair the submission will actually read.
+  // The counterparty is whichever side the submitting bank is not, and its NAME
+  // is required because nothing else says who is being paid
+  // (payment.ErrCounterpartyNotNamed).
   const pull = selected?.direction === "Pull";
-  const counterparty = pull ? debtor : creditor;
   const counterpartyName = pull ? debtorName : creditorName;
 
+  // BOTH addresses are required here, and for two different reasons — which is
+  // the shape this console has and a bank's own port does not.
+  //
+  // The COUNTERPARTY's, because the message quotes an address the submitting
+  // bank cannot resolve and because the counterparty's bank is derived from it.
+  //
+  // The SUBMITTING side's, because an instruction now names no bank at all, so
+  // this console has nothing to hand it to until it works out whose act it is —
+  // and it does that by resolving the payer's own address (the payee's, on a
+  // pull) in the roster it publishes. A bank's own port reads that off the
+  // LISTENER instead and needs no address for it. See api's
+  // handleInitiatePayment.
   const valid =
     scheme &&
     debtor.pid.trim() &&
     debtor.ref.account.trim() &&
+    debtor.ref.identifier?.value.trim() &&
     creditor.pid.trim() &&
     creditor.ref.account.trim() &&
+    creditor.ref.identifier?.value.trim() &&
     counterpartyName.trim() &&
-    counterparty.ref.identifier?.value.trim() &&
     resolvedAsset != null &&
     amount != null &&
     (!needsMandate || mandateId.trim());
@@ -93,8 +104,6 @@ export function InitiatePaymentForm() {
         scheme,
         debtor: debtor.ref,
         creditor: creditor.ref,
-        debtorAgent: debtor.agent,
-        creditorAgent: creditor.agent,
         debtorName: debtorName.trim() || undefined,
         creditorName: creditorName.trim() || undefined,
         amount: amount!,
@@ -160,7 +169,7 @@ export function InitiatePaymentForm() {
             onChange={setDebtor}
             name={debtorName}
             onNameChange={setDebtorName}
-            addressRequired={pull}
+            addressRequired
           />
           <PartyRefFields
             legend="Creditor"
@@ -168,7 +177,7 @@ export function InitiatePaymentForm() {
             onChange={setCreditor}
             name={creditorName}
             onNameChange={setCreditorName}
-            addressRequired={!pull}
+            addressRequired
           />
 
           <div className="space-y-2">
