@@ -88,7 +88,7 @@ export const chapter: Chapter = {
         "Shrink — capitalizing subtracts interest from what is owed",
         "Compound — next period's accrual now runs on a principal that already includes this period's interest",
         "Freeze — capitalization pauses further accrual until the next statement",
-        "Split across two new GL accounts",
+        "Split — the capitalized interest moves onto a line of its own",
       ],
       answer: 1,
       explanation:
@@ -233,7 +233,7 @@ export const chapter: Chapter = {
       ],
       answer: 2,
       explanation:
-        "Nothing is posted, ever, to an Asset account for the DRAWN AMOUNT — not even for an account with no rate set at all. The Asset-side total is a derived aggregate, the same on-demand shape that already produces \"total customer deposits\". The interest on that drawn amount does post to an Asset account, daily, into the account's own [[accrued-interest|accrued-interest receivable]] — but that is interest earned, not the balance reclassified.",
+        "Nothing is posted, ever, to an Asset account for the DRAWN AMOUNT — not even for an account with no rate set at all. The Asset-side total is a derived aggregate, the same on-demand shape that already produces \"total customer deposits\". The interest on that drawn amount does post to an Asset line, daily — the bank's [[accrued-interest|accrued-interest receivable]], under this account — but that is interest earned, not the balance reclassified.",
     },
     {
       kind: "truefalse",
@@ -244,7 +244,7 @@ export const chapter: Chapter = {
         "An overdrawn account gets its own [[credit-facility|credit facility]] record, the same way a term loan or revolving line does, so its drawn amount can be tracked independently.",
       answer: false,
       explanation:
-        "It deliberately does not. The drawn amount IS the negative balance of the customer's own Liability account, viewed by sign — not a second fact that happens to agree with it. A facility row for it would store a number that already exists, which is exactly the duplication a unified ledger is built without.",
+        "It deliberately does not. The drawn amount IS the customer's own negative balance in the bank's [[ledger-vs-subledger|customer-deposit line]], viewed by sign — not a second fact that happens to agree with it. A facility row for it would store a number that already exists, which is exactly the duplication a unified ledger is built without.",
     },
     {
       kind: "mc",

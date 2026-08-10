@@ -44,42 +44,42 @@ export const chapter: Chapter = {
       difficulty: "core",
       concept: "credit-facility",
       prompt:
-        "A credit facility's two GL accounts (principal and accrued interest receivable) could be merged into one account without losing any information, since both belong to the same facility.",
+        "The two Asset lines a facility posts to — drawn principal and accrued interest receivable — could be merged into one without losing any information, since both are owed by the same borrower.",
       answer: false,
       explanation:
-        "A [[repayment-allocation|repayment]] settles interest before principal, and one account cannot express a split between two things it does not distinguish. The two accounts exist precisely so that split has somewhere to be recorded.",
+        "A [[repayment-allocation|repayment]] settles interest before principal, and one line cannot express a split between two things it does not distinguish. The two exist precisely so that split has somewhere to be recorded — and note that they are the bank's lines, shared by every borrower, with the [[credit-facility|facility named on each entry]] rather than an account pair opened per loan.",
     },
     {
       kind: "mc",
       id: "ch17-q4",
       difficulty: "core",
       concept: "credit-facility",
-      prompt: "Why does every credit facility need two separate Asset GL accounts rather than one?",
+      prompt: "Why does lending post to two separate Asset lines rather than one?",
       options: [
         "Because the ledger requires every entity to have at least two accounts",
-        "Because a repayment allocates against interest before principal, and one account cannot express that split",
+        "Because a repayment allocates against interest before principal, and one line cannot express that split",
         "Because principal and interest are always denominated in different assets",
         "Because regulators require two account numbers per loan",
       ],
       answer: 1,
       explanation:
-        "The split is [[credit-facility|principal]] (what is owed on drawn money) and accrued interest receivable (interest earned, not yet collected). [[repayment-allocation|Repayment]] credits the receivable first and only then the principal account — impossible with a single account.",
+        "The split is [[credit-facility|drawn principal]] (what is owed on money taken) and accrued interest receivable (interest earned, not yet collected). [[repayment-allocation|Repayment]] credits the receivable first and only then the principal — impossible if the two shared a line. Both are control accounts of the bank's, so a second borrower adds entries to them rather than accounts beside them.",
     },
     {
       kind: "mc",
       id: "ch17-q5",
       difficulty: "intro",
       concept: "account-type-asset",
-      prompt: "Disbursing a €1,000,000 term loan into the customer's deposit account debits which GL account?",
+      prompt: "Disbursing a €1,000,000 term loan into the customer's deposit account debits which line of the chart of accounts?",
       options: [
-        "The customer's deposit (Liability) account",
-        "The bank's Interest Income (Revenue) account",
-        "The loan's Principal (Asset) account",
+        "The bank's customer-deposit line, under this customer",
+        "The bank's Interest Income (Revenue) line",
+        "The bank's loan-principal (Asset) line, under this facility",
         "The central bank reserve account",
       ],
       answer: 2,
       explanation:
-        "Disbursement debits the loan's Principal [[account-type-asset|Asset]] account and credits the counterparty — typically the customer's Liability deposit account, whose balance rises. Both sides balance under [[double-entry]]; nothing is owed on the facility before this posting, and the whole committed amount is after it.",
+        "Disbursement debits the bank's loan-principal [[account-type-asset|Asset]] line with the facility named on the entry, and credits the counterparty — typically the customer's Liability deposit position, whose balance rises. Both sides balance under [[double-entry]]; nothing is owed on the facility before this posting, and the whole committed amount is after it.",
     },
     {
       kind: "numeric",
@@ -192,12 +192,12 @@ export const chapter: Chapter = {
       difficulty: "intro",
       concept: "derived-balance",
       prompt:
-        "A facility's Principal GL account has a book balance of €45,000 and its Accrued Interest GL account has a book balance of €120. What does the facility's drawn principal report, in euros?",
+        "The bank's loan-principal line has a book balance of €45,000 under a given facility, and its accrued-interest receivable has €120 under that same facility. What does the facility's drawn principal report, in euros?",
       answer: 45000,
       unit: { asset: "EUR", in: "major" },
       tolerance: 0,
       explanation:
-        "Drawn principal is read from the Principal account alone — **€45,000** — never combined with the accrued-interest receivable, which is a separate figure tracked on its own account.",
+        "Drawn principal is read from the principal line alone, filtered to this facility — **€45,000** — never combined with the accrued-interest receivable, which is a separate figure on a separate line. Both are [[derived-balance|the same sum with the obligor in the filter]]; neither is a column anywhere.",
     },
     {
       kind: "mc",
@@ -207,13 +207,13 @@ export const chapter: Chapter = {
       prompt: "Where is a facility's drawn amount stored?",
       options: [
         "In a `drawn` column on the facility's own row",
-        "It isn't stored anywhere — it is read from the Principal GL account's book balance whenever it is asked for",
+        "It isn't stored anywhere — it is the loan-principal line's book balance under this facility, read whenever it is asked for",
         "In a cache refreshed once a night",
         "On the customer's deposit account",
       ],
       answer: 1,
       explanation:
-        "Like every [[derived-balance|derived balance]] in this system, the drawn amount is not stored: it is computed on demand from the Principal account, the same discipline a plain book balance follows.",
+        "Like every [[derived-balance|derived balance]] in this system, the drawn amount is not stored: it is computed on demand by summing the loan-principal line's entries that name this facility, the same discipline a plain book balance follows.",
     },
     {
       kind: "truefalse",
@@ -221,10 +221,10 @@ export const chapter: Chapter = {
       difficulty: "challenge",
       concept: "credit-facility",
       prompt:
-        "A facility's **commitment** is derived the same way its drawn amount and accrued interest are — read from a GL account balance rather than stored.",
+        "A facility's **commitment** is derived the same way its drawn amount and accrued interest are — read from a ledger balance rather than stored.",
       answer: false,
       explanation:
-        "The **commitment** — a term loan's original principal, or a revolving line's limit — IS stored: it is a fact about the contract, not a fact about postings so far. The **drawn** amount is the [[derived-balance|derived]] one, read from the Principal account. The **accrued interest** is stored, but as an exact sub-minor-unit [[accrued-interest|record]] whose rounded figure the receivable account always equals — so it agrees with that account to the cent either way.",
+        "The **commitment** — a term loan's original principal, or a revolving line's limit — IS stored: it is a fact about the contract, not a fact about postings so far. The **drawn** amount is the [[derived-balance|derived]] one, read from the loan-principal line under this facility. The **accrued interest** is stored, but as an exact sub-minor-unit [[accrued-interest|record]] whose rounded figure the facility's balance in the receivable always equals — so the two agree to the cent either way.",
     },
     {
       kind: "mc",
@@ -245,7 +245,7 @@ export const chapter: Chapter = {
       prompt: "A term loan's amortization schedule is generated the moment it is opened, before any money is disbursed.",
       answer: false,
       explanation:
-        "Opening a [[term-loan]] only creates its two GL accounts and records it as Pending — it does not move money or build a schedule. The schedule needs a first due date, which is not known until disbursement fixes when the money actually went out; a schedule generated at opening would be a plan to repay money never paid out.",
+        "Opening a [[term-loan]] only records it as Pending — it does not move money or build a schedule. The schedule needs a first due date, which is not known until disbursement fixes when the money actually went out; a schedule generated at opening would be a plan to repay money never paid out.",
     },
     {
       kind: "numeric",
@@ -282,16 +282,16 @@ export const chapter: Chapter = {
       id: "ch17-q20",
       difficulty: "intro",
       concept: "term-loan",
-      prompt: "What state are a term loan's two GL accounts in the moment it is opened, before it is disbursed?",
+      prompt: "A bank has lent in euro before. What happens to its chart of accounts when it opens another euro term loan, before that loan is disbursed?",
       options: [
-        "They don't exist yet — accounts are created only at disbursement",
-        "They exist, created when the facility is opened, both at a zero balance until money is disbursed",
-        "They already hold the full committed amount",
-        "They hold the commitment amount as a negative balance",
+        "Two Asset accounts are created for this loan, both at a zero balance",
+        "Nothing is added: the euro loan-principal and receivable lines already exist, and no entry yet names this facility",
+        "Two accounts are created, already holding the committed amount",
+        "One account is created, covering principal and interest together",
       ],
       answer: 1,
       explanation:
-        "Opening a [[term-loan]] creates both GL accounts — principal and accrued interest receivable — immediately, at zero. Nothing is owed and nothing has accrued until [[account-type-asset|Disburse]] posts the first real transaction against them.",
+        "A [[term-loan|facility]] is an obligor under lines the bank already has — the *first* euro facility opened them, and every one after it adds entries rather than rows. Its drawn principal reads zero not because an account was opened at zero but because nothing has been posted under its id. Nothing is owed and nothing has accrued until [[account-type-asset|Disburse]] posts the first real transaction naming it.",
     },
   ],
 };

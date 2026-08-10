@@ -149,16 +149,16 @@ export const chapter: Chapter = {
       difficulty: "core",
       concept: "ledger-vs-subledger",
       prompt:
-        "A bank's General Ledger shows one line: 'Customer Deposits — $10,000,000.' The Customer Deposits subledger contains 50,000 individual accounts that sum to that total. What does the subledger provide that the GL line alone cannot?",
+        "This bank has 50,000 depositors, and its chart of accounts holds a single line for all of them: 'Customer Deposits (EUR) — €10,000,000.' Where is the balance of one named depositor recorded?",
       options: [
-        "The subledger corrects arithmetic errors in the GL total",
-        "The subledger shows the balance for each individual customer account",
-        "The subledger records entries that are excluded from the GL",
-        "The subledger stores only asset accounts while the GL stores liabilities",
+        "In a second set of accounts, one per depositor, that posts summary entries up to the line",
+        "Nowhere — only the pooled total is knowable once money is deposited",
+        "In the entries against that line: each names the obligor whose money it moved, so one depositor's balance is the line filtered to them",
+        "In a stored balance column on the depositor's account record, kept in step with the line by a nightly job",
       ],
-      answer: 1,
+      answer: 2,
       explanation:
-        "In a [[ledger-vs-subledger]] hierarchy, the General Ledger holds *summary* totals while the subledger holds the *detail* — every individual account. A bank may have millions of deposit accounts; the GL rolls them up into a single line, but the subledger tracks what each customer is owed so that per-customer statements and balance checks are possible.",
+        "'Customer Deposits (EUR)' is a **control account** — one line standing for many — and a depositor's account is not a row in the chart of accounts at all. Every entry against the line names *whose* money the leg is, so their balance is that line's balance filtered to them and the bank's total is the same sum with the filter dropped. Option a is the classic arrangement, which keeps the same money in two places and reconciles them daily; here there is one number, read two ways. See [[ledger-vs-subledger]].",
     },
     {
       kind: "mc",

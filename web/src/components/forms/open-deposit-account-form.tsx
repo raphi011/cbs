@@ -91,8 +91,9 @@ export function OpenDepositAccountForm({ pid }: { pid: string }) {
           <DialogHeader>
             <DialogTitle>Open deposit account</DialogTitle>
             <DialogDescription>
-              A customer checking/current account, backed by a Liability GL
-              account in the general ledger.
+              A customer checking/current account. It gets no line of its own in
+              the chart of accounts: it becomes an obligor under the bank&apos;s
+              customer-deposit control account.
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-2">

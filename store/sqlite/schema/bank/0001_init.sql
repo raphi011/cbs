@@ -858,7 +858,7 @@ CREATE TABLE facilities (
     -- no independent existence, so a facility row for it would store a number
     -- that already exists. Its terms live in overdraft_terms, and its Asset-side
     -- classification is an aggregation (deposit.Totals). See README.md,
-    -- "A Control Account, or an Aggregation".
+    -- "A Control Account, and Still an Aggregation".
     book_id           TEXT NOT NULL REFERENCES books (id) ON DELETE CASCADE,
     id                TEXT NOT NULL,
     kind              INTEGER NOT NULL,

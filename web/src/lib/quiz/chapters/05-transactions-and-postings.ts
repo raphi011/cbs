@@ -57,16 +57,16 @@ export const chapter: Chapter = {
       difficulty: "intro",
       concept: "ledger-vs-subledger",
       prompt:
-        "A bank's General Ledger contains a 'Customer Deposits' subledger holding 50,000 individual accounts. What does the General Ledger show for this subledger?",
+        "A bank has 50,000 depositors, and the 'Customer Deposits' folder of its chart of accounts holds a single control account. What is that one account's balance?",
       options: [
-        "The balance of every individual customer account, listed separately",
-        "A combined total balance for all accounts in the subledger",
-        "Only the most recently posted transaction across all accounts",
-        "An alphabetical index of all customer account names",
+        "The balance of every depositor, listed separately",
+        "The combined total the bank owes all 50,000 depositors",
+        "Zero — the line is a heading, and the money sits in accounts beneath it",
+        "Only the most recently posted transaction across all depositors",
       ],
       answer: 1,
       explanation:
-        "The [[ledger-vs-subledger]] hierarchy exists so the General Ledger can show one summary total while the subledger holds the individual detail. If Customer Deposits sum to $10 M, the GL shows $10 M — not 50,000 lines. The subledger is where the per-customer granularity lives.",
+        "A control account is one line standing for many, and its balance is the sum of every entry posted against it — $10 M, not 50,000 lines. What keeps the per-depositor detail recoverable is that each of those entries names its **obligor**, so one depositor's balance is the same line filtered to them. See [[ledger-vs-subledger]].",
     },
     {
       kind: "truefalse",
