@@ -55,6 +55,7 @@ import type {
   SnapshotRequest,
   StatusRequest,
   Subledger,
+  SubsidiaryBalance,
   Totals,
   Transaction,
   Transfer,
@@ -317,11 +318,24 @@ export async function getAllAccounts(
 
 // --- Ledger: transactions -------------------------------------------------
 
+// `account` alone is the WHOLE account — on a control line, every obligor's
+// postings. `subsidiary` narrows it to one of them, which is what a customer's
+// statement is: a customer is a position, not an account.
 export function listTransactions(
   pid: string,
   account?: string,
+  subsidiary?: string,
 ): Promise<Transaction[]> {
-  return request("GET", bank(pid, `/transactions${qs({ account })}`));
+  return request("GET", bank(pid, `/transactions${qs({ account, subsidiary })}`));
+}
+
+// Who a control account is holding money for, and how much of the line is
+// each one's. Empty for a plain account, which pools nobody.
+export function listSubsidiaries(
+  pid: string,
+  aid: string,
+): Promise<SubsidiaryBalance[]> {
+  return request("GET", bank(pid, `/accounts/${aid}/subsidiaries`));
 }
 
 export function getTransaction(
@@ -471,7 +485,7 @@ export function releaseHold(pid: string, hid: string): Promise<void> {
 }
 
 // Capture posts a real ledger transaction debiting the customer and crediting
-// the counterparty GL account; returns that transaction.
+// the counterparty position; returns that transaction.
 export function captureHold(
   pid: string,
   hid: string,

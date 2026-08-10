@@ -924,6 +924,47 @@ func (t *tx) BookBalance(ctx context.Context, book ledger.BookID, pos ledger.Pos
 	return balance, nil
 }
 
+// SubsidiaryBalances groups a control account's entries by obligor. See
+// ledger.Tx for the contract.
+//
+// HAVING rather than a filter in Go: an obligor whose entries net to zero is a
+// customer who has repaid, and a listing of what a bank owes should not carry a
+// row of nothing. The empty subsidiary cannot appear on a control account —
+// PostTransactionTx refuses an unqualified entry against one — so no predicate
+// excludes it here.
+func (t *tx) SubsidiaryBalances(ctx context.Context, book ledger.BookID, account ledger.AccountID, normal ledger.Direction) ([]ledger.SubsidiaryBalance, error) {
+	if err := t.inShape("entries"); err != nil {
+		return nil, err
+	}
+	if err := t.own(book); err != nil {
+		return nil, err
+	}
+	rows, err := t.tx.QueryContext(ctx, `
+		SELECT e.subsidiary_id,
+		       SUM(CASE WHEN e.direction = ? THEN e.amount ELSE -e.amount END) AS balance
+		FROM entries e WHERE e.book_id = ? AND e.account_id = ?
+		GROUP BY e.subsidiary_id HAVING balance != 0
+		ORDER BY e.subsidiary_id`,
+		int64(normal), string(book), string(account))
+	if err != nil {
+		return nil, fmt.Errorf("sqlite: subsidiary balances %s: %w", account, err)
+	}
+	defer rows.Close()
+
+	out := make([]ledger.SubsidiaryBalance, 0)
+	for rows.Next() {
+		var row ledger.SubsidiaryBalance
+		if err := rows.Scan(&row.Subsidiary, &row.Balance); err != nil {
+			return nil, fmt.Errorf("sqlite: subsidiary balances %s: %w", account, err)
+		}
+		out = append(out, row)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("sqlite: subsidiary balances %s: %w", account, err)
+	}
+	return out, nil
+}
+
 // ValueDateBalance is BookBalance restricted to entries whose value date falls
 // strictly before the bound. See ledger.Tx for the contract.
 //

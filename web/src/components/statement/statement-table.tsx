@@ -41,7 +41,8 @@ function ContraCell({ pid, contra }: { pid: string; contra: ContraRef }) {
 export function StatementTable({
   rows,
   book,
-  glAccount,
+  account,
+  subsidiary,
   pid,
   asset,
   amountHintId = "statement-amount",
@@ -49,7 +50,12 @@ export function StatementTable({
 }: {
   rows: StatementRow[];
   book?: number;
-  glAccount: string;
+  // The POSITION this statement is projected onto: the account, and the obligor
+  // within it when there is one. Both are needed to highlight the reader's own
+  // leg, because a control account carries every other customer's legs too and
+  // the account alone would light all of them up.
+  account: string;
+  subsidiary?: string;
   pid: string;
   // The asset of the account this statement is projected onto. `delta` and
   // `runningBalance` are always in this one asset (they're this account's
@@ -146,7 +152,9 @@ export function StatementTable({
                         </div>
                         <div className="divide-y rounded-md border bg-background">
                           {row.transaction.entries.map((e, i) => {
-                            const isMine = e.accountId === glAccount;
+                            const isMine =
+                              e.accountId === account &&
+                              (subsidiary === undefined || e.subsidiary === subsidiary);
                             return (
                               <div
                                 key={e.id ?? i}

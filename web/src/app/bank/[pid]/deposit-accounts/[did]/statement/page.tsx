@@ -22,10 +22,19 @@ function StatementBody({
   account: DepositAccount;
   asset: Asset;
 }) {
-  const { rows, book, isLoading, error, refetch } = useStatement(pid, did, account.glAccount);
+  const { rows, book, isLoading, error, refetch } = useStatement(pid, did, account.controlAccount);
   if (error) return <ErrorState error={error} onRetry={() => refetch()} />;
   if (isLoading) return <Skeleton className="h-64 w-full" />;
-  return <StatementTable rows={rows} book={book} glAccount={account.glAccount} pid={pid} asset={asset} />;
+  return (
+    <StatementTable
+      rows={rows}
+      book={book}
+      account={account.controlAccount}
+      subsidiary={did}
+      pid={pid}
+      asset={asset}
+    />
+  );
 }
 
 export default function StatementPage() {

@@ -22,7 +22,8 @@ import { ProductPicker } from "@/components/pickers/product-picker";
 import { useAssetLookup, useOpenDepositAccount } from "@/lib/api/hooks";
 import { describeError } from "@/lib/api/errors";
 
-// Opens a demand-deposit account backed by a Liability GL account. Overdraft
+// Opens a demand-deposit account, whose money pools in the bank's customer-
+// deposit control account for its asset rather than in a line of its own. Overdraft
 // limit defaults to 0 (a hard-decline account); a positive limit lets the
 // available balance go that far below zero.
 //

@@ -9,6 +9,46 @@ import (
 // One account's history, and the balance decomposed into dated lots
 // ---------------------------------------------------------------------------
 
+// SubsidiaryBalance is one obligor's share of a control account. It is what a
+// control line drills into: the detail whose sum IS the line's own balance, read
+// from the same entries rather than from a second place that could disagree.
+type SubsidiaryBalance struct {
+	Subsidiary string
+	Balance    Amount
+}
+
+// SubsidiaryBalances is every obligor under a control account, ordered by
+// obligor, with the ones that net to zero left out — a customer who has repaid
+// is not a row in what the bank owes.
+//
+// A PLAIN account answers with nothing at all rather than with one unnamed row.
+// It pools nobody, so there is no detail under it to show; its balance is
+// BookBalance and that is the whole of it.
+//
+// Returns ErrAccountNotFound.
+func (s *Book) SubsidiaryBalances(ctx context.Context, account AccountID) ([]SubsidiaryBalance, error) {
+	var out []SubsidiaryBalance
+	err := s.store.View(ctx, func(ctx context.Context, tx Tx) error {
+		var err error
+		out, err = s.SubsidiaryBalancesTx(ctx, tx, account)
+		return err
+	})
+	return out, err
+}
+
+// SubsidiaryBalancesTx is SubsidiaryBalances within a caller-supplied unit of
+// work.
+func (s *Book) SubsidiaryBalancesTx(ctx context.Context, tx Tx, account AccountID) ([]SubsidiaryBalance, error) {
+	acct, err := tx.GetAccount(ctx, s.id, account)
+	if err != nil {
+		return nil, err
+	}
+	if !acct.Control {
+		return []SubsidiaryBalance{}, nil
+	}
+	return tx.SubsidiaryBalances(ctx, s.id, account, acct.Type.NormalBalance())
+}
+
 // AccountHistory is every transaction that touched one account, in book order,
 // each carrying the balance the account stood at once it had posted.
 //

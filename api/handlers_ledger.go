@@ -20,6 +20,7 @@ func (s *Server) registerLedgerRoutes(mux *router) {
 	mux.HandleFunc("GET /subledgers/{sid}/accounts", s.handleListAccounts)
 	mux.HandleFunc("GET /accounts/{aid}", s.handleGetAccount)
 	mux.HandleFunc("GET /accounts/{aid}/balance", s.handleBookBalance)
+	mux.HandleFunc("GET /accounts/{aid}/subsidiaries", s.handleAccountSubsidiaries)
 
 	mux.HandleFunc("POST /transactions", s.handlePostTransaction)
 	mux.HandleFunc("GET /transactions", s.handleListTransactions)
@@ -210,22 +211,60 @@ func (s *Server) handleBookBalance(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	bal, err := p.Ledger.BookBalance(r.Context(), aid.Total())
+	// An obligor's balance, or the whole account's when none is named. On a
+	// control account the second is the sum of the first over every obligor,
+	// which is what makes the drill-down below add up.
+	pos := aid.For(r.URL.Query().Get("subsidiary"))
+	bal, err := p.Ledger.BookBalance(r.Context(), pos)
 	if err != nil {
 		writeError(w, err)
 		return
 	}
-	valueDated, err := p.Ledger.ValueDateBalance(r.Context(), aid.Total(), asOf)
+	valueDated, err := p.Ledger.ValueDateBalance(r.Context(), pos, asOf)
 	if err != nil {
 		writeError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, accountBalanceDTO{
 		AccountID:        string(aid),
+		Subsidiary:       pos.Subsidiary,
 		Asset:            string(acct.Asset),
 		Balance:          int64(bal),
 		ValueDateBalance: int64(valueDated),
 	})
+}
+
+// handleAccountSubsidiaries is the drill-down: which obligors a control account
+// is holding money for, and how much of the line is each one's.
+//
+// A plain account answers with an empty list rather than a 404 or an error. It
+// pools nobody, so there is no detail under it — and a client rendering an
+// account page should not have to know which kind it is before it asks.
+func (s *Server) handleAccountSubsidiaries(w http.ResponseWriter, r *http.Request) {
+	p, ok := s.participant(w, r)
+	if !ok {
+		return
+	}
+	aid := ledger.AccountID(r.PathValue("aid"))
+	acct, err := p.Ledger.GetAccount(r.Context(), aid)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	rows, err := p.Ledger.SubsidiaryBalances(r.Context(), aid)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	out := make([]subsidiaryBalanceDTO, len(rows))
+	for i, row := range rows {
+		out[i] = subsidiaryBalanceDTO{
+			Subsidiary: row.Subsidiary,
+			Asset:      string(acct.Asset),
+			Balance:    int64(row.Balance),
+		}
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 func (s *Server) handlePostTransaction(w http.ResponseWriter, r *http.Request) {
@@ -261,10 +300,15 @@ func (s *Server) handleListTransactions(w http.ResponseWriter, r *http.Request) 
 	if !ok {
 		return
 	}
+	// account alone is the WHOLE account, which on a control line is every
+	// obligor's postings; account plus subsidiary is one obligor's. That is the
+	// same rule ledger.Position states, and it is why there is no separate
+	// route for a customer's statement: a customer is a position.
 	var txs []ledger.Transaction
 	var err error
 	if acct := r.URL.Query().Get("account"); acct != "" {
-		txs, err = p.Ledger.ListTransactionsForPosition(r.Context(), ledger.AccountID(acct).Total())
+		pos := ledger.AccountID(acct).For(r.URL.Query().Get("subsidiary"))
+		txs, err = p.Ledger.ListTransactionsForPosition(r.Context(), pos)
 	} else {
 		txs, err = p.Ledger.ListTransactions(r.Context())
 	}

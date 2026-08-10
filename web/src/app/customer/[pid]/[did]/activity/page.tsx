@@ -21,7 +21,7 @@ export default function CustomerActivity() {
   const { rows, book, isLoading, error, refetch } = useStatement(
     pid,
     did,
-    account?.glAccount ?? "",
+    account?.controlAccount ?? "",
   );
 
   // assetError is kept out of the loading guard below: if /assets never
@@ -44,7 +44,8 @@ export default function CustomerActivity() {
         retail
         rows={rows}
         book={book}
-        glAccount={account.glAccount}
+        account={account.controlAccount}
+        subsidiary={did}
         pid={pid}
         asset={asset}
       />

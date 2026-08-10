@@ -416,6 +416,24 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Sto
 			}
 			assertEqual(t, "an obligor with no postings", absent, ledger.Amount(0))
 
+			// And the same detail asked for the other way round: the caller that
+			// does not know the obligors yet. It is the drill-down a control
+			// account's page renders, and it must agree with the per-obligor
+			// reads above rather than being a second count of the same entries.
+			breakdown, err := tx.SubsidiaryBalances(ctx, bookA, pooled, ledger.Credit)
+			if err != nil {
+				return err
+			}
+			var listed []string
+			var summed ledger.Amount
+			for _, row := range breakdown {
+				listed = append(listed, row.Subsidiary)
+				summed += row.Balance
+			}
+			assertEqual(t, "the obligors, in order", sliceString(listed), "[dep_1 dep_2]")
+			assertEqual(t, "the breakdown against the control", summed, whole)
+			assertEqual(t, "dep_1's row", breakdown[0].Balance, ledger.Amount(1040))
+
 			// The value-dated reads carry the obligor too: interest is computed
 			// from these, and a series that read the pool would accrue the whole
 			// bank's balance for every customer under it.

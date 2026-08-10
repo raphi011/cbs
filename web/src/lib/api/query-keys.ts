@@ -52,9 +52,11 @@ export const qk = {
   // created account shows up next time a form opens).
   allAccounts: (pid: string) =>
     ["participants", pid, "all-accounts"] as const,
-  transactions: (pid: string, account?: string) =>
+  subsidiaries: (pid: string, aid: string) =>
+    ["participants", pid, "accounts", aid, "subsidiaries"] as const,
+  transactions: (pid: string, account?: string, subsidiary?: string) =>
     account
-      ? (["participants", pid, "transactions", { account }] as const)
+      ? (["participants", pid, "transactions", { account, subsidiary }] as const)
       : (["participants", pid, "transactions"] as const),
   transaction: (pid: string, tid: string) =>
     ["participants", pid, "transaction", tid] as const,

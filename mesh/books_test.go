@@ -371,6 +371,11 @@ func (r *recordingTx) ListAccounts(ctx context.Context, book ledger.BookID) ([]l
 	return r.Tx.ListAccounts(ctx, book)
 }
 
+func (r *recordingTx) SubsidiaryBalances(ctx context.Context, book ledger.BookID, account ledger.AccountID, normal ledger.Direction) ([]ledger.SubsidiaryBalance, error) {
+	r.rec.note(book)
+	return r.Tx.SubsidiaryBalances(ctx, book, account, normal)
+}
+
 func (r *recordingTx) PutSlotAccount(ctx context.Context, book ledger.BookID, row ledger.SlotAccount) error {
 	r.rec.note(book)
 	return r.Tx.PutSlotAccount(ctx, book, row)

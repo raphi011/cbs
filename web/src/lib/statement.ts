@@ -1,7 +1,7 @@
 import type { Direction, TransactionStatus } from "@/lib/enums";
 import { NORMAL_BALANCE } from "@/lib/enums";
 import type { AccountType } from "@/lib/enums";
-import type { Participant, Transaction } from "@/lib/types";
+import type { Entry, Participant, Transaction } from "@/lib/types";
 
 // One statement line is one leg of a GL transaction, projected onto the backing
 // account. The tagged `kind` leaves room for future non-GL lines (interest,
@@ -55,20 +55,35 @@ export function buildKnownAccounts(participant?: Participant): Record<string, st
   );
 }
 
-// Project the General Ledger onto a single backing account. Rows are returned
-// newest-first; the running balance is accumulated over the FULL ordered history
-// (oldest→newest) so the newest row reconciles to the account's book balance.
-// Amounts are signed by the account's normal balance (Debit+ for Asset/Expense,
-// Credit+ for Liability/Equity/Revenue); `type` defaults to "Liability".
+// Project the General Ledger onto a single POSITION: an account, or one obligor
+// within it. Rows are returned newest-first; the running balance is accumulated
+// over the FULL ordered history (oldest→newest) so the newest row reconciles to
+// the position's book balance. Amounts are signed by the account's normal
+// balance (Debit+ for Asset/Expense, Credit+ for Liability/Equity/Revenue);
+// `type` defaults to "Liability".
+//
+// `subsidiary` is what makes a customer's statement theirs. Omitted, the
+// projection is the whole account — which on a control account is every
+// customer's postings at once, and is the right answer only when the pool
+// itself is what is being read.
 export function projectStatement(
   txs: Transaction[],
   accountId: string,
-  opts: { type?: AccountType; knownAccounts?: Record<string, string> } = {},
+  opts: {
+    type?: AccountType;
+    knownAccounts?: Record<string, string>;
+    subsidiary?: string;
+  } = {},
 ): Statement {
-  const { type = "Liability", knownAccounts = {} } = opts;
+  const { type = "Liability", knownAccounts = {}, subsidiary } = opts;
   const increases = NORMAL_BALANCE[type]; // the direction that increases this account
 
-  const touching = txs.filter((t) => t.entries.some((e) => e.accountId === accountId));
+  // Mine is the position's leg, and a leg against the same account under
+  // another obligor is somebody else's — a contra, not a row of this statement.
+  const isMine = (e: Entry) =>
+    e.accountId === accountId && (subsidiary === undefined || e.subsidiary === subsidiary);
+
+  const touching = txs.filter((t) => t.entries.some(isMine));
 
   const ordered = [...touching].sort((a, b) => {
     if (a.valueDate !== b.valueDate) return a.valueDate < b.valueDate ? -1 : 1;
@@ -78,8 +93,8 @@ export function projectStatement(
 
   let running = 0;
   const rows: StatementRow[] = ordered.map((t) => {
-    const mine = t.entries.filter((e) => e.accountId === accountId);
-    const others = t.entries.filter((e) => e.accountId !== accountId);
+    const mine = t.entries.filter(isMine);
+    const others = t.entries.filter((e) => !isMine(e));
 
     const delta = mine.reduce(
       (sum, e) => sum + (e.direction === increases ? e.amount : -e.amount),

@@ -21,7 +21,7 @@ export function StatementCard({
   account: DepositAccount;
   asset: Asset;
 }) {
-  const { rows, book, isLoading, error, refetch } = useStatement(pid, did, account.glAccount);
+  const { rows, book, isLoading, error, refetch } = useStatement(pid, did, account.controlAccount);
   const recent = rows.slice(0, 10);
   const hasMore = rows.length > recent.length;
   const statementHref = `/bank/${pid}/deposit-accounts/${did}/statement`;
@@ -44,7 +44,14 @@ export function StatementCard({
           <Skeleton className="h-40 w-full" />
         ) : (
           <>
-            <StatementTable rows={recent} book={book} glAccount={account.glAccount} pid={pid} asset={asset} />
+            <StatementTable
+              rows={recent}
+              book={book}
+              account={account.controlAccount}
+              subsidiary={account.id}
+              pid={pid}
+              asset={asset}
+            />
             {hasMore && (
               <p className="text-xs text-muted-foreground">
                 Showing the {recent.length} most recent of {rows.length} transactions.{" "}

@@ -141,6 +141,16 @@ type Tx interface {
 	// fixtures do.
 	ValueDateBalance(ctx context.Context, book BookID, pos Position, normal Direction, before time.Time) (Amount, error)
 
+	// SubsidiaryBalances is the balance of every obligor under an account, in
+	// one query rather than one BookBalance per obligor: the caller does not
+	// know the obligors before it asks, which is the whole difference between
+	// this and reading a Position.
+	//
+	// Ordered by obligor, and obligors netting to zero are omitted — a customer
+	// who has repaid is not a row in what the bank owes. normal is the account
+	// type's normal direction, as it is for BookBalance.
+	SubsidiaryBalances(ctx context.Context, book BookID, account AccountID, normal Direction) ([]SubsidiaryBalance, error)
+
 	// ValueDatedSeries returns the balance carried into from, plus the net
 	// movement on each value date in [from, to) that had any.
 	//

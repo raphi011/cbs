@@ -33,12 +33,17 @@ func toSubledgerDTO(sl ledger.Subledger) subledgerDTO {
 }
 
 type accountDTO struct {
-	ID          string    `json:"id"`
-	SubledgerID string    `json:"subledgerId"`
-	Name        string    `json:"name"`
-	Type        string    `json:"type"`
-	Asset       string    `json:"asset"`
-	CreatedAt   time.Time `json:"createdAt"`
+	ID          string `json:"id"`
+	SubledgerID string `json:"subledgerId"`
+	Name        string `json:"name"`
+	Type        string `json:"type"`
+	Asset       string `json:"asset"`
+	// Control says this line pools obligors: it stands for many, and every entry
+	// against it names which. A client needs it for two things it cannot get
+	// right otherwise — a posting form must ask for the obligor, and an account
+	// page must offer the detail under the line rather than only the total.
+	Control   bool      `json:"control"`
+	CreatedAt time.Time `json:"createdAt"`
 }
 
 func toAccountDTO(a ledger.Account) accountDTO {
@@ -48,6 +53,7 @@ func toAccountDTO(a ledger.Account) accountDTO {
 		Name:        a.Name,
 		Type:        a.Type.String(),
 		Asset:       string(a.Asset),
+		Control:     a.Control,
 		CreatedAt:   a.CreatedAt,
 	}
 }
@@ -59,13 +65,31 @@ func toAccountDTO(a ledger.Account) accountDTO {
 // deposit layer. A number with no asset is not an amount.
 type accountBalanceDTO struct {
 	AccountID string `json:"accountId"`
-	Asset     string `json:"asset"`
-	Balance   int64  `json:"balance"`
+	// Subsidiary is the obligor the figures are for, absent when they are the
+	// whole account's. It is echoed back because a client asking for one
+	// customer's balance and a client asking for the pool's send the same route
+	// two different questions.
+	Subsidiary string `json:"subsidiary,omitempty"`
+	Asset      string `json:"asset"`
+	Balance    int64  `json:"balance"`
 	// ValueDateBalance is the balance as of the end of the requested day,
 	// counting only entries that have taken economic effect. It is what
 	// interest is computed from, and it differs from Balance whenever a
 	// posting is value-dated away from its booking date.
 	ValueDateBalance int64 `json:"valueDateBalance"`
+}
+
+// subsidiaryBalanceDTO is one obligor's share of a control account. The asset
+// travels with the number for accountBalanceDTO's reason: an integer in minor
+// units is not an amount without it.
+//
+// What an obligor IS — a deposit account, a facility — is not said here and
+// cannot be: the ledger holds an opaque string, and the layer that knows what it
+// names is the one rendering the link.
+type subsidiaryBalanceDTO struct {
+	Subsidiary string `json:"subsidiary"`
+	Asset      string `json:"asset"`
+	Balance    int64  `json:"balance"`
 }
 
 type entryDTO struct {

@@ -407,7 +407,8 @@ export default function DepositAccountDetailPage() {
           </p>
 
           <p className="flex items-center gap-1.5 text-sm text-muted-foreground">
-            Backed by GL account <AccountRef pid={pid} id={account.glAccount} /> · overdraft
+            Pooled in <AccountRef pid={pid} id={account.controlAccount} />, under this
+            account&apos;s own id · overdraft
             limit <Money amount={account.overdraftLimit} asset={asset} />
             <Hint id="overdraft" />
           </p>
