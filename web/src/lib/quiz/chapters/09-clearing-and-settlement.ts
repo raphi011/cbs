@@ -136,15 +136,21 @@ export const chapter: Chapter = {
       explore: { label: "View central bank", href: "/central-bank" },
     },
     {
-      kind: "truefalse",
+      kind: "mc",
       id: "ch9-q9",
-      difficulty: "challenge",
-      concept: "clearing-vs-settlement",
+      difficulty: "core",
+      concept: "book-transfer",
       prompt:
-        "Settlement finality means the receiving bank has a legal, irrevocable claim to the funds.",
-      answer: true,
+        "Alice and Aaron both hold accounts at Aurora Bank. Alice pays Aaron €100. What does the clearing house do with it?",
+      options: [
+        "Nets it with Aurora's other payments for the cycle, leaving Aurora's net position €100 different",
+        "Nothing — it never hears about it. Aurora posts both legs in its own book, and no obligation between institutions comes into existence",
+        "Clears and settles it as usual; the two reserve movements happen to cancel, so Aurora's reserve ends up unchanged",
+        "Refuses it, and there is nothing else Alice can do — a payment needs two banks",
+      ],
+      answer: 1,
       explanation:
-        "[[clearing-vs-settlement|Settlement]] is the moment of finality — once reserves have moved at the central bank level, the transaction is irrevocable. This is fundamentally different from clearing, which is merely an agreement on amounts. Before settlement, counterparty risk remains.",
+        "A [[book-transfer]] is the one payment with a single institution at both ends. Aurora debits Alice's deposit and credits Aaron's in one posting: no position for the clearing house to [[netting|net]], no reserves for the settlement agent to move, no [[clearing-suspense|suspense]] — suspense holds money that has left one bank and not yet reached another, and this money never left — and no statement that could tell Aurora about a book it already holds.\n\nThe answer about **reserve movements that cancel** is what actually happens when such a payment is submitted to a clearing house anyway, and it is worse than it sounds: measured, a cut-off whose only payment netted to zero settled nothing and stranded, and one bank's own record of its reserve moved by an amount the central bank's record of it did not. That is why it is refused at submission.\n\nThe last answer gets the refusal right and the consequence wrong. Refusing the *clearing* route is a statement about the route, not about the payment: the transfer is an ordinary product and Alice's bank performs it. What she has to change is which of the two she asks for.",
     },
     {
       kind: "mc",

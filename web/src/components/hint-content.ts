@@ -591,11 +591,31 @@ Settlement phase:
   Banks clear their clearing suspense accounts
 \`\`\`
 
-A payment with **one bank at both ends** has nothing to clear, and this system refuses it rather than carrying it. Both customers bank at the same institution, so no interbank obligation comes into existence: there is no position to net, no reserves to move and no statement that could tell a bank about a book it already holds. A real bank recognises the beneficiary as its own and moves the money between two of its own deposit accounts — a **book transfer**, which never reaches a scheme. Here that submission is refused at the door with a \`422\`, which is a statement about the route and not about the payment: the transfer is an ordinary product, and this system does not offer it yet.
+A payment with **one bank at both ends** has nothing to clear, and it is refused rather than carried: both customers bank at the same institution, so no interbank obligation comes into existence, and there is no position to net and nothing to settle. The bank recognises the beneficiary as its own and moves the money between two of its own deposit accounts instead — a [[book-transfer]], which never reaches a scheme. The refusal is a statement about the **route** and not about the payment, and it names the route that does carry it.
 
 The gap between the two phases is the **settlement window** — during it, counterparty risk exists, and the money sits in each bank's [[clearing-suspense]] account. The [[payment-lifecycle]] reflects this: a payment moves Accepted → Cleared before it can reach Settled.
 
 There is a second gap on the far side of it. Settlement is [[settlement-finality|final]] when the central bank commits, and each member books its own legs afterwards on being told — see [[unreconciled-position]].`,
+  },
+  "book-transfer": {
+    title: "Book transfer",
+    body: `A **book transfer** is a payment between two customers of the *same* bank. Nothing crosses between institutions, so no interbank obligation comes into existence: there is no position for a clearing house to net, no reserves for a settlement agent to move, and no statement that could tell a bank about a book it already holds. The bank recognises the payee as its own and posts both legs itself.
+
+\`\`\`
+Alice and Aaron both bank at Bank A:
+  Debit  Alice (Liability)   1000   ← the bank owes Alice less
+  Credit Aaron (Liability)   1000   ← and owes Aaron more
+                             ────
+  Net:                          0 ✓
+\`\`\`
+
+One posting, one unit of work, and no [[clearing-suspense|suspense]] — suspense holds money that has left one bank and not yet reached another, and this money never left. It joins no clearing cycle and gets no row in \`payments\`: that table carries no \`cycle_id\` precisely because clearing belongs to somebody else, and a transfer that never clears has no business in it.
+
+**Money out is harder than money in.** The payer's account must be active, so a frozen or dormant payer is refused, and the amount is measured against the [[balance-available|available]] balance — which carries the overdraft limit, so a transfer can legitimately push the payer overdrawn. The payee's account is refused only if it is closed: money lands in a frozen one, because that freeze is a debit block, and landing in a dormant one is what revives it. See [[account-status]].
+
+Two refusals are about the instruction rather than about either account: one account named twice, which would post a self-cancelling pair and record that money moved; and two accounts in different currencies, because an amount is one number at one scale and converting is a second operation with a price in it — see [[scheme-asset]].
+
+A payer types the same two things either way: their own account, and the payee's [[account-addressing|address]]. What decides whether it is a transfer or a [[clearing-vs-settlement|clearing]] payment is whether that address resolves in this bank's own register.`,
   },
   netting: {
     title: "Netting",
