@@ -62,16 +62,16 @@ export const chapter: Chapter = {
       difficulty: "core",
       concept: "mandate",
       prompt:
-        "An SDD collection arrives but the debtor revoked the mandate two weeks before the due date. Which specific error does the scheme return?",
+        "An SDD collection arrives but the debtor revoked the mandate two weeks before the due date. On which grounds is it refused?",
       options: [
-        "ErrMandateRequired",
-        "ErrMandateRevoked",
-        "ErrMandateExceeded",
-        "ErrInsufficientFunds",
+        "No mandate exists for this creditor and this account",
+        "The mandate that exists has been revoked",
+        "The collection exceeds the mandate's cap",
+        "The debtor's account has insufficient funds",
       ],
       answer: 1,
       explanation:
-        "The [[mandate]] status check fires before any posting. A mandate that exists but has been revoked triggers **ErrMandateRevoked**. `ErrMandateRequired` fires when no mandate exists at all; `ErrMandateExceeded` fires when the collection amount exceeds the mandate limit.",
+        "The [[mandate]] status check fires before any posting, and each ground is a distinct refusal. A mandate that **exists but has been revoked** is refused as revoked — not as missing, which is what a collection against an account that never authorised this creditor gets, and not as over the cap, which is what a collection larger than the mandate's limit gets. Funds are the debtor's bank's business, later and elsewhere: the creditor's own bank never sees that balance.",
       explore: { href: "/", label: "Pick a bank, then Mandates" },
     },
     {
@@ -152,13 +152,13 @@ export const chapter: Chapter = {
         "A creditor submits an SDD for €450 against a mandate capped at €400. The mandate exists, is active, and both parties match. What does the scheme do?",
       options: [
         "Processes the payment — the cap is advisory when all other checks pass",
-        "Rejects with ErrMandateExceeded before any posting",
+        "Refuses it for exceeding the cap, before any posting",
         "Approves €400 and queues the €50 excess for the next cycle",
         "Automatically updates the mandate cap to €450 and proceeds",
       ],
       answer: 1,
       explanation:
-        "The [[mandate]] amount cap is a hard gate, not advisory. Even when every other mandate check passes, a collection exceeding the mandate limit is rejected with **ErrMandateExceeded** before any posting occurs. There is no partial approval or automatic cap increase.",
+        "The [[mandate]] amount cap is a hard gate, not advisory. Even when every other mandate check passes, a collection exceeding the mandate limit is refused **for exceeding it** before any posting occurs. There is no partial approval or automatic cap increase.",
       explore: { href: "/", label: "Pick a bank, then Mandates" },
     },
     {
@@ -328,7 +328,7 @@ export const chapter: Chapter = {
         "When a bank submits a pacs.008, it looks up the payee's name in the payee's bank's deposit register before building the message.",
       answer: false,
       explanation:
-        "No bank reads another bank's register to build a payment — that crossing is what closed, and it's what this question asks about. The [[counterparty-details|payee's name]] is asserted on the instruction instead: the payer types it, and the submitting bank stores it in `Payment.CreditorDetails` exactly as received, refusing to submit at all if it is missing (`ErrCounterpartyNotNamed`). The submitting bank fills in only its OWN side from its own register — it is the authority on its own customer, never on the other bank's.\n\n**The payee's bank is asserted too.** It is tempting to expect the `CdtrAgt` BIC to be *derived* from the payee's own bank record — name from the payer, routing from the network — but deriving it would mean reading a row belonging to a bank the payer's bank shares no database with. The payer supplies the BIC, exactly as they supply the IBAN, and a missing or malformed one is refused (`ErrCounterpartyAgentNotNamed`).\n\n**What makes asserting it safe is a second change, and neither works alone.** Address resolution no longer sweeps every bank's register: the receiving bank resolves the address in *its own* register and answers `AC01` when it holds no such account. So a payer who names the wrong bank does not divert the money — that bank simply does not hold the address and refuses. Typing a BIC now chooses which bank you *ask*, not which bank gets paid.",
+        "No bank reads another bank's register to build a payment — that crossing is what closed, and it's what this question asks about. The [[counterparty-details|payee's name]] is asserted on the instruction instead: the payer types it, and the submitting bank stores it on the payment exactly as received, refusing to submit at all if it is missing. The submitting bank fills in only its OWN side from its own register — it is the authority on its own customer, never on the other bank's.\n\n**The payee's bank is asserted too.** It is tempting to expect the `CdtrAgt` BIC to be *derived* from the payee's own bank record — name from the payer, routing from the network — but deriving it would mean reading a row belonging to a bank the payer's bank shares no database with. The payer supplies the BIC, exactly as they supply the IBAN, and a missing or malformed one is refused.\n\n**What makes asserting it safe is a second change, and neither works alone.** Address resolution no longer sweeps every bank's register: the receiving bank resolves the address in *its own* register and answers `AC01` when it holds no such account. So a payer who names the wrong bank does not divert the money — that bank simply does not hold the address and refuses. Typing a BIC now chooses which bank you *ask*, not which bank gets paid.",
       explore: { label: "View payments", href: "/clearing-house/payments" },
     },
     {

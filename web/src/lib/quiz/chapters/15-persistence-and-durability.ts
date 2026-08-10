@@ -248,7 +248,7 @@ export const chapter: Chapter = {
       ],
       answers: [0, 1, 2],
       explanation:
-        "All three are real. This is why every mutating method comes in a pair: the plain one opens a [[unit-of-work]], the `…Tx` one joins the caller's. Refusing the nesting turns the most likely mistake in this codebase — calling the wrong one of the pair — into an immediate, named error rather than a rare corruption whose shape depends on what is underneath.",
+        "All three are real. This is why every mutation either opens a [[unit-of-work]] or joins one already open, and never both. Refusing the nesting turns the likeliest mistake — reaching for the wrong one of those two — into an immediate, named refusal rather than a rare corruption whose shape depends on what is underneath.",
     },
     {
       kind: "mc",

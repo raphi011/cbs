@@ -284,12 +284,12 @@ export const chapter: Chapter = {
       options: [
         "They record the book balance — computed from booking dates — not the value-date balance",
         "Interest accrual reads a stored snapshot instead of recomputing the balance from entries",
-        "They are written by TakeEndOfDaySnapshot and read back only by GetSnapshot and ListSnapshots",
+        "They are written, and read back only by asking for one — a day's, or a range",
         "A backdated posting automatically invalidates any snapshot it falsifies",
       ],
       answers: [0, 2],
       explanation:
-        "[[snapshot|End-of-day snapshots]] record the deposit layer's book/holds/available figures, computed the same way [[balance-book|book balance]] always is — from booking dates, not value dates (option 0). Interest accrual does the opposite: it reads `Tx.ValueDatedSeries` fresh from the entry list on every run — its opening figure is exactly `ValueDateBalance` at the window's start — so it never reads a snapshot (option 1 is wrong). Snapshots are written by `TakeEndOfDaySnapshot` and read back only by `GetSnapshot` and `ListSnapshots` — no balance query of any kind consults one (option 2), which is also why a backdated posting does not invalidate the snapshots it falsifies (option 3 is wrong) — nothing is watching them to know they are now stale. The checkpointing snapshots would enable — a query starting from the nearest one instead of replaying every entry — is described but not built.",
+        "[[snapshot|End-of-day snapshots]] record the deposit layer's book/holds/available figures, computed the same way [[balance-book|book balance]] always is — from booking dates, not value dates (option 0). Interest accrual does the opposite: it reads the value-dated entries fresh on every run — its opening figure is exactly the [[value-date|value-date balance]] at the window's start — so it never reads a snapshot (option 1 is wrong). Snapshots are written, and read back only by asking for one — a day's, or a range of them — and no balance query of any kind consults one (option 2), which is also why a backdated posting does not invalidate the snapshots it falsifies (option 3 is wrong) — nothing is watching them to know they are now stale. The checkpointing snapshots would enable — a query starting from the nearest one instead of replaying every entry — is described but not built.",
     },
     {
       kind: "numeric",

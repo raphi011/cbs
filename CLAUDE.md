@@ -82,6 +82,19 @@ The banking/accounting/payments content is duplicated, by design, across:
 When you correct a domain fact in one layer, check and fix the same claim in the
 others.
 
+**The learner-facing layers name no repo symbol.** `hint-content.ts` and the
+quiz chapters are read by someone learning banking, not by someone reading this
+code, so they carry no Go package, type, method or error name, no HTTP method
+and path, and no component or source file name. A rule states what an
+institution does — "the submitting bank refuses an instruction that names no
+counterparty" — not which function refuses it. What they DO carry is vocabulary
+a banker would recognise: `CdtrAgt`, `pacs.008`, `AC01`, IBAN, `ACT/365`, and
+the three schemas' table and column names, the relational mapping being one of
+these layers itself. Where the honest answer is that something is not built,
+say so without the symbol — the limitation is domain content. `README.md` and
+`docs/` are engineer-facing and keep their identifiers; distilling one into a
+hint is what drops them.
+
 Two mechanical rules that the build will not catch for you:
 
 - A `[[wiki-link]]` to a key that is not in `hint-content.ts` throws at runtime

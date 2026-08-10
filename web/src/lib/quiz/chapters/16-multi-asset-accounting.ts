@@ -32,7 +32,7 @@ export const chapter: Chapter = {
         "A euro deposit account and a bitcoin deposit account are different account *types*.",
       answer: false,
       explanation:
-        "Both are **Liability** accounts — the bank owes the customer, whichever kind of money it owes. An account's [[normal-balance|type]] says whether it is something the bank owns or owes; its [[asset]] says what it is counted in. The two dimensions are independent, which is exactly why the Go type is named `AssetDef`: `Asset` was already taken by the [[account-type-asset|account-type constant]].",
+        "Both are **Liability** accounts — the bank owes the customer, whichever kind of money it owes. An account's [[normal-balance|type]] says whether it is something the bank owns or owes; its [[asset]] says what it is counted in. The two dimensions are independent, and the word doing double duty is a hazard of the vocabulary rather than a fact about the books: an [[account-type-asset|Asset account]] and an account's asset are different questions.",
     },
     {
       kind: "mc",
@@ -182,7 +182,7 @@ export const chapter: Chapter = {
       ],
       answer: 1,
       explanation:
-        "SEPA is the *Single Euro Payments Area*, and a 'SEPA dollar transfer' is not a thing that exists. A scheme in another currency is **another scheme**, with its own rulebook, cycles and settlement arrangements — which is why [[scheme-asset|`Asset()` sits on the scheme]] rather than on the payment. It is a fact about the rails, not a limit of the model.",
+        "SEPA is the *Single Euro Payments Area*, and a 'SEPA dollar transfer' is not a thing that exists. A scheme in another currency is **another scheme**, with its own rulebook, cycles and settlement arrangements — which is why [[scheme-asset|the asset sits on the scheme]] rather than on the payment. It is a fact about the rails, not a limit of the model.",
       explore: { href: "/clearing-house/schemes", label: "Registered schemes" },
     },
     {
@@ -191,16 +191,16 @@ export const chapter: Chapter = {
       difficulty: "core",
       concept: "scheme-asset",
       prompt:
-        "Suppose `ErrAssetMismatch` did not exist, and a payment from a euro account to a bitcoin account got past initiation. What would happen to it?",
+        "Suppose the scheme's asset check did not exist, and a payment from a euro account to a bitcoin account got past initiation. What would happen to it?",
       options: [
         "Nothing would catch it — each leg balances within its own asset, so the payment settles and 3000 satoshi appear out of 3000 cents",
-        "It would survive initiation and fail at the creditor leg with `ErrUnbalancedAsset`, long after the payer was debited and the cycle had already settled",
+        "It would survive initiation and fail at the creditor leg, unbalanced in its assets, long after the payer was debited and the cycle had already settled",
         "The debtor leg would be refused at initiation, because its two entries are in different assets",
         "It would settle, and the imbalance would surface afterwards as a discrepancy in the central bank's reserve accounts",
       ],
       answer: 1,
       explanation:
-        "The ledger does catch it — in the worst possible place. At initiation there is only the debtor leg, *debit Alice EUR / credit Suspense EUR*, which is impeccable [[double-entry]] within one asset and contains no claim that a posting in another bank's book is its other half. The creditor leg — posted by the payee's own bank once the cycle has settled — is built from the creditor's suspense account **in the scheme's asset**, so it comes out *debit Suspense EUR / credit Bob BTC*, and that does not balance. By then the payer has been debited for hours, the reserves have moved and the cut-off is final, and the error names an unbalanced asset rather than the payment behind it. It no longer takes the whole cycle down with it — the leg is one bank's own unit of work, so the damage is confined to this one payment — but confined and late is still late. [[scheme-asset|`ErrAssetMismatch`]] turns a late, misattributed failure into an immediate, correctly attributed one. The general rule: an invariant is enforceable where the whole of it is visible, and cheapest where it is visible earliest.",
+        "The ledger does catch it — in the worst possible place. At initiation there is only the debtor leg, *debit Alice EUR / credit Suspense EUR*, which is impeccable [[double-entry]] within one asset and contains no claim that a posting in another bank's book is its other half. The creditor leg — posted by the payee's own bank once the cycle has settled — is built from the creditor's suspense account **in the scheme's asset**, so it comes out *debit Suspense EUR / credit Bob BTC*, and that does not balance. By then the payer has been debited for hours, the reserves have moved and the cut-off is final, and the error names an unbalanced asset rather than the payment behind it. It no longer takes the whole cycle down with it — the leg is one bank's own unit of work, so the damage is confined to this one payment — but confined and late is still late. [[scheme-asset|The scheme's asset check]] turns a late, misattributed failure into an immediate, correctly attributed one. The general rule: an invariant is enforceable where the whole of it is visible, and cheapest where it is visible earliest.",
     },
     {
       kind: "truefalse",
@@ -222,14 +222,14 @@ export const chapter: Chapter = {
       prompt:
         "Which of the following are true of assets in this system? (Select all that apply.)",
       options: [
-        "The known assets are a list in Go, not rows in a table — adding one is a code change",
+        "The known assets are a list in code, not rows in a table — adding one is a code change",
         "An asset records a code, a name, a scale and a class (Fiat or Crypto)",
         "Creating an account in an asset the system does not know fails with an error",
         "An account's asset can be changed later if the customer switches currency",
       ],
       answers: [0, 1, 2],
       explanation:
-        "[[asset|An asset definition is defined in code]], not stored: 'BTC has 8 decimal places' is a fact about the world, true in every book, and storing it per book would only make disagreement representable. It is the same call [[scheme-asset|the payment schemes make]] — a scheme is a Go type, its settlements are rows. An account's asset is fixed at creation and never changes; a customer who wants euro *and* dollars gets a second account, which is why in practice they get a second IBAN. `AssetClass` carries no behaviour at all — it exists so a UI can tell a currency from a token without pattern-matching on the code.",
+        "[[asset|An asset definition is defined in code]], not stored: 'BTC has 8 decimal places' is a fact about the world, true in every book, and storing it per book would only make disagreement representable. It is the same call [[scheme-asset|the payment schemes make]] — a scheme is defined in code, its settlements are rows. An account's asset is fixed at creation and never changes; a customer who wants euro *and* dollars gets a second account, which is why in practice they get a second IBAN. The **class** carries no behaviour at all — it exists so a console can tell a currency from a token without pattern-matching on the code.",
     },
     {
       kind: "mc",
@@ -237,16 +237,16 @@ export const chapter: Chapter = {
       difficulty: "challenge",
       concept: "double-entry",
       prompt:
-        "When a transaction fails to balance in one of its assets, the error returned wraps both `ErrUnbalancedAsset` and `ErrUnbalancedTransaction`. Why both?",
+        "A transaction with entries in EUR and in BTC balances in EUR but not in BTC. The refusal names the asset that broke, not merely that the transaction did. Why is naming it worth doing?",
       options: [
-        "So that a caller can match on whichever level it cares about — 'did this balance?' or 'which asset broke?'",
-        "Because Go requires a sentinel error to be wrapped at least twice to be matchable",
-        "So the error message is longer and therefore more helpful in logs",
-        "Because the two sentinels are returned in different situations and the caller must distinguish them",
+        "Because the transaction balances in every other asset, so 'it did not balance' does not say where to look",
+        "Because the BTC entries must be converted to EUR before a total can be reported at all",
+        "Because the posting can be retried in the asset that balanced",
+        "Because an imbalance and a wrong asset are two different failures, and only one of them refuses",
       ],
       answer: 0,
       explanation:
-        "Both match under `errors.Is`. A caller that only wants to know whether the posting balanced checks the general sentinel; one that wants to report the offending asset checks the specific one — and neither has to know the other exists. This is [[double-entry]]'s invariant restated for a multi-asset book: the general fact and the specific diagnosis are the same failure at two levels of detail, not two different failures.",
+        "The check runs [[per-asset-balance|within each asset]], so a multi-asset transaction can be impeccable in one and broken in another — 'it did not balance' is true but locates nothing. The general fact and the specific diagnosis are the same failure at two levels of detail, not two different failures, which is [[double-entry]]'s invariant restated for a multi-asset book. Nothing is converted and nothing is retried: per asset there is no rate, which is exactly why the ledger needs none.",
     },
     {
       kind: "mc",

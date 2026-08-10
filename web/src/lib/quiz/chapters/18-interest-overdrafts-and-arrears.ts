@@ -104,7 +104,7 @@ export const chapter: Chapter = {
       answer: 452040,
       tolerance: 0,
       explanation:
-        "1,479.452040 rounds DOWN to 1,479 — the customer is charged 0.452040 minor units LESS than actually accrued — so the record is left **+452,040** micro-minor-units, still owed. That is positive, not negative: capitalizing always leaves a residue of up to half a minor unit either way, and here the rounding fell down. `Minor()` of a residue this size (below half a minor unit) is 0, so the ledger and the record stay in step — it would only round away from zero, to ±1, at an EXACT half.",
+        "1,479.452040 rounds DOWN to 1,479 — the customer is charged 0.452040 minor units LESS than actually accrued — so the record is left **+452,040** micro-minor-units, still owed. That is positive, not negative: capitalizing always leaves a residue of up to half a minor unit either way, and here the rounding fell down. A residue this size — below half a minor unit — rounds to 0, so the ledger and the record stay in step — it would only round away from zero, to ±1, at an EXACT half.",
     },
     {
       kind: "truefalse",
@@ -227,13 +227,13 @@ export const chapter: Chapter = {
         "An overdrawn current account needs to appear as a receivable — an Asset — somewhere in the bank's reporting. How does this system actually produce that figure?",
       options: [
         "A nightly sweep posts a reclassification transaction moving the drawn amount into a Loans Asset account",
-        "A `lending.Facility` record is opened automatically the instant the account goes negative",
+        "A credit facility is opened automatically the instant the account goes negative",
         "It is computed by aggregating Σ max(0, −balance) across every deposit account, on demand — nothing is ever posted for it",
         "The account's overdraft limit itself is booked directly as the Asset-side figure",
       ],
       answer: 2,
       explanation:
-        "Nothing is posted, ever, to an Asset account for the DRAWN AMOUNT — `deposit.TestTotals_OverdraftsAreDerivedAndNothingIsPosted` pins exactly this, over accounts with no rate set. The Asset-side total is a derived aggregate, the same on-demand shape that already produces \"total customer deposits\". The interest on that drawn amount does post to an Asset account, daily, into the account's own [[accrued-interest|accrued-interest receivable]] — but that is interest earned, not the balance reclassified.",
+        "Nothing is posted, ever, to an Asset account for the DRAWN AMOUNT — not even for an account with no rate set at all. The Asset-side total is a derived aggregate, the same on-demand shape that already produces \"total customer deposits\". The interest on that drawn amount does post to an Asset account, daily, into the account's own [[accrued-interest|accrued-interest receivable]] — but that is interest earned, not the balance reclassified.",
     },
     {
       kind: "truefalse",
@@ -241,7 +241,7 @@ export const chapter: Chapter = {
       difficulty: "challenge",
       concept: "overdraft",
       prompt:
-        "An overdrawn account gets its own `lending.Facility` row, the same way a term loan or revolving line does, so its drawn amount can be tracked independently.",
+        "An overdrawn account gets its own [[credit-facility|credit facility]] record, the same way a term loan or revolving line does, so its drawn amount can be tracked independently.",
       answer: false,
       explanation:
         "It deliberately does not. The drawn amount IS the negative balance of the customer's own Liability account, viewed by sign — not a second fact that happens to agree with it. A facility row for it would store a number that already exists, which is exactly the duplication a unified ledger is built without.",

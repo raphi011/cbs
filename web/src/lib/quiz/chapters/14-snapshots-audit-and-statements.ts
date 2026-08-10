@@ -153,7 +153,7 @@ export const chapter: Chapter = {
       ],
       answer: 1,
       explanation:
-        "[[ledger-vs-subledger|Snapshots belong to the deposit layer]] (`deposit.Register`). The pure general ledger computes book balances on demand but stores no snapshots — it knows nothing about holds or available balances. Because the deposit layer owns the three-part balance, it also owns the [[snapshot]].",
+        "[[ledger-vs-subledger|Snapshots belong to the deposit layer]], with the account register. The pure general ledger computes book balances on demand but stores no snapshots — it knows nothing about holds or available balances. Because the deposit layer owns the three-part balance, it also owns the [[snapshot]].",
     },
     {
       kind: "numeric",

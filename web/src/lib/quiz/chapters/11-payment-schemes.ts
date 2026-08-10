@@ -186,7 +186,7 @@ export const chapter: Chapter = {
       ],
       answers: [0, 1],
       explanation:
-        "SDD is [[scheme-direction-pull]] — the payee's bank initiates, and its submission posts nothing. It [[requires-mandate]] (a signed authorization), which SCT does not: a payer instructing their own bank *is* the authorization. The return option is the trap — [[allows-return]] reports **true for both schemes** here (`payment/scheme.go` sets it on `SCT` and `SDD` alike, and `PostReturnLegTx` refuses only a scheme that reports false), and that matches SEPA: a credit transfer return is a real R-transaction, sent by the beneficiary's bank when it cannot apply the funds. What SDD alone gives the *debtor* is the dispute — the 8-week refund — and this model puts no window on it. Both schemes use net settlement, not individual (gross) settlement.",
+        "SDD is [[scheme-direction-pull]] — the payee's bank initiates, and its submission posts nothing. It [[requires-mandate]] (a signed authorization), which SCT does not: a payer instructing their own bank *is* the authorization. The return option is the trap — [[allows-return]] is **true of both schemes** here — SCT and SDD alike, and a return is refused only for a scheme that permits none — and that matches SEPA: a credit transfer return is a real R-transaction, sent by the beneficiary's bank when it cannot apply the funds. What SDD alone gives the *debtor* is the dispute — the 8-week refund — and this model puts no window on it. Both schemes use net settlement, not individual (gross) settlement.",
       explore: { label: "Browse payment schemes", href: "/clearing-house/schemes" },
     },
     {
@@ -271,7 +271,7 @@ export const chapter: Chapter = {
       ],
       answers: [0, 1, 2, 3, 4],
       explanation:
-        "Every option but the last names a method on the `Scheme` interface: [[scheme-direction-push]]/[[scheme-direction-pull]] direction, [[settlement-model-net]]/[[settlement-model-gross]] model, [[requires-mandate]], [[allows-return]] and [[settlement-delay]]. Those five are a selection rather than the whole set — the interface carries other axes too, [[scheme-asset|the asset the scheme settles in]] and the kind of address it routes on (`AddressedBy`). ISO 20022 message names (pacs.008, pacs.003) are implementation labels, not scheme-differentiating axes: no method on the interface reports one.",
+        "Every option but the last names an axis a scheme declares: [[scheme-direction-push]]/[[scheme-direction-pull]] direction, [[settlement-model-net]]/[[settlement-model-gross]] model, [[requires-mandate]], [[allows-return]] and [[settlement-delay]]. Those five are a selection rather than the whole set — a scheme declares other axes too, [[scheme-asset|the asset it settles in]] and [[account-addressing|the kind of address it routes on]]. ISO 20022 message names (pacs.008, pacs.003) are the format a scheme's instructions travel in, not an axis schemes differ along: a scheme declares no message name.",
       explore: { label: "Browse payment schemes", href: "/clearing-house/schemes" },
     },
     {
@@ -289,7 +289,7 @@ export const chapter: Chapter = {
       ],
       answer: 1,
       explanation:
-        "[[requires-mandate]] schemes validate the mandate at **submission, at the creditor's own bank** — in SEPA the creditor is the party that holds the mandate. If no valid mandate exists the collection is refused there and then, with an error such as `ErrMandateRequired`, and **no debtor leg is ever posted**: a collection posts nothing when it is submitted, and the payer's bank never even receives it. This protects payers from unauthorized debits before any money moves.",
+        "[[requires-mandate]] schemes validate the mandate at **submission, at the creditor's own bank** — in SEPA the creditor is the party that holds the mandate. If no valid mandate exists the collection is refused there and then, for want of one, and **no debtor leg is ever posted**: a collection posts nothing when it is submitted, and the payer's bank never even receives it. This protects payers from unauthorized debits before any money moves.",
       explore: { label: "Browse payment schemes", href: "/clearing-house/schemes" },
     },
     {

@@ -213,7 +213,7 @@ export const chapter: Chapter = {
       ],
       answer: 1,
       explanation:
-        "Like every [[derived-balance|derived balance]] in this system, `drawn` is not a stored field: it is computed on demand from the Principal account, the same discipline a plain book balance follows.",
+        "Like every [[derived-balance|derived balance]] in this system, the drawn amount is not stored: it is computed on demand from the Principal account, the same discipline a plain book balance follows.",
     },
     {
       kind: "truefalse",
@@ -221,10 +221,10 @@ export const chapter: Chapter = {
       difficulty: "challenge",
       concept: "credit-facility",
       prompt:
-        "A facility's `Commitment` is derived the same way `drawn` and `accruedInterest` are — read from a GL account balance rather than stored.",
+        "A facility's **commitment** is derived the same way its drawn amount and accrued interest are — read from a GL account balance rather than stored.",
       answer: false,
       explanation:
-        "`Commitment` — a term loan's original principal, or a revolving line's limit — IS a stored field: it is a fact about the contract, not a fact about postings so far. `drawn` is the [[derived-balance|derived]] one, read from the Principal account. `accruedInterest` is stored, but as an exact sub-minor-unit [[accrued-interest|record]] whose `Minor()` the receivable account always equals — so the figure agrees with that account to the cent either way.",
+        "The **commitment** — a term loan's original principal, or a revolving line's limit — IS stored: it is a fact about the contract, not a fact about postings so far. The **drawn** amount is the [[derived-balance|derived]] one, read from the Principal account. The **accrued interest** is stored, but as an exact sub-minor-unit [[accrued-interest|record]] whose rounded figure the receivable account always equals — so it agrees with that account to the cent either way.",
     },
     {
       kind: "mc",
