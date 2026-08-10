@@ -83,6 +83,30 @@ var (
 	// not permitted from the account's current state.
 	ErrInvalidStatusTransition = errors.New("invalid account status transition")
 
+	// ErrSameAccount is a transfer whose payer and payee are the one account.
+	//
+	// It posts nothing and it is not a no-op either: unrefused it would write a
+	// self-cancelling pair of entries and an audit event saying money moved, so
+	// the trail would carry an act that never happened. A customer moving money
+	// between two accounts of their own is the real version of this, and it has
+	// two account ids.
+	ErrSameAccount = errors.New("a transfer needs two different accounts")
+
+	// ErrAssetMismatch is a transfer between accounts denominated in different
+	// units.
+	//
+	// An amount is one integer at one scale, so a euro debit against a bitcoin
+	// credit is not a transfer at a bad rate — it is two different numbers with
+	// nothing between them saying what one is worth in the other. Converting is
+	// two operations with a price in the middle, and this bank has no dealing
+	// desk; see README.md, "Cross-Currency Payments Are Two Operations".
+	//
+	// The ledger would refuse the posting anyway, with ErrUnbalancedAsset. That
+	// names the symptom — a transaction whose legs do not balance within an asset
+	// — and this names the cause, in the layer that knows both accounts and can
+	// say which pair of them disagreed.
+	ErrAssetMismatch = errors.New("the two accounts are denominated in different assets")
+
 	// ErrIdentifierTaken is returned when an account is given an identifier
 	// another account at the SAME bank already holds. The check spans one
 	// register, because that is the widest scope a register can see — and it is

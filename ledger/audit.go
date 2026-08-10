@@ -47,8 +47,13 @@ const (
 	EventHoldReleased       = "hold.released"
 	EventHoldCaptured       = "hold.captured"
 	EventSnapshotTaken      = "snapshot.taken"
-	EventIdentifierAdded    = "identifier.added"
-	EventIdentifierRemoved  = "identifier.removed"
+	// EventTransferPosted is a book transfer between two accounts in one bank's
+	// register: one act, one event, keyed by the payer. It is a DEPOSIT event and
+	// there is no payment-scope counterpart, because nothing about it clears —
+	// see deposit.Register.TransferTx.
+	EventTransferPosted    = "transfer.posted"
+	EventIdentifierAdded   = "identifier.added"
+	EventIdentifierRemoved = "identifier.removed"
 	// The three ways an account's own terms row changes, kept apart because they
 	// are three different decisions: what the bank will lend this customer, what
 	// this customer was promised instead of the list price, and which product
