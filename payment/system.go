@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/raphi011/cbs/deposit"
+	"github.com/raphi011/cbs/iban"
 	"github.com/raphi011/cbs/iso20022"
 	"github.com/raphi011/cbs/ledger"
 	"github.com/raphi011/cbs/lending"
@@ -334,7 +335,7 @@ func (s *Network) CentralBank() (*ledger.Book, error) { return s.centralBankBook
 // value the store returns.
 func (s *Network) bind(p Bank) *Bank {
 	p.Ledger = ledger.NewBook(s.ledgers, p.BookID, s.clock)
-	p.Deposit = deposit.NewRegister(s.deposits, p.Ledger, p.BookID, s.clock)
+	p.Deposit = deposit.NewRegister(s.deposits, p.Ledger, p.BookID, s.clock, p.Issuer)
 	p.Lending = lending.NewPortfolio(s.lendings, p.Ledger, p.BookID, s.clock)
 	p.Catalogue = product.NewCatalogue(s.products, p.Ledger, p.BookID, s.clock)
 	return &p
@@ -544,8 +545,22 @@ func (s *Network) settlementAccountTx(ctx context.Context, tx Tx, bic iso20022.B
 // one of these from an acmt.007, and AdmissionMessage is what renders one; both
 // are in translate.go, because the acts below know nothing about the wire.
 type AdmissionRequest struct {
-	Name  string
-	BIC   iso20022.BIC
+	Name string
+	BIC  iso20022.BIC
+
+	// Country is which national registry the applicant is applying to for a bank
+	// code, and it is the whole of what a request says about the allocation it
+	// wants. The applicant proposes NO code: a code is the registry's to give,
+	// and the acknowledgement is what carries one back.
+	//
+	// It is not derivable from the BIC and must not be read as if it were. A
+	// BIC's fifth and sixth characters say where the INSTITUTION is; this says
+	// where it issues its customers' addresses, and a bank passported into
+	// another market answers the two differently. It travels on the acmt.007's
+	// Org/CtryOfOpr, which is the element Organisation33 makes mandatory and
+	// which nothing used to read.
+	Country iban.Country
+
 	Asset ledger.AssetCode
 	Ref   string
 }
@@ -572,7 +587,25 @@ type AdmissionRequest struct {
 // routing, and RecordMembershipTx is a bank writing its own row, which knows
 // its own name. See RosterEntry.
 type AdmissionAcknowledgement struct {
-	BIC      iso20022.BIC
+	BIC iso20022.BIC
+
+	// Issuer is the bank code the registry allocated and the country it came out
+	// of, and this message is the ONLY place either value ever travels.
+	//
+	// Three institutions read it and each does something different with it. The
+	// applicant records it and mints its customers' addresses under it — before
+	// this message it has none and can open no addressable account. The clearing
+	// house publishes it on the roster every member copies. The settlement agent
+	// wrote it, and is the one institution here that never reads it back off a
+	// message.
+	//
+	// It travels as Org/OrgId/Othr — an identifier, the register it came out of,
+	// and the institution that allocated it — and the country is carried by the
+	// REGISTER's name rather than as a field of its own, because that is what a
+	// scheme name is for and there is no country element on this message. See
+	// iso20022.GenericOrganisationIdentification.
+	Issuer iban.Issuer
+
 	Accounts map[ledger.AssetCode]ledger.AccountID
 	Ref      string
 }
@@ -726,11 +759,11 @@ func (s *Network) admissionSequenceTx(ctx context.Context, tx Tx) error {
 
 // FoundBank is FoundBankTx in its own unit of work: the bank's own act, and the
 // only one of the four its own operator drives directly.
-func (s *Network) FoundBank(ctx context.Context, name string, bic iso20022.BIC, assets []ledger.AssetCode) (*Bank, error) {
+func (s *Network) FoundBank(ctx context.Context, name string, bic iso20022.BIC, country iban.Country, assets []ledger.AssetCode) (*Bank, error) {
 	var out *Bank
 	err := s.store.Update(ctx, func(ctx context.Context, tx Tx) error {
 		var err error
-		out, err = s.FoundBankTx(ctx, tx, name, bic, assets)
+		out, err = s.FoundBankTx(ctx, tx, name, bic, country, assets)
 		return err
 	})
 	if err != nil {
@@ -741,14 +774,17 @@ func (s *Network) FoundBank(ctx context.Context, name string, bic iso20022.BIC, 
 
 // OpenSettlementAccount is OpenSettlementAccountTx in its own unit of work: the
 // settlement agent's act, driven by an acmt.007.
-func (s *Network) OpenSettlementAccount(ctx context.Context, in AdmissionRequest) (SettlementMember, error) {
-	var out SettlementMember
+func (s *Network) OpenSettlementAccount(ctx context.Context, in AdmissionRequest) (SettlementMember, iban.Issuer, error) {
+	var (
+		out    SettlementMember
+		issuer iban.Issuer
+	)
 	err := s.store.Update(ctx, func(ctx context.Context, tx Tx) error {
 		var err error
-		out, err = s.OpenSettlementAccountTx(ctx, tx, in)
+		out, issuer, err = s.OpenSettlementAccountTx(ctx, tx, in)
 		return err
 	})
-	return out, err
+	return out, issuer, err
 }
 
 // AdmitMember is AdmitMemberTx in its own unit of work: the clearing house's
@@ -806,7 +842,7 @@ func (s *Network) RecordMembership(ctx context.Context, in AdmissionAcknowledgem
 // bank it carries is Founded and its settlement references are empty, because at
 // the moment it is written no settlement agent has opened one. The other three
 // acts each append their own.
-func (s *Network) FoundBankTx(ctx context.Context, tx Tx, name string, bic iso20022.BIC, assets []ledger.AssetCode) (*Bank, error) {
+func (s *Network) FoundBankTx(ctx context.Context, tx Tx, name string, bic iso20022.BIC, country iban.Country, assets []ledger.AssetCode) (*Bank, error) {
 	if err := ledger.ValidateText("name", name); err != nil {
 		return nil, err
 	}
@@ -817,6 +853,19 @@ func (s *Network) FoundBankTx(ctx context.Context, tx Tx, name string, bic iso20
 	// when the first payment addressed to it fails somewhere else entirely.
 	if err := bic.Validate(); err != nil {
 		return nil, fmt.Errorf("bic: %w", err)
+	}
+	// The market this bank means to operate in, and NOT a bank code: a code is a
+	// national registry's to allocate and arrives on the acknowledgement, which
+	// is why a founded bank can open no addressable account at all. See
+	// Bank.Issuer, and deposit.ErrNoIssuer for what a register with a country and
+	// no code refuses.
+	//
+	// It is refused here rather than at the registry so that the refusal reaches
+	// whoever is founding the bank. A country this system keeps no IBAN structure
+	// for is one no address could be minted in, and discovering that when the
+	// settlement agent answers acmt.011 would be a bank founded to be useless.
+	if _, err := iban.BankCodeWidth(country); err != nil {
+		return nil, fmt.Errorf("country of operation: %w", err)
 	}
 	assets = joiningAssets(assets)
 
@@ -955,6 +1004,7 @@ func (s *Network) FoundBankTx(ctx context.Context, tx Tx, name string, bic iso20
 		ID:                ParticipantID(id),
 		Name:              name,
 		BIC:               bic,
+		Issuer:            iban.Issuer{Country: country},
 		BookID:            bookID,
 		CustomerSubledger: customers.ID,
 		ProductID:         basic.ID,
@@ -1012,30 +1062,38 @@ func (s *Network) FoundBankTx(ctx context.Context, tx Tx, name string, bic iso20
 // It appends settlement_account.opened under the member's BIC, and only when it
 // opens something: an event on a request for an asset already held would make a
 // redelivered acmt.007 indistinguishable in the log from a second account.
-func (s *Network) OpenSettlementAccountTx(ctx context.Context, tx Tx, in AdmissionRequest) (SettlementMember, error) {
+func (s *Network) OpenSettlementAccountTx(ctx context.Context, tx Tx, in AdmissionRequest) (SettlementMember, iban.Issuer, error) {
 	// FIRST: this act returns early for an asset the agent already holds an
 	// account in, so a guard further down would be reachable only on the path
 	// that opens something — and a redelivered acmt.007 would answer a clearing
 	// house's network with a member row and no refusal at all.
 	book, err := s.centralBankBook()
 	if err != nil {
-		return SettlementMember{}, err
+		return SettlementMember{}, iban.Issuer{}, err
 	}
 	if _, err := ledger.LookupAsset(in.Asset); err != nil {
-		return SettlementMember{}, err
+		return SettlementMember{}, iban.Issuer{}, err
 	}
 	// Before the read below, and before centralBankChartTx's find-or-create. See
 	// admissionSequenceTx: without it this act's idempotency is whatever the
 	// store happens to give it rather than something the act arranged.
 	if err := s.admissionSequenceTx(ctx, tx); err != nil {
-		return SettlementMember{}, err
+		return SettlementMember{}, iban.Issuer{}, err
+	}
+	// The registry's act, and it runs BEFORE the early return below rather than
+	// beside the account, so that the second currency of one admission is
+	// answered with the code the first was given. It is idempotent per
+	// (country, BIC) and writes nothing on a repeat.
+	issuer, err := s.allocateBankCodeTx(ctx, tx, in.Country, in.BIC)
+	if err != nil {
+		return SettlementMember{}, iban.Issuer{}, err
 	}
 
 	member, err := tx.GetSettlementMember(ctx, in.BIC)
 	switch {
 	case err == nil:
 		if _, held := member.Accounts[in.Asset]; held {
-			return member, nil
+			return member, issuer, nil
 		}
 		if member.Accounts == nil {
 			// This act never writes a member with no accounts, so a nil map here
@@ -1051,34 +1109,123 @@ func (s *Network) OpenSettlementAccountTx(ctx context.Context, tx Tx, in Admissi
 			OpenedAt: s.now(),
 		}
 	default:
-		return SettlementMember{}, err
+		return SettlementMember{}, iban.Issuer{}, err
 	}
 
 	reserves, _, err := s.centralBankChartTx(ctx, tx)
 	if err != nil {
-		return SettlementMember{}, err
+		return SettlementMember{}, iban.Issuer{}, err
 	}
 	// The other side of every reserve credit in this asset, in the central
 	// bank's own capital block. One per asset and shared by every member, so
 	// this is a lookup on the second admission in an asset and a creation on the
 	// first.
 	if _, err := s.centralBankAssetsAccountTx(ctx, tx, in.Asset); err != nil {
-		return SettlementMember{}, err
+		return SettlementMember{}, iban.Issuer{}, err
 	}
 	account, err := book.CreateAccountTx(ctx, tx, reserves,
 		"Reserve: "+member.Name+" ("+string(in.Asset)+")", ledger.Liability, in.Asset)
 	if err != nil {
-		return SettlementMember{}, err
+		return SettlementMember{}, iban.Issuer{}, err
 	}
 
 	member.Accounts[in.Asset] = account.ID
 	if err := tx.PutSettlementMember(ctx, member); err != nil {
-		return SettlementMember{}, err
+		return SettlementMember{}, iban.Issuer{}, err
 	}
 	if err := s.appendAuditTx(ctx, tx, ledger.EventSettlementAccountOpened, string(member.BIC), member); err != nil {
-		return SettlementMember{}, err
+		return SettlementMember{}, iban.Issuer{}, err
 	}
-	return member, nil
+	return member, issuer, nil
+}
+
+// allocateBankCodeTx is the NATIONAL REGISTRY's act: giving one institution the
+// code its customers' addresses will carry, in one country, once.
+//
+// It runs inside OpenSettlementAccountTx because this system has one institution
+// playing both the settlement agent and four registries — the fudge is named at
+// the bank_codes statement in store/sqlite/schema/centralbank/0001_init.sql — but
+// the two acts are separate and the separation is real: the account is opened in
+// this institution's book, and the code is written in a register that has nothing
+// to do with books at all.
+//
+// # It is allocated, not derived, and that is the whole point
+//
+// Nothing here reads the BIC to compute a code. There is no arithmetic between
+// AURODEFFXXX and 99999999 and there could not be — a bank code is numeric in all
+// four of these countries and a BIC is not — which is exactly why a scheme has to
+// PUBLISH a directory rather than letting every bank work it out. A version of
+// this function that hashed a BIC would make the whole of Task 21 unnecessary and
+// would be wrong about the world.
+//
+// # Idempotent per (country, BIC)
+//
+// One acmt.007 names one currency, so a bank joining in two assets applies twice
+// and must not be given two codes: an institution issuing addresses under two
+// ranges is two institutions to anybody routing. The read that makes this
+// idempotent is ordered by the id drawn before it in the calling act — see
+// admissionSequenceTx.
+//
+// # Where the numbers come from, and why they run downwards
+//
+// The serial counts one country's allocations, and the code is that serial
+// subtracted from the top of the country's range: the first German bank admitted
+// is 99999999 and the next is 99999998. Counting DOWN is the closest this system
+// can get to a guarantee it cannot make, which is that a code it mints is one no
+// real registry has issued — a real one allocates upwards from the bottom, so the
+// top of the range is where a fiction is least likely to collide with somebody's
+// actual Bankleitzahl. It is not a guarantee, and the same elision is already in
+// the fixtures' BICs.
+//
+// The width is the country's and is refused rather than truncated: a code of the
+// wrong width does not fit the address it would be minted into, and iban.New
+// would refuse it one layer down with no admission left to refuse.
+func (s *Network) allocateBankCodeTx(ctx context.Context, tx Tx, country iban.Country, bic iso20022.BIC) (iban.Issuer, error) {
+	width, err := iban.BankCodeWidth(country)
+	if err != nil {
+		return iban.Issuer{}, fmt.Errorf("payment: %s applied to a register this system does not keep: %w", bic, err)
+	}
+	switch held, err := tx.GetBankCodeForBIC(ctx, country, bic); {
+	case err == nil:
+		return held.Issuer, nil
+	case !errors.Is(err, ErrBankCodeNotAllocated):
+		return iban.Issuer{}, err
+	}
+
+	serial, err := tx.NextBankCodeSerial(ctx, s.book(), country)
+	if err != nil {
+		return iban.Issuer{}, err
+	}
+	top := uint64(1)
+	for range width {
+		top *= 10
+	}
+	if serial == 0 || serial >= top {
+		return iban.Issuer{}, fmt.Errorf("payment: %s allocates %d-digit bank codes and this register has issued all %d of them",
+			country, width, top-1)
+	}
+	issuer := iban.Issuer{Country: country, BankCode: iban.BankCode(fmt.Sprintf("%0*d", width, top-serial))}
+
+	// Whether anybody else already holds it. Unreachable while every allocation
+	// comes through here — the serial is monotonic per country and a code is
+	// never given back — so what this catches is a row this act did not write,
+	// which is the state recon invariant 1 is about. It is refused rather than
+	// overwritten because an overwrite would move an address range out from under
+	// a bank whose customers are already quoting it.
+	switch taken, err := tx.GetBankCode(ctx, issuer); {
+	case err == nil && taken.BIC != bic:
+		return iban.Issuer{}, fmt.Errorf("%w: %s in %s is already %s's",
+			ErrBankCodeTaken, issuer.BankCode, country, taken.BIC)
+	case err != nil && !errors.Is(err, ErrBankCodeNotAllocated):
+		return iban.Issuer{}, err
+	}
+	if err := tx.PutBankCode(ctx, BankCodeAllocation{Issuer: issuer, BIC: bic, AllocatedAt: s.now()}); err != nil {
+		return iban.Issuer{}, err
+	}
+	if err := s.appendAuditTx(ctx, tx, ledger.EventBankCodeAllocated, string(bic), issuer); err != nil {
+		return iban.Issuer{}, err
+	}
+	return issuer, nil
 }
 
 // checkAcknowledgement refuses an acknowledgement neither act can act on.
@@ -1094,6 +1241,9 @@ func (s *Network) OpenSettlementAccountTx(ctx context.Context, tx Tx, in Admissi
 //	OrgId/AnyBIC absent                   in.BIC.Validate
 //	OrgId/AnyBIC malformed                in.BIC.Validate
 //	Refs/PrcId/Id absent                  ErrAdmissionNotIdentified
+//	OrgId/Othr not exactly one            unrepresentable: Issuer is one value
+//	OrgId/Othr/SchmeNm unknown            in.Issuer.Validate
+//	OrgId/Othr/Id absent                  in.Issuer.Validate
 //	AcctId empty                          ErrAdmittedAccountUnusable
 //	AcctId[i]/Ccy absent                  ErrAdmittedAccountUnusable
 //	AcctId[i]/Id/Othr/Id absent           ErrAdmittedAccountUnusable
@@ -1139,6 +1289,15 @@ func checkAcknowledgement(in AdmissionAcknowledgement) error {
 	}
 	if in.Ref == "" {
 		return fmt.Errorf("%w: it is addressed to %s", ErrAdmissionNotIdentified, in.BIC)
+	}
+	// The allocation, structurally. Both acts write it — the clearing house
+	// publishes it and the bank mints under it — so a code of the wrong width or
+	// a country nothing issues in would leave one institution routing to a range
+	// the other cannot address. Whether the code was really allocated is a
+	// question neither act can ask: the registry is the settlement agent's, which
+	// is the whole reason this value travels on a message.
+	if err := in.Issuer.Validate(); err != nil {
+		return fmt.Errorf("payment: this acknowledgement gives %s no usable address range: %w", in.BIC, err)
 	}
 	if len(in.Accounts) == 0 {
 		return fmt.Errorf("%w: it names none at all, and would admit %s to nothing",
@@ -1215,9 +1374,30 @@ func (s *Network) AdmitMemberTx(ctx context.Context, tx Tx, in AdmissionAcknowle
 			return RosterEntry{}, fmt.Errorf("%w: %s is admitted under %q and this acknowledgement quotes %q",
 				ErrBICAlreadyAdmitted, in.BIC, entry.AdmissionRef, in.Ref)
 		}
+		// The second acknowledgement of one admission repeats the allocation, so
+		// equal is the ordinary case and different is an entry being MOVED — see
+		// ErrBankCodeReplaced for what that costs every member holding a copy.
+		if entry.Issuer != in.Issuer {
+			return RosterEntry{}, fmt.Errorf("%w: %s is published as %s %s and this acknowledgement says %s %s",
+				ErrBankCodeReplaced, in.BIC, entry.Issuer.Country, entry.Issuer.BankCode,
+				in.Issuer.Country, in.Issuer.BankCode)
+		}
 	case errors.Is(err, ErrRosterEntryNotFound):
-		entry = RosterEntry{BIC: in.BIC, AdmissionRef: in.Ref, AdmittedAt: s.now()}
+		entry = RosterEntry{BIC: in.BIC, Issuer: in.Issuer, AdmissionRef: in.Ref, AdmittedAt: s.now()}
 	default:
+		return RosterEntry{}, err
+	}
+	// And whether anybody ELSE is already published under this allocation. The
+	// settlement agent has already refused that at the registry, where it can be
+	// refused for good; this is the same refusal made again by the institution
+	// that PUBLISHES, and it earns its place because this row is the one every
+	// member copies. A duplicate here would make one address ambiguous for the
+	// whole scheme, and this institution cannot see the registry to check.
+	switch other, err := tx.GetRosterEntryByIssuer(ctx, in.Issuer); {
+	case err == nil && other.BIC != in.BIC:
+		return RosterEntry{}, fmt.Errorf("%w: %s %s is published for %s",
+			ErrBankCodeTaken, in.Issuer.Country, in.Issuer.BankCode, other.BIC)
+	case err != nil && !errors.Is(err, ErrRosterEntryNotFound):
 		return RosterEntry{}, err
 	}
 
@@ -1334,6 +1514,32 @@ func (s *Network) RecordMembershipTx(ctx context.Context, tx Tx, in AdmissionAck
 			ErrBankAlreadyAdmitted, self, bank.AdmissionRef, in.Ref)
 	}
 
+	// And the ALLOCATION, which is the other thing this bank learns here and
+	// nowhere else: the code its customers' addresses will carry. Before this
+	// line it has a country and no range, so every account it tried to open was
+	// refused deposit.ErrNoIssuer.
+	//
+	// The country is compared rather than taken. A bank applied to one register
+	// and an answer from another is a misrouted message, and taking it would move
+	// this bank's whole address range into a market it never asked for — the same
+	// shape of defect as recording another bank's settlement account, and it
+	// reaches further, because every address minted afterwards carries it.
+	//
+	// The code is compared once there is one, for the reason the settlement
+	// references below are: an allocation is never reassigned, and a bank whose
+	// range moved would leave every address it had already issued resolving to
+	// nobody. Equal is an extension — the second acknowledgement of one admission
+	// repeats it — and different is a refusal.
+	if in.Issuer.Country != bank.Issuer.Country {
+		return nil, fmt.Errorf("%w: %s issues in %s and this acknowledgement allocates in %s",
+			ErrBankCodeReplaced, self, bank.Issuer.Country, in.Issuer.Country)
+	}
+	if bank.Issuer.BankCode != "" && bank.Issuer.BankCode != in.Issuer.BankCode {
+		return nil, fmt.Errorf("%w: %s issues under %s and this acknowledgement allocates %s",
+			ErrBankCodeReplaced, self, bank.Issuer.BankCode, in.Issuer.BankCode)
+	}
+	bank.Issuer = in.Issuer
+
 	// And WHICH ACCOUNTS. The two guards above are about the message's
 	// identifiers; these two are about the STATE this act would leave behind,
 	// which is not the same list and was twice found not to be. In asset order,
@@ -1366,7 +1572,13 @@ func (s *Network) RecordMembershipTx(ctx context.Context, tx Tx, in AdmissionAck
 	if err := s.appendAuditTx(ctx, tx, ledger.EventMembershipRecorded, string(bank.ID), *bank); err != nil {
 		return nil, err
 	}
-	return bank, nil
+	// Bound AGAIN, from the row this act has just changed. The handles a Bank
+	// carries are built from its fields, and its deposit register is built from
+	// its Issuer — which was empty when this bank was read a few lines above and
+	// is not now. A caller handed the stale binding would hold a bank that is a
+	// Member of a scheme and cannot address an account, which is the state this
+	// act exists to end.
+	return s.bind(*bank), nil
 }
 
 // Deposit takes cash in over the counter: the bank holds the notes, and it owes
@@ -1697,11 +1909,11 @@ func (s *Network) ReceiveLodgementTx(ctx context.Context, tx Tx, in LodgementIns
 
 // CreateMandate records a debtor's authorization for a creditor to collect
 // funds via direct debit. A MaxAmount of 0 means unlimited.
-func (s *Network) CreateMandate(ctx context.Context, debtorAgent iso20022.BIC, debtor, creditor PartyRef, maxAmount ledger.Amount) (Mandate, error) {
+func (s *Network) CreateMandate(ctx context.Context, assertedAgent iso20022.BIC, debtor, creditor PartyRef, maxAmount ledger.Amount) (Mandate, error) {
 	var out Mandate
 	err := s.store.Update(ctx, func(ctx context.Context, tx Tx) error {
 		var err error
-		out, err = s.CreateMandateTx(ctx, tx, debtorAgent, debtor, creditor, maxAmount)
+		out, err = s.CreateMandateTx(ctx, tx, assertedAgent, debtor, creditor, maxAmount)
 		return err
 	})
 	return out, err
@@ -1740,9 +1952,26 @@ func (s *Network) CreateMandate(ctx context.Context, debtorAgent iso20022.BIC, d
 // account id that is not one of this bank's comes back ErrAccountNotInParticipant
 // from checkPartyTx.
 //
-// debtorAgent is the address the collection will be sent to, and it is the whole
-// of what this row records about the other side.
-func (s *Network) CreateMandateTx(ctx context.Context, tx Tx, debtorAgent iso20022.BIC, debtor, creditor PartyRef, maxAmount ledger.Amount) (Mandate, error) {
+// # The debtor's agent is DERIVED, and derived ONCE
+//
+// It comes out of this bank's routing directory, from the debtor's own address,
+// by the same routeTx a submission uses — so assertedAgent is the fallback for an
+// address no directory here covers and is ignored for an IBAN.
+//
+// Deriving it AT CREATION and never again is the substance. A mandate authorises
+// debits from an account at the bank the debtor signed up against, and an
+// authorisation that silently followed a later directory to a different
+// institution is a behaviour no real scheme has: the debtor consented to a
+// creditor collecting from THAT account at THAT bank. So the row keeps the answer
+// it was given, and a directory that changes underneath it changes nothing about
+// what was authorised.
+//
+// It is also consistent with the rule that a mandate compares its parties by
+// (participant, account) and survives a reissued IBAN — the address is how the
+// debtor was reached once, and the authorisation is not made of it.
+//
+// DebtorAgent is the whole of what this row records about the other side.
+func (s *Network) CreateMandateTx(ctx context.Context, tx Tx, assertedAgent iso20022.BIC, debtor, creditor PartyRef, maxAmount ledger.Amount) (Mandate, error) {
 	if _, err := s.self(); err != nil {
 		return Mandate{}, fmt.Errorf("%w: %w", ErrNotThisBanksMandate, err)
 	}
@@ -1761,21 +1990,21 @@ func (s *Network) CreateMandateTx(ctx context.Context, tx Tx, debtorAgent iso200
 	}
 	// ValidateText accepts the empty string — it refuses control characters and
 	// invalid UTF-8 and nothing else — so the presence check is separate and
-	// explicit. A mandate whose debtor names neither a bank nor an account
-	// authorises debits from nothing, and SameParty would match it against any
-	// payment quoting the same emptiness.
-	if debtorAgent == "" || debtor.Account == "" {
+	// explicit. A mandate whose debtor names no account authorises debits from
+	// nothing, and SameParty would match it against any payment quoting the same
+	// emptiness.
+	if debtor.Account == "" {
 		return Mandate{}, fmt.Errorf(
-			"payment: a mandate names the account it authorises debits from; this one quotes agent %q and account %q",
-			debtorAgent, debtor.Account)
+			"payment: a mandate names the account it authorises debits from; this one quotes account %q",
+			debtor.Account)
 	}
-	// The agent is checked for STRUCTURE and for nothing else, which is the same
-	// stance the payments path takes on a counterparty's agent
-	// (ErrCounterpartyAgentNotNamed): this institution has no table to check the
-	// address against, because the bank it names is the one whose database this is
-	// not.
-	if err := debtorAgent.Validate(); err != nil {
-		return Mandate{}, fmt.Errorf("mandate debtor.agent: %w", err)
+	// And the agent, out of this bank's routing directory. The refusals are a
+	// submission's — an address whose bank code is not in this copy is
+	// ErrBankCodeUnknown here too, so a mandate cannot be signed against a bank
+	// this one could not then collect from.
+	debtorAgent, err := s.routeTx(ctx, tx, debtor.Identifier, assertedAgent)
+	if err != nil {
+		return Mandate{}, err
 	}
 
 	id, err := tx.NextID(ctx, s.book(), "mnd")
@@ -2698,11 +2927,12 @@ type InitiatePaymentRequest struct {
 	// anything supplied for it is ignored, because a payer does not get to
 	// rename themselves on an instruction.
 	//
-	// The COUNTERPARTY's Agent is REQUIRED. A bank holds only its own row, so
-	// there is nothing to derive the counterparty's BIC from, and SubmitPaymentTx
-	// refuses an instruction that names no agent (ErrCounterpartyAgentNotNamed).
-	// The address is an IBAN and a BIC, which is what SEPA was before 2016. See
-	// SubmitPaymentTx for what makes asserting it safe.
+	// The COUNTERPARTY's Agent is IGNORED for an address this system has a
+	// directory for, which today means every IBAN: SubmitPaymentTx derives it from
+	// the address, so an instruction carries an address and a name and no routing
+	// element at all. What is left of the field is the door for everything else —
+	// a card PAN, a proxy alias — where the BIC is genuinely the payer's to
+	// supply and its absence is ErrCounterpartyAgentNotNamed.
 	//
 	// The SUBMITTING bank's own agent is ignored, for the reason its name is: this
 	// bank is the authority on itself and fills its own side from its own
@@ -2959,8 +3189,10 @@ func (s *Network) SubmitPaymentTx(ctx context.Context, tx Tx, req InitiatePaymen
 	// side call, so an instruction that names nobody is refused before the
 	// debtor leg is posted rather than after.
 	counterparty := &p.CreditorDetails
+	counterpartyRef := p.Creditor
 	if !push {
 		counterparty = &p.DebtorDetails
+		counterpartyRef = p.Debtor
 	}
 
 	// The NAME is asserted by the payer and there is nowhere else it could come
@@ -2974,35 +3206,27 @@ func (s *Network) SubmitPaymentTx(ctx context.Context, tx Tx, req InitiatePaymen
 		return Payment{}, err
 	}
 
-	// The AGENT is ASSERTED rather than derived. A bank holds only its own row, so
-	// there is no source to derive the counterparty's BIC from: the roster is
-	// keyed by the BIC being derived and is the CLEARING HOUSE's row, and this
-	// network has no IBAN-to-BIC directory service. So the address on an
-	// instruction here is an IBAN AND a BIC — what SEPA was before February 2016,
-	// and what a cross-border transfer still is.
+	// The AGENT is DERIVED from the counterparty's ADDRESS, through this bank's
+	// own copy of the scheme's routing directory. That is what makes an
+	// instruction here IBAN-only: a payer types an address and a name, and the
+	// element the whole network routes on is read out of a table rather than out
+	// of the instruction.
 	//
-	// What makes that safe is that ResolveIdentifierTx resolves only against the
-	// resolving bank's OWN register. A misdirected message has nothing to resolve,
-	// and the bank that receives it answers AC01 — the true statement about what
-	// it was sent, and what a real bank does with a payment for an IBAN it does
-	// not hold. The payer's debit is reversed by the rejection. See mesh's
-	// TestAWrongCounterpartyAgentIsRefusedByTheBankItNames.
+	// It is derived from a table this bank HOLDS. No read crosses an institutional
+	// boundary — the copy was delivered by a refresh, and between two refreshes
+	// this bank routes from what it was given, which is why the refusal below can
+	// mean "not yet" as easily as "never". See routeTx for the three outcomes and
+	// their remedies.
 	//
-	// # What is refused here
-	//
-	// The FORMAT, and nothing else. An unnamed agent is refused by name, because
-	// the message cannot be built without CdtrAgt/DbtrAgt and a submission that
-	// committed the payer's debit before discovering that would be the money bug
-	// SubmitAndInstruct exists to prevent. A malformed one is refused for the
-	// reason FoundBankTx validates a BIC at founding rather than at first use:
-	// the mesh cannot route to it, so the refusal belongs where the payer can
-	// still fix it.
-	if counterparty.Agent == "" {
-		return Payment{}, ErrCounterpartyAgentNotNamed
+	// It happens BEFORE the debtor leg is posted, for the reason the name check
+	// does: a payment refused after the payer has been debited is the money bug
+	// SubmitAndInstruct exists to prevent, and an address that will not route
+	// cannot be turned into a message at all.
+	agent, err := s.routeTx(ctx, tx, counterpartyRef.Identifier, counterparty.Agent)
+	if err != nil {
+		return Payment{}, err
 	}
-	if err := counterparty.Agent.Validate(); err != nil {
-		return Payment{}, fmt.Errorf("%w: %w", ErrCounterpartyAgentNotNamed, err)
-	}
+	counterparty.Agent = agent
 
 	// The submitting bank's own side comes from its own register, overwriting
 	// anything the request supplied: a payer does not rename themselves on an
@@ -4711,12 +4935,15 @@ func validateParty(field string, ref PartyRef) error {
 // A bank has no standing to say whether an address at ANOTHER bank exists — that
 // is the other bank's register and the other bank's customer.
 //
-// There is no network-wide lookup, because this network has no directory SERVICE
-// to provide one. A real one does: SEPA banks resolve an IBAN's bank out of a
-// subscribed IBAN-to-BIC table, and aliases that are not bank-issued (a phone
-// number, an email address) go to a separate central service — the EPC's Proxy
-// Lookup Service, or UPI — precisely because no bank can guarantee they are
-// unique.
+// There is no network-wide lookup of ACCOUNTS, and there is no institution here
+// that could hold one. What does exist is the other question, and it is a
+// different act: ResolveBankCode answers which BANK an address routes to, out of
+// this bank's copy of the scheme's published directory. That is the whole of what
+// a subscribed IBAN-to-BIC table gives a real SEPA bank, and it stops at the
+// institution. Aliases that are not bank-issued (a phone number, an email
+// address) go to a separate central service — the EPC's Proxy Lookup Service, or
+// UPI — precisely because no bank can guarantee they are unique, and nothing here
+// stands in for one.
 //
 // The register searched is this network's own, and a network that is not a member
 // bank's has no register to search. See Network.self.
@@ -4862,11 +5089,13 @@ func addressFor(scheme Scheme, ref PartyRef, acct deposit.Account) (deposit.Iden
 	}
 	// Matches and not ==, and the payment records the account's STORED form.
 	//
-	// The two differ for one reason: an IBAN is stored in its readable display
-	// form and quoted on the wire compact, and those are one address
-	// (deposit.Identifier.MatchValue). A payment translated out of a received
-	// pacs.008 quotes what the message carried, so == would refuse a party this
-	// bank had just resolved BY that address.
+	// The two differ when a PERSON supplied the quote: a customer reads an IBAN
+	// off a statement, where it is grouped in fours, and types it in whatever
+	// case they were in. That is the same address as the compact one the bank
+	// stored (deposit.Identifier.MatchValue), and == would refuse it. A quote
+	// that came off a message needs no such allowance — the wire form and the
+	// stored form are one string — but the check cannot tell the two apart and
+	// does not need to.
 	//
 	// Returning the stored identifier keeps the invariant that a payment's
 	// recorded address is one the account actually holds, in the form this bank

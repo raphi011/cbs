@@ -95,6 +95,45 @@ CREATE TABLE roster_entries (
     -- one — on the bank's row, and on settlement_members, which learns it from
     -- the acmt.007's Org/FullLglNm and names the reserve account after it.
     bic           TEXT PRIMARY KEY,
+    -- The allocation this member issues its customers' addresses under, learned
+    -- from the same acmt.010 that writes this row and published to every member
+    -- that asks for a copy. It is what makes this table a ROUTING DIRECTORY and
+    -- not merely a list of addresses the scheme will talk to.
+    --
+    -- WHY IT HAS TO BE PUBLISHED AT ALL: a payer quotes an IBAN and nothing
+    -- else, the bank code inside it is a national registry's allocation, and no
+    -- arithmetic turns one into a BIC. Aurora is AURODEFFXXX and 99999999. So
+    -- somebody has to write the pairing down where every member can read it, and
+    -- SEPA is IBAN-only because somebody does — not because routing is
+    -- computable from an address.
+    --
+    -- TWO COLUMNS, because a bank code is unique within ONE country: 99999 is an
+    -- ABI in Italy and a code banque in France, and this scheme has members in
+    -- both. Every table keyed by an allocation is keyed by the pair, here and in
+    -- the settlement agent's register and in each member's copy.
+    --
+    -- There is no name beside them, for the reason this row carries none at all:
+    -- an acmt.010 identifies its owner by BIC and delivers no legal name. So a
+    -- member's copy of this table answers a BIC and cannot answer "Banca Verde",
+    -- which is where a payer meets the absence.
+    --
+    -- WHAT IS NOT HERE is a UNIQUE on (country, bank_code), and its absence is
+    -- the same division every refusal in this schema keeps. Two members on one
+    -- code would make one address ambiguous for the whole scheme, and it IS
+    -- refused — by payment's AdmitMemberTx, which reads this table before it
+    -- writes and answers ErrBankCodeTaken. The read-then-write is ordered by the
+    -- id drawn before it from id_sequences in this database, exactly as the
+    -- admission_ref refusal below is. A unique index would state the rule a
+    -- second time and answer a constraint violation where the domain answers a
+    -- sentinel, and the store could not afford a second one in any case: see
+    -- TestExactlyOneUniqueIndexPerShapeThatHasABook.
+    --
+    -- The clearing house refusing this at all is belt-and-braces: the settlement
+    -- agent guarantees uniqueness at allocation, in a register keyed by
+    -- (country, code). It earns its place because this row is the one every
+    -- member COPIES, and this institution cannot see that register to check.
+    country       TEXT NOT NULL,
+    bank_code     TEXT NOT NULL,
     -- The process id every message of one admission echoes, and the clearing
     -- house's only way to tell two admissions apart. The acknowledgement that
     -- causes this row carries no back-reference to the request, so there is

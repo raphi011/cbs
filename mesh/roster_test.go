@@ -121,7 +121,7 @@ func TestStartGivesAFoundedBankNoActor(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Nordhaven's own network: %v", err)
 	}
-	if _, err := nordhaven.FoundBank(ctx, "Nordhaven Bank", "NORDSESSXXX", euroOnly); err != nil {
+	if _, err := nordhaven.FoundBank(ctx, "Nordhaven Bank", "NORDSESSXXX", storetest.FixtureCountry, euroOnly); err != nil {
 		t.Fatalf("FoundBank Nordhaven: %v", err)
 	}
 
@@ -143,7 +143,7 @@ func TestStartGivesAFoundedBankNoActor(t *testing.T) {
 	// And its address is free, which is what makes the state recoverable: an
 	// actor answering to it would make the admission that finishes it
 	// unroutable for the life of the process.
-	if _, err := m.Admit(ctx, "Nordhaven Bank", "NORDSESSXXX", euroOnly); err != nil {
+	if _, err := m.Admit(ctx, "Nordhaven Bank", "NORDSESSXXX", storetest.FixtureCountry, euroOnly); err != nil {
 		t.Errorf("re-driving the founded bank's admission: %v", err)
 	}
 }

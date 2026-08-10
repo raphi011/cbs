@@ -217,15 +217,20 @@
 //     is refused, which is why pacs.002's PART group status is built and never
 //     produced.
 //
-//   - No identifier format validation: an IBAN's check digit, length and
-//     country code go unchecked, and a participant's BIC is checked for
-//     structure only — there is no directory to look it up in. Addresses
-//     resolve by lookup against deposit.Identifier, not by parsing, with one
-//     exception the readable stored form forces: an IBAN is compared with its
-//     display separators removed from both sides
-//     (deposit.Identifier.MatchValue), so that the SE89-AURORA-1001 this system
-//     stores and the SE89AURORA1001 a pacs.008 carries are the one address they
-//     are. No other scheme is normalised.
+//   - An address is checked for STRUCTURE and never for existence. An IBAN's
+//     length, country structure and both kinds of check digit are enforced
+//     (package iban), so a mistyped address is refused before any lookup — but
+//     a well-formed one belonging to nobody is refused only by the register that
+//     finds no account, and only at the bank that holds the register. A
+//     participant's BIC is checked for structure alone; there is no directory to
+//     look one up in, which is why an instruction still carries the
+//     counterparty's agent beside the address it could be derived from.
+//
+//     Addresses resolve by lookup against deposit.Identifier, and the one
+//     normalisation is the one a person forces: an IBAN typed off a statement is
+//     grouped in fours and may be lower-cased, so both sides are compacted
+//     before comparison (deposit.Identifier.MatchValue). What is stored and what
+//     a pacs.008 carries are already one string. No other scheme is normalised.
 //
 //   - Many assets, but no exchange between them. Accounts and schemes are
 //     denominated in one of the known assets and transactions balance per

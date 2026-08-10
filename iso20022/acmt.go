@@ -254,14 +254,25 @@ func (a RequestedAccount) validate() error {
 // because of that. FullLglNm, CtryOfOpr and LglAdr describe a corporate
 // applicant, which is what eBAM was written for and what this use of it is not.
 //
-// One of those three is read after all, and the reason is worth having. An
+// Two of those three are read after all, and the reasons are different. An
 // account servicer names an account after the member it opens it for, so
 // payment.ReadAdmissionRequest takes FullLglNm and the settlement agent's own
 // member row keeps it — which makes this the only element on the family that
 // delivers a legal name anywhere, since the acknowledgement carries none (see
-// AccountRequestAcknowledgement). CtryOfOpr and LglAdr are read by nothing: this
-// system knows a bank's BIC and its name and nothing about where its offices
-// are.
+// AccountRequestAcknowledgement).
+//
+// CtryOfOpr says which national registry the applicant is applying to, and it is
+// the whole of what a request says about the bank code it is asking for: an
+// applicant proposes no code, because a code is the registry's to allocate and
+// the acknowledgement is what carries one back. A bank operating in Germany is
+// given a Bankleitzahl and one operating in Italy an ABI, and nothing but this
+// element says which.
+//
+// LglAdr is read by nothing. It is the address at which an institution can be
+// served, and this system knows a bank's BIC and its name and nothing about
+// where its offices are — which is also why the two country elements can
+// legitimately disagree: a bank passported into another market operates there
+// and is established here.
 //
 // OrgId/AnyBIC is the load-bearing one, and the standard leaves it OPTIONAL:
 // AnyBIC is minOccurs="0" in OrganisationIdentification29. This package requires
@@ -341,6 +352,14 @@ func (d Acmt010) validate() error { return d.AcctReqAck.validate() }
 // That narrowing is this system's: the clearing house writes its routing entry —
 // including which assets the bank clears — from this list, so an acknowledgement
 // naming no account would admit a bank to nothing.
+//
+// It refuses one carrying anything but EXACTLY ONE OrgId/Othr, for the same kind
+// of reason and a sharper one. This is the message a bank code travels on: the
+// servicer allocates it, the clearing house publishes it, and the applicant mints
+// its customers' addresses under it, and none of the three has another source.
+// None at all admits a bank whose customers nobody can address; two would leave
+// three readers to choose between them, and a bank holds one allocation because
+// a code is one country's to give. See GenericOrganisationIdentification.
 type AccountRequestAcknowledgement struct {
 	Refs       AccountAcknowledgementReferences `xml:"Refs"`
 	AcctId     []OpenedAccount                  `xml:"AcctId"`
@@ -362,6 +381,14 @@ func (a AccountRequestAcknowledgement) validate() error {
 	}
 	if err := a.OrgId.validate(); err != nil {
 		return err
+	}
+	switch len(a.OrgId.Othr) {
+	case 1:
+	case 0:
+		return fmt.Errorf("%w: OrgId/Othr", ErrMissingElement)
+	default:
+		return fmt.Errorf("iso20022: OrgId/Othr names %d allocations and an admission carries one",
+			len(a.OrgId.Othr))
 	}
 	if err := a.AcctSvcrId.validate(); err != nil {
 		return fmt.Errorf("AcctSvcrId: %w", err)

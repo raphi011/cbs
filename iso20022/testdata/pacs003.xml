@@ -74,7 +74,7 @@
         </Cdtr>
         <CdtrAcct>
           <Id>
-            <IBAN>IT60VERDE2002</IBAN>
+            <IBAN>IT78K8881200000000000000002</IBAN>
           </Id>
         </CdtrAcct>
         <CdtrAgt>
@@ -87,7 +87,7 @@
         </Dbtr>
         <DbtrAcct>
           <Id>
-            <IBAN>SE89AURORA1001</IBAN>
+            <IBAN>SE0888100000000000000001</IBAN>
           </Id>
         </DbtrAcct>
         <DbtrAgt>

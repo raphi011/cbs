@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/raphi011/cbs/deposit"
+	"github.com/raphi011/cbs/iban"
 	"github.com/raphi011/cbs/iso20022"
 	"github.com/raphi011/cbs/ledger"
 	"github.com/raphi011/cbs/payment"
@@ -1296,6 +1297,20 @@ func (m *Mesh) Submit(ctx context.Context, req payment.InitiatePaymentRequest) (
 	// ErrBankNotAdmitted rather than a 404. The clearing house cannot tell "no
 	// such institution" from "an institution I have not admitted", and answering
 	// 404 would be it reporting a bank row it should not be reading.
+	//
+	// # In practice it now fires on the SUBMITTING side only, and the other side
+	// is covered by something stronger
+	//
+	// An instruction names no counterparty bank: the submitting bank derives one
+	// from the counterparty's address, out of its own copy of this same roster.
+	// So an address at a non-member resolves to nothing and is refused before the
+	// debtor leg posts — payment.ErrBankCodeUnknown, at the payer's own bank,
+	// which is EARLIER than this door and needs no read here at all. A copy of the
+	// roster is a membership list, so subscribing subsumed half of this guard.
+	//
+	// The loop still walks both, because a caller that names both is a caller this
+	// can answer precisely: the seed, this package's fixtures, and any future door
+	// that fills the field in.
 	for _, side := range []struct {
 		role  string
 		agent iso20022.BIC
@@ -1333,13 +1348,14 @@ func (m *Mesh) Submit(ctx context.Context, req payment.InitiatePaymentRequest) (
 	// On-us, asked by ADDRESS, and this is the arm that fires for an instruction
 	// a customer actually hands in.
 	//
-	// It RESOLVES rather than comparing BICs. The counterparty's BIC is the
-	// PAYER'S ASSERTION (payment.SubmitPaymentTx says why nothing derives it), so
-	// "the asserted agent is this bank" is a statement about what somebody typed
-	// rather than about where the payee banks — and a payer who types their own
-	// bank's BIC for a payee at another bank would be told their instruction is a
-	// book transfer, which it is not. What IS a fact this bank holds is whether
-	// the address resolves in its own register.
+	// It RESOLVES rather than comparing BICs, and the reason survives the
+	// derivation landing. A derived agent answers at INSTITUTION granularity, out
+	// of a copy that pairs a bank code with a BIC — so "the counterparty's agent
+	// is this bank" says the payee's address was issued under this bank's code,
+	// and not that this bank holds the account. Those differ for exactly the case
+	// that matters: an address under the right bank's code that the bank does not
+	// hold, which is somebody else's customer or nobody's. What IS a fact this
+	// bank holds is whether the address resolves in its own register.
 	//
 	// The participant comparison further up covers the instructions this cannot:
 	// a caller that names both internal ids — the seed, and this package's
@@ -1444,7 +1460,19 @@ func (m *Mesh) Submit(ctx context.Context, req payment.InitiatePaymentRequest) (
 // Closing it needs a way to re-drive ONE asset of an existing admission, quoting
 // the reference the bank already recorded rather than minting one — a decision
 // about the flow rather than about this function.
-func (m *Mesh) Admit(ctx context.Context, name string, bic iso20022.BIC, assets []ledger.AssetCode) (*payment.Bank, error) {
+// # The bank code is applied for, not brought
+//
+// country is the market the joining bank means to operate in, and it is the
+// whole of what the caller says about addressing. The CODE its customers'
+// addresses will carry is a national registry's allocation, and it arrives on
+// the acknowledgement — which is why the bank this returns can open no
+// addressable account yet (deposit.ErrNoIssuer), and why a re-drive reads the
+// country off the bank's own row rather than off the caller.
+//
+// A caller that could supply the code would make the whole routing directory
+// unnecessary and would be wrong about the world: a bank code has no computable
+// relationship to a BIC, which is why a scheme has to publish the pairing.
+func (m *Mesh) Admit(ctx context.Context, name string, bic iso20022.BIC, country iban.Country, assets []ledger.AssetCode) (*payment.Bank, error) {
 	if m.nets == nil {
 		return nil, errors.New("mesh: no network, so there is no bank to admit")
 	}
@@ -1494,7 +1522,7 @@ func (m *Mesh) Admit(ctx context.Context, name string, bic iso20022.BIC, assets 
 			return nil, fmt.Errorf("mesh: %s is re-driving its own interrupted admission and cannot read its row: %w", bic, err)
 		}
 	} else {
-		if bank, err = applicant.FoundBank(ctx, name, bic, assets); err != nil {
+		if bank, err = applicant.FoundBank(ctx, name, bic, country, assets); err != nil {
 			// The reservation goes back before the caller is told, so a refused
 			// unit of work leaves the address exactly as free as it found it.
 			m.releaseAddress(bic)
@@ -1516,7 +1544,12 @@ func (m *Mesh) Admit(ctx context.Context, name string, bic iso20022.BIC, assets 
 	to := m.cfg.ClearingHouseBIC
 	for _, asset := range slices.Sorted(maps.Keys(bank.Assets)) {
 		env, err := payment.AdmissionMessage(
-			payment.AdmissionRequest{Name: bank.Name, BIC: bank.BIC, Asset: asset, Ref: ref},
+			// The country is the BANK's own, off the row, so a re-drive applies to
+			// the register the interrupted admission applied to rather than to
+			// whichever one this caller named. See payment.Bank.Issuer.
+			payment.AdmissionRequest{
+				Name: bank.Name, BIC: bank.BIC, Country: bank.Issuer.Country, Asset: asset, Ref: ref,
+			},
 			m.cfg.CentralBankBIC,
 			payment.MessageContext{From: bank.BIC, To: to, MsgID: m.nextMsgID(bank.BIC), Now: m.now()},
 		)
@@ -1641,6 +1674,49 @@ func (m *Mesh) Settle(ctx context.Context, id payment.CycleID) (payment.Clearing
 		return payment.ClearingCycle{}, errors.New("mesh: no network, so there is no cycle to settle")
 	}
 	return m.csm.settle(ctx, id)
+}
+
+// RefreshDirectory is one member bank subscribing: it takes the roster the
+// clearing house publishes and replaces that bank's own copy with it.
+//
+// # It is not a message, and that is why it is here
+//
+// Every other hop in this package is an ISO 20022 document going into an inbox.
+// This one is a FILE being delivered — the shape a real routing directory
+// arrives in, since the EPC's Register of Participants is downloaded and not
+// queried per payment — so there is no envelope, no correlation and no
+// asynchrony to arrange. What the mesh is standing in for is the vendor, and the
+// mesh is the only thing here that holds both institutions' handles.
+//
+// It runs on the CALLER's goroutine and reaches two databases, exactly as Admit
+// does and for the same reason: the subscriber has an actor, but the act is not
+// something that arrived in its inbox.
+//
+// The two reads cannot be one unit of work and must not look like one. The
+// roster is read at the clearing house and committed there before the copy is
+// written at the bank, so a member admitted between the two shows up on the next
+// refresh — which is the staleness this design is built out of, arriving at the
+// smallest scale it has.
+//
+// # Not a timer, and not a push
+//
+// A background poller would buy realism in a repository whose suites run on a
+// fake clock and pay for it in flaky tests. A push would make the clearing house
+// hold a subscriber list and a retry policy, which is a delivery system rather
+// than a publisher — and the real vendor does not know who is listening.
+func (m *Mesh) RefreshDirectory(ctx context.Context, bic iso20022.BIC) ([]payment.DirectoryEntry, error) {
+	if m.nets == nil {
+		return nil, errors.New("mesh: no network, so there is no directory to refresh")
+	}
+	published, err := m.clearingHouse.ListRosterEntries(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("mesh: reading the published roster for %s: %w", bic, err)
+	}
+	subscriber, err := m.nets.Bank(ctx, payment.ParticipantID(bic))
+	if err != nil {
+		return nil, fmt.Errorf("mesh: opening %s's store: %w", bic, err)
+	}
+	return subscriber.RefreshDirectory(ctx, published)
 }
 
 // Reject is the clearing house declining a payment it is holding, on an

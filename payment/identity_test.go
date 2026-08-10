@@ -6,7 +6,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/raphi011/cbs/deposit"
 	"github.com/raphi011/cbs/iso20022"
 	"github.com/raphi011/cbs/ledger"
 	. "github.com/raphi011/cbs/payment"
@@ -65,8 +64,11 @@ func TestAMemberBanksActsAreRefusedOnAnyOtherInstitutionsNetwork(t *testing.T) {
 		name string
 		call func(n *Network) error
 	}{
+		// A well-formed address, so that what refuses the act is the identity
+		// guard. A malformed one is refused for its check digits by every
+		// institution alike, which would make this row pass without the guard.
 		{"ResolveIdentifier", func(n *Network) error {
-			_, err := n.ResolveIdentifier(ctx, deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "SE89-ALICE-0001"})
+			_, err := n.ResolveIdentifier(ctx, mintAt(t, a, 999_999))
 			return err
 		}},
 		{"AcceptInbound", func(n *Network) error { return n.AcceptInbound(ctx, pay.ID, relayedFrom(pay)) }},
@@ -87,7 +89,7 @@ func TestAMemberBanksActsAreRefusedOnAnyOtherInstitutionsNetwork(t *testing.T) {
 		}},
 		{"RecordMembership", func(n *Network) error {
 			_, err := n.RecordMembership(ctx, AdmissionAcknowledgement{
-				BIC: testBIC, Ref: "adm-1",
+				BIC: testBIC, Issuer: testAllocation, Ref: "adm-1",
 				Accounts: map[ledger.AssetCode]ledger.AccountID{testAsset: "200.100.001"},
 			})
 			return err
@@ -151,8 +153,8 @@ func TestTheCentralBanksBookIsReachableOnlyFromTheSettlementAgentsNetwork(t *tes
 		call func(n *Network) error
 	}{
 		{"OpenSettlementAccount", func(n *Network) error {
-			_, err := n.OpenSettlementAccount(ctx, AdmissionRequest{
-				Name: "Aurora Bank", BIC: testBIC, Asset: testAsset, Ref: "adm-1",
+			_, _, err := n.OpenSettlementAccount(ctx, AdmissionRequest{
+				Name: "Aurora Bank", BIC: testBIC, Country: testAllocation.Country, Asset: testAsset, Ref: "adm-1",
 			})
 			return err
 		}},

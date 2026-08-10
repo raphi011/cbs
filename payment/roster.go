@@ -3,9 +3,104 @@ package payment
 import (
 	"time"
 
+	"github.com/raphi011/cbs/iban"
 	"github.com/raphi011/cbs/iso20022"
 	"github.com/raphi011/cbs/ledger"
 )
+
+// BankCodeAllocation is one row of the NATIONAL REGISTRY's book: which
+// institution holds which bank code, in which country. It lives in the
+// settlement agent's database, and no bank ever reads it.
+//
+// It is what an IBAN's middle digits are a reference into, and it is the fact
+// that makes an address routable at all. A bank code has no computable
+// relationship to a BIC — Aurora is AURODEFFXXX and 99999999 — so somebody has
+// to write the pairing down, and this is that somebody.
+//
+// # It is not the routing directory, and the difference is the whole design
+//
+// This is the ISSUER's record of what it gave out. What a bank routes by is a
+// COPY of the clearing house's published roster, pulled by that bank and
+// possibly behind. The two answer different questions — who issued this address,
+// and may this address be reached — which is why they are two tables in two
+// institutions rather than one table read twice, and why nothing in the domain
+// can reach across from one to the other.
+//
+// # An allocation is never reassigned
+//
+// That is the invariant every subscriber's stale copy rests on. A directory that
+// is behind is then INCOMPLETE and never WRONG: the failure mode is "I cannot
+// route this yet", never "I routed it to the wrong bank". Nothing in this system
+// may introduce a path that gives a code back to be issued again.
+//
+// The settlement agent standing in for four national registries is a fudge, and
+// it is named where the table is: store/sqlite/schema/centralbank/0001_init.sql.
+type BankCodeAllocation struct {
+	// Issuer is the allocation itself: the country whose register it came out
+	// of, and the code. Both, because a code is unique within one country and
+	// nowhere else.
+	Issuer iban.Issuer
+
+	// BIC is the institution it was allocated to, and it is the only thing this
+	// row says about that institution. A registry knows which code belongs to
+	// whom; it does not hold the bank's name, its assets or its accounts — those
+	// are on SettlementMember, one register over in the same database, keyed by
+	// this same BIC and written by the same act.
+	BIC iso20022.BIC
+
+	AllocatedAt time.Time
+}
+
+// DirectoryEntry is one row of a MEMBER BANK's own copy of the scheme's routing
+// directory: which institution answers for a bank code, and when that answer was
+// last refreshed. It lives in that bank's database, one copy per member.
+//
+// It is the third of the three tables an address is routed through, and the only
+// one a bank holds. BankCodeAllocation is the issuer's record of what it gave
+// out; RosterEntry is the clearing house's published pairing; this is a snapshot
+// of the second, pulled by a subscriber and used to derive a counterparty's agent
+// from the counterparty's IBAN. SEPA is IBAN-only because every bank holds one of
+// these, not because routing is computable from an address.
+//
+// # A copy, and therefore possibly behind
+//
+// RefreshDirectoryTx replaces the whole set — a directory is a file a subscriber
+// downloads, not a delta feed — so between two refreshes this bank routes from
+// what it was given last. A member admitted in between cannot be paid, and
+// ErrBankCodeUnknown says so. That is the behaviour of every real routing
+// directory rather than a defect being tolerated, and it is safe because an
+// allocation is never reassigned: a copy that is behind is INCOMPLETE and never
+// WRONG.
+//
+// Nothing holds it against the roster it came from. payment/recon reports the
+// difference and passes.
+type DirectoryEntry struct {
+	// Issuer is the allocation this row resolves: the country, and the code.
+	// Both, because a code is unique within one country and this copy holds
+	// members in several.
+	Issuer iban.Issuer
+
+	// BIC is the institution to send to, and the whole of what this row says
+	// about it.
+	//
+	// No name beside it, because the roster carries none, because the acmt.010
+	// that writes the roster carries none. That absence arrives at the moment a
+	// payer most expects a name: an address resolves, and what comes back is
+	// AURODEFFXXX.
+	//
+	// No assets either, and that one is a refusal deliberately not made — an
+	// early "this member does not clear in euro", computed from a copy that may
+	// be behind, would refuse a payment the clearing house would have taken. The
+	// asset check belongs to whoever reads the live roster; see
+	// Network.bothBanksAreMembersTx.
+	BIC iso20022.BIC
+
+	// RefreshedAt is when the snapshot this row came from was taken, and every
+	// row of one refresh carries the same instant. It is what a console shows to
+	// make the subscription visible — "14 banks, refreshed 3 days ago" — and it
+	// is the only thing here that is about the COPY rather than about the member.
+	RefreshedAt time.Time
+}
 
 // SettlementMember is the CENTRAL BANK's own record of a bank it holds a
 // settlement account for. It lives in the central bank's database and in no
@@ -97,6 +192,29 @@ type SettlementMember struct {
 // acmt.007's Org/FullLglNm and names the account it opens after it.
 type RosterEntry struct {
 	BIC iso20022.BIC
+
+	// Issuer is the country and bank code this member issues its customers'
+	// addresses under, learned from the same acmt.010 that writes this row.
+	//
+	// It is what makes this table a ROUTING DIRECTORY rather than a list of
+	// addresses the scheme will talk to. A payer quotes an IBAN and nothing else;
+	// the bank code inside it is a national registry's allocation with no
+	// computable relationship to a BIC, so turning one into the other takes a
+	// published pairing, and this is where this scheme publishes it. Every member
+	// copies these rows and derives from its copy — see the routing directory in
+	// store/sqlite/schema/bank/0001_init.sql.
+	//
+	// The clearing house refuses a second member on a code already here, which
+	// is the settlement agent's refusal made again in another database. It is
+	// belt-and-braces and it earns its place: this row is the one every member
+	// COPIES, so a duplicate would make one address ambiguous for the whole
+	// scheme, and this institution cannot see the registry to check.
+	//
+	// It carries no name beside it, for the reason this row carries none at all.
+	// A member's copy of this table therefore answers a BIC and cannot answer
+	// "Banca Verde", which is the documented absence arriving at the moment a
+	// payer most expects a name.
+	Issuer iban.Issuer
 
 	// Assets is the assets this member clears in. A slice and not a map because
 	// there is nothing to key it by: the clearing house holds no account per

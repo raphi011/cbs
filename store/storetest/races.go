@@ -53,7 +53,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/raphi011/cbs/deposit"
+	"github.com/raphi011/cbs/iban"
 	"github.com/raphi011/cbs/iso20022"
 	"github.com/raphi011/cbs/ledger"
 	"github.com/raphi011/cbs/payment"
@@ -204,11 +204,12 @@ func RunSystemRaces(t *testing.T, newStores func(*testing.T) payment.Stores) {
 		debtorNet, err := nets.Bank(ctx, debtorBank.ID)
 		assertNoError(t, err)
 
-		alice, err := debtorBank.Deposit.OpenAccount(ctx, debtorBank.CustomerSubledger, "Alice", "EUR", debtorBank.ProductID, 0,
-			deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "SE89-DUP-ALICE-0001"})
+		// Neither call names an address. A bank issues its customers' addresses
+		// out of its own bank code, so the register mints one and it comes back
+		// on the account — which is where the PartyRefs below read it from.
+		alice, err := debtorBank.Deposit.OpenAccount(ctx, debtorBank.CustomerSubledger, "Alice", "EUR", debtorBank.ProductID, 0)
 		assertNoError(t, err)
-		bruno, err := creditorBank.Deposit.OpenAccount(ctx, creditorBank.CustomerSubledger, "Bruno", "EUR", creditorBank.ProductID, 0,
-			deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "SE89-DUP-BRUNO-0001"})
+		bruno, err := creditorBank.Deposit.OpenAccount(ctx, creditorBank.CustomerSubledger, "Bruno", "EUR", creditorBank.ProductID, 0)
 		assertNoError(t, err)
 
 		const opening ledger.Amount = 1_000_000
@@ -321,7 +322,13 @@ func RunClearingHouseRaces(t *testing.T, newStore func(*testing.T) payment.Store
 			errs := runConcurrently(len(refs), func(i int) error {
 				ack := payment.AdmissionAcknowledgement{
 					BIC: bic,
-					Ref: refs[i],
+					// One allocation for all eight, because they are eight
+					// admissions of ONE applicant and a code follows the bank
+					// rather than the conversation. Eight different codes would
+					// make the roster's own ErrBankCodeTaken fire and hide the
+					// refusal this case is measuring.
+					Issuer: iban.Issuer{Country: FixtureCountry, BankCode: fixtureBankCode(bic)},
+					Ref:    refs[i],
 					Accounts: map[ledger.AssetCode]ledger.AccountID{
 						"EUR": ledger.AccountID(fmt.Sprintf("200.100.00%d", i)),
 					},
@@ -390,8 +397,9 @@ func RunCentralBankRaces(t *testing.T, newStore func(*testing.T) payment.Store) 
 		assets := []ledger.AssetCode{"EUR", "USD"}
 		errs := runConcurrently(len(assets), func(i int) error {
 			return s.Update(ctx, func(ctx context.Context, tx payment.Tx) error {
-				_, err := cb.OpenSettlementAccountTx(ctx, tx, payment.AdmissionRequest{
-					Name: "Aurora Bank", BIC: "AURODEFFXXX", Asset: assets[i], Ref: "adm-aurora",
+				_, _, err := cb.OpenSettlementAccountTx(ctx, tx, payment.AdmissionRequest{
+					Name: "Aurora Bank", BIC: "AURODEFFXXX", Country: FixtureCountry,
+					Asset: assets[i], Ref: "adm-aurora",
 				})
 				return err
 			})
@@ -811,4 +819,20 @@ func assertNoError(t *testing.T, err error) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
+}
+
+// fixtureBankCode is a distinct, well-formed German bank code per address, for
+// the races above.
+//
+// It stands in for an allocation, which these cases are not about: the registry
+// that really makes one is the settlement agent's, one database over, and no
+// race here reaches it. What each case needs is that two applicants do not
+// collide on a code, because a collision is a DIFFERENT refusal and would mask
+// the one being measured.
+func fixtureBankCode(bic iso20022.BIC) iban.BankCode {
+	var h uint32 = 2166136261
+	for _, c := range []byte(bic) {
+		h = (h ^ uint32(c)) * 16777619
+	}
+	return iban.BankCode(fmt.Sprintf("%08d", h%100_000_000))
 }

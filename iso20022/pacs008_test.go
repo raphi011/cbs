@@ -19,8 +19,8 @@ func TestPacs008RoundTrip(t *testing.T) {
 	if got := tx[0].PmtId.EndToEndId; got != "INV-2026-0042" {
 		t.Fatalf("EndToEndId = %q, want INV-2026-0042", got)
 	}
-	if got := *tx[0].DbtrAcct.Id.IBAN; got != "SE89AURORA1001" {
-		t.Fatalf("debtor IBAN = %q, want SE89AURORA1001", got)
+	if got := *tx[0].DbtrAcct.Id.IBAN; got != "SE0888100000000000000001" {
+		t.Fatalf("debtor IBAN = %q, want SE0888100000000000000001", got)
 	}
 	if got := tx[0].CdtrAgt.FinInstnId.BICFI; got != "VERDITMMXXX" {
 		t.Fatalf("creditor agent = %q, want VERDITMMXXX", got)

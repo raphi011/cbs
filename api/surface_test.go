@@ -15,10 +15,6 @@ import (
 //
 //   - GET /assets is a compiled-in constant every operator needs to render money
 //     at the right scale. Duplicating a constant is not duplicating state.
-//   - GET /directory is on the bank as well as the clearing house because a bank
-//     is a scheme participant with directory access, and the alternative — a
-//     customer's browser querying the CSM — gives a retail app a clearing-house
-//     connection no retail app has.
 //   - GET /audit means "this operator's own log" on every operator: a bank's
 //     ledger events on a bank, the reserve movements on the central bank. Same
 //     pattern, different operator, different answer — which is what the split is
@@ -35,7 +31,6 @@ import (
 //     operator has of what it answered — a cycle still Closed is one it refused.
 var allowedOverlaps = []string{
 	"GET /assets",
-	"GET /directory",
 	"GET /audit",
 	"GET /payments",
 	"GET /payments/{payid}",
@@ -172,17 +167,21 @@ func movedTo(old string) (operator, pattern string) {
 		return "bank", old
 
 	case path == "/directory":
-		// It is the BANK's own, for the reason /directory below is.
+		// It is the BANK's own, and it is narrower in two ways.
 		//
 		// The one server answered "who holds this IBAN" by sweeping every bank's
 		// register, which is why the route sat with payments and cycles on the
-		// clearing house. No institution can answer that question any more —
-		// see payment.ResolveIdentifier — so what is left is "is this address
-		// one of MINE", and the only operator that can ask it is a bank. The
-		// clearing house got GET /roster in its place, which is the routing
-		// directory it does own; that route is not in this golden list because
-		// the pre-split server had no such thing.
-		return "bank", old
+		// clearing house. No institution can answer that question any more — see
+		// payment.ResolveIdentifier — so what is left is "is this address one of
+		// MINE", and the only operator that can ask it is a bank.
+		//
+		// And the PATH moved, because "directory" stopped being one question the
+		// moment a second directory arrived: a bank now also holds a copy of the
+		// scheme's routing directory, answering which INSTITUTION a bank code
+		// belongs to, on GET /directory/banks. Neither of those routes is in this
+		// golden list, along with GET /roster, because the pre-split server had no
+		// such thing.
+		return "bank", "GET /directory/accounts"
 
 	default:
 		// Payments, cycles, settlements, schemes.
@@ -411,18 +410,21 @@ func settledCycle(t *testing.T, h *Server) string {
 	a := admitMember(t, h, `{"bic":"BNKADEFFXXX","name":"Bank A"}`, http.StatusAccepted)["id"].(string)
 	b := admitMember(t, h, `{"bic":"BNKBDEFFXXX","name":"Bank B"}`, http.StatusAccepted)["id"].(string)
 	alice := doJSON(t, bank(h, a), "POST", "/deposit-accounts",
-		`{"name":"Alice","asset":"EUR","productId":"`+prdOf(t, h, a)+`","identifiers":[{"scheme":"IBAN","value":"SE89-SET-ALICE-0001"}]}`,
+		`{"name":"Alice","asset":"EUR","productId":"`+prdOf(t, h, a)+`"}`,
 		http.StatusCreated)["id"].(string)
 	bob := doJSON(t, bank(h, b), "POST", "/deposit-accounts",
-		`{"name":"Bob","asset":"EUR","productId":"`+prdOf(t, h, b)+`","identifiers":[{"scheme":"IBAN","value":"SE89-SET-BOB-0001"}]}`,
+		`{"name":"Bob","asset":"EUR","productId":"`+prdOf(t, h, b)+`"}`,
 		http.StatusCreated)["id"].(string)
 	fundAndLodge(t, h, a, alice, 100000)
 
 	cyc := doJSON(t, csm(h), "POST", "/cycles", `{"scheme":"sepa.ct"}`, http.StatusCreated)["id"].(string)
+	// Both sides quote an ADDRESS and neither names a bank. This is the clearing
+	// house's console, which is no bank, so it reads the submitting bank out of the
+	// payer's address and the payer's bank derives the payee's from theirs.
 	doJSON(t, csm(h), "POST", "/payments", `{
 		"scheme":"sepa.ct",
-		"debtorAgent":"`+a+`","debtor":{"account":"`+alice+`"},
-		"creditorAgent":"`+b+`","creditor":{"account":"`+bob+`","identifier":{"scheme":"IBAN","value":"SE89-SET-BOB-0001"}},
+		"debtor":{"account":"`+alice+`","identifier":{"scheme":"IBAN","value":"`+ibanFor(t, h, a, alice)+`"}},
+		"creditor":{"account":"`+bob+`","identifier":{"scheme":"IBAN","value":"`+ibanFor(t, h, b, bob)+`"}},
 		"amount":25000,
 		"endToEndId":"settle-e2e",
 		"creditorName":"Bob"
@@ -491,20 +493,22 @@ func threeBanks(t *testing.T, h *Server) (a, b, c seededBank) {
 	// A BIC each: the mesh gives every bank an actor keyed by its address and
 	// refuses two on one, so three banks that shared a BIC could not be admitted
 	// at all — let alone tell each other apart on the wire.
-	mk := func(name, bic, iban string) seededBank {
+	mk := func(name, bic string) seededBank {
 		pid := admitMember(t, h, `{"bic":"`+bic+`","name":"`+name+`"}`, http.StatusAccepted)["id"].(string)
 		accountName := name + " customer"
 		did := doJSON(t, bank(h, pid), "POST", "/deposit-accounts",
 			`{"name":"`+accountName+`","asset":"EUR","productId":"`+prdOf(t, h, pid)+
-				`","identifiers":[{"scheme":"IBAN","value":"`+iban+`"}]}`,
+				`"}`,
 			http.StatusCreated)["id"].(string)
+		// Read back rather than chosen: the bank minted it.
+		iban := ibanFor(t, h, pid, did)
 		doJSON(t, bank(h, pid), "POST", "/deposits",
 			`{"account":"`+did+`","amount":500000,"description":"opening"}`, http.StatusOK)
 		return seededBank{pid: pid, account: did, iban: iban, bic: bic, accountName: accountName}
 	}
-	return mk("Bank A", "BNKADEFFXXX", "SE89-NARROW-A-0001"),
-		mk("Bank B", "BNKBDEFFXXX", "IT60-NARROW-B-0001"),
-		mk("Bank C", "BNKCDEFFXXX", "NO93-NARROW-C-0001")
+	return mk("Bank A", "BNKADEFFXXX"),
+		mk("Bank B", "BNKBDEFFXXX"),
+		mk("Bank C", "BNKCDEFFXXX")
 }
 
 // sct initiates a credit transfer between two seeded banks and returns its id.
@@ -512,8 +516,8 @@ func sct(t *testing.T, h *Server, from, to seededBank, e2e string) string {
 	t.Helper()
 	id := doJSON(t, csm(h), "POST", "/payments", `{
 		"scheme":"sepa.ct",
-		"debtorAgent":"`+from.pid+`","debtor":{"account":"`+from.account+`"},
-		"creditorAgent":"`+to.pid+`","creditor":{"account":"`+to.account+`","identifier":{"scheme":"IBAN","value":"`+to.iban+`"}},
+		"debtor":{"account":"`+from.account+`","identifier":{"scheme":"IBAN","value":"`+from.iban+`"}},
+		"creditor":{"account":"`+to.account+`","identifier":{"scheme":"IBAN","value":"`+to.iban+`"}},
 		"amount":10000,
 		"endToEndId":"`+e2e+`",
 		"creditorName":"`+to.accountName+`"
@@ -535,8 +539,8 @@ func TestABankAcceptsItsOwnCustomersInstruction(t *testing.T) {
 
 	instruction := `{
 		"scheme":"sepa.ct",
-		"debtorAgent":"` + a.pid + `","debtor":{"account":"` + a.account + `"},
-		"creditorAgent":"` + b.pid + `","creditor":{"account":"` + b.account + `","identifier":{"scheme":"IBAN","value":"` + b.iban + `"}},
+		"debtor":{"account":"` + a.account + `"},
+		"creditor":{"account":"` + b.account + `","identifier":{"scheme":"IBAN","value":"` + b.iban + `"}},
 		"amount":10000,
 		"endToEndId":"retail-1",
 		"creditorName":"` + b.accountName + `"
@@ -573,16 +577,18 @@ func TestTheCreditorsBankSubmitsADirectDebit(t *testing.T) {
 
 	// Recorded at the CREDITOR's bank, which on a pull is the collecting bank —
 	// the same bank that submits below, and the only one that may hold the row.
+	// The mandate names no bank either: the debtor's is derived from the debtor's
+	// address, once, at signature. See api.createMandateRequest.
 	mandate := doJSON(t, bank(h, payeeBank.pid), "POST", "/mandates", `{
-		"debtorAgent":"`+payerBank.pid+`","debtor":{"account":"`+payerBank.account+`"},
+		"debtor":{"account":"`+payerBank.account+`","identifier":{"scheme":"IBAN","value":"`+payerBank.iban+`"}},
 		"creditor":{"account":"`+payeeBank.account+`"},
 		"maxAmount":0
 	}`, http.StatusCreated)["id"].(string)
 
 	collection := `{
 		"scheme":"sepa.dd",
-		"debtorAgent":"` + payerBank.pid + `","debtor":{"account":"` + payerBank.account + `","identifier":{"scheme":"IBAN","value":"` + payerBank.iban + `"}},
-		"creditorAgent":"` + payeeBank.pid + `","creditor":{"account":"` + payeeBank.account + `"},
+		"debtor":{"account":"` + payerBank.account + `","identifier":{"scheme":"IBAN","value":"` + payerBank.iban + `"}},
+		"creditor":{"account":"` + payeeBank.account + `"},
 		"amount":10000,
 		"mandateId":"` + mandate + `",
 		"endToEndId":"collection-1",
@@ -594,10 +600,15 @@ func TestTheCreditorsBankSubmitsADirectDebit(t *testing.T) {
 
 	// The payer's bank submitting the same collection is refused: a bank does
 	// not collect on somebody else's behalf.
+	//
+	// It is refused by the DOMAIN rather than by the door. The port fills in the
+	// submitting agent, so this listener claims to be the collecting bank; the
+	// creditor account it then has to resolve is the payee bank's, in a register
+	// this bank does not hold, and that is where it stops.
 	doJSON(t, bank(h, payerBank.pid), "POST", "/payments", `{
 		"scheme":"sepa.dd",
-		"debtorAgent":"`+payerBank.pid+`","debtor":{"account":"`+payerBank.account+`"},
-		"creditorAgent":"`+payeeBank.pid+`","creditor":{"account":"`+payeeBank.account+`"},
+		"debtor":{"account":"`+payerBank.account+`","identifier":{"scheme":"IBAN","value":"`+payerBank.iban+`"}},
+		"creditor":{"account":"`+payeeBank.account+`"},
 		"amount":10000,
 		"mandateId":"`+mandate+`",
 		"endToEndId":"collection-2"
@@ -614,74 +625,26 @@ func TestAnUnknownSchemeIsRefusedAsAnUnknownScheme(t *testing.T) {
 	h := newServer(t, nil)
 	a, b, _ := threeBanks(t, h)
 
-	// Debtor at the OTHER bank, so the bound-bank check would refuse this with
+	// Debtor at the OTHER bank, so the account resolution would refuse this with
 	// 422 if it ran first. It must not run first.
 	doJSON(t, bank(h, a.pid), "POST", "/payments", `{
 		"scheme":"nope",
-		"debtorAgent":"`+b.pid+`","debtor":{"account":"`+b.account+`"},
-		"creditorAgent":"`+a.pid+`","creditor":{"account":"`+a.account+`"},
+		"debtor":{"account":"`+b.account+`"},
+		"creditor":{"account":"`+a.account+`","identifier":{"scheme":"IBAN","value":"`+a.iban+`"}},
 		"amount":10000,
 		"endToEndId":"no-such-scheme"
 	}`, http.StatusNotFound)
 }
 
-// A missing participant is answered as a missing field, not as the wrong bank.
+// There is no case here for an instruction that names the wrong bank, or names
+// none, and there cannot be: an instruction carries an address and a name and has
+// no field for a bank at all. The submitting side comes from the port, the
+// counterparty's is derived from their address, and a request cannot disagree
+// with either.
 //
-// An omitted participant decodes to "", which never equals a non-empty bound
-// id, so it falls through the direction rule and is answered "this bank does not
-// submit this payment: a credit transfer is submitted by the payer's bank and a
-// direct debit by the payee's" — a diagnosis of a direction violation about a
-// request that names no direction to violate. Same shape as the unregistered
-// scheme above, and the same fix: ask the question that has an answer first.
-//
-// Both directions, because the field that is missing is not the same one: it is
-// the COUNTERPARTY's agent, and which side that is is the scheme's direction —
-// the creditor's on a push, the debtor's on a pull. A message that said
-// "debtor" for both would be wrong for every collection.
-//
-// The counterparty is named by its AGENT: a ref names no bank, because a bank's
-// id is its BIC and the agent beside the ref carries it (see payment.PartyRef).
-func TestAnInstructionWithNoParticipantIsRefusedAsAMissingField(t *testing.T) {
-	h := newServer(t, nil)
-	a, b, _ := threeBanks(t, h)
-	doJSON(t, csm(h), "POST", "/cycles", `{"scheme":"sepa.ct"}`, http.StatusCreated)
-	doJSON(t, csm(h), "POST", "/cycles", `{"scheme":"sepa.dd"}`, http.StatusCreated)
-
-	push := do(t, bank(h, a.pid), "POST", "/payments", `{
-		"scheme":"sepa.ct",
-		"debtor":{"account":"`+a.account+`"},
-		"creditor":{"account":"`+b.account+`","identifier":{"scheme":"IBAN","value":"`+b.iban+`"}},
-		"creditorName":"Bob",
-		"amount":10000
-	}`)
-	if push.Code != http.StatusUnprocessableEntity {
-		t.Fatalf("a push naming no creditor agent = %d, want 422 (%s)", push.Code, push.Body.String())
-	}
-	if !strings.Contains(push.Body.String(), "usable BIC for the counterparty's bank") {
-		t.Fatalf("a push naming no creditor agent was refused as %q", push.Body.String())
-	}
-
-	mandate := doJSON(t, bank(h, b.pid), "POST", "/mandates", `{
-		"debtorAgent":"`+a.pid+`","debtor":{"account":"`+a.account+`"},
-		"creditor":{"account":"`+b.account+`"},
-		"maxAmount":0
-	}`, http.StatusCreated)["id"].(string)
-
-	pull := do(t, bank(h, b.pid), "POST", "/payments", `{
-		"scheme":"sepa.dd",
-		"debtor":{"account":"`+a.account+`","identifier":{"scheme":"IBAN","value":"`+a.iban+`"}},
-		"debtorName":"Alice",
-		"creditor":{"account":"`+b.account+`"},
-		"amount":10000,
-		"mandateId":"`+mandate+`"
-	}`)
-	if pull.Code != http.StatusUnprocessableEntity {
-		t.Fatalf("a collection naming no debtor agent = %d, want 422 (%s)", pull.Code, pull.Body.String())
-	}
-	if !strings.Contains(pull.Body.String(), "usable BIC for the counterparty's bank") {
-		t.Fatalf("a collection naming no debtor agent was refused as %q", pull.Body.String())
-	}
-}
+// What is left of "this address names nowhere to send it" is three refusals with
+// three remedies, and they are pinned together on the payer's own port —
+// TestPostPaymentRefusesEachWayAnAddressFails in server_test.go.
 
 // A bank may not submit a payment drawn on somebody else's customer.
 func TestABankRefusesAnInstructionItIsNotTheDebtorFor(t *testing.T) {
@@ -692,8 +655,8 @@ func TestABankRefusesAnInstructionItIsNotTheDebtorFor(t *testing.T) {
 	// Bank A's listener, asked to debit Bank B's customer.
 	doJSON(t, bank(h, a.pid), "POST", "/payments", `{
 		"scheme":"sepa.ct",
-		"debtorAgent":"`+b.pid+`","debtor":{"account":"`+b.account+`"},
-		"creditorAgent":"`+a.pid+`","creditor":{"account":"`+a.account+`"},
+		"debtor":{"account":"`+b.account+`"},
+		"creditor":{"account":"`+a.account+`","identifier":{"scheme":"IBAN","value":"`+a.iban+`"}},
 		"amount":10000,
 		"endToEndId":"not-mine-to-send"
 	}`, http.StatusUnprocessableEntity)

@@ -94,6 +94,19 @@ const (
 	// moment it is written no settlement agent has opened one — which is what
 	// makes the other three worth having rather than derivable.
 	EventParticipantAdded = "participant.added"
+	// EventBankCodeAllocated is the settlement agent's OTHER act, keyed by the
+	// applicant's BIC and made in the same unit of work: a national registry
+	// giving one institution the code its customers' addresses will carry. Its
+	// payload is the allocation — a country and a code — and it is written once
+	// per bank per country, so the second currency of one admission appends
+	// nothing.
+	//
+	// It is a separate event from the one below because it is a separate register
+	// and, in the world, a separate institution: a bank's reserve account is at
+	// its central bank and its Bankleitzahl comes from the Bundesbank's file. One
+	// event covering both would say an account was opened where a code was
+	// issued.
+	EventBankCodeAllocated = "bank_code.allocated"
 	// EventSettlementAccountOpened is the settlement agent's act, keyed by the
 	// member's BIC: the identifier between institutions, and the only one this
 	// institution has. Its payload is the SettlementMember row, which carries
@@ -111,6 +124,17 @@ const (
 	// told. It is the pair to EventParticipantAdded and the reason that one can
 	// stay silent about everything the founding did not know.
 	EventMembershipRecorded = "membership.recorded"
+	// EventDirectoryRefreshed is a member bank taking delivery of a snapshot of
+	// the scheme's routing directory, keyed by the SUBSCRIBER's own BIC — the act
+	// is about the bank that pulled, not about any member in the file. Its payload
+	// is the whole snapshot, which is what makes the log answer the question a
+	// stale directory raises: not "is this bank behind" but "what did it believe
+	// when it refused that payment".
+	//
+	// It is the only event in this block written by an institution about
+	// institutions it does not act for, and it records no decision about any of
+	// them: a directory says where to send a message and never whether to.
+	EventDirectoryRefreshed = "directory.refreshed"
 	EventMandateCreated     = "mandate.created"
 	EventMandateRevoked     = "mandate.revoked"
 	EventPaymentInitiated   = "payment.initiated"

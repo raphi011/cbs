@@ -145,6 +145,9 @@ describe("navFor", () => {
       // A mandate is the CREDITOR's bank's row, so the console that shows one
       // is a bank's. It was the clearing house's until this moved.
       "/bank/bank_1/mandates",
+      // A bank's own copy of the scheme's directory, which is a different
+      // screen from the clearing house's entry of the same name.
+      "/bank/bank_1/directory",
       "/bank/bank_1/ledger",
       "/bank/bank_1/transactions",
       "/bank/bank_1/facilities",

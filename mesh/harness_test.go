@@ -9,9 +9,11 @@ import (
 	"time"
 
 	"github.com/raphi011/cbs/deposit"
+	"github.com/raphi011/cbs/iban"
 	"github.com/raphi011/cbs/iso20022"
 	"github.com/raphi011/cbs/ledger"
 	"github.com/raphi011/cbs/payment"
+	"github.com/raphi011/cbs/store/storetest"
 	"github.com/raphi011/cbs/store/testenv"
 )
 
@@ -43,33 +45,40 @@ const (
 // Real, distinct, and in different countries, for the reason
 // payment/message_test.go's addressedBanks gives: a test asserting which bank
 // answered cannot use a fixture in which both banks look the same.
-const (
-	debtorIBAN   = "DE89370400440532013000"
-	creditorIBAN = "IT60X0542811101000000123456"
+// The addresses this fixture's customers hold are NOT written down here any
+// more, and could not be: a bank mints its customers' addresses out of the bank
+// code it was allocated, so the only place one exists is on the account. They
+// are read off the accounts as they are opened — see meshHarness.debtorIBAN and
+// the fields beside it.
+//
+// They remain real, distinct, and in different countries, for the reason
+// payment/message_test.go's addressedBanks gives: a test asserting which bank
+// answered cannot use a fixture in which both banks look the same. That now
+// follows from the ALLOCATIONS the two banks are admitted under rather than from
+// two literals — see harnessIssuers.
 
-	// The same two customers' DOLLAR accounts, used only by the two-asset
-	// fixture. Separate addresses because they are separate accounts: an IBAN
-	// identifies an account and not a person, and the register refuses to hold
-	// one address on two accounts — which is exactly the property that makes
-	// ResolveIdentifier able to answer at all.
-	debtorUSDIBAN   = "DE21301204000000015228"
-	creditorUSDIBAN = "IT40S0542811101000000123457"
+// unknownIBANAt is an address in one bank's own range that the bank does not
+// hold: a serial far above anything a fixture opens, under that bank's allocated
+// code.
+//
+// Both halves are what make it useful. It has to be well-formed twice over — an
+// IBAN failing the schema's pattern is refused by the codec on the way out, and
+// one failing mod-97 is refused by the payer's own bank — and it has to carry the
+// RECIPIENT's bank code, because that is what routes it there. An address under
+// some other code is refused by the payer's own directory
+// (payment.ErrBankCodeUnknown) and the recipient never gets the chance to answer
+// AC01, which is the answer these tests are about.
+func unknownIBANAt(p *payment.Bank) string {
+	return mustMint(p.Issuer.Country, p.Issuer.BankCode, 999_999)
+}
 
-	// onUsIBAN addresses a SECOND customer of the payer's own bank, which is the
-	// one arrangement in which a payment has the same institution at both ends.
-	// It is opened only by the test that needs it, because a fixture that carried
-	// a spare account at one bank would quietly change what "the payer's bank"
-	// means everywhere else.
-	onUsIBAN = "DE02120300000000202051"
-
-	// unknownIBAN is well-formed and belongs to no account in this network. It
-	// is the address TestCreditTransferToAnUnknownAccountComesBackAsAC01 sends
-	// to, and it has to be well-formed: an IBAN that failed the schema's own
-	// pattern would be refused by the codec on the way out, so the message would
-	// never leave the debtor's bank and the creditor's bank would never get the
-	// chance to answer AC01.
-	unknownIBAN = "DE00000000000000000000"
-)
+func mustMint(c iban.Country, code iban.BankCode, serial uint64) string {
+	a, err := iban.New(c, code, serial)
+	if err != nil {
+		panic(err)
+	}
+	return string(a)
+}
 
 // tappedMessage is one message an actor received: who from, who to, and the
 // bytes.
@@ -96,8 +105,16 @@ type meshHarness struct {
 	mesh *Mesh
 	cfg  Config
 
-	debtor       *payment.Bank
-	creditor     *payment.Bank
+	debtor   *payment.Bank
+	creditor *payment.Bank
+	// The addresses the fixture's customers were minted, read off their accounts
+	// as they were opened. A test quoting one on an instruction reads it from
+	// here; nothing can write one down in advance.
+	debtorIBAN      string
+	creditorIBAN    string
+	debtorUSDIBAN   string
+	creditorUSDIBAN string
+
 	debtorAcct   deposit.Account
 	creditorAcct deposit.Account
 
@@ -348,6 +365,14 @@ func newHarness(t *testing.T, opts harnessOptions) *meshHarness {
 	h.debtor = h.admit(t, "Aurora Bank", "AURODEFFXXX", assets)
 	h.creditor = h.admit(t, "Banca Verde", "VERDITMMXXX", assets)
 	h.drain(t)
+	// And a fifth act, which is nobody's part of an admission: each of them pulls
+	// the scheme's routing directory. Being in the roster is what makes a bank
+	// reachable; holding a copy of the roster is what makes it able to reach
+	// anybody, and nothing publishes one. A fixture that skipped this would have
+	// two members neither of which could address the other — which is a real state
+	// and is what TestABankAdmittedAfterTheLastRefreshCannotBePaidUntilTheNextOne
+	// is about.
+	h.subscribeAll(t)
 	h.debtor = h.getBank(t, h.debtor.ID)
 	h.creditor = h.getBank(t, h.creditor.ID)
 	for _, p := range []*payment.Bank{h.debtor, h.creditor} {
@@ -364,8 +389,10 @@ func newHarness(t *testing.T, opts harnessOptions) *meshHarness {
 	if opts.lendToTheDebtor {
 		limit = harnessFunding
 	}
-	h.debtorAcct = h.openCustomer(t, h.debtor, "Alice", "EUR", limit, debtorIBAN)
-	h.creditorAcct = h.openCustomer(t, h.creditor, "Bruno", "EUR", 0, creditorIBAN)
+	h.debtorAcct = h.openCustomer(t, h.debtor, "Alice", "EUR", limit)
+	h.debtorIBAN = addressOf(t, h.debtorAcct)
+	h.creditorAcct = h.openCustomer(t, h.creditor, "Bruno", "EUR", 0)
+	h.creditorIBAN = addressOf(t, h.creditorAcct)
 	// Funding is TWO acts and the fixture has to run both. A deposit gives the
 	// customer a balance and leaves the bank holding vault cash; it does not raise
 	// the bank's reserve, because a bank cannot write in the central bank's book.
@@ -386,8 +413,10 @@ func newHarness(t *testing.T, opts harnessOptions) *meshHarness {
 		h.lodge(t, h.debtor.BIC, "EUR", harnessFunding)
 	}
 	if opts.twoAssets {
-		h.debtorUSDAcct = h.openCustomer(t, h.debtor, "Alice", "USD", 0, debtorUSDIBAN)
-		h.creditorUSDAcct = h.openCustomer(t, h.creditor, "Bruno", "USD", 0, creditorUSDIBAN)
+		h.debtorUSDAcct = h.openCustomer(t, h.debtor, "Alice", "USD", 0)
+		h.debtorUSDIBAN = addressOf(t, h.debtorUSDAcct)
+		h.creditorUSDAcct = h.openCustomer(t, h.creditor, "Bruno", "USD", 0)
+		h.creditorUSDIBAN = addressOf(t, h.creditorUSDAcct)
 		// Funded and lodged on the same terms as the euro side, and separately in
 		// both halves, because each is per asset: a deposit lands in the funded
 		// account's OWN vault, and a lodgement moves one asset's vault onto that
@@ -408,7 +437,7 @@ func newHarness(t *testing.T, opts harnessOptions) *meshHarness {
 	// compares them party by party and a mandate over a different account is a
 	// mismatch rather than an authority. MaxAmount 0 is unlimited, so the amount
 	// is never what refuses a collection here.
-	if h.mandate, err = h.bank(h.creditor.BIC).CreateMandate(ctx, h.debtorBIC, h.debtorRef(), h.creditorRef(creditorIBAN), 0); err != nil {
+	if h.mandate, err = h.bank(h.creditor.BIC).CreateMandate(ctx, h.debtorBIC, h.debtorRef(), h.creditorRef(h.creditorIBAN), 0); err != nil {
 		t.Fatalf("CreateMandate: %v", err)
 	}
 	if opts.revokeMandate {
@@ -450,7 +479,7 @@ func newHarness(t *testing.T, opts harnessOptions) *meshHarness {
 // once for both of them. See newHarness.
 func (h *meshHarness) admit(t *testing.T, name string, bic iso20022.BIC, assets []ledger.AssetCode) *payment.Bank {
 	t.Helper()
-	p, err := h.mesh.Admit(context.Background(), name, bic, assets)
+	p, err := h.mesh.Admit(context.Background(), name, bic, storetest.FixtureCountry, assets)
 	if err != nil {
 		t.Fatalf("Admit %s (%s): %v", name, bic, err)
 	}
@@ -458,6 +487,72 @@ func (h *meshHarness) admit(t *testing.T, name string, bic iso20022.BIC, assets 
 		t.Fatalf("Admit returned %s as %q; the scheme's answer arrives as a message, not from this call", bic, p.Status)
 	}
 	return p
+}
+
+// subscribeAll has every member of the scheme pull the routing directory as it
+// stands, through the same call an operator's POST /directory/banks/refresh
+// makes.
+//
+// It reads the roster to find the members, which is what a deployment can do and
+// no institution may: each of them then pulls for itself.
+func (h *meshHarness) subscribeAll(t *testing.T) {
+	t.Helper()
+	ctx := context.Background()
+	entries, err := h.net.ListRosterEntries(ctx)
+	if err != nil {
+		t.Fatalf("ListRosterEntries: %v", err)
+	}
+	for _, e := range entries {
+		if _, err := h.mesh.RefreshDirectory(ctx, e.BIC); err != nil {
+			t.Fatalf("RefreshDirectory %s: %v", e.BIC, err)
+		}
+	}
+}
+
+// admitWithoutTheRoster builds a bank the SETTLEMENT AGENT has answered and the
+// CLEARING HOUSE has never admitted: it holds a bank code, so it can address its
+// customers' accounts, and no member of this scheme can be told where to send
+// anything for it.
+//
+// It is three of admission's four acts driven directly, with AdmitMember left
+// out, and the mesh's own flow cannot produce it — the clearing house writes its
+// roster entry from the acknowledgement before it forwards one. What makes it
+// reachable is that the acts are separately callable, and what makes it worth
+// building is that it is the only state in which a bank has customers with money
+// and no route to anybody.
+//
+// A merely FOUNDED bank is not this. A bank no registry has answered has no
+// address range at all, so it can open no customer account whatever
+// (deposit.ErrNoIssuer) and has nobody to pay with.
+//
+// The bank is given an ACTOR, because the tests using this are about what the
+// mesh refuses rather than about who it can reach: without one, a submission is
+// refused "no bank actor for", which is true and is not the refusal being
+// measured.
+func (h *meshHarness) admitWithoutTheRoster(t *testing.T, name string, bic iso20022.BIC) *payment.Bank {
+	t.Helper()
+	ctx := context.Background()
+	applicant := h.bank(bic)
+	if _, err := applicant.FoundBank(ctx, name, bic, storetest.FixtureCountry, euroOnly); err != nil {
+		t.Fatalf("FoundBank %s: %v", bic, err)
+	}
+	ref := "unrostered-" + string(bic)
+	member, issuer, err := h.cb().OpenSettlementAccount(ctx, payment.AdmissionRequest{
+		Name: name, BIC: bic, Country: storetest.FixtureCountry, Asset: "EUR", Ref: ref,
+	})
+	if err != nil {
+		t.Fatalf("OpenSettlementAccount %s: %v", bic, err)
+	}
+	b, err := applicant.RecordMembership(ctx, payment.AdmissionAcknowledgement{
+		BIC: bic, Issuer: issuer, Accounts: member.Accounts, Ref: ref,
+	})
+	if err != nil {
+		t.Fatalf("RecordMembership %s: %v", bic, err)
+	}
+	if err := h.mesh.AddBank(ctx, b); err != nil {
+		t.Fatalf("AddBank %s: %v", bic, err)
+	}
+	return b
 }
 
 // getBank re-reads a bank from the store, which is the only way to learn what
@@ -579,15 +674,26 @@ func assertBankCount(t *testing.T, h *meshHarness, bic iso20022.BIC, want int) {
 // openCustomer opens a deposit account in one asset, addressable by an IBAN, with
 // an overdraft limit of the caller's choosing.
 func (h *meshHarness) openCustomer(t *testing.T, p *payment.Bank, name string,
-	asset ledger.AssetCode, overdraft ledger.Amount, iban string) deposit.Account {
+	asset ledger.AssetCode, overdraft ledger.Amount) deposit.Account {
 
 	t.Helper()
-	acct, err := p.Deposit.OpenAccount(context.Background(), p.CustomerSubledger, name, asset, p.ProductID, overdraft,
-		deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: iban})
+	acct, err := p.Deposit.OpenAccount(context.Background(), p.CustomerSubledger, name, asset, p.ProductID, overdraft)
 	if err != nil {
 		t.Fatalf("OpenAccount %s (%s): %v", name, asset, err)
 	}
 	return acct
+}
+
+// addressOf is the IBAN a register minted for an account.
+func addressOf(t *testing.T, a deposit.Account) string {
+	t.Helper()
+	for _, i := range a.Identifiers {
+		if i.Scheme == deposit.IdentifierIBAN {
+			return i.Value
+		}
+	}
+	t.Fatalf("account %s holds no IBAN", a.ID)
+	return ""
 }
 
 // record is the tap: every message an actor is handed lands here.
@@ -634,7 +740,7 @@ func (h *meshHarness) watch(fn func(to, from iso20022.BIC, raw []byte)) {
 // the whole of the happy path, as a value a test can alter one field of.
 func (h *meshHarness) creditTransferRequest(t *testing.T) payment.InitiatePaymentRequest {
 	t.Helper()
-	return h.creditTransferRequestTo(t, creditorIBAN)
+	return h.creditTransferRequestTo(t, h.creditorIBAN)
 }
 
 // creditTransferRequestTo is the same instruction addressed somewhere else.
@@ -653,20 +759,18 @@ func (h *meshHarness) creditTransferRequestTo(t *testing.T, iban string) payment
 		Creditor:    h.creditorRef(iban),
 		Amount:      harnessAmount,
 		Description: "invoice 42",
-		// Push: the creditor is the counterparty, so the request must name it — the
-		// NAME and the BIC. Nothing derives the second: the row it would be derived
-		// from is the counterparty's own.
-		// TestAWrongCounterpartyAgentIsRefusedByTheBankItNames sets a WRONG one on
-		// purpose, which is the only place in this package that should.
-		CreditorDetails: payment.PartyDetails{Agent: h.creditorBIC, Name: h.creditorAcct.Name},
+		// Push: the creditor is the counterparty, and the NAME is the whole of what
+		// this instruction says about it. No agent, because there is nowhere to put
+		// one that would be read: the submitting bank derives it from the address
+		// above, through its own copy of the routing directory.
+		CreditorDetails: payment.PartyDetails{Name: h.creditorAcct.Name},
 		// And the payer's own bank, which this fixture has to name and a customer's
 		// instruction does not. Mesh.Submit picks the SUBMITTING actor out of the
 		// two agents (submitterOf) before any bank's half runs, so a request that
 		// left this empty would be refused with "no bank actor for" — the mesh
 		// having nobody to hand it to. api's POST /payments fills the same field
 		// from the port's bound identity and the seed names it outright; this is a
-		// caller that names both, which is the case Submit's on-us guard says it
-		// covers.
+		// caller that names its own side, which every fixture here is.
 		DebtorDetails: payment.PartyDetails{Agent: h.debtorBIC, Name: h.debtorAcct.Name},
 	}
 }
@@ -703,18 +807,19 @@ func (h *meshHarness) directDebitRequest(t *testing.T) payment.InitiatePaymentRe
 	return payment.InitiatePaymentRequest{
 		Scheme:      payment.SchemeSEPADD,
 		Debtor:      h.debtorRef(),
-		Creditor:    h.creditorRef(creditorIBAN),
+		Creditor:    h.creditorRef(h.creditorIBAN),
 		Amount:      harnessAmount,
 		MandateID:   h.mandate.ID,
 		Description: "subscription 7",
-		// Pull: the debtor is the counterparty, so the request must name it. See
-		// creditTransferRequest on why the BIC sits beside the name.
-		DebtorDetails: payment.PartyDetails{Agent: h.debtorBIC, Name: h.debtorAcct.Name},
+		// Pull: the debtor is the counterparty, so the request names it — the NAME
+		// and nothing else. See creditTransferRequestTo on why no agent sits beside
+		// it.
+		DebtorDetails: payment.PartyDetails{Name: h.debtorAcct.Name},
 		// And the SUBMITTER, which on a pull is the payee's bank. Mesh.Submit picks
-		// the actor out of the two agents before any bank's half runs, so a request
-		// naming one side leaves it with nobody to hand the collection to. See
-		// creditTransferRequestTo, where the same field arrived for the same reason
-		// on the other side.
+		// the actor out of the submitting side's agent before any bank's half runs,
+		// so a request leaving it empty has nobody to hand the collection to. See
+		// creditTransferRequestTo, where the same field is here for the same
+		// reason on the other side.
 		CreditorDetails: payment.PartyDetails{Agent: h.creditorBIC, Name: h.creditorAcct.Name},
 	}
 }
@@ -738,7 +843,7 @@ func (h *meshHarness) submitDirectDebit(t *testing.T) payment.Payment {
 // seen the payment yet, which is the whole point of the mesh.
 func (h *meshHarness) submitCreditTransfer(t *testing.T) payment.Payment {
 	t.Helper()
-	return h.submitCreditTransferTo(t, creditorIBAN)
+	return h.submitCreditTransferTo(t, h.creditorIBAN)
 }
 
 func (h *meshHarness) submitCreditTransferTo(t *testing.T, iban string) payment.Payment {
@@ -763,18 +868,18 @@ func (h *meshHarness) submitCreditTransferInUSD(t *testing.T) payment.Payment {
 		Scheme: schemeUSDCT,
 		Debtor: payment.PartyRef{
 			Account:    h.debtorUSDAcct.ID,
-			Identifier: deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: debtorUSDIBAN},
+			Identifier: deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: h.debtorUSDIBAN},
 		},
 		Creditor: payment.PartyRef{
 			Account:    h.creditorUSDAcct.ID,
-			Identifier: deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: creditorUSDIBAN},
+			Identifier: deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: h.creditorUSDIBAN},
 		},
 		DebtorDetails: payment.PartyDetails{Agent: h.debtorBIC, Name: h.debtorUSDAcct.Name},
 		Amount:        harnessAmount,
 		Description:   "invoice 43",
-		// Push: the creditor is the counterparty, so the request must name it. See
-		// creditTransferRequest on why there is no Agent beside the name.
-		CreditorDetails: payment.PartyDetails{Agent: h.creditorBIC, Name: h.creditorUSDAcct.Name},
+		// Push: the creditor is the counterparty, so the request names it. See
+		// creditTransferRequestTo on why there is no Agent beside the name.
+		CreditorDetails: payment.PartyDetails{Name: h.creditorUSDAcct.Name},
 	})
 	if err != nil {
 		t.Fatalf("Submit in USD: %v", err)

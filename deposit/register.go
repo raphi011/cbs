@@ -8,6 +8,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/raphi011/cbs/iban"
 	"github.com/raphi011/cbs/interest"
 	"github.com/raphi011/cbs/ledger"
 	"github.com/raphi011/cbs/product"
@@ -62,6 +63,19 @@ type Register struct {
 
 	// clock is the time source. Override in tests to control time.
 	clock func() time.Time
+
+	// issuer is what this register mints addresses under.
+	//
+	// It is CONSTRUCTOR state rather than a per-call argument, for the reason
+	// payment.Identity is: as an argument, every caller asserts which bank's
+	// addresses it is issuing and the register believes it, and a caller that
+	// got it wrong opens an account at another bank's address. As constructor
+	// state there is no call at which a different answer could be given.
+	//
+	// It is not an institution, and this layer still does not know what one is.
+	// It is two strings a register was told, exactly as a BookID is. Where they
+	// come from is the payment layer's business.
+	issuer iban.Issuer
 }
 
 // NewRegister creates a deposit register over the given store, layered on the
@@ -73,14 +87,23 @@ type Register struct {
 // Share the clock with the backing ledger.Book so that audit timestamps and
 // snapshot dates line up across layers.
 //
+// issuer is what customer addresses are minted under; see Issuer. The zero
+// value is legal to construct and refuses to open an account (ErrNoIssuer),
+// because a bank that has not been allocated a bank code has no address to give
+// anybody — which is a real state, between founding and admission.
+//
 // Example:
 //
 //	s, _ := sqlite.Open(ctx, "", time.Now)
 //	book := ledger.NewBook(s, "bank", time.Now)
-//	reg := deposit.NewRegister(s.Deposit(), book, "bank", time.Now)
-func NewRegister(store Store, book *ledger.Book, id ledger.BookID, clock func() time.Time) *Register {
-	return &Register{store: store, gl: book, bookID: id, clock: clock}
+//	reg := deposit.NewRegister(s.Deposit(), book, "bank", time.Now,
+//		iban.Issuer{Country: iban.DE, BankCode: "99900001"})
+func NewRegister(store Store, book *ledger.Book, id ledger.BookID, clock func() time.Time, issuer iban.Issuer) *Register {
+	return &Register{store: store, gl: book, bookID: id, clock: clock, issuer: issuer}
 }
+
+// Issuer returns what this register mints addresses under.
+func (r *Register) Issuer() iban.Issuer { return r.issuer }
 
 // Store returns the underlying store, so a caller that needs to span several
 // layers in one unit of work can open the Update itself and then drive the …Tx
@@ -146,13 +169,18 @@ func (r *Register) appendAuditTx(ctx context.Context, tx Tx, eventType, entityID
 // stays on the account's own timeline for life. The asset comes before it so
 // that the two ledger-typed arguments are not adjacent and transposable.
 //
-// identifiers are the account's external addresses — an IBAN, later a card PAN.
-// Zero is legal and normal: an account nobody pays from outside the bank needs
-// no address. Each must be unique within THIS bank; a collision is
-// ErrIdentifierTaken. Uniqueness is not checked across banks, and does not need
-// to be: a bank-issued identifier carries its own issuer (an IBAN its bank
-// code, a PAN its BIN), so two banks cannot collide without one of them issuing
-// addresses it was never allocated.
+// identifiers are the account's external addresses OTHER than its IBAN, which
+// this bank issues rather than accepts: an account always comes out of here with
+// one, minted under the register's Issuer, and a caller supplying one is refused
+// ErrIBANIsIssued. Zero others is legal and normal — a card PAN is the only kind
+// this system has a constant for, and most accounts have none.
+//
+// Each must be unique within THIS bank; a collision is ErrIdentifierTaken.
+// Uniqueness is not checked across banks, and does not need to be: a bank-issued
+// identifier carries its own issuer (an IBAN its bank code, a PAN its BIN), so
+// two banks cannot collide without one of them issuing addresses it was never
+// allocated — which is now something this layer refuses rather than something it
+// relies on.
 //
 // Returns product.ErrProductNotFound, product.ErrProductRetired,
 // product.ErrKindMismatch, product.ErrVersionNotFound, and any error from the
@@ -184,6 +212,12 @@ func (r *Register) OpenAccountTx(ctx context.Context, tx Tx, subledger ledger.Su
 		if err := ident.Validate("identifier"); err != nil {
 			return Account{}, err
 		}
+		// This bank issues its own customers' IBANs; see ErrIBANIsIssued. The
+		// refusal is here as well as at AddIdentifier because opening is the
+		// other door, and it is the one the API's request body reaches.
+		if ident.Scheme == IdentifierIBAN {
+			return Account{}, ErrIBANIsIssued
+		}
 		// Siblings in THIS call, not only accounts already in the store.
 		// checkIdentifierFreeTx reads the register, and the account being opened
 		// is not in it yet, so `identifiers: [X, X]` — which the API accepts
@@ -191,22 +225,30 @@ func (r *Register) OpenAccountTx(ctx context.Context, tx Tx, subledger ledger.Su
 		// store's identifier rows carry (scheme, value) in their primary key, so
 		// the list means ONE address once it is written and two while it is in a
 		// Go slice. Refusing beats collapsing silently: a caller who listed one
-		// address twice
-		// either meant two different addresses and mistyped one, or is sending
-		// a list it has not deduplicated, and both are worth being told about.
+		// address twice either meant two different addresses and mistyped one,
+		// or is sending a list it has not deduplicated, and both are worth being
+		// told about.
 		//
-		// ContainsFunc over Matches and not Contains over ==, because
-		// [SE89-AURORA-1001, SE89AURORA1001] is that same list written twice —
-		// see Identifier.MatchValue. Comparing literally here would let one
-		// call open an account holding two spellings of one address, which is
-		// exactly what this check exists to refuse, and would then be caught by
-		// nothing: the account resolves, so no lookup ever complains.
+		// ContainsFunc over Matches, which for everything reaching here is ==:
+		// the loop above has already refused the only scheme with a second
+		// spelling. Matches anyway, because "the same address" is one rule and
+		// Identifier.Matches is where it lives — comparing literally would be a
+		// second definition of it, correct only until some other scheme grows a
+		// display form.
 		if slices.ContainsFunc(identifiers[:i], ident.Matches) {
 			return Account{}, ErrIdentifierTaken
 		}
 		if err := r.checkIdentifierFreeTx(ctx, tx, "", ident); err != nil {
 			return Account{}, err
 		}
+	}
+
+	// Minted BEFORE the ledger account, so a register with no bank code refuses
+	// having created nothing. The order costs nothing — both are in this Tx and
+	// roll back together — and it keeps the refusal cheap to reason about.
+	address, err := r.mintAddressTx(ctx, tx)
+	if err != nil {
+		return Account{}, err
 	}
 
 	gl, err := r.gl.CreateAccountTx(ctx, tx, subledger, name, ledger.Liability, asset)
@@ -220,13 +262,17 @@ func (r *Register) OpenAccountTx(ctx context.Context, tx Tx, subledger ledger.Su
 	}
 
 	acct := Account{
-		ID:          AccountID(id),
-		GLAccount:   gl.ID,
-		Name:        name,
-		Asset:       gl.Asset,
-		Status:      Active,
-		CreatedAt:   r.now(),
-		Identifiers: identifiers,
+		ID:        AccountID(id),
+		GLAccount: gl.ID,
+		Name:      name,
+		Asset:     gl.Asset,
+		Status:    Active,
+		CreatedAt: r.now(),
+		// The minted address FIRST, and the caller's other schemes after it.
+		// Nothing depends on the order — addressFor picks by scheme, not by
+		// position — but an account's own IBAN leading the list is what a
+		// statement and a console both show.
+		Identifiers: append([]Identifier{address}, identifiers...),
 	}
 	if err := tx.PutDepositAccount(ctx, r.bookID, acct); err != nil {
 		return Account{}, err
@@ -648,12 +694,12 @@ func (r *Register) ListAccountsWithTerms(ctx context.Context) ([]AccountWithTerm
 // collision, which is what makes a retried AddIdentifier succeed twice.
 //
 // "Already holds" is Identifier.Matches, because the lookup this delegates to
-// is: a bank that has issued SE89-AURORA-1001 has issued SE89AURORA1001, and
-// letting a second account take the other spelling would mint an ambiguous
-// address that every subsequent resolution refuses. The rule is one rule —
-// two identifiers that compact equal are one address — and it is the same one
-// on the read side, so uniqueness and routing cannot disagree about what has
-// been issued. See TestAddIdentifierRefusesAnotherSpellingOfAnAddressTheBankHasIssued.
+// is. No IBAN reaches here — a minted address is not checked against the
+// register, because a serial is handed out once, and every other door refuses
+// the scheme — so the two comparisons coincide on everything this actually
+// sees. It is written as the shared rule regardless: uniqueness and routing
+// disagreeing about what counts as one address is the defect this whole cluster
+// of comparisons exists to prevent.
 //
 // The check is a read followed by a write with no constraint behind it and no
 // lock above it, so two concurrent adds can both pass. That is deliberate. A
@@ -677,11 +723,17 @@ func (r *Register) checkIdentifierFreeTx(ctx context.Context, tx Tx, owner Accou
 	return nil
 }
 
-// AddIdentifier gives an existing account another external address.
+// AddIdentifier gives an existing account another external address, in a scheme
+// somebody else issues.
 //
 // Adding rather than replacing is the point of the plural: a customer keeps
 // their IBAN and gains a card PAN, and reissuing a card is a remove plus an add
 // against an account whose balance and history do not move.
+//
+// It refuses an IBAN (ErrIBANIsIssued). That address is this bank's to allocate,
+// not a caller's to assert, and the act that replaces one is ReissueIdentifier —
+// which mints and withdraws together, because remove-then-add no longer
+// composes when the add is refused.
 func (r *Register) AddIdentifier(ctx context.Context, id AccountID, ident Identifier) error {
 	return r.store.Update(ctx, func(ctx context.Context, tx Tx) error {
 		return r.AddIdentifierTx(ctx, tx, id, ident)
@@ -693,6 +745,9 @@ func (r *Register) AddIdentifierTx(ctx context.Context, tx Tx, id AccountID, ide
 	if err := ident.Validate("identifier"); err != nil {
 		return err
 	}
+	if ident.Scheme == IdentifierIBAN {
+		return ErrIBANIsIssued
+	}
 	acct, err := tx.GetDepositAccount(ctx, r.bookID, id)
 	if err != nil {
 		return err
@@ -700,19 +755,18 @@ func (r *Register) AddIdentifierTx(ctx context.Context, tx Tx, id AccountID, ide
 	if err := r.checkIdentifierFreeTx(ctx, tx, id, ident); err != nil {
 		return err
 	}
-	// Matches and not ==: an account holds an ADDRESS, and the two spellings of
-	// one IBAN are one address. Comparing literally would append the compact
-	// form beside the display form and leave the account holding what looks
-	// like two addresses — which nothing downstream would report, because both
-	// resolve to it, but which makes a payment quoting neither of them
-	// ErrAmbiguousAddress: the account would have lost the ability to be paid
-	// without an address being named. See addressFor in the payment package,
-	// and TestAddIdentifierIsANoOpForAnotherSpellingTheAccountAlreadyHolds.
+	// Matches and not ==: an account holds an ADDRESS, and a scheme with two
+	// spellings of one would otherwise leave the account holding what looks like
+	// two. Nothing downstream would report that, because both resolve to it, but
+	// a payment quoting neither becomes ErrAmbiguousAddress — the account would
+	// have lost the ability to be paid without an address being named. See
+	// addressFor in the payment package. No scheme reaching here has two
+	// spellings today; the one that did is the one this method refuses.
 	//
-	// The stored form is the one KEPT. A caller adding the compact spelling of
-	// an address the account holds hyphenated has told this bank nothing new,
-	// and rewriting the stored value would edit what a statement shows and what
-	// every earlier payment recorded on the strength of a no-op.
+	// The stored form is the one KEPT. A caller re-adding an address the account
+	// already holds has told this bank nothing new, and rewriting the stored
+	// value would edit what a statement shows and what every earlier payment
+	// recorded, on the strength of a no-op.
 	for _, got := range acct.Identifiers {
 		if got.Matches(ident) {
 			return nil // already held by this account: a no-op, not an error
@@ -728,13 +782,13 @@ func (r *Register) AddIdentifierTx(ctx context.Context, tx Tx, id AccountID, ide
 // RemoveIdentifier withdraws an external address. Removing one that is not held
 // is a no-op, for the same reason adding one twice is.
 //
-// It withdraws the address in EITHER spelling: a caller quoting SE89AURORA1001
-// withdraws an account's SE89-AURORA-1001, because they are one address and the
-// rest of the system already treats them as one. The alternative is worse than
-// inconsistent — removal of an unheld identifier is a no-op by design, so a
-// literal comparison would leave a bank that quoted the compact form believing
-// it had withdrawn an address that is still live and still payable, with no
-// error to say otherwise. See
+// It withdraws the address in EITHER spelling: a caller quoting
+// DE20 9990 0001 0000 0000 01 withdraws the account's DE20999000010000000001,
+// because they are one address and the rest of the system already treats them as
+// one. The alternative is worse than inconsistent — removal of an unheld
+// identifier is a no-op by design, so a literal comparison would leave a bank
+// that quoted the grouped form believing it had withdrawn an address that is
+// still live and still payable, with no error to say otherwise. See
 // TestRemoveIdentifierWithdrawsTheAddressInEitherSpelling.
 //
 // What the audit event records is the identifier as STORED, not as quoted. The

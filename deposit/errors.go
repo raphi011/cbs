@@ -104,4 +104,42 @@ var (
 	// is also what closes the within-bank race that comes with enforcing
 	// uniqueness in the domain rather than with a constraint.
 	ErrIdentifierAmbiguous = errors.New("identifier resolves to more than one account")
+
+	// ErrIBANIsIssued is a caller supplying an IBAN — at OpenAccount, or at
+	// AddIdentifier — rather than being given one.
+	//
+	// A BANK ISSUES ITS CUSTOMERS' ADDRESSES. It allocates them out of the bank
+	// code its country's registry allocated to it, which is what makes the code
+	// inside an address a true statement about who holds the account: a bank
+	// cannot issue an address that routes to somebody else, because it has no
+	// other code to issue under.
+	//
+	// A caller-supplied IBAN is exactly the hole that closes. It would let one
+	// bank open an account at another bank's address, and nothing downstream
+	// could tell the difference — the address resolves here, and a directory says
+	// it belongs there.
+	//
+	// The refusal is only for this scheme, and the plural on Identifiers is why
+	// AddIdentifier survives at all: a card PAN is issued by a scheme somewhere
+	// else and quoted to this bank, so it arrives from a caller and always will.
+	// A customer wanting a second IBAN opens a second ACCOUNT, which is already
+	// the rule for a second currency.
+	ErrIBANIsIssued = errors.New("an IBAN is issued by this bank, not supplied to it")
+
+	// ErrNoIssuer is a Register with no bank code, asked to open an account.
+	//
+	// A register that mints addresses has to know what to mint them under, and
+	// there is no sensible default — every other value would be some other
+	// bank's. NewRegister takes the issuer for that reason, and this fires
+	// whenever it has not been allocated one.
+	//
+	// It is a REAL STATE and not only a wiring mistake, which is what makes it
+	// worth a sentinel rather than a panic: a bank code is a national registry's
+	// to give, and a bank that has been licensed and not yet answered has none.
+	// Such a bank works — it holds a book, a chart of accounts and a product —
+	// and cannot give a customer an address, because it has no range to give one
+	// out of. Every account here is opened with one, so what it really cannot do
+	// is take a customer at all. That is what a bank between its licence and its
+	// allocation is, and this is the refusal that says so.
+	ErrNoIssuer = errors.New("this register has no bank code to issue addresses under")
 )

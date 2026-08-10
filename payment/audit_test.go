@@ -140,6 +140,25 @@ func auditBooks(t *testing.T, sys *testSystem) []ledger.BookID {
 	return out
 }
 
+// withoutRefreshes drops the directory refreshes a fixture's admissions left
+// behind.
+//
+// storetest.Admit subscribes to the routing directory after admitting, which is
+// a fifth act and no part of an admission; the event it appends is keyed by the
+// subscribing bank's own BIC, so it answers the same entity filter as the two
+// events about that bank's row. A case that listed it would be asserting how the
+// helper is composed rather than what the acts under test do. The cases that ARE
+// about a refresh assert on it directly.
+func withoutRefreshes(events []ledger.AuditEvent) []ledger.AuditEvent {
+	out := make([]ledger.AuditEvent, 0, len(events))
+	for _, e := range events {
+		if e.Type != ledger.EventDirectoryRefreshed {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
 func eventTypes(events []ledger.AuditEvent) string {
 	out := make([]string, len(events))
 	for i, e := range events {
@@ -220,12 +239,14 @@ func TestPaymentAuditCoversTheNettingFlow(t *testing.T) {
 			ledger.EventPaymentSettled,
 		}, " "))
 
-	// The settlement agent's is three lines long: it opened an account for each
-	// member and it discharged one cut-off. It has never heard of a payment,
-	// which is what netting means.
+	// The settlement agent's is five lines long: it allocated a bank code and
+	// opened an account for each member, and it discharged one cut-off. It has
+	// never heard of a payment, which is what netting means.
 	assertEqual(t, "the settlement agent's trail", eventTypes(cbAudit(t, sys, "")),
 		strings.Join([]string{
+			ledger.EventBankCodeAllocated,
 			ledger.EventSettlementAccountOpened,
+			ledger.EventBankCodeAllocated,
 			ledger.EventSettlementAccountOpened,
 			ledger.EventCycleSettled,
 		}, " "))
@@ -240,6 +261,10 @@ func TestPaymentAuditCoversTheNettingFlow(t *testing.T) {
 	//
 	// No cycle and no settlement. A member is told the outcome of a cut-off and
 	// posts against it; it does not run one.
+	//
+	// The directory refreshes this fixture's admissions leave behind are filtered
+	// out — see ofType. They are neither an admission's act nor a payment's, and a
+	// list that included them would be asserting how storetest.Admit is composed.
 	eachBank := strings.Join([]string{
 		ledger.EventParticipantAdded,
 		ledger.EventMembershipRecorded,
@@ -248,8 +273,8 @@ func TestPaymentAuditCoversTheNettingFlow(t *testing.T) {
 		ledger.EventPaymentSettled,
 		ledger.EventPaymentSettled,
 	}, " ")
-	assertEqual(t, "Bank A's trail", eventTypes(bankAudit(t, sys, a.BIC, "")), eachBank)
-	assertEqual(t, "Bank B's trail", eventTypes(bankAudit(t, sys, b.BIC, "")), eachBank)
+	assertEqual(t, "Bank A's trail", eventTypes(withoutRefreshes(bankAudit(t, sys, a.BIC, ""))), eachBank)
+	assertEqual(t, "Bank B's trail", eventTypes(withoutRefreshes(bankAudit(t, sys, b.BIC, ""))), eachBank)
 
 	// Every event names the entity it is about, so ?entity= is usable — and the
 	// answer differs by institution, which is the point. The clearing house holds
@@ -271,12 +296,13 @@ func TestPaymentAuditCoversTheNettingFlow(t *testing.T) {
 	// recorded what the scheme told it. The other two acts of its admission are
 	// keyed by its BIC — and a bank's id IS its BIC, so what separates them is the
 	// LOG THEY ARE IN. See TestEachActOfAnAdmissionLeavesItsOwnAuditEvent.
-	assertEqual(t, "Bank A's own trail for itself", eventTypes(bankAudit(t, sys, a.BIC, string(a.ID))),
+	assertEqual(t, "Bank A's own trail for itself",
+		eventTypes(withoutRefreshes(bankAudit(t, sys, a.BIC, string(a.ID)))),
 		ledger.EventParticipantAdded+" "+ledger.EventMembershipRecorded)
 	assertEqual(t, "the clearing house on Bank A", eventTypes(csmAudit(t, sys, string(a.ID))),
 		ledger.EventMemberAdmitted)
 	assertEqual(t, "the settlement agent on Bank A", eventTypes(cbAudit(t, sys, string(a.ID))),
-		ledger.EventSettlementAccountOpened)
+		ledger.EventBankCodeAllocated+" "+ledger.EventSettlementAccountOpened)
 	// And Bank B's log says nothing about Bank A at all, which is the claim the
 	// one shared log could not make.
 	assertEqual(t, "Bank B on Bank A", eventTypes(bankAudit(t, sys, b.BIC, string(a.ID))), "")
@@ -524,7 +550,11 @@ func TestParticipantAuditPayloadDropsLiveHandles(t *testing.T) {
 	p, err := storetest.Admit(ctx, sys.nets, "Bank A", testBIC, euroOnly)
 	assertNoError(t, err)
 
-	events := bankAudit(t, sys, testBIC, string(p.ID))
+	// The directory refresh is in this log too, and it is dropped rather than
+	// asserted: its payload is a snapshot of other institutions rather than this
+	// bank's own row, and what this case is about is the two events whose payload
+	// IS the row.
+	events := withoutRefreshes(bankAudit(t, sys, testBIC, string(p.ID)))
 	assertEqual(t, "events about the bank's own row", eventTypes(events),
 		ledger.EventParticipantAdded+" "+ledger.EventMembershipRecorded)
 
@@ -590,12 +620,18 @@ func TestEachActOfAnAdmissionLeavesItsOwnAuditEvent(t *testing.T) {
 	assertNoError(t, err)
 
 	// The bank's own two, in its own log and in its own order: it founded itself
-	// and later recorded what the scheme told it.
-	assertEqual(t, "the bank's own trail", eventTypes(bankAudit(t, sys, testBIC, "")),
+	// and later recorded what the scheme told it. The subscription that follows in
+	// this fixture is a fifth act and no part of an admission (storetest.Admit),
+	// so it is dropped rather than listed.
+	assertEqual(t, "the bank's own trail",
+		eventTypes(withoutRefreshes(bankAudit(t, sys, testBIC, ""))),
 		ledger.EventParticipantAdded+" "+ledger.EventMembershipRecorded)
-	// The settlement agent opened the account.
+	// The settlement agent allocated a bank code and opened the account. Two
+	// events because they are two registers: a reserve account is at a central
+	// bank and a Bankleitzahl comes from a registry, and this institution is
+	// standing in for both.
 	assertEqual(t, "the settlement agent's trail", eventTypes(cbAudit(t, sys, "")),
-		ledger.EventSettlementAccountOpened)
+		ledger.EventBankCodeAllocated+" "+ledger.EventSettlementAccountOpened)
 	// The clearing house put the address in the roster.
 	assertEqual(t, "the clearing house's trail", eventTypes(csmAudit(t, sys, "")),
 		ledger.EventMemberAdmitted)

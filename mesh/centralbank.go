@@ -403,6 +403,17 @@ func (cb *centralBank) receiveReturn(ctx context.Context, from iso20022.BIC, hdr
 // and ONE currency, and the BIC is what it keys its own member row by. See
 // payment.ReadAdmissionRequest, where the address is validated.
 //
+// # It answers for two registers, and the second is not a book
+//
+// One request, two acts. The settlement account is opened in this institution's
+// own ledger; the BANK CODE is allocated in a register that has nothing to do
+// with books, and this institution keeps it because it is standing in for four
+// national registries as well as for one settlement agent. The applicant asks for
+// both in one message — the register by naming its country of operation, the
+// account by naming a currency — and one acknowledgement carries both answers
+// back. See payment.allocateBankCodeTx, and the bank_codes statement in
+// store/sqlite/schema/centralbank/0001_init.sql for where the fudge is named.
+//
 // # It answers acmt.011 and NOT pacs.002
 //
 // A status report is about a payment transaction, and this is not one: no
@@ -435,12 +446,13 @@ func (cb *centralBank) receiveAdmission(ctx context.Context, from iso20022.BIC, 
 		return cb.refuseAdmission(from, doc, fmt.Errorf(
 			"mesh: %s could not read the admission request %s sent it: %w", cb.bic, from, err))
 	}
-	member, err := cb.ops.OpenSettlementAccount(ctx, in)
+	member, issuer, err := cb.ops.OpenSettlementAccount(ctx, in)
 	if err != nil {
 		return cb.refuseAdmission(from, doc, err)
 	}
 	env, err := payment.AdmissionAcknowledgementMessage(payment.AdmissionAcknowledgement{
 		BIC:      in.BIC,
+		Issuer:   issuer,
 		Accounts: member.Accounts,
 		Ref:      in.Ref,
 	}, payment.MessageContext{

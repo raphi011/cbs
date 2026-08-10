@@ -45,6 +45,20 @@ type Tx interface {
 	// one into ErrIdentifierNotFound, the account, and ErrIdentifierAmbiguous.
 	ListDepositAccountsByIdentifier(ctx context.Context, book ledger.BookID, ident Identifier) ([]Account, error)
 
+	// NextAddressSerial issues the next account serial this book mints an IBAN
+	// from: 1, 2, 3, …, dense and gap-free.
+	//
+	// A counter OF ITS OWN, and that is the whole reason it is a method rather
+	// than a NextID call. NextID shares one counter per book across every prefix,
+	// so an address drawn from it would carry whatever number the book happened
+	// to be on — and the gaps between one account and the next would be a record
+	// of unrelated work. See Register.mintAddressTx.
+	//
+	// Allocated in the caller's transaction and rolled back with it, like every
+	// other counter here. A store implementing this outside the unit of work
+	// would burn an address on a failed open.
+	NextAddressSerial(ctx context.Context, book ledger.BookID) (uint64, error)
+
 	PutHold(ctx context.Context, book ledger.BookID, h Hold) error
 	GetHold(ctx context.Context, book ledger.BookID, id HoldID) (Hold, error)
 	ListHoldsForAccount(ctx context.Context, book ledger.BookID, id AccountID) ([]Hold, error)
@@ -122,10 +136,10 @@ func SnapshotDateKey(date time.Time) string { return date.Format("2006-01-02") }
 //     subledgers in store/sqlite/schema/bank/0001_init.sql.
 //   - ListDepositAccountsByIdentifier matches with Identifier.Matches — the
 //     scheme exactly, and the value under that scheme's comparison rule, which
-//     for an IBAN means with display separators stripped from BOTH sides. A
+//     for an IBAN means separators stripped and case folded on BOTH sides. A
 //     store that compared raw values would leave an account stored as
-//     SE89-AURORA-1001 unreachable from a message carrying SE89AURORA1001 —
-//     which is the same address.
+//     DE20999000010000000001 unreachable from a customer who typed it
+//     DE20 9990 0001 0000 0000 01, the way their statement prints it.
 //     (ListDepositAccountsByIdentifierMatchesAnIBANThroughItsSeparators.) It is
 //     book-scoped like everything else here, orders created_at then seq, and
 //     returns an empty slice — never a sentinel — when nothing matches. It must

@@ -658,10 +658,28 @@ semantics under one type in one pass is the ambiguity that makes a design rot.
 Also absent: fee schedules, tiered and bonus rates, and capitalisation frequency.
 A catalogue carrying only the parameters the code reads is the honest version.
 
-**Account addressing.** Format validation including the mod-97 check digit — it
-would make the seed's readable `SE89-AURORA-1001` illegal and costs more teaching
-than it buys — a proxy-alias registry, a second identifier scheme, and BIC-level
-addressing.
+**Account addressing.** A proxy-alias registry and a second identifier scheme.
+Two things have shipped. Format validation: an address is an ISO 13616 IBAN in
+four countries, with mod-97-10 and, where the country has one of its own, Italy's
+CIN or France's clé RIB. And **routing**: a bank code is allocated by a registry
+at admission, published on the clearing house's roster, copied by each member
+into its own `routing_directory`, and derived from at submission — so an
+instruction carries an address and a name and names no bank at all.
+
+What is still absent is the rest of the registry — eighty-odd countries, which is
+licensed reference data — and **virtual IBANs**, where a PSP issues addresses
+under another institution's bank-code range. That case breaks "the bank code
+identifies the account holder's bank", which the whole routing design rests on,
+and it is a live regulatory argument in SEPA rather than a hypothetical.
+
+**Verification of Payee** is the natural sequel and is not here. Once a payer
+stops typing a BIC, the NAME is the only thing they assert, which is exactly why
+the Instant Payments Regulation made name-checking mandatory across SEPA in
+October 2025. It has a real message pair — `acmt.023` IdentificationVerification-
+Request and `acmt.024` IdentificationVerificationReport — and it would be the
+first sanctioned crack in "no bank reads another bank's register": a bounded
+question with a bounded answer. That is a rule reversal, and rule reversals get
+their own commit.
 
 **ISO 20022.** `pain.001`/`pain.008` customer initiation, `camt.056`/`pacs.007`
 recalls and reversals, runtime XSD validation, and message signing. Two are

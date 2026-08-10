@@ -147,14 +147,15 @@ func (s Shape) String() string { return s.dir }
 // The three shapes. See Shape.
 var (
 	// Bank is one member bank: a ledger, a deposit register, products, lending,
-	// its own single row in banks, the mandates it holds as creditor bank, its
-	// own copy of each payment it is a party to, and the advices it was sent.
+	// its own single row in banks, its copy of the scheme's routing directory,
+	// the mandates it holds as creditor bank, its own copy of each payment it is
+	// a party to, and the advices it was sent.
 	Bank = shape("bank",
 		"books", "ledgers", "subledgers", "accounts", "transactions", "entries",
 		"deposit_accounts", "deposit_account_identifiers", "holds", "snapshots", "overdraft_terms",
 		"products", "product_versions",
 		"facilities", "installments", "facility_terms",
-		"banks", "bank_assets", "mandates", "payments", "settlement_advices",
+		"banks", "bank_assets", "routing_directory", "mandates", "payments", "settlement_advices",
 		"audit_events", "id_sequences").withPaymentLegs()
 
 	// CSM is the clearing house: a roster, cycles, its own copy of each payment
@@ -165,11 +166,12 @@ var (
 		"audit_events", "id_sequences").withPaymentCycle()
 
 	// CentralBank is the settlement agent: a ledger holding the members' reserve
-	// accounts, its own member register, the settlements it discharged, and no
+	// accounts, its own member register, the register of bank codes it allocates
+	// as four national registries in one, the settlements it discharged, and no
 	// customers and no payments.
 	CentralBank = shape("centralbank",
 		"books", "ledgers", "subledgers", "accounts", "transactions", "entries",
-		"settlement_members", "settlement_member_accounts",
+		"bank_codes", "settlement_members", "settlement_member_accounts",
 		"settlements", "settlement_positions",
 		"audit_events", "id_sequences")
 )

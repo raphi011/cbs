@@ -131,6 +131,11 @@ export function navFor(identity: Identity): NavItem[] {
         // and what this bank sees is its own customers' authorisations. See
         // payment.Mandate.
         { href: `${base}/mandates`, label: "Mandates", icon: FileSignature },
+        // This bank's COPY of the scheme's directory, which is a different
+        // screen from the clearing house's entry of the same name: that one is
+        // the publication, this one is a snapshot of it in this bank's own
+        // database, and every payment this bank submits routes from it.
+        { href: `${base}/directory`, label: "Directory", icon: Search },
         { href: `${base}/ledger`, label: "General ledger", icon: BookOpen },
         { href: `${base}/transactions`, label: "Transactions", icon: ArrowLeftRight },
         { href: `${base}/facilities`, label: "Facilities", icon: Landmark },

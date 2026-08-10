@@ -128,38 +128,37 @@ export const chapter: Chapter = {
     },
     {
       kind: "mc",
-      id: "ch12-q8",
+      id: "ch12-q23",
       difficulty: "core",
-      concept: "clearing-vs-settlement",
+      concept: "routing-directory",
       prompt:
-        "What is the defining difference between the 'Cleared' state and the 'Settled' state in the SEPA payment lifecycle?",
+        "A bank is admitted to the scheme this morning. A member that last refreshed its directory yesterday tries to send that bank's customer a credit transfer, and is refused before either leg posts. What has happened?",
       options: [
-        "In 'Cleared', the creditor leg has posted; in 'Settled', the debtor leg has also posted",
-        "In 'Cleared', net positions are computed but no central-bank reserves have moved; in 'Settled', reserves have moved and the creditor leg has posted",
-        "In 'Cleared', the payment is final and irrevocable; in 'Settled', the creditor leg is still pending",
-        "In 'Cleared', both banks have confirmed receipt; in 'Settled', the central bank has confirmed",
+        "The new bank has not been allocated a bank code yet, so it has no addresses anybody could pay",
+        "The payer's bank routes from its own copy of the scheme's published directory, and that copy predates the admission — one refresh, and the same payment works",
+        "The admission is still in flight at the clearing house, and the refusal clears itself once the last message lands",
+        "A newly issued bank code has not reached the check-digit tables, so the payee's IBAN fails validation",
       ],
       answer: 1,
       explanation:
-        "[[clearing-vs-settlement]] — clearing computes the **net** amounts each bank owes, but no central-bank money moves yet. Settlement is the moment of finality: reserves transfer between banks at the central bank and the [[creditor-leg]] posts, delivering funds to the payee. Only after settlement can a return unwind the flow.",
+        "A member does not ask the clearing house where an address goes; it **subscribes**. It pulls the published directory as a snapshot, replaces its own copy wholesale, and between two pulls it routes from whatever it was last given. So [[routing-directory|staleness is real]] — and it is the design's behaviour rather than a defect being tolerated, because every real routing directory works exactly this way. Being *in* the scheme's directory and *holding a copy of* it are two separate things, and [[bank-admission|admission]] does the first only: it fills nobody's copy, the new bank's own included, so the new member cannot pay anyone either until it refreshes.\n\nWhat makes holding a copy safe is one invariant: **a bank code is never reassigned.** A copy that is behind is therefore *incomplete* and never *wrong* — the failure is \"I cannot route this yet\", never \"I routed it to the wrong bank\".\n\nAnd notice what the refusing bank cannot say: whether no such bank is in the scheme at all, or whether its own copy simply predates it. Those have different remedies, and telling them apart would mean asking the clearing house — which is the very lookup the subscription replaces. **This is the price of IBAN-only, and it is what SEPA pays too**: SEPA works from an address alone because every bank subscribes to such a table, not because routing is computable from an IBAN.",
     },
     {
       kind: "mc",
       id: "ch12-q9",
       difficulty: "challenge",
-      concept: "mandate",
+      concept: "bank-code",
       prompt:
-        "A creditor submits an SDD for €450 against a mandate capped at €400. The mandate exists, is active, and both parties match. What does the scheme do?",
+        "A developer proposes reading the payee's bank out of an IBAN with `iban[4:8]` — four characters, fixed offset. Against German addresses it is correct. Why does it break?",
       options: [
-        "Processes the payment — the cap is advisory when all other checks pass",
-        "Refuses it for exceeding the cap, before any posting",
-        "Approves €400 and queues the €50 excess for the next cycle",
-        "Automatically updates the mandate cap to €450 and proceeds",
+        "The bank code is encrypted and has to be decoded first",
+        "The bank code is variable-length and sits at a country-dependent offset",
+        "The bank code appears only on the message, never inside the address",
+        "The check digits occupy those positions, not the bank code",
       ],
       answer: 1,
       explanation:
-        "The [[mandate]] amount cap is a hard gate, not advisory. Even when every other mandate check passes, a collection exceeding the mandate limit is refused **for exceeding it** before any posting occurs. There is no partial approval or automatic cap increase.",
-      explore: { href: "/", label: "Pick a bank, then Mandates" },
+        "[[bank-code]] — Germany's Bankleitzahl really is 8 digits at offset 4, so a one-country system can take the shortcut and be *right*. Italy's ABI is 5 digits at offset **5**, behind a CIN check letter that is not part of it; Sweden's is 3 digits; France's is 5. Nothing can extract a bank code without first knowing which country's structure applies — which is exactly why a real system carries the ISO 13616 structure table rather than a slice expression.\n\nAnd extracting it is only half the problem. A bank code is **allocated** by a national registry and travels on a message; it is never computed from anything, least of all from a BIC. Knowing which institution holds a code therefore takes a directory of every participant's allocation — the scheme publishes one, and every member routes from its own copy. See [[routing-directory]].",
     },
     {
       kind: "mc",
@@ -180,26 +179,32 @@ export const chapter: Chapter = {
       explore: { label: "View payments", href: "/clearing-house/payments" },
     },
     {
-      kind: "truefalse",
+      kind: "mc",
       id: "ch12-q11",
       difficulty: "intro",
-      concept: "scheme-direction-pull",
+      concept: "iban-check-digit",
       prompt:
-        "SEPA Direct Debit (SDD) is a push payment — the debtor's bank initiates the transfer to the creditor.",
-      answer: false,
+        "A payer types an IBAN into a send form and the form rejects it immediately, before any request leaves the browser. What did it just prove?",
+      options: [
+        "That no bank holds that address",
+        "That the address was probably mistyped — a character is wrong, or two are swapped",
+        "That the payee's bank is not reachable in this scheme",
+        "That the payee's name does not match the address",
+      ],
+      answer: 1,
       explanation:
-        "SDD is a [[scheme-direction-pull]] payment. The **creditor's** bank initiates the collection from the debtor's account. Because the creditor is reaching into someone else's account, a signed [[mandate]] is required before any debit can proceed.",
+        "[[iban-check-digit]] — positions 3 and 4 of an IBAN are mod-97-10 check digits over the rest of it, and they exist to catch a typo **offline**: before any request, any message, any bank. That is the only refusal in a payment system that needs nothing but the string.\n\nWhat it cannot say is whether the address **exists**. Measured over four published example IBANs: every one of 810 single-digit substitutions caught, and every one of 787 transpositions of two different digits — at any distance, not just neighbouring ones. But over `DE89370400440532013000`, 141 of 15,390 two-character errors slip through, 0.92%. A well-formed address belonging to nobody passes every check there is, and only the bank that keeps the register can say so — which is what an `AC01` rejection is.",
     },
     {
       kind: "truefalse",
       id: "ch12-q12",
       difficulty: "core",
-      concept: "payment-lifecycle",
+      concept: "address-issuance",
       prompt:
-        "Once mandate checks pass for an SDD, the accounting postings follow a different path from an SCT — the pull direction requires separate posting logic.",
+        "A customer opening an account may bring an IBAN of their choosing, and the bank records it.",
       answer: false,
       explanation:
-        "Once the mandate gate clears, SDD uses **exactly the same posting engine** as SCT: debtor → clearing suspense → central-bank reserves → creditor. This is a key insight of the [[payment-lifecycle]]: only the rules governing initiation and authorisation differ — the underlying ledger choreography is shared by both schemes.",
+        "[[address-issuance]] — a bank **issues** its customers' IBANs and refuses one offered to it. Opening an account allocates its address there and then, from the country and [[bank-code]] that bank holds.\n\nThe refusal is the point rather than a formality. A bank can only mint under the allocation it was given, so it *cannot* issue an address that routes somewhere else — which is what makes the bank code inside an IBAN a fact about who holds the account rather than a claim somebody typed. Accepting an address would hand that guarantee to whoever filled in the form.\n\nOther schemes are different, and the plural set is why: a card PAN is issued by a card scheme elsewhere and **is** quoted to the bank. It is only the address a bank issues that a bank will not accept.",
     },
     {
       kind: "truefalse",
@@ -328,7 +333,7 @@ export const chapter: Chapter = {
         "When a bank submits a pacs.008, it looks up the payee's name in the payee's bank's deposit register before building the message.",
       answer: false,
       explanation:
-        "No bank reads another bank's register to build a payment — that crossing is what closed, and it's what this question asks about. The [[counterparty-details|payee's name]] is asserted on the instruction instead: the payer types it, and the submitting bank stores it on the payment exactly as received, refusing to submit at all if it is missing. The submitting bank fills in only its OWN side from its own register — it is the authority on its own customer, never on the other bank's.\n\n**The payee's bank is asserted too.** It is tempting to expect the `CdtrAgt` BIC to be *derived* from the payee's own bank record — name from the payer, routing from the network — but deriving it would mean reading a row belonging to a bank the payer's bank shares no database with. The payer supplies the BIC, exactly as they supply the IBAN, and a missing or malformed one is refused.\n\n**What makes asserting it safe is a second change, and neither works alone.** Address resolution no longer sweeps every bank's register: the receiving bank resolves the address in *its own* register and answers `AC01` when it holds no such account. So a payer who names the wrong bank does not divert the money — that bank simply does not hold the address and refuses. Typing a BIC now chooses which bank you *ask*, not which bank gets paid.",
+        "No bank reads another bank's register to build a payment — that crossing is what closed, and it's what this question asks about. The [[counterparty-details|payee's name]] is asserted on the instruction instead: the payer types it, and the submitting bank stores it on the payment exactly as received, refusing to submit at all if it is missing. The submitting bank fills in only its OWN side from its own register — it is the authority on its own customer, never on the other bank's.\n\n**The payee's BANK is the opposite case, and it is not on the instruction at all.** It is *derived*, from the [[bank-code|bank code]] inside the payee's IBAN — but not out of the payee's own bank record, which is the row the payer's bank cannot see. It comes out of this bank's own copy of the scheme's [[routing-directory|published directory]], and that copy is what makes the derivation possible at all. **This is what IBAN-only means**, and it is what SEPA has been since February 2016.\n\n**Why that element is worth taking away from the payer** is that it is an address rather than a description: the `CdtrAgt` BIC is what the clearing house relays on, without reading anything of its own. Measured, before the derivation existed: a push whose creditor agent named the payer's own bank came straight back to its sender, and a pull whose debtor agent named the collector had the *collecting* bank post the debit in the payer's bank's book. Neither is expressible now, because there is no field to put a bank in. What still makes a misdirected message safe is unchanged: a receiving bank resolves an address in *its own* register and answers `AC01` when it holds no such account.",
       explore: { label: "View payments", href: "/clearing-house/payments" },
     },
     {

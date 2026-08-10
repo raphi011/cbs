@@ -12,23 +12,65 @@ import (
 	"testing"
 
 	. "github.com/raphi011/cbs/deposit"
+	"github.com/raphi011/cbs/iban"
 	"github.com/raphi011/cbs/ledger"
 )
 
-func TestOpenAccountWithIdentifier(t *testing.T) {
+// pan is a scheme somebody else issues, which is what makes it the right
+// counterparty for every rule about identifiers-in-general. This package has a
+// constant for IBAN alone, because an IBAN is the only kind it MINTS; a card
+// number is quoted to a bank by the scheme that issued it, so it arrives from a
+// caller and always will.
+const pan IdentifierScheme = "PAN"
+
+func card(v string) Identifier { return Identifier{Scheme: pan, Value: v} }
+
+// ibanOf returns the address the register minted for an account.
+func ibanOf(t *testing.T, a Account) Identifier {
+	t.Helper()
+	for _, i := range a.Identifiers {
+		if i.Scheme == IdentifierIBAN {
+			return i
+		}
+	}
+	t.Fatalf("account %s holds no IBAN: %#v", a.ID, a.Identifiers)
+	return Identifier{}
+}
+
+// ---------------------------------------------------------------------------
+// A bank issues its customers' addresses
+// ---------------------------------------------------------------------------
+
+func TestOpenAccountMintsAnAddress(t *testing.T) {
 	ctx := context.Background()
 	reg, _, sub, prd := newTestRegister(t)
-	iban := Identifier{Scheme: IdentifierIBAN, Value: "SE89-AURORA-1001"}
 
-	acct, err := reg.OpenAccount(ctx, sub, "Alice", testAsset, prd, 0, iban)
+	acct, err := reg.OpenAccount(ctx, sub, "Alice", testAsset, prd, 0)
 	if err != nil {
 		t.Fatalf("OpenAccount: %v", err)
 	}
-	if len(acct.Identifiers) != 1 || acct.Identifiers[0] != iban {
-		t.Fatalf("identifiers = %#v, want [%#v]", acct.Identifiers, iban)
+	addr := ibanOf(t, acct)
+
+	// It is a real address, under this register's own allocation, and it is
+	// STORED COMPACT — the canonical form, which is also the only one a pacs.008
+	// carries.
+	parsed, err := iban.Parse(addr.Value)
+	if err != nil {
+		t.Fatalf("the minted address does not verify: %v", err)
+	}
+	if string(parsed) != addr.Value {
+		t.Errorf("stored %q, canonical form is %q", addr.Value, string(parsed))
+	}
+	code, err := parsed.BankCode()
+	if err != nil {
+		t.Fatalf("BankCode: %v", err)
+	}
+	if code != testIssuer.BankCode || parsed.Country() != testIssuer.Country {
+		t.Errorf("minted under (%s, %s), want (%s, %s)",
+			parsed.Country(), code, testIssuer.Country, testIssuer.BankCode)
 	}
 
-	got, err := reg.ResolveIdentifier(ctx, iban)
+	got, err := reg.ResolveIdentifier(ctx, addr)
 	if err != nil {
 		t.Fatalf("ResolveIdentifier: %v", err)
 	}
@@ -37,61 +79,133 @@ func TestOpenAccountWithIdentifier(t *testing.T) {
 	}
 }
 
-func TestOpenAccountWithoutIdentifierIsNormal(t *testing.T) {
+// Serials are dense and per bank, because the counter is the register's own and
+// not the book's shared one. An account number is read out loud; gaps in it
+// would be a record of unrelated work.
+func TestMintedAddressesAreDenseAndDistinct(t *testing.T) {
 	ctx := context.Background()
 	reg, _, sub, prd := newTestRegister(t)
 
-	acct, err := reg.OpenAccount(ctx, sub, "Plumbing", testAsset, prd, 0)
-	if err != nil {
-		t.Fatalf("OpenAccount: %v", err)
-	}
-	if len(acct.Identifiers) != 0 {
-		t.Fatalf("identifiers = %#v, want none", acct.Identifiers)
+	seen := map[string]bool{}
+	for n := range 5 {
+		acct, err := reg.OpenAccount(ctx, sub, "Customer", testAsset, prd, 0)
+		if err != nil {
+			t.Fatalf("OpenAccount %d: %v", n, err)
+		}
+		v := ibanOf(t, acct).Value
+		if seen[v] {
+			t.Fatalf("address %s minted twice", v)
+		}
+		seen[v] = true
+
+		want, err := iban.New(testIssuer.Country, testIssuer.BankCode, uint64(n+1))
+		if err != nil {
+			t.Fatalf("iban.New: %v", err)
+		}
+		if v != string(want) {
+			t.Errorf("account %d got %s, want serial %d — %s", n, v, n+1, want)
+		}
 	}
 }
 
-func TestAddAndRemoveIdentifier(t *testing.T) {
+// A caller does not get to say what an account's address is. This is the whole
+// of what makes the bank code inside one a true statement about who holds the
+// account: a register can only mint under the allocation it was given, so it
+// cannot issue an address that routes somewhere else.
+func TestOpenAccountRefusesACallerSuppliedIBAN(t *testing.T) {
+	ctx := context.Background()
+	reg, _, sub, prd := newTestRegister(t)
+	elsewhere := Identifier{Scheme: IdentifierIBAN, Value: "DE89370400440532013000"}
+
+	_, err := reg.OpenAccount(ctx, sub, "Alice", testAsset, prd, 0, elsewhere)
+	if !errors.Is(err, ErrIBANIsIssued) {
+		t.Fatalf("OpenAccount with a supplied IBAN = %v, want ErrIBANIsIssued", err)
+	}
+	if _, err := reg.ResolveIdentifier(ctx, elsewhere); !errors.Is(err, ErrIdentifierNotFound) {
+		t.Fatalf("ResolveIdentifier after the refusal = %v, want ErrIdentifierNotFound", err)
+	}
+}
+
+func TestAddIdentifierRefusesAnIBAN(t *testing.T) {
 	ctx := context.Background()
 	reg, _, sub, prd := newTestRegister(t)
 	acct, err := reg.OpenAccount(ctx, sub, "Alice", testAsset, prd, 0)
 	if err != nil {
 		t.Fatalf("OpenAccount: %v", err)
 	}
-	iban := Identifier{Scheme: IdentifierIBAN, Value: "SE89-AURORA-1001"}
 
-	if err := reg.AddIdentifier(ctx, acct.ID, iban); err != nil {
+	second := Identifier{Scheme: IdentifierIBAN, Value: "DE89370400440532013000"}
+	if err := reg.AddIdentifier(ctx, acct.ID, second); !errors.Is(err, ErrIBANIsIssued) {
+		t.Fatalf("AddIdentifier(IBAN) = %v, want ErrIBANIsIssued", err)
+	}
+	// And the account still holds exactly the one it was issued.
+	after, err := reg.GetAccount(ctx, acct.ID)
+	if err != nil {
+		t.Fatalf("GetAccount: %v", err)
+	}
+	if len(after.Identifiers) != 1 {
+		t.Fatalf("identifiers = %#v, want the one minted address", after.Identifiers)
+	}
+}
+
+// A register with no allocation can open no accounts. That is a real state — a
+// bank exists before any registry has heard of it — and the refusal is what
+// stops one inventing a code for itself.
+func TestOpenAccountRefusesARegisterWithNoBankCode(t *testing.T) {
+	ctx := context.Background()
+	reg, _, sub, prd := newTestRegisterIssuedBy(t, iban.Issuer{})
+
+	if _, err := reg.OpenAccount(ctx, sub, "Alice", testAsset, prd, 0); !errors.Is(err, ErrNoIssuer) {
+		t.Fatalf("OpenAccount on a register with no issuer = %v, want ErrNoIssuer", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// The schemes a caller does supply
+// ---------------------------------------------------------------------------
+
+func TestAddAndRemoveAnIssuedElsewhereIdentifier(t *testing.T) {
+	ctx := context.Background()
+	reg, _, sub, prd := newTestRegister(t)
+	acct, err := reg.OpenAccount(ctx, sub, "Alice", testAsset, prd, 0)
+	if err != nil {
+		t.Fatalf("OpenAccount: %v", err)
+	}
+	c := card("4000000000000001")
+
+	if err := reg.AddIdentifier(ctx, acct.ID, c); err != nil {
 		t.Fatalf("AddIdentifier: %v", err)
 	}
-	if _, err := reg.ResolveIdentifier(ctx, iban); err != nil {
+	if _, err := reg.ResolveIdentifier(ctx, c); err != nil {
 		t.Fatalf("ResolveIdentifier after add: %v", err)
 	}
 
-	if err := reg.RemoveIdentifier(ctx, acct.ID, iban); err != nil {
+	if err := reg.RemoveIdentifier(ctx, acct.ID, c); err != nil {
 		t.Fatalf("RemoveIdentifier: %v", err)
 	}
-	if _, err := reg.ResolveIdentifier(ctx, iban); !errors.Is(err, ErrIdentifierNotFound) {
+	if _, err := reg.ResolveIdentifier(ctx, c); !errors.Is(err, ErrIdentifierNotFound) {
 		t.Fatalf("ResolveIdentifier after remove = %v, want ErrIdentifierNotFound", err)
+	}
+	// The minted address is untouched by any of it.
+	if _, err := reg.ResolveIdentifier(ctx, ibanOf(t, acct)); err != nil {
+		t.Fatalf("the account's own address stopped resolving: %v", err)
 	}
 }
 
 // The same address twice in ONE OpenAccount call. checkIdentifierFreeTx only
 // sees accounts already in the register, and the account being opened is not
 // one of them, so nothing else catches this — and the API forwards the list
-// from a request body verbatim. Left alone the list means two things at once:
-// the store's identifier rows key on (scheme, value) and keep one, and the Go
-// slice the caller sent holds two.
+// from a request body verbatim.
 func TestOpenAccountRefusesTheSameIdentifierTwice(t *testing.T) {
 	ctx := context.Background()
 	reg, _, sub, prd := newTestRegister(t)
-	iban := Identifier{Scheme: IdentifierIBAN, Value: "SE89-AURORA-1001"}
+	c := card("4000000000000001")
 
-	_, err := reg.OpenAccount(ctx, sub, "Alice", testAsset, prd, 0, iban, iban)
+	_, err := reg.OpenAccount(ctx, sub, "Alice", testAsset, prd, 0, c, c)
 	if !errors.Is(err, ErrIdentifierTaken) {
 		t.Fatalf("OpenAccount with a repeated identifier = %v, want ErrIdentifierTaken", err)
 	}
-
-	// And nothing was opened: the check runs before the GL account is created.
-	if _, err := reg.ResolveIdentifier(ctx, iban); !errors.Is(err, ErrIdentifierNotFound) {
+	if _, err := reg.ResolveIdentifier(ctx, c); !errors.Is(err, ErrIdentifierNotFound) {
 		t.Fatalf("ResolveIdentifier = %v, want ErrIdentifierNotFound", err)
 	}
 }
@@ -99,9 +213,9 @@ func TestOpenAccountRefusesTheSameIdentifierTwice(t *testing.T) {
 func TestAddIdentifierRefusesADuplicateAtTheSameBank(t *testing.T) {
 	ctx := context.Background()
 	reg, _, sub, prd := newTestRegister(t)
-	iban := Identifier{Scheme: IdentifierIBAN, Value: "SE89-AURORA-1001"}
+	c := card("4000000000000001")
 
-	if _, err := reg.OpenAccount(ctx, sub, "Alice", testAsset, prd, 0, iban); err != nil {
+	if _, err := reg.OpenAccount(ctx, sub, "Alice", testAsset, prd, 0, c); err != nil {
 		t.Fatalf("OpenAccount: %v", err)
 	}
 	other, err := reg.OpenAccount(ctx, sub, "Aaron", testAsset, prd, 0)
@@ -109,11 +223,11 @@ func TestAddIdentifierRefusesADuplicateAtTheSameBank(t *testing.T) {
 		t.Fatalf("OpenAccount: %v", err)
 	}
 
-	if err := reg.AddIdentifier(ctx, other.ID, iban); !errors.Is(err, ErrIdentifierTaken) {
+	if err := reg.AddIdentifier(ctx, other.ID, c); !errors.Is(err, ErrIdentifierTaken) {
 		t.Fatalf("AddIdentifier = %v, want ErrIdentifierTaken", err)
 	}
 	// And the same rule at open, which is a different code path.
-	if _, err := reg.OpenAccount(ctx, sub, "Annie", testAsset, prd, 0, iban); !errors.Is(err, ErrIdentifierTaken) {
+	if _, err := reg.OpenAccount(ctx, sub, "Annie", testAsset, prd, 0, c); !errors.Is(err, ErrIdentifierTaken) {
 		t.Fatalf("OpenAccount with a taken identifier = %v, want ErrIdentifierTaken", err)
 	}
 }
@@ -124,20 +238,20 @@ func TestAddIdentifierIsIdempotentForTheSameAccount(t *testing.T) {
 	// fail on its second delivery.
 	ctx := context.Background()
 	reg, _, sub, prd := newTestRegister(t)
-	iban := Identifier{Scheme: IdentifierIBAN, Value: "SE89-AURORA-1001"}
-	acct, err := reg.OpenAccount(ctx, sub, "Alice", testAsset, prd, 0, iban)
+	c := card("4000000000000001")
+	acct, err := reg.OpenAccount(ctx, sub, "Alice", testAsset, prd, 0, c)
 	if err != nil {
 		t.Fatalf("OpenAccount: %v", err)
 	}
-	if err := reg.AddIdentifier(ctx, acct.ID, iban); err != nil {
+	if err := reg.AddIdentifier(ctx, acct.ID, c); err != nil {
 		t.Fatalf("AddIdentifier (repeat) = %v, want nil", err)
 	}
 	got, err := reg.GetAccount(ctx, acct.ID)
 	if err != nil {
 		t.Fatalf("GetAccount: %v", err)
 	}
-	if len(got.Identifiers) != 1 {
-		t.Fatalf("identifiers = %#v, want exactly one", got.Identifiers)
+	if len(got.Identifiers) != 2 { // the minted IBAN, and the card
+		t.Fatalf("identifiers = %#v, want the address and one card", got.Identifiers)
 	}
 }
 
@@ -148,34 +262,15 @@ func TestIdentifierMutationsAreAudited(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenAccount: %v", err)
 	}
-	iban := Identifier{Scheme: IdentifierIBAN, Value: "SE89-AURORA-1001"}
-	if err := reg.AddIdentifier(ctx, acct.ID, iban); err != nil {
+	c := card("4000000000000001")
+	if err := reg.AddIdentifier(ctx, acct.ID, c); err != nil {
 		t.Fatalf("AddIdentifier: %v", err)
 	}
-	if err := reg.RemoveIdentifier(ctx, acct.ID, iban); err != nil {
+	if err := reg.RemoveIdentifier(ctx, acct.ID, c); err != nil {
 		t.Fatalf("RemoveIdentifier: %v", err)
 	}
 
-	// ledger.Tx.ListAudit takes a filter (ledger/store.go:124,
-	// ledger/audit.go:152), so the account's own events come back directly.
-	var types []string
-	if err := reg.Store().View(ctx, func(ctx context.Context, tx Tx) error {
-		events, err := tx.ListAudit(ctx, ledger.AuditFilter{
-			BookID:   reg.BookID(),
-			Scope:    ledger.ScopeDeposit,
-			EntityID: string(acct.ID),
-		})
-		if err != nil {
-			return err
-		}
-		for _, e := range events {
-			types = append(types, e.Type)
-		}
-		return nil
-	}); err != nil {
-		t.Fatalf("reading the audit trail: %v", err)
-	}
-
+	types := auditTypesFor(t, reg, acct.ID)
 	wantBoth := map[string]bool{ledger.EventIdentifierAdded: false, ledger.EventIdentifierRemoved: false}
 	for _, got := range types {
 		if _, ok := wantBoth[got]; ok {
@@ -195,10 +290,11 @@ func TestResolveIdentifierIsAmbiguousWhenTwoAccountsHoldIt(t *testing.T) {
 	// answer must be a refusal, not the first hit.
 	ctx := context.Background()
 	reg, _, sub, prd := newTestRegister(t)
-	iban := Identifier{Scheme: IdentifierIBAN, Value: "SE89-AURORA-1001"}
-	if _, err := reg.OpenAccount(ctx, sub, "Alice", testAsset, prd, 0, iban); err != nil {
+	first, err := reg.OpenAccount(ctx, sub, "Alice", testAsset, prd, 0)
+	if err != nil {
 		t.Fatalf("OpenAccount: %v", err)
 	}
+	addr := ibanOf(t, first)
 	second, err := reg.OpenAccount(ctx, sub, "Aaron", testAsset, prd, 0)
 	if err != nil {
 		t.Fatalf("OpenAccount: %v", err)
@@ -210,13 +306,13 @@ func TestResolveIdentifierIsAmbiguousWhenTwoAccountsHoldIt(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		a.Identifiers = append(a.Identifiers, iban)
+		a.Identifiers = append(a.Identifiers, addr)
 		return tx.PutDepositAccount(ctx, reg.BookID(), a)
 	}); err != nil {
 		t.Fatalf("seeding the duplicate: %v", err)
 	}
 
-	if _, err := reg.ResolveIdentifier(ctx, iban); !errors.Is(err, ErrIdentifierAmbiguous) {
+	if _, err := reg.ResolveIdentifier(ctx, addr); !errors.Is(err, ErrIdentifierAmbiguous) {
 		t.Fatalf("ResolveIdentifier = %v, want ErrIdentifierAmbiguous", err)
 	}
 }
@@ -225,119 +321,55 @@ func TestResolveIdentifierIsAmbiguousWhenTwoAccountsHoldIt(t *testing.T) {
 // One address, two spellings
 // ---------------------------------------------------------------------------
 //
-// An IBAN is stored here in its readable display form and transmitted compact,
-// and the two are one address (Identifier.MatchValue). These tests pin that the
-// rule is ONE rule: what routing treats as the same address, uniqueness,
-// addition and withdrawal treat as the same address too. A layer that disagreed
-// with the others would be discovered by a payment, not by a compiler.
-
-var (
-	displayIBAN = Identifier{Scheme: IdentifierIBAN, Value: "SE89-AURORA-1001"}
-	compactIBAN = Identifier{Scheme: IdentifierIBAN, Value: "SE89AURORA1001"}
-)
-
-// A bank that has issued an address has issued it in every spelling. Letting a
-// second account take the other one would mint an address that resolves to two
-// accounts — which ResolveIdentifier then refuses for both of them, so the
-// damage lands on the innocent account as well as the new one.
+// An address is STORED compact and READ OFF A STATEMENT in groups of four. The
+// two are one address (Identifier.MatchValue), and these pin that it is ONE
+// rule: what resolution treats as the same address, withdrawal treats as the
+// same address too.
 //
-// This is the write-side half of the read-side change, and it arrived through
-// the lookup rather than by editing this rule. It is pinned so that it is a
-// decision rather than a side effect.
-func TestAddIdentifierRefusesAnotherSpellingOfAnAddressTheBankHasIssued(t *testing.T) {
+// There is no third site any more. Uniqueness and addition used to be here as
+// well, and an IBAN cannot reach either now — a bank issues them, so a caller
+// has no spelling of anything to offer.
+
+func TestResolveFindsAnAddressInTheSpellingAPersonTypes(t *testing.T) {
 	ctx := context.Background()
 	reg, _, sub, prd := newTestRegister(t)
-	if _, err := reg.OpenAccount(ctx, sub, "Alice", testAsset, prd, 0, displayIBAN); err != nil {
-		t.Fatalf("OpenAccount: %v", err)
-	}
-	aaron, err := reg.OpenAccount(ctx, sub, "Aaron", testAsset, prd, 0)
-	if err != nil {
-		t.Fatalf("OpenAccount: %v", err)
-	}
-
-	if err := reg.AddIdentifier(ctx, aaron.ID, compactIBAN); !errors.Is(err, ErrIdentifierTaken) {
-		t.Fatalf("AddIdentifier(compact form of another account's IBAN) = %v, want ErrIdentifierTaken", err)
-	}
-	// And the original account is untouched — the refusal is a refusal, not a
-	// partial write.
-	got, err := reg.ResolveIdentifier(ctx, compactIBAN)
-	if err != nil {
-		t.Fatalf("ResolveIdentifier after the refusal: %v", err)
-	}
-	if got.Name != "Alice" {
-		t.Fatalf("the address now resolves to %s, want Alice", got.Name)
-	}
-}
-
-// The same address in the other spelling is not new information, so adding it
-// is the no-op that adding it twice already was.
-//
-// The consequence of getting this wrong is not a duplicate row: it is an
-// account that holds what looks like two addresses, which makes every payment
-// that quotes NEITHER of them ErrAmbiguousAddress — the account loses the
-// ability to be paid without one being named, and nothing reports it, because
-// both spellings resolve to it perfectly well.
-func TestAddIdentifierIsANoOpForAnotherSpellingTheAccountAlreadyHolds(t *testing.T) {
-	ctx := context.Background()
-	reg, _, sub, prd := newTestRegister(t)
-	acct, err := reg.OpenAccount(ctx, sub, "Alice", testAsset, prd, 0, displayIBAN)
+	acct, err := reg.OpenAccount(ctx, sub, "Alice", testAsset, prd, 0)
 	if err != nil {
 		t.Fatalf("OpenAccount: %v", err)
 	}
-
-	if err := reg.AddIdentifier(ctx, acct.ID, compactIBAN); err != nil {
-		t.Fatalf("AddIdentifier(another spelling of an address the account holds) = %v, want a no-op", err)
+	stored := ibanOf(t, acct)
+	grouped := Identifier{Scheme: IdentifierIBAN, Value: iban.IBAN(stored.Value).Grouped()}
+	if grouped.Value == stored.Value {
+		t.Fatal("the grouped form is the stored form; this test is testing nothing")
 	}
-	after, err := reg.GetAccount(ctx, acct.ID)
+
+	got, err := reg.ResolveIdentifier(ctx, grouped)
 	if err != nil {
-		t.Fatalf("GetAccount: %v", err)
+		t.Fatalf("ResolveIdentifier(%q) = %v", grouped.Value, err)
 	}
-	if len(after.Identifiers) != 1 {
-		t.Fatalf("identifiers = %#v, want the one address the account already had", after.Identifiers)
-	}
-	// The STORED spelling is the one kept. Rewriting it would edit what a
-	// statement shows and what every earlier payment recorded, on the strength
-	// of a call that told this bank nothing.
-	if after.Identifiers[0] != displayIBAN {
-		t.Errorf("identifier = %#v, want the stored display form %#v", after.Identifiers[0], displayIBAN)
-	}
-}
-
-// The sibling check inside one OpenAccount call, which is the path a request
-// body reaches directly: [X, X] is refused, and so is [X, X-written-differently],
-// because they are the same list.
-func TestOpenAccountRefusesTwoSpellingsOfOneAddressInOneCall(t *testing.T) {
-	ctx := context.Background()
-	reg, _, sub, prd := newTestRegister(t)
-
-	_, err := reg.OpenAccount(ctx, sub, "Alice", testAsset, prd, 0, displayIBAN, compactIBAN)
-	if !errors.Is(err, ErrIdentifierTaken) {
-		t.Fatalf("OpenAccount with both spellings of one IBAN = %v, want ErrIdentifierTaken", err)
-	}
-	// Nothing was opened: the refusal happens before any write, so the address
-	// is still free.
-	if _, err := reg.ResolveIdentifier(ctx, displayIBAN); !errors.Is(err, ErrIdentifierNotFound) {
-		t.Fatalf("ResolveIdentifier after the refusal = %v, want ErrIdentifierNotFound", err)
+	if got.ID != acct.ID {
+		t.Fatalf("resolved %s, want %s", got.ID, acct.ID)
 	}
 }
 
 // Withdrawal takes the address, whichever spelling names it.
 //
 // Removing an identifier that is not held is a no-op by design, so a literal
-// comparison here fails SILENTLY: a bank quoting the compact form would believe
+// comparison here fails SILENTLY: a bank quoting the grouped form would believe
 // it had withdrawn an address that is still live and still payable, with no
-// error anywhere to say otherwise. That is the worst of the three sites to get
-// wrong, which is why it is not left exact.
+// error anywhere to say otherwise.
 func TestRemoveIdentifierWithdrawsTheAddressInEitherSpelling(t *testing.T) {
 	ctx := context.Background()
 	reg, _, sub, prd := newTestRegister(t)
-	acct, err := reg.OpenAccount(ctx, sub, "Alice", testAsset, prd, 0, displayIBAN)
+	acct, err := reg.OpenAccount(ctx, sub, "Alice", testAsset, prd, 0)
 	if err != nil {
 		t.Fatalf("OpenAccount: %v", err)
 	}
+	stored := ibanOf(t, acct)
+	grouped := Identifier{Scheme: IdentifierIBAN, Value: iban.IBAN(stored.Value).Grouped()}
 
-	if err := reg.RemoveIdentifier(ctx, acct.ID, compactIBAN); err != nil {
-		t.Fatalf("RemoveIdentifier(the compact spelling): %v", err)
+	if err := reg.RemoveIdentifier(ctx, acct.ID, grouped); err != nil {
+		t.Fatalf("RemoveIdentifier(the grouped spelling): %v", err)
 	}
 	after, err := reg.GetAccount(ctx, acct.ID)
 	if err != nil {
@@ -346,7 +378,7 @@ func TestRemoveIdentifierWithdrawsTheAddressInEitherSpelling(t *testing.T) {
 	if len(after.Identifiers) != 0 {
 		t.Fatalf("identifiers = %#v, want the address withdrawn", after.Identifiers)
 	}
-	if _, err := reg.ResolveIdentifier(ctx, displayIBAN); !errors.Is(err, ErrIdentifierNotFound) {
+	if _, err := reg.ResolveIdentifier(ctx, stored); !errors.Is(err, ErrIdentifierNotFound) {
 		t.Fatalf("ResolveIdentifier after withdrawal = %v, want ErrIdentifierNotFound", err)
 	}
 
@@ -374,7 +406,102 @@ func TestRemoveIdentifierWithdrawsTheAddressInEitherSpelling(t *testing.T) {
 	if len(payloads) != 1 {
 		t.Fatalf("got %d identifier.removed events, want 1", len(payloads))
 	}
-	if !strings.Contains(payloads[0], displayIBAN.Value) {
-		t.Errorf("identifier.removed payload = %s, want the stored form %q", payloads[0], displayIBAN.Value)
+	if !strings.Contains(payloads[0], stored.Value) {
+		t.Errorf("identifier.removed payload = %s, want the stored form %q", payloads[0], stored.Value)
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Reissue
+// ---------------------------------------------------------------------------
+
+// Reissue is one act because it stopped being expressible as two: the add half
+// of remove-plus-add is a refusal now, and an account between the two calls has
+// no address and cannot be paid.
+func TestReissueMintsAndWithdrawsTogether(t *testing.T) {
+	ctx := context.Background()
+	reg, _, sub, prd := newTestRegister(t)
+	c := card("4000000000000001")
+	acct, err := reg.OpenAccount(ctx, sub, "Alice", testAsset, prd, 0, c)
+	if err != nil {
+		t.Fatalf("OpenAccount: %v", err)
+	}
+	old := ibanOf(t, acct)
+
+	fresh, err := reg.ReissueIdentifier(ctx, acct.ID)
+	if err != nil {
+		t.Fatalf("ReissueIdentifier: %v", err)
+	}
+	if fresh.Value == old.Value {
+		t.Fatal("reissue returned the address it was replacing")
+	}
+	if err := iban.IBAN(fresh.Value).Validate(); err != nil {
+		t.Fatalf("the reissued address does not verify: %v", err)
+	}
+
+	// The old one is gone and the new one resolves.
+	if _, err := reg.ResolveIdentifier(ctx, old); !errors.Is(err, ErrIdentifierNotFound) {
+		t.Errorf("the withdrawn address still resolves: %v", err)
+	}
+	got, err := reg.ResolveIdentifier(ctx, fresh)
+	if err != nil {
+		t.Fatalf("ResolveIdentifier(new) = %v", err)
+	}
+	if got.ID != acct.ID {
+		t.Errorf("resolved %s, want %s", got.ID, acct.ID)
+	}
+
+	// Everything else the account holds survives. A reissue is about one
+	// address, not about the account.
+	after, err := reg.GetAccount(ctx, acct.ID)
+	if err != nil {
+		t.Fatalf("GetAccount: %v", err)
+	}
+	var kept bool
+	for _, i := range after.Identifiers {
+		if i.Matches(c) {
+			kept = true
+		}
+	}
+	if !kept {
+		t.Errorf("identifiers = %#v, want the card kept", after.Identifiers)
+	}
+
+	// Two events, because two things happened: a log that collapsed them could
+	// not say when the old address stopped working.
+	types := auditTypesFor(t, reg, acct.ID)
+	var added, removed int
+	for _, ty := range types {
+		switch ty {
+		case ledger.EventIdentifierAdded:
+			added++
+		case ledger.EventIdentifierRemoved:
+			removed++
+		}
+	}
+	if added != 1 || removed != 1 {
+		t.Errorf("audit = %v, want one add and one remove from the reissue", types)
+	}
+}
+
+func auditTypesFor(t *testing.T, reg *Register, id AccountID) []string {
+	t.Helper()
+	var types []string
+	if err := reg.Store().View(context.Background(), func(ctx context.Context, tx Tx) error {
+		events, err := tx.ListAudit(ctx, ledger.AuditFilter{
+			BookID:   reg.BookID(),
+			Scope:    ledger.ScopeDeposit,
+			EntityID: string(id),
+		})
+		if err != nil {
+			return err
+		}
+		for _, e := range events {
+			types = append(types, e.Type)
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("reading the audit trail: %v", err)
+	}
+	return types
 }

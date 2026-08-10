@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/raphi011/cbs/deposit"
+	"github.com/raphi011/cbs/iban"
 	"github.com/raphi011/cbs/iso20022"
 	"github.com/raphi011/cbs/ledger"
 	"github.com/raphi011/cbs/payment"
@@ -49,19 +50,23 @@ type participantDTO struct {
 	// two a client is holding.
 	//
 	// A founded bank has a book, a chart of accounts and a product, and that part
-	// of it is unrestricted: it opens customer accounts, publishes products, adds
-	// ledgers. What it cannot do is anything needing another institution. It
-	// cannot take a cash deposit — funding raises its reserve at the central bank
-	// in the same step and no settlement agent holds an account for it to raise —
-	// and the refusal is a 422 naming the membership rather than the account. Nor
-	// can any cut-off it takes part in settle, because the instruction turns net
-	// positions into addresses through a routing directory this bank is not in.
+	// of it is unrestricted: it publishes products and adds ledgers. What it
+	// cannot do is anything that needs something another institution gives out,
+	// and the sharpest of those is an ADDRESS — no registry has allocated it a
+	// bank code, so it can open no customer account at all (deposit.ErrNoIssuer).
+	// It cannot lodge cash on reserve either, because no settlement agent holds an
+	// account for it, and no cut-off it took part in could settle, because the
+	// instruction turns net positions into addresses through a roster it is not
+	// in.
 	//
-	// It does NOT say the bank cannot be paid. The mesh routes on its ACTOR TABLE,
-	// which Mesh.Admit fills at founding, so a payment addressed to a founded bank
-	// is relayed, accepted and reaches Cleared like any other and the cut-off
-	// carrying it is what fails. What refuses it is payment.ErrBankNotAdmitted, at
-	// Mesh.Submit and at the clearing house.
+	// It cannot be PAID, and the refusal is the payer's bank's rather than this
+	// scheme's: a bank in no roster is in nobody's copy of one, so an address
+	// under its code resolves to nothing and the payment dies before either leg
+	// posts (payment.ErrBankCodeUnknown). Paying is refused separately, of the
+	// submitting side, by payment.ErrBankNotAdmitted at Mesh.Submit and again at
+	// the clearing house — and both halves are needed, because the mesh routes on
+	// an ACTOR TABLE that Mesh.Admit fills at founding, so nothing about the
+	// transport makes a founded bank unreachable.
 	//
 	// It became a state a client can SEE when admission became a conversation: POST /members
 	// answers 202 with a founded bank, and the scheme's answer arrives at two
@@ -122,7 +127,24 @@ type createParticipantRequest struct {
 	// (iso20022.BIC.Validate), which is what turns a malformed value into a 422
 	// rather than a 400 — the field is present and well-typed, and what is
 	// wrong with it is a business rule.
-	BIC    string   `json:"bic"`
+	BIC string `json:"bic"`
+
+	// Country is the market this bank means to operate in: which national
+	// registry it applies to for the bank code its customers' addresses will
+	// carry. It is required, because a bank that has applied to no registry can
+	// be allocated nothing and can address no account.
+	//
+	// There is NO bank code beside it, and its absence is the whole of what this
+	// request says about addressing. A code is the registry's to allocate and
+	// arrives on the acknowledgement, so a caller supplying one would be a bank
+	// asserting its own allocation — which is what a routing directory exists
+	// because nobody can do. See payment.Bank.Issuer.
+	//
+	// Validated through Admit, which is what makes a country this system keeps no
+	// IBAN structure for a 422 rather than a 400: the field is present and
+	// well-typed, and what is wrong with it is a business rule.
+	Country string `json:"country"`
+
 	Assets []string `json:"assets"`
 }
 
@@ -167,12 +189,34 @@ func toPartyRefDTO(r payment.PartyRef) partyRefDTO {
 	return out
 }
 
+// toDomain converts the wire shape, canonicalising an address a PERSON typed.
+//
+// This is the front door iban.Parse describes. A customer reads an IBAN off a
+// statement, where it is grouped in fours, and types it in whatever case they
+// were in; everything downstream works in the one canonical form. A quoted
+// address for a party at ANOTHER bank is the case that needs it: this bank
+// cannot reach that register, so nothing later replaces the quote with a stored
+// value, and what the caller typed is what goes on the message. A document whose
+// IBAN carries spaces or a lower-case country code is not schema-valid, and the
+// codec is right to refuse it — see iso20022.IBAN.Compact, which deliberately
+// does not fold case for exactly that reason. Folding what a person typed is
+// this end's job, and this is that end.
+//
+// A value that will not parse is passed through UNCHANGED. The refusal is then
+// deposit.Identifier.Validate's, which says what is wrong with the address the
+// caller sent rather than with some tidied-up version of it.
 func (r partyRefDTO) toDomain() payment.PartyRef {
 	out := payment.PartyRef{Account: deposit.AccountID(r.Account)}
 	if r.Identifier != nil {
+		value := r.Identifier.Value
+		if deposit.IdentifierScheme(r.Identifier.Scheme) == deposit.IdentifierIBAN {
+			if parsed, err := iban.Parse(value); err == nil {
+				value = string(parsed)
+			}
+		}
 		out.Identifier = deposit.Identifier{
 			Scheme: deposit.IdentifierScheme(r.Identifier.Scheme),
-			Value:  r.Identifier.Value,
+			Value:  value,
 		}
 	}
 	return out
@@ -405,16 +449,17 @@ type reserveDTO struct {
 	Reserve int64  `json:"reserve"`
 }
 
+// createMandateRequest names the two accounts and the ceiling, and names no bank.
+//
+// The address the collection is sent to is DERIVED, from the debtor's own IBAN
+// through this bank's routing directory, and it is derived once — a mandate
+// authorises debits from an account at the bank the debtor signed up against, so
+// the answer is fixed at signature rather than re-asked at every collection. See
+// payment.CreateMandateTx.
 type createMandateRequest struct {
-	Debtor partyRefDTO `json:"debtor"`
-	// DebtorAgent is required: it is the address the collection is sent to, and
-	// the creditor's bank has no way to derive it — the debtor's account is in
-	// the debtor bank's own register. It is the mandate's version of
-	// initiatePaymentRequest's counterparty agent, and it arrived for the same
-	// reason. See payment.CreateMandateTx.
-	DebtorAgent string      `json:"debtorAgent"`
-	Creditor    partyRefDTO `json:"creditor"`
-	MaxAmount   int64       `json:"maxAmount"`
+	Debtor    partyRefDTO `json:"debtor"`
+	Creditor  partyRefDTO `json:"creditor"`
+	MaxAmount int64       `json:"maxAmount"`
 }
 
 type initiatePaymentRequest struct {
@@ -427,32 +472,29 @@ type initiatePaymentRequest struct {
 	Description string            `json:"description"`
 	Metadata    map[string]string `json:"metadata"`
 
-	// DebtorName and CreditorName are the names on the two accounts, and
-	// DebtorAgent and CreditorAgent the BICs of the two banks. Only the
-	// COUNTERPARTY's pair is required — the creditor's on a push, the debtor's on
-	// a pull — because submission looks neither up: the account is at another
-	// bank, and nothing on the path that builds a payment reads another bank's
-	// register. See payment.ErrCounterpartyNotNamed and
-	// payment.ErrCounterpartyAgentNotNamed.
+	// DebtorName and CreditorName are the names on the two accounts, and only the
+	// COUNTERPARTY's is required — the creditor's on a push, the debtor's on a
+	// pull. Nothing looks it up: the account is at another bank, so the name a
+	// payer types is the only one there is. See payment.ErrCounterpartyNotNamed.
 	//
-	// # The agent fields have been here, then not, and are here again
+	// # There is no agent field, and its absence is what makes this IBAN-only
 	//
-	// The agent goes on the wire as CdtrAgt/DbtrAgt and the clearing house routes
-	// on it, so a payer who types the wrong BIC chooses which bank receives the
-	// payment. It is asserted anyway, because the row it could be derived from is
-	// the counterparty's own and a bank holds only its own — see
-	// payment.SubmitPaymentTx. What makes an asserted agent safe is that a bank
-	// resolves an address in its own register only, so a misdirected payment is
-	// refused with AC01 by the bank that was named rather than silently accepted
-	// for another bank's customer.
+	// The BIC goes on the wire as CdtrAgt/DbtrAgt and the clearing house routes on
+	// it, so a payer able to type one is a payer able to choose which bank
+	// receives their money. It is DERIVED instead, from the counterparty's own
+	// address through this bank's copy of the scheme's routing directory — see
+	// payment.SubmitPaymentTx — so an instruction carries an address and a name
+	// and there is no field left to put a wrong bank in.
 	//
-	// The submitting bank's OWN side is still ignored on both fields. A payer
-	// does not rename themselves and does not reroute their own bank; both come
-	// from the register and the row the listener is bound to.
-	DebtorName    string `json:"debtorName,omitempty"`
-	CreditorName  string `json:"creditorName,omitempty"`
-	DebtorAgent   string `json:"debtorAgent,omitempty"`
-	CreditorAgent string `json:"creditorAgent,omitempty"`
+	// What that costs is a new refusal: an address whose bank code is not in this
+	// bank's copy is payment.ErrBankCodeUnknown, and the remedy is a refresh or
+	// giving up, because a subscriber cannot tell those apart. What it buys is
+	// that the two cannot disagree.
+	//
+	// The submitting bank's OWN name is still ignored. A payer does not rename
+	// themselves; it comes from the register.
+	DebtorName   string `json:"debtorName,omitempty"`
+	CreditorName string `json:"creditorName,omitempty"`
 }
 
 func (req initiatePaymentRequest) toDomain() payment.InitiatePaymentRequest {
@@ -470,8 +512,12 @@ func (req initiatePaymentRequest) toDomain() payment.InitiatePaymentRequest {
 		// submitting bank's own side from its own register either way — so
 		// forwarding both is correct and forwarding only the one this layer
 		// guessed at would be a second place that has to know the direction.
-		DebtorDetails:   payment.PartyDetails{Agent: iso20022.BIC(req.DebtorAgent), Name: req.DebtorName},
-		CreditorDetails: payment.PartyDetails{Agent: iso20022.BIC(req.CreditorAgent), Name: req.CreditorName},
+		//
+		// Neither carries an Agent, because this request has no field for one and
+		// SubmitPaymentTx derives it. A zero BIC here is the honest value: it is
+		// what the instruction said about routing, which is nothing.
+		DebtorDetails:   payment.PartyDetails{Name: req.DebtorName},
+		CreditorDetails: payment.PartyDetails{Name: req.CreditorName},
 	}
 }
 

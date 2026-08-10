@@ -354,27 +354,34 @@
 // Mesh.Admit's synchronous half is Mesh.Submit's: the bank's own unit of work,
 // on the caller's goroutine, marked as the bank's, committed before a message
 // exists. What it returns is a FOUNDED bank — a licence, a book, a chart of
-// accounts and a product, able to open customer accounts and unable to FUND one
-// — and what the scheme thinks arrives later, at two other actors, as a message.
+// accounts and a product, and no customers at all, because no registry has
+// allocated it the bank code an account's address is minted under — and what the
+// scheme thinks arrives later, at two other actors, as a message.
 //
 // # "A founded bank can neither pay nor be paid" is a REFUSAL, and this
 // transport is not what makes it
 //
 // Routing here is the ACTOR TABLE, not the roster: m.send looks a BIC up in
 // m.actors, and Admit registers the actor at founding so that the bank can
-// receive its own acknowledgement. So a founded bank is perfectly REACHABLE, and
-// nothing about this transport says otherwise — a payment addressed to one is
-// relayed, accepted, taken into a cycle and reaches Cleared. Where it fails is
-// the CUT-OFF, and it fails wide: csm.settlementLegs turns each net position
-// into a BIC through the roster, so a non-member in the batch means the pacs.009
-// cannot be built at all and the whole cycle stays Closed with no settlement
-// against it, every other member's payments included.
+// receive its own acknowledgement. So a founded bank is perfectly REACHABLE by
+// this transport, and nothing about m.send says otherwise. What it cost when
+// nothing else said otherwise either is the argument for every refusal below: a
+// payment addressed to a non-member was relayed, accepted, taken into a cycle
+// and reached Cleared, and failed at the CUT-OFF, wide — csm.settlementLegs
+// turns each net position into a BIC through the roster, so one non-member in
+// the batch means the pacs.009 cannot be built at all and the whole cycle stays
+// Closed with no settlement against it, every other member's payments included.
 //
-// What refuses it is payment.ErrBankNotAdmitted, in two places. Mesh.Submit
-// refuses at the door, beside ErrOnUsPayment and for that guard's reason: Submit
-// is synchronous, so a refusal any later has a committed debtor leg to unwind.
+// The two directions are refused in two different places, and neither is here.
+// BEING PAID is refused by the payer's own bank: a bank in no roster is in no
+// member's copy of one, so an address under its code resolves to nothing and
+// SubmitPaymentTx answers payment.ErrBankCodeUnknown before either leg posts —
+// earlier than this door, and by an institution that never has to ask anybody.
+// PAYING is payment.ErrBankNotAdmitted, in two places: Mesh.Submit refuses at
+// the door, beside ErrOnUsPayment and for that guard's reason (Submit is
+// synchronous, so a refusal any later has a committed debtor leg to unwind), and
 // AcceptAtCSMTx refuses again from the clearing house's own roster row, which is
-// the institution whose judgement it is. Both are pinned —
+// the institution whose judgement it is. All three are pinned —
 // TestAFoundedBankCanNeitherPayNorBePaid here, and
 // TestTheClearingHouseWillNotClearForANonMember in payment.
 //

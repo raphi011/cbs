@@ -1,8 +1,8 @@
 -- centralbank/0001_init: the settlement agent's whole world, in one migration.
 --
--- Twelve tables. Six of them are a general ledger and are also in
+-- Thirteen tables. Six of them are a general ledger and are also in
 -- bank/0001_init.sql, because a central bank keeps a book of accounts like any
--- other bank does; the other six are what makes it a central bank.
+-- other bank does; the other seven are what makes it a central bank.
 --
 -- What is absent is again the substance. THE CENTRAL BANK HAS NO CUSTOMERS: no
 -- deposit register, no deposit account identifiers, no holds, no snapshots, no
@@ -311,6 +311,80 @@ CREATE INDEX entries_account_idx ON entries (
     -- uses, and a reserve balance is the read this institution makes most.
     book_id, account_id, value_date
 );
+
+-- ---------------------------------------------------------------------------
+-- The bank-code register
+-- ---------------------------------------------------------------------------
+
+CREATE TABLE bank_codes (
+    -- bank_codes is the national registry's own book: which institution holds
+    -- which bank code, in which country. It is the thing an IBAN's middle
+    -- digits are a reference INTO, and the reason a payment can be addressed by
+    -- account number alone.
+    --
+    -- THIS INSTITUTION IS FOUR REGISTRIES WEARING ONE HAT, and the fudge is
+    -- worth naming here because the table is where it is visible. In the world
+    -- a bank code is a NATIONAL allocation — the Bundesbank runs the
+    -- Bankleitzahl file, the Banca d'Italia the ABI — and SEPA spans those
+    -- countries precisely BECAUSE no one institution owns the mapping, which is
+    -- why the real directory is a purchased, federated data product rather than
+    -- a table anybody can ask for. One settlement agent standing in for four
+    -- registries is what makes this system small enough to read.
+    --
+    -- NO BANK EVER READS IT. That is the whole point of the split between this
+    -- table and the routing directory a bank holds: this is the ISSUER's record
+    -- of what it gave out, and what a bank routes by is a COPY of the clearing
+    -- house's published roster, pulled and possibly stale. The two answer
+    -- different questions — who issued this address, and may this address be
+    -- reached — and there is no method on any store that lets one institution
+    -- ask the other's. payment/recon holds them against each other, and it is a
+    -- harness rather than an actor for exactly that reason.
+    --
+    -- KEYED BY (country, code), and the composite is the substance rather than a
+    -- convenience. A bank code is unique within ONE country and nowhere else:
+    -- 99999 is an ABI in Italy and a code banque in France, and this system
+    -- allocates both. A key on the code alone would refuse the second of those
+    -- as a duplicate, which would be the store inventing a collision the domain
+    -- does not have; a key on the BIC would allow it and lose the refusal that
+    -- matters.
+    --
+    -- THIS KEY IS THE REFUSAL. Two banks on one code is the defect the whole
+    -- routing directory would be built on top of — every address issued under
+    -- the shared code would resolve to whichever bank the reader's copy named
+    -- last — and it is refused here, by the issuer, at the moment of allocation.
+    -- The clearing house refuses it a second time on its roster, which is
+    -- belt-and-braces and earns its place: the roster is what every member
+    -- copies, and the clearing house cannot see this table to check.
+    country      TEXT NOT NULL,
+    code         TEXT NOT NULL,
+    -- The institution the allocation is to, and there is no UNIQUE on
+    -- (country, bic) beside the key above. An allocation is never REASSIGNED —
+    -- the invariant every subscriber's stale copy rests on, because a copy that
+    -- is behind can then only be incomplete and never wrong — but "one code per
+    -- bank per country" is a rule about the ACT and not about the row, and the
+    -- act holds it: payment's OpenSettlementAccountTx reads this bank's
+    -- allocation before it mints one, and a bank asking for a second asset gets
+    -- the code it already has. That read-then-write is ordered by the id drawn
+    -- before it from id_sequences in THIS database, the same way every other act
+    -- in this file is ordered; see ledgers, and payment's admissionSequenceTx.
+    --
+    -- A second UNIQUE index would also be unaffordable rather than merely
+    -- redundant: the store identifies a unique conflict by SQLite's extended
+    -- error code alone, which is as targeted as an index name only while one
+    -- unique index exists per database. See TestExactlyOneUniqueIndexPerShapeThatHasABook.
+    bic          TEXT NOT NULL,
+    -- No CHECK on the country, and none on the code's width or characters. Which
+    -- countries exist, how wide each one's code is and which characters it
+    -- admits are the iban package's country table — four countries today, and a
+    -- fifth is one Go value — and a CHECK would state the same rule a second
+    -- time in the place least able to change. It is the argument
+    -- accounts.asset makes in bank/0001_init.sql, and it is stronger here: the
+    -- rule is a table of segment widths and two national check-digit
+    -- algorithms, and none of that is expressible in SQLite at all.
+    allocated_at TEXT,
+    seq          INTEGER NOT NULL,
+    PRIMARY KEY (country, code)
+) STRICT;
 
 -- ---------------------------------------------------------------------------
 -- The settlement register

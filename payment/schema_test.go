@@ -9,6 +9,7 @@ import (
 	"testing"
 	"unicode/utf8"
 
+	"github.com/raphi011/cbs/iban"
 	"github.com/raphi011/cbs/iso20022"
 	"github.com/raphi011/cbs/ledger"
 )
@@ -56,7 +57,7 @@ func TestTheAdmissionMessagesThisSystemEmitsValidateAgainstTheSchema(t *testing.
 
 	mc := MessageContext{From: "NORDSESSXXX", To: "CSMXFRPPXXX", MsgID: "nord-1", Now: readNow}
 	request, err := AdmissionMessage(
-		AdmissionRequest{Name: "Nordhaven Bank", BIC: "NORDSESSXXX", Asset: "EUR", Ref: "adm-1"},
+		AdmissionRequest{Name: "Nordhaven Bank", BIC: "NORDSESSXXX", Country: iban.SE, Asset: "EUR", Ref: "adm-1"},
 		"CBXXDEFFXXX", mc)
 	if err != nil {
 		t.Fatalf("AdmissionMessage: %v", err)
@@ -67,6 +68,7 @@ func TestTheAdmissionMessagesThisSystemEmitsValidateAgainstTheSchema(t *testing.
 	// unvalidated.
 	acknowledgement, err := AdmissionAcknowledgementMessage(AdmissionAcknowledgement{
 		BIC:      "NORDSESSXXX",
+		Issuer:   testAllocation,
 		Ref:      "adm-1",
 		Accounts: map[ledger.AssetCode]ledger.AccountID{"EUR": "acc_eur", "USD": "acc_usd"},
 	}, MessageContext{From: "CBXXDEFFXXX", To: "CSMXFRPPXXX", MsgID: "cb-1", Now: readNow})
@@ -74,7 +76,7 @@ func TestTheAdmissionMessagesThisSystemEmitsValidateAgainstTheSchema(t *testing.
 		t.Fatalf("AdmissionAcknowledgementMessage: %v", err)
 	}
 	rejection, err := AdmissionRejectionMessage(
-		AdmissionRequest{Name: "Nordhaven Bank", BIC: "NORDSESSXXX", Asset: "EUR", Ref: "adm-1"},
+		AdmissionRequest{Name: "Nordhaven Bank", BIC: "NORDSESSXXX", Country: iban.SE, Asset: "EUR", Ref: "adm-1"},
 		iso20022.MessageIdentification{Id: "nord-1", CreDtTm: iso20022.ISODateTime{Time: readNow}},
 		"NORDSESSXXX is admitted under another admission",
 		MessageContext{From: "CSMXFRPPXXX", To: "NORDSESSXXX", MsgID: "csm-1", Now: readNow})

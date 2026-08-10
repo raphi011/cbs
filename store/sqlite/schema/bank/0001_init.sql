@@ -441,19 +441,42 @@ CREATE TABLE deposit_account_identifiers (
     -- primary key is therefore widened with deposit_account_id so that it is a
     -- row identity rather than the domain rule in disguise, and the lookup index
     -- is a plain index. The residual duplicate is caught at READ time, ON THE
-    -- ROUTING PATH: Register.ResolveIdentifier and the network's sweep answer
-    -- ErrIdentifierAmbiguous rather than picking one, so no address ever routes
-    -- money to a bank or an account chosen by listing order. It is a claim about
+    -- ROUTING PATH: Register.ResolveIdentifier answers ErrIdentifierAmbiguous
+    -- rather than picking one, so no address ever routes money to an account
+    -- chosen by listing order. It is a claim about
     -- resolution and nothing else — SubmitPaymentTx is handed an account id and
     -- never resolves, so two accounts colliding on one address both stay payable
     -- by id. That is correct: the accounts are distinct and real, and what is
     -- ambiguous is the address.
     -- storetest/IdentifierUniquenessIsNotEnforced pins all of this.
     --
-    -- Second, there is no CHECK on scheme or value. The known schemes are Go
-    -- constants (deposit.IdentifierIBAN), the way assets and payment schemes
-    -- are, and the FORMAT of a value is deliberately unvalidated — no mod-97
-    -- check digit — so that the seed's readable SE89-AURORA-1001 stays legal.
+    -- Second, there is no CHECK on scheme or value, and the value half of that
+    -- is where the argument for an absent constraint is at its strongest in this
+    -- file. The known schemes are Go constants (deposit.IdentifierIBAN), the way
+    -- assets and payment schemes are. The FORMAT of a value IS validated, and it
+    -- is validated in Go: an IBAN is ISO 13616, so the rule is a table of country
+    -- structures plus mod-97-10 plus Italy's CIN plus France's clé RIB, none of
+    -- which SQLite can express. A CHECK could at best restate a length, which
+    -- would be one country's length written in the place least able to change
+    -- and no help at all against a transposed digit. See the canonical absent-
+    -- CHECK argument on accounts.asset; this is the same rule with a rule too
+    -- large to copy rather than merely too located elsewhere.
+    --
+    -- What this table therefore holds is any string a caller could persuade the
+    -- register to write. That is not a gap: deposit.Identifier.Validate refuses a
+    -- malformed IBAN on the way in, a bank MINTS its customers' addresses rather
+    -- than accepting them, and a row here that fails the check digits is one no
+    -- code path can produce.
+    --
+    -- WHERE THE MINTING AUTHORITY COMES FROM is one column over and one
+    -- institution away: the (country, bank_code) on this bank's own row in banks,
+    -- allocated by a national registry at admission and delivered on the
+    -- acmt.010. A register can only mint under the allocation it was given, which
+    -- is what makes the bank code inside a value here a true statement about who
+    -- holds the account rather than a claim the caller made — and it is what
+    -- every other member routes on, out of its own copy of the published
+    -- directory (see routing_directory). A bank with no allocation mints nothing
+    -- and has no rows here at all.
     --
     -- The parent FOREIGN KEY, unlike subledgers.ledger_id, DOES stay. It is the
     -- exemption stated on subledgers: PutDepositAccount writes both sides
@@ -476,23 +499,26 @@ CREATE INDEX deposit_account_identifiers_lookup_idx
         --
         -- Its third column does not serve an IBAN lookup, and that is worth
         -- stating here rather than leaving someone to discover it from a query
-        -- plan. An IBAN is stored in its readable display form
-        -- (SE89-AURORA-1001) and arrives from a payment message compact
-        -- (SE89AURORA1001); they are one address, so the lookup compares both
-        -- sides with the separators removed, and a predicate on
-        -- replace(value, …) cannot use an index on value. The (book_id, scheme)
-        -- PREFIX still can, so the scan is over one bank's identifiers in one
-        -- scheme rather than the table — the index is narrowed here, not dead.
+        -- plan. A stored address is already canonical, so it is not the ROW that
+        -- forces a derived comparison — it is the QUERY: an IBAN read off a
+        -- statement is grouped in fours and may be lower-cased, and those are
+        -- the same address. The lookup therefore normalises both sides, and a
+        -- predicate on upper(replace(value, …)) cannot use an index on value.
+        -- The (book_id, scheme) PREFIX still can, so the scan is over one bank's
+        -- identifiers in one scheme rather than the table — the index is
+        -- narrowed here, not dead.
+        --
+        -- Normalising the query alone would restore the column and would be
+        -- WRONG rather than merely narrow: the store is handed rows and cannot
+        -- assume every one of them came from the minter, and a comparison rule
+        -- that held only for canonical rows is not the rule
+        -- deposit.Identifier.MatchValue states.
         --
         -- An index on the same expression would restore the third column;
-        -- replace() is deterministic, so an expression index is legal here as it
-        -- was in Postgres — measured on this driver. It is not created because
-        -- no database is deployed and a bank here has a handful of accounts, so
-        -- there is nothing to measure it against. Normalising the stored value
-        -- instead would take the readable IBAN out of every statement, worked
-        -- example and screenshot in the repository, which is the trade this
-        -- schema already refused when it declined to enforce mod-97 check
-        -- digits.
+        -- upper() and replace() are deterministic, so an expression index is
+        -- legal here as it was in Postgres — measured on this driver. It is not
+        -- created because no database is deployed and a bank here has a handful
+        -- of accounts, so there is nothing to measure it against.
         book_id, scheme, value
     );
 
@@ -1099,6 +1125,33 @@ CREATE TABLE banks (
     -- nobody else's table to do it. The two columns having survived into two
     -- schemas is the check on that: neither could be replaced by a join.
     admission_ref      TEXT NOT NULL,
+    -- The allocation this bank issues its customers' addresses under: a country
+    -- and a bank code, from that country's registry.
+    --
+    -- IT IS A SECOND IDENTIFIER AND NOT A RESTATEMENT OF THE ROW'S KEY. The id
+    -- above is a BIC, which is what a MESSAGE is addressed to; this is what an
+    -- ACCOUNT's address carries. Neither computes the other — AURODEFFXXX and
+    -- 99900001 have no arithmetic between them — which is exactly why a scheme
+    -- has to publish a directory instead of letting every bank derive one.
+    --
+    -- Two columns and not one, because a bank code is unique only within a
+    -- country: 99991 is Banca Verde in Italy and Crédit Soleil in France, and
+    -- they are different banks. Anything keyed by an allocation is keyed by the
+    -- pair.
+    --
+    -- No CHECK on either, for the reason accounts.asset gives above: the rule is
+    -- the country structure table in Go, which knows widths, character classes
+    -- and two national check-digit algorithms, and none of that is expressible
+    -- here. What SQLite could state — "three characters" — would be Sweden's rule
+    -- written in the one place least able to change when a fifth country
+    -- arrives.
+    --
+    -- Empty on a bank that has not been allocated one, which is a real state and
+    -- not a broken row: a bank exists before any registry has heard of it. Such a
+    -- bank can open no customer accounts at all, because every account is opened
+    -- with an address minted under this pair (deposit.ErrNoIssuer).
+    country            TEXT NOT NULL DEFAULT '',
+    bank_code          TEXT NOT NULL DEFAULT '',
     created_at         TEXT,
     seq                INTEGER NOT NULL
 ) STRICT;
@@ -1209,6 +1262,77 @@ CREATE TABLE bank_assets (
     settlement         TEXT NOT NULL,
     seq                INTEGER NOT NULL,
     PRIMARY KEY (bank_id, asset)
+) STRICT;
+
+CREATE TABLE routing_directory (
+    -- THIS BANK'S OWN COPY of the scheme's published routing directory: which
+    -- institution answers for which bank code, in which country. It is what
+    -- turns an IBAN into an agent, and it is the only table in this schema whose
+    -- rows are about other institutions.
+    --
+    -- IT IS A COPY AND THAT IS THE DESIGN. The original is the clearing house's
+    -- roster, in the clearing house's database, which nothing here can open. A
+    -- member SUBSCRIBES: it asks for a snapshot, replaces this table wholesale
+    -- with what it was given, and routes from what it holds. That is what every
+    -- real routing directory is — the EPC's Register of Participants is a file a
+    -- bank downloads, not a service it queries per payment — and it is why SEPA
+    -- can be IBAN-only without any bank being able to read another's register.
+    --
+    -- WHICH MAKES STALENESS REAL, and it is a behaviour rather than a defect. A
+    -- bank admitted this morning cannot be paid by a member that refreshed
+    -- yesterday: the payer's bank finds no row, refuses with
+    -- payment.ErrBankCodeUnknown, and a refresh makes the same payment work. The
+    -- refusal is safe only because AN ALLOCATION IS NEVER REASSIGNED — see
+    -- bank_codes in centralbank/0001_init.sql — so a copy that is behind is
+    -- INCOMPLETE and never WRONG. The failure mode is "I cannot route this yet"
+    -- and never "I routed it to the wrong bank", and nothing in this system may
+    -- introduce a path that gives a code back to be issued again.
+    --
+    -- Nothing checks this table against the roster it came from, because
+    -- disagreeing with it is legal. payment/recon REPORTS the difference — "this
+    -- bank's directory is two entries behind" — and passes, and a reconciliation
+    -- that FAILED on one would assert the opposite of the design.
+    --
+    -- KEYED BY (country, bank_code), for the reason every table keyed by an
+    -- allocation is: a code is unique within one country and nowhere else, so
+    -- 99999 names Banca Verde in Italy and Crédit Soleil in France and this copy
+    -- holds both. The pair is also the whole of the uniqueness rule here, which
+    -- is why there is no second unique index; see
+    -- TestExactlyOneUniqueIndexPerShapeThatHasABook.
+    country      TEXT NOT NULL,
+    bank_code    TEXT NOT NULL,
+    -- The institution to send to, and the only thing this row says about it.
+    --
+    -- THERE IS NO NAME HERE, and the absence is domain content rather than a
+    -- column somebody forgot. The roster has none because an acmt.010 delivers
+    -- none, so a copy of the roster can have none either. The consequence lands
+    -- exactly where a payer feels it: a send form that resolves an IBAN can show
+    -- AURODEFFXXX and cannot show "Aurora Bank". Confirming the payee's NAME is a
+    -- different question with a different message pair behind it, and this scheme
+    -- does not ask it.
+    --
+    -- NO ASSETS EITHER, and that one is a refusal deliberately not made. This
+    -- copy could carry which currencies a member clears in and refuse a payment
+    -- early — and it would then refuse, from data that may be behind, a payment
+    -- the clearing house would have accepted. The asset check has an owner that
+    -- reads the live roster: payment's bothBanksAreMembersTx, at the clearing
+    -- house. A stale copy may fail to route; it may not decide membership.
+    bic          TEXT NOT NULL,
+    -- When the snapshot this row came from was taken. Per row rather than per
+    -- table because there is no table to hang it on, and every row of one refresh
+    -- carries the same instant — a snapshot is one act, not a merge of many.
+    --
+    -- It is the whole of the staleness story a console can show: "14 banks,
+    -- refreshed 3 days ago" teaches the subscription model in one line, and the
+    -- payment that will not route teaches the rest of it.
+    refreshed_at TEXT NOT NULL,
+    seq          INTEGER NOT NULL,
+    -- The order the snapshot arrived in, which is the roster's own publication
+    -- order — oldest member first. A refresh deletes every row and writes the
+    -- whole list again, so seq restarts from the top of the table each time and
+    -- carries no history; the ordering rule ledgers.seq states is about a table
+    -- rows are APPENDED to, and this is a table rows are REPLACED in.
+    PRIMARY KEY (country, bank_code)
 ) STRICT;
 
 CREATE TABLE mandates (

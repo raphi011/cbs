@@ -5,6 +5,7 @@ import (
 	"maps"
 	"slices"
 
+	"github.com/raphi011/cbs/iban"
 	"github.com/raphi011/cbs/iso20022"
 	"github.com/raphi011/cbs/ledger"
 	"github.com/raphi011/cbs/payment"
@@ -40,7 +41,33 @@ import (
 // A test that needs the conversation must not use this.
 //
 // Every test that wants "a bank in the scheme" says this, and what it gets back
-// is a Member bank.
+// is a Member bank that can pay and be paid.
+//
+// # It also re-subscribes every member, and that is a FIFTH act
+//
+// Admission fills nobody's routing directory. A member subscribes on its own
+// schedule, so a bank admitted after its neighbours last pulled is unreachable
+// from them until they pull again — which is the behaviour the whole directory
+// design is for. This helper ends with Subscribe, so that a suite about
+// something else gets banks that can address each other, and the composition is
+// named here rather than hidden: what it produces is a scheme where everybody
+// pulled a moment ago, which is not a state the system maintains for anybody.
+//
+// A suite that wants to MEASURE staleness therefore cannot use this helper, and
+// none does: the case lives in mesh, over the real conversation, where
+// Mesh.Admit publishes nothing and a refresh is a request somebody makes.
+//
+// # The bank code is really allocated
+//
+// The settlement agent allocates it, exactly as it does in the conversation, and
+// the acknowledgement below carries it to the other two acts. There used to be a
+// stand-in here that hashed the BIC, because no act allocated anything; what
+// that could not do is refuse a collision, which is precisely what a registry is
+// for. Every fixture bank is admitted in ONE country, and deliberately not its
+// BIC's — the suites use addresses like BANKESMMXXX, in countries this system
+// keeps no IBAN structure for, and an account's country is not its bank's in any
+// case (see iban.Country). One country keeps the fixtures uniform and says
+// nothing untrue.
 //
 // # The admission reference
 //
@@ -70,7 +97,7 @@ func Admit(ctx context.Context, nets *payment.Networks, name string, bic iso2002
 	if err != nil {
 		return nil, err
 	}
-	bank, err := applicant.FoundBank(ctx, name, bic, assets)
+	bank, err := applicant.FoundBank(ctx, name, bic, FixtureCountry, assets)
 	if err != nil {
 		return nil, err
 	}
@@ -81,25 +108,69 @@ func Admit(ctx context.Context, nets *payment.Networks, name string, bic iso2002
 	// central bank's account ids in the same sequence — Go randomises map
 	// iteration, and a fixture whose ids moved between runs would be a fixture
 	// nothing could assert on.
-	var member payment.SettlementMember
+	var (
+		member payment.SettlementMember
+		issuer iban.Issuer
+	)
 	for _, asset := range slices.Sorted(maps.Keys(bank.Assets)) {
-		if member, err = nets.CentralBank().OpenSettlementAccount(ctx, payment.AdmissionRequest{
-			Name: name, BIC: bic, Asset: asset, Ref: admissionRef(bic),
+		if member, issuer, err = nets.CentralBank().OpenSettlementAccount(ctx, payment.AdmissionRequest{
+			Name: name, BIC: bic, Country: FixtureCountry, Asset: asset, Ref: admissionRef(bic),
 		}); err != nil {
 			return nil, err
 		}
 	}
-	// Each answer carries the servicer's whole account set for the address, so
-	// the last is the one the other two acts read — which is true of the real
-	// conversation too: a bank's second acknowledgement lists both accounts.
+	// Each answer carries the servicer's whole account set for the address and
+	// the one allocation it made, so the last is the one the other two acts read
+	// — which is true of the real conversation too: a bank's second
+	// acknowledgement lists both accounts and repeats the code.
 	ack := payment.AdmissionAcknowledgement{
-		BIC: bic, Accounts: member.Accounts, Ref: admissionRef(bic),
+		BIC: bic, Issuer: issuer, Accounts: member.Accounts, Ref: admissionRef(bic),
 	}
 	if _, err := nets.ClearingHouse().AdmitMember(ctx, ack); err != nil {
 		return nil, err
 	}
-	return applicant.RecordMembership(ctx, ack)
+	bank, err = applicant.RecordMembership(ctx, ack)
+	if err != nil {
+		return nil, err
+	}
+	// The fifth act, which is nobody's part of an admission. See above.
+	if err := Subscribe(ctx, nets); err != nil {
+		return nil, err
+	}
+	return bank, nil
+}
+
+// Subscribe delivers the clearing house's published roster to every member in
+// it, so that each of them can route to the others.
+//
+// It is an act of the SUBSCRIBERS and no part of an admission: a member asks for
+// a snapshot and routes from what it holds, so a bank admitted after its
+// neighbours last pulled is unreachable from them until they pull again
+// (payment.ErrBankCodeUnknown), and a refresh makes the same payment work.
+//
+// It refreshes EVERY member rather than the ones a caller names, because a
+// directory is published to the whole scheme and a caller choosing which banks
+// hold a correct copy would be choosing the answer to whatever it then asserts.
+// A suite that wants one bank behind the others drives the refresh itself.
+func Subscribe(ctx context.Context, nets *payment.Networks) error {
+	published, err := nets.ClearingHouse().ListRosterEntries(ctx)
+	if err != nil {
+		return err
+	}
+	for _, e := range published {
+		subscriber, err := nets.Bank(ctx, payment.ParticipantID(e.BIC))
+		if err != nil {
+			return err
+		}
+		if _, err := subscriber.RefreshDirectory(ctx, published); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // admissionRef is the process id this stand-in quotes. See Admit.
 func admissionRef(bic iso20022.BIC) string { return "admitted-" + string(bic) }
+
+// FixtureCountry is the register every fixture bank applies to. See Admit.
+const FixtureCountry = iban.DE

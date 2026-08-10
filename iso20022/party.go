@@ -46,36 +46,45 @@ var ibanSeparators = strings.NewReplacer(" ", "", "-", "")
 
 // IBAN is an international bank account number.
 //
-// # This type does not verify the check digit, on purpose
+// # This type checks the pattern and not the check digit, and that is the
+// schema's line rather than a shortcut
 //
 // A real IBAN's third and fourth characters are an ISO 7064 mod-97 checksum over
-// the rest, and this package does not compute it: it would make the seed's
-// readable SE89-AURORA-1001 illegal and replace it with opaque digits in every
-// screenshot, worked example and quiz answer in the repository.
+// the rest, and this package does not compute it. The reason is what this
+// package IS: it models the messages, and the schema constrains an IBAN by
+// PATTERN — IBAN2007Identifier — so a value satisfying the pattern produces a
+// structurally valid document whatever its check digits say. Validate's failure
+// is ErrIBANPattern rather than a checksum error, so the distinction survives in
+// what a caller sees.
 //
-// The refusal costs nothing here, which is the part worth knowing. The schema
-// constrains an IBAN by PATTERN and not by checksum, so a readable identifier
-// still produces a structurally valid document. Validate therefore checks the
-// pattern, and its failure is ErrIBANPattern rather than a checksum error, so
-// that the distinction survives in the error a caller sees.
+// The checksum is real and is checked, one package away: iban.IBAN.Validate
+// computes mod-97 and the national check characters besides. This package cannot
+// call it — it imports nothing from this repository — and does not need to,
+// because every address it ever sees was minted by a register that already did.
 //
 // # Compact and display forms
 //
-// An IBAN is canonically stored and transmitted without separators, and
-// displayed in groups of four. This repository's stored identifiers use hyphens
-// for readability, so Compact is what turns a stored deposit.Identifier value
-// into the form that goes on the wire.
+// An IBAN is canonically stored and transmitted without separators and in upper
+// case, and displayed in groups of four. Both this repository's registers and
+// its messages carry the canonical form, so Compact is what normalises a value
+// somebody wrote out for a human to read.
 //
-// Compaction is NOT reversible: SE89AURORA1001 cannot tell you where the hyphens
-// were. Code matching a received IBAN against a stored identifier must therefore
-// compact BOTH sides and compare, rather than compacting one and hoping. The
-// rule is stated on the side that owns the comparison —
-// deposit.Identifier.MatchValue — because this package imports nothing from the
-// repository; the separator set is duplicated there and a test on that side pins
-// the two copies together.
+// Compaction is NOT reversible: the compact form cannot tell you where the
+// spaces were. Code matching a received IBAN against a stored identifier must
+// therefore compact BOTH sides and compare, rather than compacting one and
+// hoping. The rule is stated on the side that owns the comparison —
+// deposit.Identifier.MatchValue, which delegates it to iban.Compact — and the
+// separator set is duplicated here because of the import rule above. A test on
+// that side pins the two copies together.
 type IBAN string
 
 // Compact returns the IBAN with display separators removed.
+//
+// It does NOT fold case, and the difference from iban.Compact — which does — is
+// deliberate on both sides. The schema's pattern requires an upper-case country
+// code, so this package must be able to REFUSE a lower-case one; folding here
+// would make Validate accept a document that is not schema-valid. Folding what a
+// PERSON typed is a register's job, on the way in, and that is where it happens.
 func (i IBAN) Compact() IBAN { return IBAN(ibanSeparators.Replace(string(i))) }
 
 // Validate reports whether the compact form matches the schema's pattern. It
@@ -97,8 +106,10 @@ func (i IBAN) Validate() error {
 // it is an element in its own right — Org/OrgId on the request, OrgId on the
 // acknowledgement and the rejection — and it is how the applicant bank is named.
 //
-// Only AnyBIC is carried. The standard also allows an LEI and a list of generic
-// identifiers, and neither route needs one.
+// AnyBIC and the generic identifiers are carried; the LEI is not, because
+// nothing in this system holds one. Othr is empty on every message but the
+// acmt.010, where it is how a national bank code reaches the two institutions
+// that route by it — see GenericOrganisationIdentification.
 //
 // AnyBIC's schema type is AnyBICDec2014Identifier, whose pattern is character
 // for character the same as BICFIDec2014Identifier's.
@@ -119,15 +130,92 @@ func (i IBAN) Validate() error {
 // identified by BIC specifically: it is what the settlement agent keys its member
 // record by, what the clearing house keys its routing entry by, and what the
 // acknowledgement is addressed back on. See AccountOwner.
+//
+// Othr is NOT required here, and cannot be: the same type is pacs.002's Orgtr,
+// which carries a BIC and nothing else. Which message wants a generic identifier
+// is the message's own rule, the way LclInstrm's presence is — see
+// PaymentTypeInformation. AccountRequestAcknowledgement is the one that has it.
 type OrganisationIdentification struct {
-	AnyBIC BIC `xml:"AnyBIC"`
+	AnyBIC BIC                                 `xml:"AnyBIC"`
+	Othr   []GenericOrganisationIdentification `xml:"Othr,omitempty"`
 }
 
 func (o OrganisationIdentification) validate() error {
 	if o.AnyBIC == "" {
 		return fmt.Errorf("%w: OrgId/AnyBIC", ErrMissingElement)
 	}
-	return o.AnyBIC.Validate()
+	if err := o.AnyBIC.Validate(); err != nil {
+		return err
+	}
+	for i := range o.Othr {
+		if err := o.Othr[i].validate(); err != nil {
+			return fmt.Errorf("OrgId/Othr[%d]: %w", i, err)
+		}
+	}
+	return nil
+}
+
+// OrganisationIdentificationScheme names the scheme a generic organisation
+// identifier was issued under. Only the proprietary arm is carried, and the
+// reason is a code list rather than a convention.
+//
+// The choice is OrganisationIdentificationSchemeName1Choice, whose Cd is an
+// ExternalOrganisationIdentification1Code — the list of ways to identify an
+// ORGANISATION: a company registration number, a tax reference, a DUNS number. A
+// national bank code is not on it. The codes that name those registries — DEBLZ
+// for Germany's Bankleitzahl, ITNCC for Italy's national clearing code, SESBA
+// for Sweden's — are on ExternalClearingSystemIdentification1Code, which is a
+// different list that this element does not reach. Putting one in Cd would be a
+// value the schema's own enumeration has never heard of.
+//
+// So every scheme this system names here is proprietary, and the asymmetry the
+// real lists carry survives in the VALUE rather than in the arm: three of the
+// four countries name a registry the clearing-system list knows and France names
+// one it does not, because French domestic routing is IBAN-only and no equivalent
+// entry exists. The arm where a code WOULD be right is ClrSysMmbId on a
+// pacs.008's agents, and no message this package builds populates it.
+type OrganisationIdentificationScheme struct {
+	Prtry string `xml:"Prtry"`
+}
+
+func (s OrganisationIdentificationScheme) validate() error {
+	if s.Prtry == "" {
+		return fmt.Errorf("%w: SchmeNm/Prtry", ErrMissingElement)
+	}
+	return nil
+}
+
+// GenericOrganisationIdentification is GenericOrganisationIdentification1: an
+// identifier issued to an organisation, the scheme it was issued under, and the
+// institution that issued it.
+//
+// The three together are what makes it readable by somebody who was not party to
+// the allocation, and that is why all three are required here where the schema
+// requires only the first. An Id alone is digits: "99900001" is a Bankleitzahl,
+// an ABI and a clearing number depending on a scheme nobody stated, and a bank
+// code is unique only within its country. Issr names the institution whose
+// register the allocation is in, which is what a reader would have to ask to
+// check it.
+//
+// SchmeNm and Issr are both minOccurs="0", so requiring them is this package's
+// narrowing and not the standard's.
+type GenericOrganisationIdentification struct {
+	Id      string                           `xml:"Id"`
+	SchmeNm OrganisationIdentificationScheme `xml:"SchmeNm"`
+	Issr    string                           `xml:"Issr"`
+}
+
+func (g GenericOrganisationIdentification) validate() error {
+	if g.Id == "" {
+		return fmt.Errorf("%w: Othr/Id", ErrMissingElement)
+	}
+	if err := g.SchmeNm.validate(); err != nil {
+		return err
+	}
+	if g.Issr == "" {
+		return fmt.Errorf("%w: Othr/Issr", ErrMissingElement)
+	}
+	return nil
 }
 
 // PartyChoice is the standard's Party38Choice: an organisation identification

@@ -863,29 +863,104 @@ Why it exists on **one side and not the other**: a bank can refuse a leg only if
   },
   "account-addressing": {
     title: "Account addressing",
-    body: `An account has exactly one **internal number** — the bank's own key — and a set, possibly empty, of **external identifiers**: \`(scheme, value)\` pairs a counterparty actually quotes to pay it. The two are never the same thing; the internal number is never handed outside the bank, and an account nobody pays from outside it needs no identifier at all. \`IBAN\` (\`SE89-AURORA-1001\` in the seed data) is the only scheme this system issues today, but the shape is generic — a sort code and number, a routing number and number, a proxy alias, a card PAN are all the same pair with a different scheme name.
+    body: `An account has exactly one **internal number** — the bank's own key — and a set of **external identifiers**: \`(scheme, value)\` pairs a counterparty actually quotes to pay it. The two are never the same thing; the internal number is never handed outside the bank. \`IBAN\` is the only scheme this system issues today, but the shape is generic — a sort code and number, a routing number and number, a proxy alias, a card PAN are all the same pair with a different scheme name.
 
-An account can hold several identifiers at once, and gain or lose one without its balance or history moving: adding and removing them is how a customer keeps an IBAN and later adds a card PAN, or reissues a card. ISO 20022 models the same shape directly — \`CashAccountIdentification\` is a *choice* between \`IBAN\` and a generic \`Othr\` triple — which is why an identifier is a pair rather than a field per kind.
+**The bank issues the IBAN; it does not accept one.** Opening an account [[address-issuance|mints]] its address, under the country and [[bank-code]] that bank was allocated, and an address offered by whoever asked for the account is refused. That is what makes the bank code inside an IBAN a true statement about who holds the account rather than a claim somebody typed. The set can still be empty — an address can be withdrawn and not reissued — and an account in that state cannot be paid until it has one.
+
+An account can hold several identifiers at once, and gain or lose one without its balance or history moving: that is how a customer keeps an IBAN and later adds a card PAN, or reissues a card. ISO 20022 models the same shape directly — \`CashAccountIdentification\` is a *choice* between \`IBAN\` and a generic \`Othr\` triple — which is why an identifier is a pair rather than a field per kind.
 
 **The [[scheme-asset|scheme]] decides which kind addresses it**, exactly as it decides what it settles in. A leg with no identifier in that scheme is refused, and so is a quoted identifier that isn't one of the account's *in that scheme* — an account with both an IBAN and a card PAN can't have a SEPA transfer accepted against its PAN. Both checks run **per leg**, each by the bank that holds that account, in the same place and for the same reason as the [[scheme-asset|asset check]].
 
-A payment records the address it was reached by whether or not the caller quoted one: the bank that owns a leg fills in that account's single identifier in the scheme's scheme, and refuses to choose when there are several. The submitting bank does this for its own side; the far side's address is back-filled by the *other* bank when the message reaches it — the fill-in runs per leg, at the bank that owns that leg, because the account-owning bank is the authority on how its own account is addressed, not the bank that merely quoted it. That is a claim about the address, and about the payment itself, not about the whole system: see [[counterparty-details]] for what is and is not looked up when a payment is built, and for the separate, pre-submission lookup that can still resolve a name. The address is a record, not an identity — which is why a [[mandate]] compares its parties by bank and account only. Reissuing the debtor's IBAN would otherwise kill every mandate on the account, permanently.
+A payment records the address it was reached by whether or not the caller quoted one: the bank that owns a leg fills in that account's single identifier in the scheme's scheme, and refuses to choose when there are several. The submitting bank does this for its own side; the far side's address is back-filled by the *other* bank when the message reaches it — the fill-in runs per leg, at the bank that owns that leg, because the account-owning bank is the authority on how its own account is addressed, not the bank that merely quoted it. That is a claim about the address, and about the payment itself, not about the whole system: see [[counterparty-details]] for what is and is not looked up when a payment is built, and for the two separate questions an address can be put to before one is submitted. The address is a record, not an identity — which is why a [[mandate]] compares its parties by bank and account only. Reissuing the debtor's IBAN would otherwise kill every mandate on the account, permanently.
 
-**An address is compared canonically, not literally.** An IBAN is transmitted without separators and *displayed* with them, and this system stores the readable \`SE89-AURORA-1001\` while a \`pacs.008\` for that account carries \`SE89AURORA1001\`. One address, and compaction cannot be undone, so the lookup strips separators from **both** sides. Without that a bank emits an address it then cannot resolve. IBAN only: nothing else here has a display form, and stripping punctuation from a card PAN would merge addresses a scheme keeps apart. Nothing stored changes; only the comparison.
+**An address is compared canonically, not literally — and the difference is a person.** What a register stores and what a \`pacs.008\` carries are the same string, the compact upper-case form the standard calls canonical, so those two can never drift apart. What differs is what a **customer types**: a statement prints an IBAN grouped in fours, a keyboard produces whatever case the typist was in, a form field invites hyphens. All the same address, and compaction cannot be undone, so the lookup normalises **both** sides — separators stripped, case folded. IBAN only: nothing else here has a display form, and stripping punctuation from a card PAN would merge addresses a scheme keeps apart. Nothing stored changes; only the comparison.
 
-**Uniqueness stops at the bank.** A bank's register spans one book — the correct boundary, not a shortcut: a bank-issued identifier is globally unique by construction (an IBAN carries its bank's code, a PAN its BIN) while a proxy alias like a phone number carries no issuer, which is why proxy lookup needs its own central service and this system has none. The register enforces it at write time, within one bank, deliberately with no \`UNIQUE\` constraint behind it: a constraint would fire on the race this read-then-write leaves open, which the register does not, and would fire as a constraint violation rather than as the domain's own refusal. It runs through the same lookup, so it inherits the same comparison rule whole: \`SE89-AURORA-1001\` and \`SE89AURORA1001\` are one address, and the second spelling is refused. That is the point rather than a side effect — an account holding two spellings of one address resolves either way, so no lookup would ever complain about it. Address resolution is what makes that safe **for routing**, and it does so within one bank only. A sweep over every bank at read time would catch a within-bank duplicate *and* a collision across two banks. There is none: the lookup answers out of the **asking bank's own register**, because a bank that keeps its own database cannot read another's, and no real bank holds a register of another's customers. So it refuses as ambiguous rather than guessing when two of that bank's *own* accounts claim one address, and a cross-bank collision is simply **invisible** — two customers at two banks may hold one address with nothing in the system able to notice. For routing only, though — a submission is handed an account id and never resolves, so two accounts sharing an address both stay payable by id. The accounts are distinct and real; what is ambiguous is the address.`,
+**Uniqueness stops at the bank.** A bank's register spans one book — the correct boundary, not a shortcut: a bank-issued identifier is globally unique by construction (an IBAN carries its bank's code, a PAN its BIN) while a proxy alias like a phone number carries no issuer, which is why proxy lookup needs its own central service and this system has none. The register enforces it at write time, within one bank, deliberately with no \`UNIQUE\` constraint behind it: a constraint would fire on the race this read-then-write leaves open, which the register does not, and would fire as a constraint violation rather than as the domain's own refusal. It runs through the same lookup, so it inherits the same comparison rule whole: \`DE20999000010000000001\` and \`DE20 9990 0001 0000 0000 01\` are one address, and the second spelling is refused. That is the point rather than a side effect — an account holding two spellings of one address resolves either way, so no lookup would ever complain about it. Address resolution is what makes that safe **for routing**, and it does so within one bank only: the lookup answers out of the **asking bank's own register**, because a bank that keeps its own database cannot read another's, and no real bank holds a register of another's customers. So it refuses as ambiguous rather than guessing when two of that bank's *own* accounts claim one address.
+
+**Across two banks the collision is refused at the allocation, twice.** Minting cannot reach it — an address carries its issuer's [[bank-code]], so two banks holding one address takes two banks allocated one code. The settlement agent's registry refuses that outright, keyed by country and code, and the clearing house refuses it a second time by declining to publish a code its [[routing-roster|directory]] already holds under a different admission. The second is belt-and-braces and earns its place: the published directory is what every member **copies**, so a duplicate there would make one address ambiguous for the whole scheme, and the clearing house cannot see the registry to check. It is a fault in an allocation rather than in a register, which is why no register can catch it. And it is a claim about routing only — a submission is handed an account number and never resolves, so two accounts sharing an address both stay payable by number. The accounts are distinct and real; what is ambiguous is the address.`,
+  },
+  "address-issuance": {
+    title: "Issuing an address",
+    body: `**A bank issues its customers' IBANs. It does not accept one.** Opening an account allocates its address there and then, from the country and [[bank-code]] that bank holds, and an address supplied by the caller is refused outright.
+
+That refusal is the point rather than a side effect. A bank can only mint under the allocation it was given, so it *cannot* issue an address that routes to somebody else — which is what makes the bank code inside an IBAN a fact about who holds the account, and what any directory built on top of it has to be able to rely on.
+
+The account number inside the address comes from a **counter of its own**, not the counter every other identifier in the bank draws on. That one interleaves with transactions and events, so addresses drawn from it would come out \`…0001\`, \`…0007\`, \`…0019\`, with the gaps saying how much unrelated work happened in between. An account number is a thing a customer reads out loud; it is worth a counter. The number is taken inside the same unit of work that opens the account, so an opening that fails does not burn an address.
+
+**Reissuing is one act, not two.** Withdrawing the old address and minting a new one happen together, because there is no longer a call that hands an account a replacement — and because an account between the two would have no address and could not be paid, with nothing recording that it had happened. It moves neither balance, history, nor any [[mandate]] on the account: a mandate authorises debits from an *account*. What it does break is anyone still holding the old address, which is the whole cost of reissuing one and why it is something a bank does deliberately.`,
+  },
+  "iban-check-digit": {
+    title: "The check digits in an IBAN",
+    body: `An IBAN carries **check digits**, and their whole job is to reject a typo **offline** — before any lookup, any message, any bank. It is the only refusal in a payment system that needs nothing but the string.
+
+**mod-97-10** (ISO 7064) is the international one, positions 3 and 4. Move the first four characters to the end, map letters to digits (\`A\`=10 … \`Z\`=35), take the whole thing modulo 97; a valid IBAN gives 1. To create one, put \`00\` in the check positions and take 98 − (n mod 97).
+
+Where a country had its own scheme before the international one, that check survives too — they were never retired. **Italy** carries a **CIN** letter, computed from two lookup tables over the 22 characters after it, one for odd positions and one for even. **France** carries a **clé RIB**: 97 − ((89·banque + 15·guichet + 3·compte) mod 97), where letters in the account number map through a table that is **not** IBAN's \`A\`=10…\`Z\`=35. Two different letter-to-digit maps inside one address is what makes the two checks genuinely independent rather than one check computed twice.
+
+**Measured**, over four published example IBANs, exhaustively: **810 of 810** single-digit substitutions caught, and **787 of 787** transpositions of two different digits — at *every* distance, not only neighbouring ones. That is stronger than the property usually quoted and it is not luck: transposing at distance *d* changes the value by a multiple of 10^*d* − 1, and 10 has multiplicative order 96 modulo 97, so no address short of 96 characters can hide one.
+
+And the honest half. Over \`DE89370400440532013000\`, taking every pair of digit positions and every pair of replacement digits: **141 of 15,390 two-character errors go undetected — 0.92%**, close to the 1.03% a uniform remainder would give. That figure is the argument for the national checks and for everything after them: **a check digit says an address was probably typed correctly. It never says the address exists.** Whether anybody holds it is a question only the bank that keeps the register can answer.`,
+  },
+  "bank-code": {
+    title: "The bank code inside an IBAN",
+    body: `Every IBAN contains the code of the bank that issued it, and reading it out is the first step of routing a payment anywhere. In Germany it is the **Bankleitzahl**, in Italy the **ABI**, in France the **code banque**.
+
+**It is variable-length and sits at a country-dependent offset**, which is the detail everything else turns on:
+
+| Country | Length | Bank code | National check |
+|---|---|---|---|
+| \`DE\` | 22 | 8 digits at offset 4 | — |
+| \`IT\` | 27 | 5 digits at offset **5** | CIN letter at 4 |
+| \`SE\` | 24 | 3 digits at offset 4 | — |
+| \`FR\` | 27 | 5 digits at offset 4 | clé RIB at 25 |
+
+Under one country alone the extraction would be four characters at a fixed place, and that shortcut would be *correct*. Across four it is not: Italy's code sits behind a check letter that is not part of it, and Sweden's is three digits. Nothing can pull a bank code out of an address without first knowing which country's structure applies.
+
+**A bank code is allocated, never computed.** A national registry hands one out — the Bundesbank runs Germany's file, the Banca d'Italia Italy's — and the bank is told what it got. Nothing derives one from a BIC, and with numeric codes in every one of these countries nothing could. It is also **never reassigned**, which is what lets anyone hold a copy of the mapping and be at worst incomplete rather than wrong.
+
+The **branch** codes — Italy's CAB, France's guichet — are carried in the address and are deliberately not part of routing. A branch identifies an office within an institution, and routing answers at institution granularity because a BIC does.
+
+**Reading the code out is only half of routing.** Which institution holds it takes a directory of every participant's allocation, and the scheme publishes one for its members to copy. That is what lets a payer type an address and nothing else: SEPA is IBAN-only because every bank subscribes to such a table, not because routing is computable from an address. See [[routing-directory]].`,
+  },
+  "routing-directory": {
+    title: "The directory a bank routes from is a copy",
+    body: `A bank code has no computable relationship to a BIC. A bank is \`AURODEFFXXX\` and \`99999999\`, and no arithmetic joins the two — which is exactly why a scheme has to **publish** the pairing rather than let each bank work one out. Three tables carry it, in three institutions, and only one of them is a copy:
+
+| Table | Whose | Answers |
+|---|---|---|
+| \`bank_codes\` | settlement agent | *who was this code issued to* — the registry's own record of what it gave out |
+| \`roster_entries\` | clearing house | *who may be reached, and under which allocation* — the published directory |
+| \`routing_directory\` | **each member bank** | *where do I send this* — a snapshot of the row above, pulled by that bank |
+
+The split mirrors the world. The Bundesbank runs the Bankleitzahl file and the EPC keeps the Register of Participants: **who issued this address** is not **may this address be reached**, and they are different institutions answering different questions. A bank with a code and no roster entry is issuing addresses nobody can pay, which is a real state and one this system can hold.
+
+**A member does not ask the clearing house per payment. It subscribes.** It fetches the published directory and replaces its own copy wholesale — a snapshot, because that is what a directory file is, not a delta feed. Between two pulls it routes from whatever it was last given.
+
+So **staleness is real**, and it is the behaviour rather than a defect being tolerated: a bank admitted this morning cannot be paid by a bank that refreshed yesterday. The payer's own bank finds no entry, refuses before either leg posts, and one refresh makes the same payment work. Every real routing directory works this way, which is why being in the scheme's directory and holding a copy of it are two separate things — [[bank-admission|admission]] fills nobody's copy, its own included.
+
+**What makes a copy safe is one invariant: a bank code is never reassigned.** A copy that is behind is therefore *incomplete*, never *wrong*. The failure mode is "I cannot route this yet" and never "I routed it to the wrong bank", and nothing may introduce a path that gives a code back to be issued again.
+
+And the refusal cannot say **which** of two situations it is in — no such bank is in this scheme, or this bank's copy predates it. Those have different remedies, and telling them apart would mean asking the clearing house, which is the lookup the subscription replaces. A refusal claiming to know would be lying about it.
+
+**Not a timer, and not a push.** A background poller buys realism and pays in tests that fail at random; a clearing house holding a subscriber list and a retry policy is a delivery system rather than a publisher, and the real vendor does not know who is listening.
+
+The copy carries a code and a BIC and **nothing else** — no name, because the acknowledgement the published row is written from delivers none, and no list of assets either. Refusing early from data that may be behind would refuse a payment the clearing house would have accepted, so whether a member clears in this currency stays a question for whoever reads the live roster. See [[routing-roster]] and [[counterparty-details]].`,
   },
   "counterparty-details": {
     title: "Counterparty details",
     body: `A payment names two parties, and the submitting bank treats them differently. Its **own** side is overwritten unconditionally — its own BIC, and the account holder's name straight off its own deposit register — because it is the authority on its own customer; nothing is compared, the value the request quoted is simply replaced. The **counterparty's NAME** is not overwritten: it is asserted on the instruction, stored on the payment as the debtor's or the creditor's details, and carried through as given.
 
-**The counterparty's BANK is asserted too, and the hazard in that is real.** That element is not a description, it is an **address**: it goes out as \`CdtrAgt\`/\`DbtrAgt\` and the clearing house relays on it without reading anything, so a payer who can type it can choose which bank gets paid. Measured: a push whose creditor agent names the payer's own bank comes back to its sender, and a pull whose debtor agent names the collector has the collecting bank post the debit in the payer's bank's book.
+**The counterparty's BANK is not on the instruction at all — it is derived.** That element is not a description, it is an **address**: it goes out as \`CdtrAgt\`/\`DbtrAgt\` and the clearing house relays on it without reading anything, so a payer who could type it could choose which bank gets paid. Both failures were measured before the derivation existed: a push whose creditor agent named the payer's own bank came straight back to its sender, and a pull whose debtor agent named the collector had the *collecting* bank post the debit in the payer's bank's book. Neither is expressible now, because there is no field to put a bank in.
 
-**Nothing derives it instead.** The row the BIC would be read off is the *counterparty's own*, and under the [[store-split|store split]] a bank holds only its own — so the submitting bank refuses outright an instruction that names no counterparty agent. What makes asserting it safe is the narrowing that landed with it: a bank resolves an address in its **own register only**, so an instruction naming the wrong bank is refused \`AC01\` by the bank it named rather than quietly accepted for somebody else's customer. Real SEPA is the same shape — IBAN *and* BIC was what it was before 2016, and IBAN-only works because a directory service resolves the rest, which this network does not have. **The payer supplies the counterparty's address, its name and its bank; its own bank supplies everything about itself.**
+**What it is derived from is a table this bank holds.** Not the counterparty's row — that one belongs to a bank this one shares no database with, under the [[store-split|store split]], which is why the derivation was impossible for as long as there was nowhere else to get it. The submitting bank reads the [[bank-code]] out of the counterparty's address and resolves it in its own copy of the scheme's [[routing-directory|routing directory]]. **That is what IBAN-only means**, and it is what SEPA has been since February 2016.
+
+So an address can now fail in three ways, with three different remedies: the instruction names no counterparty at all, and somebody types a name; the address is in a scheme this bank keeps no directory for — a card PAN, a proxy alias, a cross-border transfer — and a BIC is supplied beside it, which is what SEPA itself required before 2016; or the bank code resolves to nothing in this bank's copy, and the remedy is a refresh, or the payee's bank is not in this scheme and never will be. **The payer supplies the counterparty's address and its name, and nothing else; its own bank supplies everything about itself and derives the rest from the address.**
+
+**A [[mandate]] derives its debtor's bank once, when it is signed, and never again.** A mandate authorises debits from an account at the bank the debtor signed up against; an authorisation that silently followed a directory to a different institution is a behaviour no real scheme has.
 
 **The name is refused where it is missing and unchecked where it arrives.** The SUBMITTING bank refuses an unnamed counterparty outright, before either leg posts, so nothing is half-done. The RECEIVING bank checks neither field. For its own side — the creditor's account on a push, the debtor's on a pull — it reads that account anyway, and could in principle compare the name it finds there against what the other bank asserted. It does not, and that is deliberate restraint rather than inability: overwriting the name would leave the payment it stores saying something different from the message that already went out on the wire.
 
-**There is no lookup before submission either.** A directory lookup answers out of one bank's own register, so nothing in this system resolves an address across banks and there is no cross-bank name to reach a payment even in principle. No name a payment carries is ever the product of one bank reading another's register — fetching the far side's name out of the *other* bank's deposit register would be a bank reading a book that was never its own, and building an outbound message reads nothing across the boundary it crosses: the name travels on the instruction because there is nowhere else a payment may take it from.`,
+**"Resolve this address" is two questions with two answers, and neither of them is a name.** *Which account holds it* is answered out of one bank's **own register** — so a bank can tell its own customer about its own accounts, and nothing whatever about anybody else's. *Which institution does it reach* is answered from the copy of the published directory, and what comes back is a BIC, because the roster was never told a name either. So a send form can show which bank an address routes to and can never show whose account it is, and no name a payment carries is ever the product of one bank reading another's register. The name travels on the instruction because there is nowhere else a payment may take it from. Confirming it against the payee's own bank is a different question with its own message pair behind it, and this scheme does not ask it.`,
   },
   "audit-trail": {
     title: "Audit trail",
@@ -1211,7 +1286,7 @@ Debit  Vault Cash (EUR)      100  (Asset ↑)
 Credit Alice's deposit (EUR) 100  (Liability ↑)
 \`\`\`
 
-Every [[bank-founding|founded]] bank has one, per asset, from the moment it is founded — **before** any scheme has heard of it and whether or not one ever does. That is what makes "a founded bank can take money in" true.
+Every [[bank-founding|founded]] bank has one, per asset, from the moment it is founded — **before** any scheme has heard of it and whether or not one ever does. That is the shape of "a bank's counter has nothing to do with its central bank account": taking cash in is one institution's act, and it needs nothing from anybody. (In this system a founded bank has no customer to take it in *for*, because addressing an account needs a [[bank-code|code]] a registry allocates. The refusal is about the address, not about the counter, and the two are worth keeping apart.)
 
 **A bank cannot settle out of it.** Interbank obligations are discharged in [[central-bank-reserves|central-bank money]], not in the bank's own cash, so a bank that takes deposits and never [[lodgement|lodges]] accumulates vault cash it cannot pay anyone with. So the balance here is a real figure and not a way-station: it is **how much of what this bank's customers paid in has not been placed on reserve**.
 
@@ -1245,29 +1320,32 @@ A bank with no [[settlement-account|reserve account]] to lodge into is refused. 
     title: "Founded, and not yet a member",
     body: `**Founding a bank and admitting it to a scheme are two different things.** Founding is the bank's own act: it gets a book, a chart of accounts, its [[participant-assets|per-asset plumbing accounts]] and a deposit product to sell. It comes out **Founded**, which is a working bank that is in no scheme.
 
-Its own book is unrestricted — it opens customer accounts, publishes products, adds ledgers. What it cannot do is anything needing another institution:
+Its own book is unrestricted — it publishes products, adds ledgers, opens general-ledger accounts. What it cannot do is anything that needs something another institution gives out:
 
 \`\`\`
 Founded
   book, chart of accounts, product
-  opens customer accounts
-  TAKES CASH IN            → held as [[vault-cash|vault cash]]
-  CANNOT lodge it          → 422
-  CANNOT pay or be paid    → 422
+  a vault cash account, per asset
+  CANNOT open a customer account   no code to address one under
+  CANNOT lodge cash on reserve     no reserve account to lodge into
+  CANNOT pay, CANNOT be paid
 
 Member — the above, plus
+  a bank code, allocated by a registry
   a settlement account at the central bank
-  a row in the routing directory
-  can lodge, can settle
+  a row in the scheme's published directory
+  opens addressable accounts, lodges, settles
 \`\`\`
 
-**Taking money in is the one people guess wrong.** The guess is that a founded bank *cannot* be funded — that cash paid in raises the bank's reserve in the same [[unit-of-work|unit of work]], so there is no reserve to raise until a settlement agent has opened one, and the API answers \`422\` naming the membership.
+**The sharpest one is that it cannot give a customer an ADDRESS.** Every account is opened with an IBAN minted under the country and [[bank-code|bank code]] its bank was allocated, and that code arrives from a registry on the answer to its application — so a bank no registry has answered has no address range and can open no customer account at all. It applies to a market; it is *given* a code. A caller allowed to supply one would make the whole [[routing-directory|routing directory]] unnecessary, and would be wrong about the world. The cost is a narrower fixture than it looks: a founded bank is a licence, a book, a chart of accounts, a product, and no customers.
 
-That is a false statement about banking. **A bank's counter has nothing to do with its central bank account.** A bank that has founded itself and joined no scheme can open its doors and take deposits; it simply holds what it takes as [[vault-cash|vault cash]], which is its own money in its own hands.
+**Taking money in is the one people guess wrong.** The guess is that a founded bank cannot be funded — that cash paid in raises the bank's reserve in the same [[unit-of-work|unit of work]], so there is no reserve to raise until a settlement agent has opened one, and the refusal names the membership.
 
-What a founded bank cannot do is turn that cash into reserves. That is a [[lodgement]] — a request to the central bank, because only the central bank can credit an account in the central bank's book — and it is refused with \`422\` for a bank that has no reserve account to lodge into. **That is the act the refusal is true about.**
+That is a false statement about banking. **A bank's counter has nothing to do with its central bank account.** A bank that has founded itself and joined no scheme can open its doors and take cash; it holds what it takes as [[vault-cash|vault cash]], which is its own money in its own hands, and nobody else's book moves. What stops this one is the address, not the counter — a different refusal, about a different act, and worth keeping apart from the one below.
 
-**Paying is a refusal, not an inability.** Nothing about a founded bank stops it: an [[overdraft|arranged overdraft]] gives a customer spendable money with no deposit, and the network's [[account-addressing|address lookup]] resolves a founded bank's addresses like anyone else's. It is refused of BOTH parties, at the mesh's door and again at the clearing house, because the cut-off cannot name a non-member in the settlement instruction — so one such payment stops the **whole cycle**, with every other member's payments in it.
+What no founded bank can do is turn cash into reserves. That is a [[lodgement]] — a request to the central bank, because only the central bank can credit an account in the central bank's book — and it is refused for a bank that has no reserve account to lodge into. **That is the act the reserve refusal is true about.**
+
+**Paying is a refusal, not an inability**, and it is refused of BOTH parties in two different places. *Being paid* is refused by the **payer's own bank**: a bank in no published directory is in nobody's copy of one, so an address under its code resolves to nothing and the payment dies before either leg posts. *Paying* is refused at the network's door, which asks the roster whether the submitting bank is a member, and again at the clearing house before a payment is taken into a cut-off. Nothing else would stop it — an [[overdraft|arranged overdraft]] gives a customer spendable money with no deposit at all — and what the refusals cost when they did not exist is the point: the cut-off cannot name a non-member in the settlement instruction, so one such payment stopped the **whole cycle**, with every other member's payments in it.
 
 **Admission is not one transaction.** One write covering the bank's accounts, the central bank's and the clearing house's together would mean "a bank can never exist without the accounts it needs", and no real admission has that guarantee. A bank is licensed and built long before any scheme has heard of it, and joining a scheme is an application to somebody else that can be refused. See [[bank-admission]].`,
   },
@@ -1291,16 +1369,20 @@ The bank's own row
 
 One account **per asset**, because a reserve in euro says nothing about a reserve in dollars. That is also why a bank joining in two assets applies twice: the account-opening request carries one currency, so it asks once per asset and is answered once per asset.
 
-The central bank's row is keyed by **BIC** and by nothing else — a settlement agent holds no roster and allocates no bank ids, so the only identifier it is ever told is the one on the message. It knows which account it holds for whom, and nothing about how the member runs: not its book, not its subledgers, not its product.`,
+The central bank's row is keyed by **BIC** and by nothing else — a settlement agent holds no roster and is told no bank ids, so the only identifier it is ever told is the one on the message. It knows which account it holds for whom, and nothing about how the member runs: not its book, not its subledgers, not its product.
+
+It does keep a **second register**, and it is a different kind of thing: the [[bank-code|bank codes]] it has allocated, one country at a time, which is the national registry's job rather than the account servicer's. Two registers because they answer two questions — *whose account do I hold* and *who was this code issued to* — and this system runs both out of one institution, which four national registries do in the world.`,
   },
   "routing-roster": {
     title: "The routing directory says who may be addressed",
     body: `The scheme's **routing directory** belongs to the clearing house, and it answers one question: **where do I send a message addressed to this member?** It is not a register of banks. A bank absent from it exists perfectly well — it is simply not somewhere this scheme will send anything.
 
-Each entry carries a **BIC**, the assets that member clears in, and the reference of the admission that put it there. What it does *not* carry is the point:
+Each entry carries a **BIC**, the country and [[bank-code|bank code]] that member issues its customers' addresses under, the assets it clears in, and the reference of the admission that put it there. The allocation is what makes it a routing *directory* rather than a guest list: it is the pairing every member [[routing-directory|copies and routes from]], and the clearing house learns it for free, off the same acknowledgement the row is written from.
+
+What the entry does *not* carry is the point:
 
 - **no account of any kind** — no account id, no subledger, no product, no book. A clearing house holding one would be holding the means to reach into a bank's ledger. The row this replaced carried the central bank's account ids, and readers in three institutions resolved their postings through it.
-- **no name** — the acknowledgement the row is written from identifies the account owner with a BIC and has no name element at all. Routing is an address; a name here could only be the clearing house remembering something no message delivered.
+- **no name** — the acknowledgement identifies the account owner with a BIC and has no name element at all. Routing is an address; a name here could only be the clearing house remembering something no message delivered. That absence travels all the way down to a payer, who resolves an address and is shown a BIC.
 
 It is keyed by BIC because a clearing house routes what a message addresses, and a message addresses a BIC. See [[bank-admission]] for how the row comes to be written, and by whom.`,
   },
@@ -1315,13 +1397,15 @@ It is keyed by BIC because a clearing house routes what a message addresses, and
 4  clearing house  --acmt.010-->  bank
 \`\`\`
 
-1. The **bank** founds itself first — see [[bank-founding]] — and then applies, one request per [[asset]], all quoting one process id so the scheme can tell they are one admission.
+1. The **bank** founds itself first — see [[bank-founding]] — and then applies, one request per [[asset]], all quoting one process id so the scheme can tell they are one admission. It names the **country** whose registry it wants a bank code from, and it brings no code of its own.
 2. The **clearing house** relays and holds nothing. The only thing it refuses before relaying is a BIC already in its directory under a *different* admission.
-3. The **central bank** opens one [[settlement-account|settlement account]] per asset in its own book, records its own member row, and answers — or refuses, in prose rather than a code, because this message family carries no code set.
-4. The **clearing house** writes its [[routing-roster|routing entry]] from that acknowledgement and only *then* forwards it, so a bank told it is a member is one the scheme can already route to.
-5. The **bank** records the account numbers it has been told and becomes a member.
+3. The **central bank** does two things in one unit of work, out of two registers: it **allocates a [[bank-code|bank code]]** in the country the request named, and it opens one [[settlement-account|settlement account]] per asset in its own book. Both travel back on its answer — the code as an identifier issued to this organisation, by that issuer, under that scheme — or it refuses, in prose rather than a code, because this message family carries no code set.
+4. The **clearing house** writes its [[routing-roster|routing entry]] from that acknowledgement, the allocation included, and only *then* forwards it, so a bank told it is a member is one the scheme can already route to. It refuses a code its directory already holds under a different admission, a second time and for a different reason: it cannot see the registry, and its own directory is what every member copies.
+5. The **bank** records the account numbers and the code it has been told, becomes a member, and can from that moment open addressable customer accounts.
 
 Four units of work at three institutions, so the API answers **202 Accepted** with a founded bank rather than 201 with a member: the scheme's answer is decided elsewhere and arrives later.
+
+**What admission does not do is fill anybody's [[routing-directory|routing directory]]**, its own included. Being in the published directory makes a bank reachable; holding a copy of it is what makes a bank able to reach anyone, and each member pulls its own copy on its own account. A bank admitted this morning is unpayable by every member that refreshed yesterday, and cannot itself pay anyone until it refreshes.
 
 **Two things here are not the real thing.** Scheme membership is *contractual* — an adherence agreement, signed — and travels on no message at all; what travels is the settlement-account request, and the routing entry falls out of its acknowledgement. And a real central bank does not open an RTGS account by message either: it is reference data (in TARGET, CRDM static data and \`reda\`). What is real is the **sequence and the ownership** — who may open which account, in whose book, and in what order.`,
   },
