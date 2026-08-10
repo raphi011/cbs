@@ -32,7 +32,8 @@ Three constraints apply to everything below.
 
 - `ledger` — double-entry GL, multi-asset, balancing per asset. `ledger.Book`.
 - `deposit` — DDA: status and lifecycle, overdraft limits, holds, available
-  balance, end-of-day snapshots. `deposit.Register`.
+  balance, end-of-day snapshots, and the book transfer between two of one bank's
+  own accounts. `deposit.Register`.
 - `interest`, `lending`, `product` — accrual, the two drawdown facilities, and
   the effective-dated product catalogue.
 - `payment` — one institution's handle on the interbank network. SEPA CT and DD,
@@ -57,7 +58,7 @@ Four groups, and only the first two are sequenced against each other.
 
 1. **Defects** — small, verified against the current tree, and each one is a
    thing the system gets wrong rather than a thing it does not have.
-2. **The build sequence** — the payments and settlement arc, §1 through §7,
+2. **The build sequence** — the payments and settlement arc, §1 through §6,
    where each item genuinely wants the one before it.
 3. **Domain gaps worth building** — a standing catalogue, ranked by value per
    unit of effort. Take from the top; nothing here blocks anything there.
@@ -113,36 +114,33 @@ about what a 500 may disclose.
 
 ## The build sequence
 
-1. **The on-us book transfer.** The only payment this system cannot make at all.
-2. **7c, the message log.** The last piece of sub-project 7, and it makes every
+1. **7c, the message log.** The last piece of sub-project 7, and it makes every
    flow already shipped visible.
-3. **Instant payments.** The one place the settlement orchestrator has to grow.
-4. **Card transactions.** Additive on top of holds and the existing net path.
-5. **Reserve adequacy.** Wanted by both 3 and 4, and worth little before either.
-6. **Crypto**, then **FX** — the two undecided-scope domains, largest last.
+2. **Instant payments.** The one place the settlement orchestrator has to grow.
+3. **Card transactions.** Additive on top of holds and the existing net path.
+4. **Reserve adequacy.** Wanted by both 2 and 3, and worth little before either.
+5. **Crypto**, then **FX** — the two undecided-scope domains, largest last.
 
-### 1. The on-us book transfer — `todo`
+### The on-us book transfer — `done`
 
-A payment between two customers of the same bank. `Mesh.Submit` refuses one
-today, correctly: nothing crosses between banks, so there is no obligation to
-net, no reserves to move and no statement to send. What is missing is the other
-half of that sentence — what a real bank does instead, which is to recognise the
-beneficiary as its own and post both customer legs in **its own book, in one unit
-of work**, with no message, no suspense and no counterparty.
+`deposit.Register.TransferTx`, and `POST /transfers` on a bank's own port. It is
+the `deposit` layer's act rather than the `payment` layer's, because nothing
+about it needs to know what an institution is: it touches the two customers' own
+GL accounts, and a register spans one book. `Mesh.Submit` refuses the on-us
+*payment* unchanged — the two are different products and the payer chooses one.
 
-It is the only payment where a single institution legitimately holds both legs at
-once, which is what makes it the exception that shows why every other payment
-needs a conversation: there is no second institution to disagree with, so there
-is nothing to reconcile and nothing to strand.
+What it does NOT cover is the standing order: a transfer that happens on a date
+has a lifecycle of its own, and nothing here holds an instruction between the day
+it is given and the day it runs.
 
-Two defects found under sub-project 8 are reachable only through an arrangement
-`Mesh.Submit` currently refuses, and this work is what makes them reachable —
+Two defects found under sub-project 8 remain reachable only through an
+arrangement `Mesh.Submit` refuses, and this work did not change that —
 `AcceptInboundTx`'s witness is the ROW, which is false when the same bank also
 submitted, and `PostReturnLegTx` decides which leg is last by position in a
-conversation one institution does not have. Both are closed; both need a test
-through the new path rather than through the store.
+conversation one institution does not have. Both are closed and both are still
+proved through the store rather than through a path a caller can reach.
 
-### 2. 7c, the message log — `todo`
+### 1. 7c, the message log — `todo`
 
 The last of sub-project 7, and the only reason §7 is not `done`. Envelopes
 persisted so a payment screen can show the XML that actually moved, carried
@@ -152,7 +150,7 @@ Cheap relative to what it exposes: every flow already shipped becomes something 
 reader can watch rather than infer. It is also the natural home for anything that
 wants to explain a `pacs.002` reason code at the point it was returned.
 
-### 3. Instant payments — `todo`
+### 2. Instant payments — `todo`
 
 Real-time **gross** settlement, 24/7. Each payment settles individually and
 immediately instead of being batched into a clearing cycle. (*Instant* and
@@ -178,7 +176,7 @@ the right shape for instant rails, and adopting it for a `Gross` scheme while
 keeping the current shape for `Net` is a real fork in the payment layer, not a
 detail. The earmark primitive already exists: it is a `deposit` hold.
 
-### 4. Card transactions — `todo`
+### 3. Card transactions — `todo`
 
 An **authorise → capture → clear → settle** flow. The authorisation is a
 `deposit` hold (`CreateHold`) reserving the cardholder's available balance;
@@ -193,7 +191,7 @@ front-end work, recorded as out of scope by 6b and unclaimed since.
 Wants the **hold expiry sweep** below first, or ships a hold state machine that
 is less honest than it looks.
 
-### 5. Reserve adequacy — `todo`
+### 4. Reserve adequacy — `todo`
 
 Check a bank's reserves before its net settlement is allowed to post. Motivated
 by both of the two items above and worth little before either: today every
@@ -205,7 +203,7 @@ the `camt.051` that would pull liquidity back the other way. **This system lodge
 cash and never withdraws it**, which is the current reason `camt.051` is refused
 by name in `iso20022/doc.go`.
 
-### 6. Crypto — `todo`
+### 5. Crypto — `todo`
 
 Scope deliberately undecided. Ranges from custody balances denominated in
 non-fiat units — nearly free today, BTC is a known asset at scale 8 and works —
@@ -230,7 +228,7 @@ child table keyed `(participant_id, asset)`; and `interest` is asset-agnostic, s
 a crypto-denominated facility needs no new arithmetic — only an asset inside the
 cap.
 
-### 7. FX / exchange — `todo`
+### 6. FX / exchange — `todo`
 
 Trades against two assets, rate handling, spread recognized as revenue, position
 and exposure accounts, settlement conventions.
@@ -546,7 +544,7 @@ known to be the wrong place for it.
 **Do not act on this before instant payments.** `SettlementModel()` had no
 consumer at all when this was written and now has exactly one, a DTO field —
 nothing branches on it. A third scheme with a genuinely different settlement
-model is what would let the seam earn itself, and §3 of the sequence is that
+model is what would let the seam earn itself, and §2 of the sequence is that
 scheme. Re-ask afterwards.
 
 ---
