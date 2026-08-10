@@ -235,6 +235,10 @@ func TestSchemaArgumentsReachSqliteMaster(t *testing.T) {
 			{"ledgers", "A note on what is NOT here: UNIQUE (book_id, name)"},
 			// An absent CHECK, which has no column to hang a comment from.
 			{"accounts", "There is deliberately no CHECK restricting it to the known codes"},
+			// An absent TABLE, argued on the column that replaces it: the
+			// classic arrangement's second entries table, and with it the
+			// nightly reconciliation a stored control figure needs.
+			{"entries", "What is ABSENT is the second entries table"},
 			// An index's own reasoning, inside its column list.
 			{"transactions_idempotency_key_idx", "the ONLY unique index in this schema"},
 			// An absent foreign key, and the exemption that says which ones stay.

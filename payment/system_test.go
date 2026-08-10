@@ -791,7 +791,7 @@ func payTheCreditors(t *testing.T, sys *testSystem, id CycleID) {
 // bookBalance returns the GL book balance of an arbitrary ledger account.
 func bookBalance(t *testing.T, l *ledger.Book, acct ledger.AccountID) ledger.Amount {
 	t.Helper()
-	bal, err := l.BookBalance(context.Background(), acct)
+	bal, err := l.BookBalance(context.Background(), acct.Total())
 	assertNoError(t, err)
 	return bal
 }

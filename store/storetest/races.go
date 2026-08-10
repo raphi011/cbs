@@ -492,7 +492,7 @@ func RunConcurrentTxRaces(t *testing.T, newStore func(*testing.T) Store) {
 
 		assertOneWinner(t, "concurrent withdrawals", errs, ledger.ErrInsufficientBalance)
 
-		balance, err := book.BookBalance(ctx, cash)
+		balance, err := book.BookBalance(ctx, cash.Total())
 		assertNoError(t, err)
 		assertEqual(t, "cash balance after the race", balance, ledger.Amount(400))
 	})
@@ -683,7 +683,7 @@ func RunConcurrentTxRaces(t *testing.T, newStore func(*testing.T) Store) {
 		for _, err := range errs {
 			assertNoError(t, err)
 		}
-		balance, err := book.BookBalance(ctx, cash)
+		balance, err := book.BookBalance(ctx, cash.Total())
 		assertNoError(t, err)
 		assertEqual(t, "cash balance after both postings", balance, ledger.Amount(9_800))
 	})

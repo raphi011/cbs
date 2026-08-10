@@ -131,7 +131,7 @@ func TestABookTransferReconcilesAndMovesNothingBetweenInstitutions(t *testing.T)
 	payee := h.openCustomer(t, h.debtor, "Aaron", "EUR", 0)
 	reserve := h.accounts(t, h.debtorBIC, "EUR").Reserve
 
-	before, err := h.debtor.Ledger.BookBalance(ctx, reserve)
+	before, err := h.debtor.Ledger.BookBalance(ctx, reserve.Total())
 	if err != nil {
 		t.Fatalf("reading %s's reserve: %v", h.debtorBIC, err)
 	}
@@ -149,7 +149,7 @@ func TestABookTransferReconcilesAndMovesNothingBetweenInstitutions(t *testing.T)
 	if got := h.centralBankTransactionCount(t); got != posted {
 		t.Errorf("the settlement agent posted %d transactions over a book transfer, want %d", got-posted, 0)
 	}
-	after, err := h.debtor.Ledger.BookBalance(ctx, reserve)
+	after, err := h.debtor.Ledger.BookBalance(ctx, reserve.Total())
 	if err != nil {
 		t.Fatalf("reading %s's reserve: %v", h.debtorBIC, err)
 	}
@@ -174,9 +174,14 @@ func TestTheHarnessCatchesAReserveMirrorThatDiverged(t *testing.T) {
 	// bank rises by a thousand it was never credited. The contra is Unclaimed
 	// rather than vault cash because vault cash is an Asset the ledger will not
 	// let go negative, and this fixture's payer lodged all of its.
+	//
+	// Unclaimed pools obligors, so the leg names one. It names an account that
+	// does not exist, which the ledger neither checks nor could: the break this
+	// fixture builds is about the reserve, and a subsidiary that resolves to
+	// nothing is as postable as one that resolves.
 	h.postBehindTheBanksBack(t, h.debtorBIC, "a reserve nobody credited",
 		ledger.Entry{AccountID: accts.Reserve, Amount: 1000, Direction: ledger.Debit},
-		ledger.Entry{AccountID: accts.Unclaimed, Amount: 1000, Direction: ledger.Credit})
+		ledger.Entry{AccountID: accts.Unclaimed, Subsidiary: "dep_nobody", Amount: 1000, Direction: ledger.Credit})
 
 	report := reconcile(t, h.nets)
 	assertBreakAbout(t, report, member(h.debtorBIC, "EUR"), "the bank's own reserve says")

@@ -101,7 +101,7 @@ func TestBackValueAcrossARepricingTruesUp(t *testing.T) {
 	// The receivable holds Minor() of the record, which is the invariant every
 	// caller in this package maintains — and the true-up was POSTED, not just
 	// recorded on the row.
-	receivable, err := book.BookBalance(ctx, got.InterestGL)
+	receivable, err := book.BookBalance(ctx, got.InterestGL.Total())
 	assertNoError(t, err)
 	assertEqual(t, "receivable after the true-up", receivable, want.Minor())
 }
@@ -166,10 +166,10 @@ func TestWholeLifeAccrualEqualsTheSumOfItsPeriods(t *testing.T) {
 	assertEqual(t, "one run over sixty days", inOneRun.Accrued, want)
 	assertEqual(t, "two runs over the same sixty days", inTwoRuns.Accrued, want)
 
-	oneRecv, err := oneBook.BookBalance(ctx, inOneRun.InterestGL)
+	oneRecv, err := oneBook.BookBalance(ctx, inOneRun.InterestGL.Total())
 	assertNoError(t, err)
 	assertEqual(t, "receivable after one run", oneRecv, want.Minor())
-	twoRecv, err := twoBook.BookBalance(ctx, inTwoRuns.InterestGL)
+	twoRecv, err := twoBook.BookBalance(ctx, inTwoRuns.InterestGL.Total())
 	assertNoError(t, err)
 	assertEqual(t, "receivable after two runs", twoRecv, want.Minor())
 }
@@ -231,7 +231,7 @@ func TestABackdatedTermsRowPostsADeltaAndRewritesNothing(t *testing.T) {
 	got, err := reg.GetAccount(ctx, acct.ID)
 	assertNoError(t, err)
 	assertEqual(t, "accrued after a retroactive repricing", got.Accrued, want)
-	receivable, err := book.BookBalance(ctx, got.InterestGL)
+	receivable, err := book.BookBalance(ctx, got.InterestGL.Total())
 	assertNoError(t, err)
 	assertEqual(t, "receivable after a retroactive repricing", receivable, want.Minor())
 
@@ -317,7 +317,7 @@ func TestAFutureDatedTermsRowIsInertUntilItsDate(t *testing.T) {
 	forty, err := reg.GetAccount(ctx, acct.ID)
 	assertNoError(t, err)
 	assertEqual(t, "accrued through day 40, priced across the switch", forty.Accrued, want)
-	receivable, err := book.BookBalance(ctx, forty.InterestGL)
+	receivable, err := book.BookBalance(ctx, forty.InterestGL.Total())
 	assertNoError(t, err)
 	assertEqual(t, "receivable", receivable, want.Minor())
 }
@@ -383,7 +383,7 @@ func TestAnAccountUnpricedThenPricedAccruesOnlyAfterwards(t *testing.T) {
 	got, err := reg.GetAccount(ctx, acct.ID)
 	assertNoError(t, err)
 	assertEqual(t, "accrued only from the day it was priced", got.Accrued, want)
-	receivable, err := book.BookBalance(ctx, got.InterestGL)
+	receivable, err := book.BookBalance(ctx, got.InterestGL.Total())
 	assertNoError(t, err)
 	assertEqual(t, "receivable", receivable, want.Minor())
 }
@@ -411,7 +411,7 @@ func TestRerunningEndOfDayForTheSameDatePostsNothing(t *testing.T) {
 
 	before, err := reg.GetAccount(ctx, acct.ID)
 	assertNoError(t, err)
-	beforeRecv, err := book.BookBalance(ctx, before.InterestGL)
+	beforeRecv, err := book.BookBalance(ctx, before.InterestGL.Total())
 	assertNoError(t, err)
 
 	want := expectedFromTimeline(day(0), 30, interest.ACT365,
@@ -425,7 +425,7 @@ func TestRerunningEndOfDayForTheSameDatePostsNothing(t *testing.T) {
 
 	after, err := reg.GetAccount(ctx, acct.ID)
 	assertNoError(t, err)
-	afterRecv, err := book.BookBalance(ctx, after.InterestGL)
+	afterRecv, err := book.BookBalance(ctx, after.InterestGL.Total())
 	assertNoError(t, err)
 	assertEqual(t, "accrued after three re-runs", after.Accrued, before.Accrued)
 	assertEqual(t, "receivable after three re-runs", afterRecv, beforeRecv)
@@ -495,7 +495,7 @@ func TestAnUnadvancedWindowIsRefusedBeforeReadingASeries(t *testing.T) {
 	after, err := reg.GetAccount(ctx, acct.ID)
 	assertNoError(t, err)
 	assertEqual(t, "accrued after an unadvanced re-run", after.Accrued, before.Accrued)
-	receivable, err := book.BookBalance(ctx, after.InterestGL)
+	receivable, err := book.BookBalance(ctx, after.InterestGL.Total())
 	assertNoError(t, err)
 	assertEqual(t, "receivable after an unadvanced re-run", receivable, before.Accrued.Minor())
 }
@@ -655,7 +655,7 @@ func TestUnderThirty360ATermsRowEffectiveOnA31stFirstChargesOnThe1st(t *testing.
 	assertEqual(t, "one 30/360 day, charged at the new rate",
 		throughFeb1.Accrued-through30.Accrued, want)
 
-	receivable, err := book.BookBalance(ctx, throughFeb1.InterestGL)
+	receivable, err := book.BookBalance(ctx, throughFeb1.InterestGL.Total())
 	assertNoError(t, err)
 	assertEqual(t, "receivable", receivable, throughFeb1.Accrued.Minor())
 }
@@ -706,10 +706,10 @@ func TestARetroactiveRateCutRefundsWithoutDrivingTheReceivableNegative(t *testin
 	charge := atDear.Minor()
 	_, err = reg.ChargeOverdraftInterest(ctx, acct.ID, day(365))
 	assertNoError(t, err)
-	emptied, err := book.BookBalance(ctx, year.InterestGL)
+	emptied, err := book.BookBalance(ctx, year.InterestGL.Total())
 	assertNoError(t, err)
 	assertEqual(t, "receivable after capitalisation", emptied, ledger.Amount(0))
-	customerAfterCharge, err := book.BookBalance(ctx, acct.GLAccount)
+	customerAfterCharge, err := book.BookBalance(ctx, acct.GLAccount.Total())
 	assertNoError(t, err)
 	assertEqual(t, "customer owes principal plus the capitalised interest",
 		customerAfterCharge, -(drawn + charge))
@@ -756,14 +756,14 @@ func TestARetroactiveRateCutRefundsWithoutDrivingTheReceivableNegative(t *testin
 
 	// The invariant at risk is that the record and the ledger agree, so both
 	// are read rather than one restated from the other.
-	receivable, err := book.BookBalance(ctx, got.InterestGL)
+	receivable, err := book.BookBalance(ctx, got.InterestGL.Total())
 	assertNoError(t, err)
 	if receivable < 0 {
 		t.Errorf("receivable = %d; the correction must clamp rather than drive an Asset negative", receivable)
 	}
 	assertEqual(t, "receivable equals Minor() of the record", receivable, got.Accrued.Minor())
 
-	customer, err := book.BookBalance(ctx, acct.GLAccount)
+	customer, err := book.BookBalance(ctx, acct.GLAccount.Total())
 	assertNoError(t, err)
 	assertEqual(t, "the customer was credited what the receivable could not absorb",
 		customer, customerAfterCharge+refund)

@@ -210,12 +210,12 @@ func (s *Server) handleBookBalance(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	bal, err := p.Ledger.BookBalance(r.Context(), aid)
+	bal, err := p.Ledger.BookBalance(r.Context(), aid.Total())
 	if err != nil {
 		writeError(w, err)
 		return
 	}
-	valueDated, err := p.Ledger.ValueDateBalance(r.Context(), aid, asOf)
+	valueDated, err := p.Ledger.ValueDateBalance(r.Context(), aid.Total(), asOf)
 	if err != nil {
 		writeError(w, err)
 		return
@@ -264,7 +264,7 @@ func (s *Server) handleListTransactions(w http.ResponseWriter, r *http.Request) 
 	var txs []ledger.Transaction
 	var err error
 	if acct := r.URL.Query().Get("account"); acct != "" {
-		txs, err = p.Ledger.ListTransactionsForAccount(r.Context(), ledger.AccountID(acct))
+		txs, err = p.Ledger.ListTransactionsForPosition(r.Context(), ledger.AccountID(acct).Total())
 	} else {
 		txs, err = p.Ledger.ListTransactions(r.Context())
 	}

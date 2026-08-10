@@ -75,14 +75,15 @@ func (s *Book) ListTransactions(ctx context.Context) ([]Transaction, error) {
 	return out, err
 }
 
-// ListTransactionsForAccount returns all transactions that have at least one
-// entry referencing the given account, ordered by creation time then insertion
-// order.
-func (s *Book) ListTransactionsForAccount(ctx context.Context, accountID AccountID) ([]Transaction, error) {
+// ListTransactionsForPosition returns all transactions that have at least one
+// entry referencing the given position, ordered by creation time then insertion
+// order. Each transaction carries all of its legs, including those belonging to
+// other obligors under the same control account.
+func (s *Book) ListTransactionsForPosition(ctx context.Context, pos Position) ([]Transaction, error) {
 	var out []Transaction
 	err := s.store.View(ctx, func(ctx context.Context, tx Tx) error {
 		var err error
-		out, err = tx.ListTransactionsForAccount(ctx, s.id, accountID)
+		out, err = tx.ListTransactionsForPosition(ctx, s.id, pos)
 		return err
 	})
 	return out, err

@@ -7,6 +7,17 @@
 // available balance, or end-of-day snapshots — those live in the deposit
 // package, which is layered on top of this one.
 //
+// # Control accounts
+//
+// An account may pool obligors: one chart-of-accounts line standing for many
+// customers, with every entry against it naming which. What the obligor IS
+// stays outside this package — Entry.Subsidiary is an opaque string the layer
+// above supplies, with no table behind it — so the ledger gains a dimension
+// without learning what a customer is. Every balance read therefore takes a
+// Position rather than an account: the whole pool, which is the control figure,
+// or one obligor within it. The two come from one aggregate with one predicate
+// between them, so no total is stored anywhere and nothing can drift.
+//
 // It also holds no state. Every entity lives behind the Store and Tx
 // interfaces declared in store.go and implemented by store/sqlite; what stays
 // here is the validation and the orchestration. The interfaces are still

@@ -174,14 +174,14 @@ func TestDisburse_PostsPrincipalAndGeneratesTheSchedule(t *testing.T) {
 	// Dr loan principal (Asset) / Cr the customer's current account
 	// (Liability): the bank's claim on the borrower rises, and so does what it
 	// owes them, because the money is now in their account.
-	principal, err := book.BookBalance(ctx, loan.PrincipalGL)
+	principal, err := book.BookBalance(ctx, loan.PrincipalGL.Total())
 	if err != nil {
 		t.Fatalf("BookBalance: %v", err)
 	}
 	if principal != 1_000_000 {
 		t.Errorf("loan principal = %d, want 1000000", principal)
 	}
-	customerBalance, err := book.BookBalance(ctx, customer)
+	customerBalance, err := book.BookBalance(ctx, customer.Total())
 	if err != nil {
 		t.Fatalf("BookBalance: %v", err)
 	}
@@ -264,7 +264,7 @@ func TestDraw_RespectsTheCommitmentAndRepeats(t *testing.T) {
 		t.Errorf("drawn = %d, want 250000", drawn)
 	}
 
-	principal, err := book.BookBalance(ctx, line.PrincipalGL)
+	principal, err := book.BookBalance(ctx, line.PrincipalGL.Total())
 	if err != nil {
 		t.Fatalf("BookBalance: %v", err)
 	}

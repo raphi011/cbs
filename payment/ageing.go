@@ -251,7 +251,7 @@ func (s *Network) ownAccountsTx(ctx context.Context, tx Tx, asset ledger.AssetCo
 func (s *Network) ageTx(ctx context.Context, tx Tx, bank *Bank, account ledger.AccountID,
 	asset ledger.AssetCode,
 ) (AgeingReport, iso20022.BIC, error) {
-	hist, err := bank.Ledger.AccountHistoryTx(ctx, tx, account)
+	hist, err := bank.Ledger.AccountHistoryTx(ctx, tx, account.Total())
 	if err != nil {
 		return AgeingReport{}, "", err
 	}

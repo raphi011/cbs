@@ -384,12 +384,14 @@ func (t *tx) PutAccount(ctx context.Context, book ledger.BookID, a ledger.Accoun
 		return err
 	}
 	_, err := t.tx.ExecContext(ctx, `
-		INSERT INTO accounts (book_id, id, subledger_id, name, type, asset, created_at, seq)
-		VALUES (?, ?, ?, ?, ?, ?, ?, `+nextRowSeq("accounts")+`)
+		INSERT INTO accounts (book_id, id, subledger_id, name, type, asset, control, created_at, seq)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, `+nextRowSeq("accounts")+`)
 		ON CONFLICT (book_id, id) DO UPDATE
 		SET subledger_id = EXCLUDED.subledger_id, name = EXCLUDED.name,
-		    type = EXCLUDED.type, asset = EXCLUDED.asset, created_at = EXCLUDED.created_at`,
-		string(book), string(a.ID), string(a.SubledgerID), a.Name, int64(a.Type), string(a.Asset), nullTime{a.CreatedAt})
+		    type = EXCLUDED.type, asset = EXCLUDED.asset, control = EXCLUDED.control,
+		    created_at = EXCLUDED.created_at`,
+		string(book), string(a.ID), string(a.SubledgerID), a.Name, int64(a.Type), string(a.Asset),
+		a.Control, nullTime{a.CreatedAt})
 	if err != nil {
 		return fmt.Errorf("sqlite: put account %s: %w", a.ID, err)
 	}
@@ -407,8 +409,8 @@ func (t *tx) GetAccount(ctx context.Context, book ledger.BookID, id ledger.Accou
 	var typ int64
 	var createdAt nullTime
 	err := t.tx.QueryRowContext(ctx,
-		"SELECT id, subledger_id, name, type, asset, created_at FROM accounts WHERE book_id = ? AND id = ?",
-		string(book), string(id)).Scan(&a.ID, &a.SubledgerID, &a.Name, &typ, &a.Asset, &createdAt)
+		"SELECT id, subledger_id, name, type, asset, control, created_at FROM accounts WHERE book_id = ? AND id = ?",
+		string(book), string(id)).Scan(&a.ID, &a.SubledgerID, &a.Name, &typ, &a.Asset, &a.Control, &createdAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ledger.Account{}, ledger.ErrAccountNotFound
 	}
@@ -428,7 +430,7 @@ func (t *tx) ListAccounts(ctx context.Context, book ledger.BookID) ([]ledger.Acc
 		return nil, err
 	}
 	rows, err := t.tx.QueryContext(ctx, `
-		SELECT id, subledger_id, name, type, asset, created_at FROM accounts WHERE book_id = ?
+		SELECT id, subledger_id, name, type, asset, control, created_at FROM accounts WHERE book_id = ?
 		ORDER BY created_at ASC NULLS FIRST, seq`, string(book))
 	if err != nil {
 		return nil, fmt.Errorf("sqlite: list accounts: %w", err)
@@ -440,7 +442,7 @@ func (t *tx) ListAccounts(ctx context.Context, book ledger.BookID) ([]ledger.Acc
 		var a ledger.Account
 		var typ int64
 		var createdAt nullTime
-		if err := rows.Scan(&a.ID, &a.SubledgerID, &a.Name, &typ, &a.Asset, &createdAt); err != nil {
+		if err := rows.Scan(&a.ID, &a.SubledgerID, &a.Name, &typ, &a.Asset, &a.Control, &createdAt); err != nil {
 			return nil, fmt.Errorf("sqlite: list accounts: %w", err)
 		}
 		a.Type = ledger.AccountType(typ)
@@ -515,7 +517,7 @@ func (t *tx) LockAccounts(ctx context.Context, book ledger.BookID, ids []ledger.
 const transactionColumns = `
 	t.id, t.idempotency_key, t.booking_date, t.value_date, t.status,
 	t.description, t.metadata, t.reversal_of, t.created_at,
-	e.id, e.account_id, e.amount, e.direction, e.value_date`
+	e.id, e.account_id, e.subsidiary_id, e.amount, e.direction, e.value_date`
 
 // PutTransaction stores a transaction, its ordered entries and its idempotency
 // claim.
@@ -588,10 +590,10 @@ func (t *tx) PutTransaction(ctx context.Context, book ledger.BookID, txn ledger.
 	}
 	for i, e := range txn.Entries {
 		if _, err := t.tx.ExecContext(ctx, `
-			INSERT INTO entries (book_id, transaction_id, position, id, account_id, amount, direction, value_date)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-			string(book), string(txn.ID), i, string(e.ID), string(e.AccountID), int64(e.Amount), int64(e.Direction),
-			nullTime{e.ValueDate},
+			INSERT INTO entries (book_id, transaction_id, position, id, account_id, subsidiary_id, amount, direction, value_date)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			string(book), string(txn.ID), i, string(e.ID), string(e.AccountID), e.Subsidiary,
+			int64(e.Amount), int64(e.Direction), nullTime{e.ValueDate},
 		); err != nil {
 			return fmt.Errorf("sqlite: put transaction %s entry %d: %w", txn.ID, i, err)
 		}
@@ -663,15 +665,26 @@ func (t *tx) ListTransactions(ctx context.Context, book ledger.BookID) ([]ledger
 		ORDER BY t.created_at ASC NULLS FIRST, t.seq, e.position`, string(book))
 }
 
-// ListTransactionsForAccount returns every transaction with a leg on the
-// account — with ALL of its legs, not only the matching ones, which is why the
-// account predicate is an EXISTS rather than a join condition.
-func (t *tx) ListTransactionsForAccount(ctx context.Context, book ledger.BookID, id ledger.AccountID) ([]ledger.Transaction, error) {
+// ListTransactionsForPosition returns every transaction with a leg on the
+// position — with ALL of its legs, not only the matching ones, which is why the
+// position predicate is an EXISTS rather than a join condition. Over a control
+// account that means one obligor's statement carries the other side of each of
+// its own transactions, and none of another obligor's.
+//
+// The EXISTS names the entries alias `x` rather than `e`, so subsidiaryClause,
+// which is written against `e`, cannot be used here.
+func (t *tx) ListTransactionsForPosition(ctx context.Context, book ledger.BookID, pos ledger.Position) ([]ledger.Transaction, error) {
 	if err := t.inShape("transactions"); err != nil {
 		return nil, err
 	}
 	if err := t.own(book); err != nil {
 		return nil, err
+	}
+	clause := ""
+	args := []any{string(book), string(pos.Account)}
+	if pos.Subsidiary != "" {
+		clause = " AND x.subsidiary_id = ?"
+		args = append(args, pos.Subsidiary)
 	}
 	return t.queryTransactions(ctx, `
 		SELECT `+transactionColumns+`
@@ -679,9 +692,9 @@ func (t *tx) ListTransactionsForAccount(ctx context.Context, book ledger.BookID,
 		LEFT JOIN entries e ON e.book_id = t.book_id AND e.transaction_id = t.id
 		WHERE t.book_id = ? AND EXISTS (
 			SELECT 1 FROM entries x
-			WHERE x.book_id = t.book_id AND x.transaction_id = t.id AND x.account_id = ?
+			WHERE x.book_id = t.book_id AND x.transaction_id = t.id AND x.account_id = ?`+clause+`
 		)
-		ORDER BY t.created_at ASC NULLS FIRST, t.seq, e.position`, string(book), string(id))
+		ORDER BY t.created_at ASC NULLS FIRST, t.seq, e.position`, args...)
 }
 
 // queryTransactions runs a transactions-joined-to-entries query and folds the
@@ -703,14 +716,14 @@ func (t *tx) queryTransactions(ctx context.Context, query string, args ...any) (
 			metadata               []byte
 			// The entry half of the LEFT JOIN is NULL for a transaction with no
 			// entries, which is a legal transaction here rather than an anomaly.
-			entryID, accountID sql.NullString
-			amount, direction  sql.NullInt64
-			entryValue         nullTime
+			entryID, accountID, subsidiary sql.NullString
+			amount, direction              sql.NullInt64
+			entryValue                     nullTime
 		)
 		if err := rows.Scan(
 			&txn.ID, &txn.IdempotencyKey, &booking, &value, &status,
 			&txn.Description, &metadata, &txn.ReversalOf, &create,
-			&entryID, &accountID, &amount, &direction, &entryValue,
+			&entryID, &accountID, &subsidiary, &amount, &direction, &entryValue,
 		); err != nil {
 			return nil, fmt.Errorf("sqlite: query transactions: %w", err)
 		}
@@ -730,11 +743,12 @@ func (t *tx) queryTransactions(ctx context.Context, query string, args ...any) (
 		}
 		if entryID.Valid {
 			out[at].Entries = append(out[at].Entries, ledger.Entry{
-				ID:        ledger.EntryID(entryID.String),
-				AccountID: ledger.AccountID(accountID.String),
-				Amount:    ledger.Amount(amount.Int64),
-				Direction: ledger.Direction(direction.Int64),
-				ValueDate: entryValue.Time,
+				ID:         ledger.EntryID(entryID.String),
+				AccountID:  ledger.AccountID(accountID.String),
+				Subsidiary: subsidiary.String,
+				Amount:     ledger.Amount(amount.Int64),
+				Direction:  ledger.Direction(direction.Int64),
+				ValueDate:  entryValue.Time,
 			})
 		}
 	}
@@ -783,7 +797,28 @@ func (t *tx) MarkReversed(ctx context.Context, book ledger.BookID, id ledger.Tra
 	return ledger.ErrTransactionAlreadyReversed
 }
 
-// BookBalance aggregates an account's entries in SQL rather than replaying them
+// subsidiaryClause is the obligor half of a position's entry predicate, and the
+// one place in this store where "an empty Subsidiary means the whole account"
+// is written down.
+//
+// An empty one adds NO predicate rather than `subsidiary_id = ”`, so a control
+// account's own balance is the identical aggregate with the obligor dropped.
+// That is what makes Σ(detail) == control a property of these three queries
+// instead of a figure to reconcile. It is unambiguous because
+// ledger.Book.PostTransactionTx leaves no account holding qualified and
+// unqualified legs at once.
+//
+// It is a fragment rather than a whole predicate because the two value-dated
+// callers need it BEFORE their date bounds, and a helper that returned the
+// whole WHERE clause would have to know about those too.
+func subsidiaryClause(pos ledger.Position) (string, []any) {
+	if pos.Subsidiary == "" {
+		return "", nil
+	}
+	return " AND e.subsidiary_id = ?", []any{pos.Subsidiary}
+}
+
+// BookBalance aggregates a position's entries in SQL rather than replaying them
 // in Go: entries in the account's normal direction add, the rest subtract.
 //
 // ALL transactions count, Reversed ones included. The Reversed status is
@@ -791,22 +826,25 @@ func (t *tx) MarkReversed(ctx context.Context, book ledger.BookID, id ledger.Tra
 // cancel the original. Filtering reversed transactions out here would
 // double-count the correction.
 //
-// Like every aggregate, an account with no entries is zero, including one that
-// does not exist; callers wanting ErrAccountNotFound read the account first.
-func (t *tx) BookBalance(ctx context.Context, book ledger.BookID, id ledger.AccountID, normal ledger.Direction) (ledger.Amount, error) {
+// Like every aggregate, a position with no entries is zero, including an
+// account that does not exist and an obligor that never had a posting; callers
+// wanting ErrAccountNotFound read the account first.
+func (t *tx) BookBalance(ctx context.Context, book ledger.BookID, pos ledger.Position, normal ledger.Direction) (ledger.Amount, error) {
 	if err := t.inShape("entries"); err != nil {
 		return 0, err
 	}
 	if err := t.own(book); err != nil {
 		return 0, err
 	}
+	clause, extra := subsidiaryClause(pos)
+	args := append([]any{int64(normal), string(book), string(pos.Account)}, extra...)
 	var balance ledger.Amount
 	err := t.tx.QueryRowContext(ctx, `
 		SELECT COALESCE(SUM(CASE WHEN e.direction = ? THEN e.amount ELSE -e.amount END), 0)
-		FROM entries e WHERE e.book_id = ? AND e.account_id = ?`,
-		int64(normal), string(book), string(id)).Scan(&balance)
+		FROM entries e WHERE e.book_id = ? AND e.account_id = ?`+clause,
+		args...).Scan(&balance)
 	if err != nil {
-		return 0, fmt.Errorf("sqlite: book balance %s: %w", id, err)
+		return 0, fmt.Errorf("sqlite: book balance %s: %w", pos, err)
 	}
 	return balance, nil
 }
@@ -824,21 +862,24 @@ func (t *tx) BookBalance(ctx context.Context, book ledger.BookID, id ledger.Acco
 // The bound is formatted rather than passed as a nullTime, because it is a
 // COMPARAND and not a stored value: a zero bound must compare as the earliest
 // instant, and NULL would make the predicate unknown for every row.
-func (t *tx) ValueDateBalance(ctx context.Context, book ledger.BookID, id ledger.AccountID, normal ledger.Direction, before time.Time) (ledger.Amount, error) {
+func (t *tx) ValueDateBalance(ctx context.Context, book ledger.BookID, pos ledger.Position, normal ledger.Direction, before time.Time) (ledger.Amount, error) {
 	if err := t.inShape("entries"); err != nil {
 		return 0, err
 	}
 	if err := t.own(book); err != nil {
 		return 0, err
 	}
+	clause, extra := subsidiaryClause(pos)
+	args := append([]any{int64(normal), string(book), string(pos.Account)}, extra...)
+	args = append(args, formatTime(before))
 	var balance ledger.Amount
 	err := t.tx.QueryRowContext(ctx, `
 		SELECT COALESCE(SUM(CASE WHEN e.direction = ? THEN e.amount ELSE -e.amount END), 0)
 		FROM entries e
-		WHERE e.book_id = ? AND e.account_id = ? AND e.value_date < ?`,
-		int64(normal), string(book), string(id), formatTime(before)).Scan(&balance)
+		WHERE e.book_id = ? AND e.account_id = ?`+clause+` AND e.value_date < ?`,
+		args...).Scan(&balance)
 	if err != nil {
-		return 0, fmt.Errorf("sqlite: value date balance %s: %w", id, err)
+		return 0, fmt.Errorf("sqlite: value date balance %s: %w", pos, err)
 	}
 	return balance, nil
 }
@@ -856,29 +897,32 @@ func (t *tx) ValueDateBalance(ctx context.Context, book ledger.BookID, id ledger
 // same exclusion ValueDateBalance makes, arrived at the same free way, and
 // storetest's ValueDatedSeriesExcludesZeroValueDateEntries pins it separately
 // because the buckets are built by different code from the balance.
-func (t *tx) ValueDatedSeries(ctx context.Context, book ledger.BookID, id ledger.AccountID, normal ledger.Direction, from, to time.Time) (ledger.Series, error) {
+func (t *tx) ValueDatedSeries(ctx context.Context, book ledger.BookID, pos ledger.Position, normal ledger.Direction, from, to time.Time) (ledger.Series, error) {
 	if err := t.inShape("entries"); err != nil {
 		return ledger.Series{}, err
 	}
 	if err := t.own(book); err != nil {
 		return ledger.Series{}, err
 	}
-	opening, err := t.ValueDateBalance(ctx, book, id, normal, from)
+	opening, err := t.ValueDateBalance(ctx, book, pos, normal, from)
 	if err != nil {
 		return ledger.Series{}, err
 	}
 
+	clause, extra := subsidiaryClause(pos)
+	args := append([]any{int64(normal), string(book), string(pos.Account)}, extra...)
+	args = append(args, formatTime(from), formatTime(to))
 	rows, err := t.tx.QueryContext(ctx, `
 		SELECT substr(e.value_date, 1, 10) AS day,
 		       SUM(CASE WHEN e.direction = ? THEN e.amount ELSE -e.amount END)
 		FROM entries e
-		WHERE e.book_id = ? AND e.account_id = ?
+		WHERE e.book_id = ? AND e.account_id = ?`+clause+`
 		  AND e.value_date >= ? AND e.value_date < ?
 		GROUP BY 1
 		ORDER BY 1`,
-		int64(normal), string(book), string(id), formatTime(from), formatTime(to))
+		args...)
 	if err != nil {
-		return ledger.Series{}, fmt.Errorf("sqlite: value dated series %s: %w", id, err)
+		return ledger.Series{}, fmt.Errorf("sqlite: value dated series %s: %w", pos, err)
 	}
 	defer rows.Close()
 
@@ -889,11 +933,11 @@ func (t *tx) ValueDatedSeries(ctx context.Context, book ledger.BookID, id ledger
 			amount ledger.Amount
 		)
 		if err := rows.Scan(&day, &amount); err != nil {
-			return ledger.Series{}, fmt.Errorf("sqlite: value dated series %s: %w", id, err)
+			return ledger.Series{}, fmt.Errorf("sqlite: value dated series %s: %w", pos, err)
 		}
 		at, err := time.Parse(time.DateOnly, day)
 		if err != nil {
-			return ledger.Series{}, fmt.Errorf("sqlite: value dated series %s: day %q: %w", id, day, err)
+			return ledger.Series{}, fmt.Errorf("sqlite: value dated series %s: day %q: %w", pos, day, err)
 		}
 		out.Movements = append(out.Movements, ledger.DayMovement{
 			Day:    ledger.DayStart(at.UTC()),
@@ -901,7 +945,7 @@ func (t *tx) ValueDatedSeries(ctx context.Context, book ledger.BookID, id ledger
 		})
 	}
 	if err := rows.Err(); err != nil {
-		return ledger.Series{}, fmt.Errorf("sqlite: value dated series %s: %w", id, err)
+		return ledger.Series{}, fmt.Errorf("sqlite: value dated series %s: %w", pos, err)
 	}
 	return out, nil
 }

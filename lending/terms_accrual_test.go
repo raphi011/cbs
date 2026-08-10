@@ -416,9 +416,9 @@ type countingTx struct {
 	series *int
 }
 
-func (t countingTx) ValueDatedSeries(ctx context.Context, book ledger.BookID, id ledger.AccountID, normal ledger.Direction, from, to time.Time) (ledger.Series, error) {
+func (t countingTx) ValueDatedSeries(ctx context.Context, book ledger.BookID, pos ledger.Position, normal ledger.Direction, from, to time.Time) (ledger.Series, error) {
 	*t.series++
-	return t.Tx.ValueDatedSeries(ctx, book, id, normal, from, to)
+	return t.Tx.ValueDatedSeries(ctx, book, pos, normal, from, to)
 }
 
 // Re-disbursement charges the span between a full repayment and the new

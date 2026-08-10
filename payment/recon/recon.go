@@ -481,7 +481,7 @@ func balanceOf(ctx context.Context, tx payment.Tx, book ledger.BookID, id ledger
 	if err != nil {
 		return 0, fmt.Errorf("account %s in %s: %w", id, book, err)
 	}
-	return tx.BookBalance(ctx, book, id, acct.Type.NormalBalance())
+	return tx.BookBalance(ctx, book, id.Total(), acct.Type.NormalBalance())
 }
 
 // assetsOf is the assets one bank operates in, sorted, so that findings come out

@@ -370,12 +370,12 @@ func TestPostTransaction_SimpleTransfer(t *testing.T) {
 	// Alice: credited 10000, debited 5000 -> net credit of 5000.
 	// For Liability (normal=Credit): credit adds, debit subtracts.
 	// Balance = +10000 - 5000 = 5000
-	aliceBal, err := book.BookBalance(ctx, alice.ID)
+	aliceBal, err := book.BookBalance(ctx, alice.ID.Total())
 	assertNoError(t, err)
 	assertEqual(t, "alice book balance", aliceBal, Amount(5000))
 
 	// Bob: credited 5000 -> net credit of 5000.
-	bobBal, err := book.BookBalance(ctx, bob.ID)
+	bobBal, err := book.BookBalance(ctx, bob.ID.Total())
 	assertNoError(t, err)
 	assertEqual(t, "bob book balance", bobBal, Amount(5000))
 }
@@ -416,15 +416,15 @@ func TestPostTransaction_MultiLeg(t *testing.T) {
 	assertEqual(t, "entries count", len(tx.Entries), 3)
 
 	// Alice: +20000 (credit) - 10200 (debit) = 9800
-	aliceBal, _ := book.BookBalance(ctx, alice.ID)
+	aliceBal, _ := book.BookBalance(ctx, alice.ID.Total())
 	assertEqual(t, "alice balance", aliceBal, Amount(9800))
 
 	// Bob: +10000 (credit)
-	bobBal, _ := book.BookBalance(ctx, bob.ID)
+	bobBal, _ := book.BookBalance(ctx, bob.ID.Total())
 	assertEqual(t, "bob balance", bobBal, Amount(10000))
 
 	// Fee Income: +200 (credit). Revenue normal = Credit, so +200.
-	feeBal, _ := book.BookBalance(ctx, feeIncome.ID)
+	feeBal, _ := book.BookBalance(ctx, feeIncome.ID.Total())
 	assertEqual(t, "fee income balance", feeBal, Amount(200))
 }
 
@@ -699,11 +699,11 @@ func TestReverseTransaction(t *testing.T) {
 	assertEqual(t, "original status", original.Status, Reversed)
 
 	// Alice's balance should be back to 10000.
-	aliceBal, _ := book.BookBalance(ctx, alice.ID)
+	aliceBal, _ := book.BookBalance(ctx, alice.ID.Total())
 	assertEqual(t, "alice balance after reversal", aliceBal, Amount(10000))
 
 	// Bob's balance should be back to 0.
-	bobBal, _ := book.BookBalance(ctx, bob.ID)
+	bobBal, _ := book.BookBalance(ctx, bob.ID.Total())
 	assertEqual(t, "bob balance after reversal", bobBal, Amount(0))
 }
 
@@ -889,7 +889,7 @@ func TestPostTransaction_InsufficientBalance_Asset(t *testing.T) {
 	assertError(t, err, ErrInsufficientBalance)
 
 	// Cash balance should be unchanged.
-	bal, _ := book.BookBalance(ctx, cash.ID)
+	bal, _ := book.BookBalance(ctx, cash.ID.Total())
 	assertEqual(t, "cash balance unchanged", bal, Amount(10000))
 }
 
@@ -936,7 +936,7 @@ func TestBookBalance_AccountNotFound(t *testing.T) {
 	ctx := context.Background()
 	book := testBook(t)
 
-	_, err := book.BookBalance(ctx, "nonexistent")
+	_, err := book.BookBalance(ctx, AccountID("nonexistent").Total())
 	assertError(t, err, ErrAccountNotFound)
 }
 
@@ -947,7 +947,7 @@ func TestBookBalance_ZeroForNewAccount(t *testing.T) {
 	book := testBook(t)
 	alice, _, _, _ := setupChartOfAccounts(t, book)
 
-	bal, err := book.BookBalance(ctx, alice.ID)
+	bal, err := book.BookBalance(ctx, alice.ID.Total())
 	assertNoError(t, err)
 	assertEqual(t, "book", bal, Amount(0))
 }
@@ -1007,7 +1007,7 @@ func TestBookBalance_AllAccountTypes(t *testing.T) {
 	expected := []Amount{3000, 1000, 2000, 500, 500}
 
 	for i, acct := range accounts {
-		bal, _ := book.BookBalance(ctx, acct.ID)
+		bal, _ := book.BookBalance(ctx, acct.ID.Total())
 		assertEqual(t, acct.Name+" balance", bal, expected[i])
 	}
 }
@@ -1016,7 +1016,7 @@ func TestValueDateBalance_AccountNotFound(t *testing.T) {
 	ctx := context.Background()
 	book := testBook(t)
 
-	_, err := book.ValueDateBalance(ctx, "nonexistent", testClock())
+	_, err := book.ValueDateBalance(ctx, AccountID("nonexistent").Total(), testClock())
 	assertError(t, err, ErrAccountNotFound)
 }
 
@@ -1046,7 +1046,7 @@ func TestValueDateBalance_AsOfDayBoundary(t *testing.T) {
 	})
 	assertNoError(t, err)
 
-	bal, err := book.ValueDateBalance(ctx, alice.ID, asOf)
+	bal, err := book.ValueDateBalance(ctx, alice.ID.Total(), asOf)
 	assertNoError(t, err)
 	assertEqual(t, "balance including asOf's own entry", bal, Amount(1_000))
 
@@ -1062,7 +1062,7 @@ func TestValueDateBalance_AsOfDayBoundary(t *testing.T) {
 	})
 	assertNoError(t, err)
 
-	bal, err = book.ValueDateBalance(ctx, alice.ID, asOf)
+	bal, err = book.ValueDateBalance(ctx, alice.ID.Total(), asOf)
 	assertNoError(t, err)
 	assertEqual(t, "balance excluding the next day's entry", bal, Amount(1_000))
 
@@ -1082,7 +1082,7 @@ func TestValueDateBalance_AsOfDayBoundary(t *testing.T) {
 	})
 	assertNoError(t, err)
 
-	bobBal, err := book.ValueDateBalance(ctx, bob.ID, asOf)
+	bobBal, err := book.ValueDateBalance(ctx, bob.ID.Total(), asOf)
 	assertNoError(t, err)
 	assertEqual(t, "balance goes negative", bobBal, Amount(-300))
 }
@@ -1119,16 +1119,16 @@ func TestDerivedReadsTx_SeeWritesInTheSameUnitOfWork(t *testing.T) {
 		}
 
 		var err error
-		if aliceBal, err = book.BookBalanceTx(ctx, tx, alice.ID); err != nil {
+		if aliceBal, err = book.BookBalanceTx(ctx, tx, alice.ID.Total()); err != nil {
 			return err
 		}
-		if cashBal, err = book.BookBalanceTx(ctx, tx, cash.ID); err != nil {
+		if cashBal, err = book.BookBalanceTx(ctx, tx, cash.ID.Total()); err != nil {
 			return err
 		}
-		if aliceAsOf, err = book.ValueDateBalanceTx(ctx, tx, alice.ID, valueDate); err != nil {
+		if aliceAsOf, err = book.ValueDateBalanceTx(ctx, tx, alice.ID.Total(), valueDate); err != nil {
 			return err
 		}
-		series, err = book.SeriesTx(ctx, tx, alice.ID, valueDate, valueDate)
+		series, err = book.SeriesTx(ctx, tx, alice.ID.Total(), valueDate, valueDate)
 		return err
 	})
 	assertNoError(t, err)
@@ -1174,10 +1174,10 @@ func TestSeriesTx_SnapsTheWindowBounds(t *testing.T) {
 	var through3, through2 Series
 	err := book.Store().View(ctx, func(ctx context.Context, tx Tx) error {
 		var err error
-		if through3, err = book.SeriesTx(ctx, tx, alice.ID, afternoon(day1), afternoon(day3)); err != nil {
+		if through3, err = book.SeriesTx(ctx, tx, alice.ID.Total(), afternoon(day1), afternoon(day3)); err != nil {
 			return err
 		}
-		through2, err = book.SeriesTx(ctx, tx, alice.ID, afternoon(day1), afternoon(day1.AddDate(0, 0, 1)))
+		through2, err = book.SeriesTx(ctx, tx, alice.ID.Total(), afternoon(day1), afternoon(day1.AddDate(0, 0, 1)))
 		return err
 	})
 	assertNoError(t, err)
@@ -1194,13 +1194,13 @@ func TestDerivedReadsTx_AccountNotFound(t *testing.T) {
 	book := testBook(t)
 
 	err := book.Store().View(ctx, func(ctx context.Context, tx Tx) error {
-		if _, err := book.BookBalanceTx(ctx, tx, "nonexistent"); !errors.Is(err, ErrAccountNotFound) {
+		if _, err := book.BookBalanceTx(ctx, tx, AccountID("nonexistent").Total()); !errors.Is(err, ErrAccountNotFound) {
 			t.Errorf("BookBalanceTx: expected ErrAccountNotFound, got %v", err)
 		}
-		if _, err := book.ValueDateBalanceTx(ctx, tx, "nonexistent", testClock()); !errors.Is(err, ErrAccountNotFound) {
+		if _, err := book.ValueDateBalanceTx(ctx, tx, AccountID("nonexistent").Total(), testClock()); !errors.Is(err, ErrAccountNotFound) {
 			t.Errorf("ValueDateBalanceTx: expected ErrAccountNotFound, got %v", err)
 		}
-		if _, err := book.SeriesTx(ctx, tx, "nonexistent", testClock(), testClock()); !errors.Is(err, ErrAccountNotFound) {
+		if _, err := book.SeriesTx(ctx, tx, AccountID("nonexistent").Total(), testClock(), testClock()); !errors.Is(err, ErrAccountNotFound) {
 			t.Errorf("SeriesTx: expected ErrAccountNotFound, got %v", err)
 		}
 		return nil
@@ -1246,7 +1246,7 @@ func TestFullLedgerWorkflow(t *testing.T) {
 		},
 	})
 
-	aliceBal, _ := book.BookBalance(ctx, alice.ID)
+	aliceBal, _ := book.BookBalance(ctx, alice.ID.Total())
 	assertEqual(t, "after deposit", aliceBal, Amount(50000))
 
 	// Step 3: Alice pays a restaurant $75 in cash.
@@ -1258,7 +1258,7 @@ func TestFullLedgerWorkflow(t *testing.T) {
 		},
 	})
 
-	aliceBal, _ = book.BookBalance(ctx, alice.ID)
+	aliceBal, _ = book.BookBalance(ctx, alice.ID.Total())
 	assertEqual(t, "book after payment", aliceBal, Amount(42500))
 
 	// Step 4: Alice receives a $200 wire transfer.
@@ -1273,7 +1273,7 @@ func TestFullLedgerWorkflow(t *testing.T) {
 		},
 	})
 
-	aliceBal, _ = book.BookBalance(ctx, alice.ID)
+	aliceBal, _ = book.BookBalance(ctx, alice.ID.Total())
 	assertEqual(t, "after wire", aliceBal, Amount(62500))
 
 	// Step 5: Erroneous $10 fee, then reversal.
@@ -1286,12 +1286,12 @@ func TestFullLedgerWorkflow(t *testing.T) {
 		},
 	})
 
-	aliceBal, _ = book.BookBalance(ctx, alice.ID)
+	aliceBal, _ = book.BookBalance(ctx, alice.ID.Total())
 	assertEqual(t, "after fee", aliceBal, Amount(61500))
 
 	book.ReverseTransaction(ctx, errTx.ID, "Reverse erroneous fee")
 
-	aliceBal, _ = book.BookBalance(ctx, alice.ID)
+	aliceBal, _ = book.BookBalance(ctx, alice.ID.Total())
 	assertEqual(t, "after fee reversal", aliceBal, Amount(62500))
 
 	// Step 6: Audit trail should contain all operations.

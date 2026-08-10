@@ -66,7 +66,7 @@ func TestRepay_AllocatesAgainstAccruedNotTheSchedule(t *testing.T) {
 	if receivable != 0 {
 		t.Errorf("receivable after repayment = %d, want 0", receivable)
 	}
-	glReceivable, err := book.BookBalance(ctx, loan.InterestGL)
+	glReceivable, err := book.BookBalance(ctx, loan.InterestGL.Total())
 	if err != nil {
 		t.Fatalf("BookBalance: %v", err)
 	}
@@ -204,7 +204,7 @@ func TestRepayAndClose_FullSettlement(t *testing.T) {
 
 	// The customer paid for the loan out of their own account, so the two
 	// sides net to nothing: they borrowed 100_000 and repaid 101_479.
-	balance, err := book.BookBalance(ctx, customer)
+	balance, err := book.BookBalance(ctx, customer.Total())
 	if err != nil {
 		t.Fatalf("BookBalance: %v", err)
 	}
@@ -308,7 +308,7 @@ func TestClose_SucceedsOnAnExactHalfMinorUnitResidue(t *testing.T) {
 	if drawn != 0 {
 		t.Fatalf("drawn principal = %d, want 0", drawn)
 	}
-	receivable, err := book.BookBalance(ctx, after.InterestGL)
+	receivable, err := book.BookBalance(ctx, after.InterestGL.Total())
 	if err != nil {
 		t.Fatalf("BookBalance: %v", err)
 	}

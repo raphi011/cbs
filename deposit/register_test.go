@@ -891,9 +891,9 @@ type countingTx struct {
 	series *int
 }
 
-func (t countingTx) ValueDatedSeries(ctx context.Context, book ledger.BookID, id ledger.AccountID, normal ledger.Direction, from, to time.Time) (ledger.Series, error) {
+func (t countingTx) ValueDatedSeries(ctx context.Context, book ledger.BookID, pos ledger.Position, normal ledger.Direction, from, to time.Time) (ledger.Series, error) {
 	*t.series++
-	return t.Tx.ValueDatedSeries(ctx, book, id, normal, from, to)
+	return t.Tx.ValueDatedSeries(ctx, book, pos, normal, from, to)
 }
 
 // fundBy posts the mirror-image transaction to overdrawBy: it credits the
@@ -946,7 +946,7 @@ func TestAccrueOverdraft_PostsTheDeltaOfTheRoundedValue(t *testing.T) {
 		assertNoError(t, err)
 		assertEqual(t, "accrued on record", got.Accrued, wantAccrued[i-1])
 
-		balance, err := book.BookBalance(ctx, got.InterestGL)
+		balance, err := book.BookBalance(ctx, got.InterestGL.Total())
 		assertNoError(t, err)
 		assertEqual(t, "receivable balance", balance, wantGL[i-1])
 		if balance != got.Accrued.Minor() {
@@ -1125,7 +1125,7 @@ func TestChargeOverdraftInterest_CapitalizesAndLeavesANegativeResidue(t *testing
 	assertEqual(t, "residue after charging", after.Accrued, interest.Accrued(-356_180))
 	assertEqual(t, "residue rounds to zero", after.Accrued.Minor(), ledger.Amount(0))
 
-	receivable, err := book.BookBalance(ctx, after.InterestGL)
+	receivable, err := book.BookBalance(ctx, after.InterestGL.Total())
 	assertNoError(t, err)
 	assertEqual(t, "receivable cleared", receivable, ledger.Amount(0))
 
@@ -1141,7 +1141,7 @@ func TestChargeOverdraftInterest_CapitalizesAndLeavesANegativeResidue(t *testing
 		assertNoError(t, reg.AccrueOverdraft(ctx, acct.ID, start.AddDate(0, 0, i)))
 		got, err := reg.GetAccount(ctx, acct.ID)
 		assertNoError(t, err)
-		gl, err := book.BookBalance(ctx, got.InterestGL)
+		gl, err := book.BookBalance(ctx, got.InterestGL.Total())
 		assertNoError(t, err)
 		if gl != got.Accrued.Minor() {
 			t.Fatalf("day %d after charging: GL %d != Minor(accrued) %d", i, gl, got.Accrued.Minor())
@@ -1299,7 +1299,7 @@ func TestClose_SucceedsOnAnExactHalfMinorUnitResidue(t *testing.T) {
 	assertEqual(t, "residue at exactly minus half a minor unit", after.Accrued, interest.Accrued(-500_000))
 	assertEqual(t, "residue rounds AWAY from zero, not to it", after.Accrued.Minor(), ledger.Amount(-1))
 
-	receivable, err := book.BookBalance(ctx, after.InterestGL)
+	receivable, err := book.BookBalance(ctx, after.InterestGL.Total())
 	assertNoError(t, err)
 	assertEqual(t, "receivable is fully cleared despite the nonzero residue", receivable, ledger.Amount(0))
 
@@ -1392,7 +1392,7 @@ func TestTotals_OverdraftsAreDerivedAndNothingIsPosted(t *testing.T) {
 	// both of its legs are Liability: the debit to Bruno, the credit to the
 	// counterparty. No Asset account was touched, and no second transaction
 	// reclassified anything.
-	txs, err := book.ListTransactionsForAccount(ctx, bruno.GLAccount)
+	txs, err := book.ListTransactionsForPosition(ctx, bruno.GLAccount.Total())
 	assertNoError(t, err)
 	assertEqual(t, "transactions against an overdrawn account", len(txs), 1)
 	for _, e := range txs[0].Entries {
@@ -1515,7 +1515,7 @@ func TestOverdraftAccrualCorrectsABackdatedCredit(t *testing.T) {
 	}
 
 	// And the receivable's ledger balance agrees with the record.
-	recv, err := book.BookBalance(ctx, got.InterestGL)
+	recv, err := book.BookBalance(ctx, got.InterestGL.Total())
 	assertNoError(t, err)
 	if recv != corrected {
 		t.Errorf("receivable = %d, accrued = %d; the two must agree", recv, corrected)
@@ -1561,7 +1561,7 @@ func TestOverdraftAccrualCorrectsABackdatedDebit(t *testing.T) {
 	// And the receivable really holds it: the ledger balance, not Accrued.Minor()
 	// restated. Reading the GL account is what proves the recompute's delta was
 	// posted rather than only recorded on the account row.
-	receivable, err := book.BookBalance(ctx, got.InterestGL)
+	receivable, err := book.BookBalance(ctx, got.InterestGL.Total())
 	assertNoError(t, err)
 	assertEqual(t, "receivable after backdated debit", receivable, ledger.Amount(164))
 }
@@ -1634,24 +1634,24 @@ func TestOverdraftCorrectionRefundsWhatTheReceivableCannotAbsorb(t *testing.T) {
 	assertNoError(t, err)
 	charged, err := reg.GetAccount(ctx, acct.ID)
 	assertNoError(t, err)
-	recvAfterCharge, err := book.BookBalance(ctx, charged.InterestGL)
+	recvAfterCharge, err := book.BookBalance(ctx, charged.InterestGL.Total())
 	assertNoError(t, err)
 	if recvAfterCharge != 0 {
 		t.Fatalf("receivable after capitalisation = %d, want 0", recvAfterCharge)
 	}
-	balBefore, err := book.BookBalance(ctx, acct.GLAccount)
+	balBefore, err := book.BookBalance(ctx, acct.GLAccount.Total())
 	assertNoError(t, err)
 
 	// Now say he was never overdrawn at all: a credit backdated to day 1.
 	postTo(t, book, sub, acct, 20_000, ledger.Credit, accrualStart)
 	assertNoError(t, reg.AccrueOverdraft(ctx, acct.ID, accrualStart.AddDate(0, 0, 31)))
 
-	recv, err := book.BookBalance(ctx, charged.InterestGL)
+	recv, err := book.BookBalance(ctx, charged.InterestGL.Total())
 	assertNoError(t, err)
 	if recv < 0 {
 		t.Errorf("receivable = %d; the correction must clamp rather than drive an asset negative", recv)
 	}
-	balAfter, err := book.BookBalance(ctx, acct.GLAccount)
+	balAfter, err := book.BookBalance(ctx, acct.GLAccount.Total())
 	assertNoError(t, err)
 	if balAfter <= balBefore {
 		t.Errorf("customer balance %d -> %d; the unabsorbed correction must be refunded to them", balBefore, balAfter)
@@ -1680,7 +1680,7 @@ func TestOverdraftCorrectionRefundsWhatTheReceivableCannotAbsorb(t *testing.T) {
 	assertNoError(t, reg.AccrueOverdraft(ctx, acct.ID, accrualStart.AddDate(0, 0, 33)))
 	next, err := reg.GetAccount(ctx, acct.ID)
 	assertNoError(t, err)
-	nextRecv, err := book.BookBalance(ctx, next.InterestGL)
+	nextRecv, err := book.BookBalance(ctx, next.InterestGL.Total())
 	assertNoError(t, err)
 	if nextRecv <= 0 {
 		t.Errorf("receivable = %d after two freshly overdrawn days, want it to have moved", nextRecv)
@@ -1746,7 +1746,7 @@ func TestARepricingPricesItsOwnEffectiveDay(t *testing.T) {
 	assertNoError(t, err)
 	assertEqual(t, "accrued after repricing", got.Accrued, interest.Accrued(98_630_136))
 
-	receivable, err := book.BookBalance(ctx, got.InterestGL)
+	receivable, err := book.BookBalance(ctx, got.InterestGL.Total())
 	assertNoError(t, err)
 	assertEqual(t, "receivable after repricing", receivable, ledger.Amount(99))
 	if receivable != got.Accrued.Minor() {
@@ -1832,7 +1832,7 @@ func TestOverdraftRepricingDoesNotRewindTheAccrualWindow(t *testing.T) {
 	assertNoError(t, err)
 	assertEqual(t, "accrued a day past the repricing", after.Accrued, interest.Accrued(863_013_690))
 
-	receivable, err := book.BookBalance(ctx, after.InterestGL)
+	receivable, err := book.BookBalance(ctx, after.InterestGL.Total())
 	assertNoError(t, err)
 	// 863_013_690 sub-minor units rounds to 863 cents.
 	assertEqual(t, "receivable after the repricing", receivable, ledger.Amount(863))

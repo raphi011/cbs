@@ -187,6 +187,53 @@ type Account struct {
 	Type        AccountType
 	Asset       AssetCode
 	CreatedAt   time.Time
+
+	// Control says this account pools obligors: every entry against it must
+	// name one, and every entry against an account without it must not. Both
+	// refusals are made in PostTransactionTx, which is where what each would
+	// otherwise cost is written down.
+	//
+	// It is fixed at creation, like Type and Asset, and for a stronger reason
+	// than either: flipping it would leave the entries already posted on the
+	// wrong side of both refusals, and nothing could tell afterwards which
+	// pool they had belonged to.
+	Control bool
+}
+
+// Position is what a balance is asked for: an account, and at most one obligor
+// within it.
+//
+// The two travel together because every read that grows the dimension needs
+// both, and a caller carrying them apart would eventually check one account's
+// balance against another obligor's. An empty Subsidiary means the WHOLE
+// account — on a control account that is the control figure, the same sum with
+// the obligor dropped from the WHERE clause, which is what makes
+// Σ(detail) == control one statement read two ways rather than a nightly proof.
+//
+// There is no ambiguity between "the whole pool" and "the obligor named by the
+// empty string", because the two posting refusals in PostTransactionTx leave no
+// account holding both kinds of entry.
+type Position struct {
+	Account    AccountID
+	Subsidiary string
+}
+
+// Total is the position of a whole account: every subsidiary under a control
+// account, or a plain account's own balance.
+func (a AccountID) Total() Position { return Position{Account: a} }
+
+// For is the position of one obligor within a control account. The string is
+// the obligor's id in the layer that knows what an obligor is; this package
+// does not resolve it and does not require that it resolve.
+func (a AccountID) For(subsidiary string) Position {
+	return Position{Account: a, Subsidiary: subsidiary}
+}
+
+func (p Position) String() string {
+	if p.Subsidiary == "" {
+		return string(p.Account)
+	}
+	return string(p.Account) + "/" + p.Subsidiary
 }
 
 // Entry is one leg of a transaction: an amount in one direction against one
@@ -196,6 +243,15 @@ type Entry struct {
 	AccountID AccountID
 	Amount    Amount
 	Direction Direction
+
+	// Subsidiary is the obligor this leg belongs to within a control account: a
+	// deposit account, a facility. It is empty on an account that pools nothing.
+	//
+	// It is an opaque string supplied by the layer above, with no foreign key
+	// and no table of subsidiaries behind it — exactly the stance AccountID
+	// takes, and for the same reason: this package does not know what a
+	// customer is.
+	Subsidiary string
 
 	// ValueDate is when this leg takes economic effect. Zero on input means
 	// the transaction's; PostTransaction resolves it, so a stored entry always

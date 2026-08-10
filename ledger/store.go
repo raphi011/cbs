@@ -80,7 +80,11 @@ type Tx interface {
 	GetTransaction(ctx context.Context, book BookID, id TransactionID) (Transaction, error)
 	GetTransactionByIdempotencyKey(ctx context.Context, book BookID, key string) (Transaction, error)
 	ListTransactions(ctx context.Context, book BookID) ([]Transaction, error)
-	ListTransactionsForAccount(ctx context.Context, book BookID, id AccountID) ([]Transaction, error)
+
+	// ListTransactionsForPosition returns every transaction with a leg on the
+	// position: on the account, or on one obligor within it. A transaction is
+	// returned whole — all of its legs, not only the matching ones.
+	ListTransactionsForPosition(ctx context.Context, book BookID, pos Position) ([]Transaction, error)
 
 	// MarkReversed sets status to Reversed only if it is currently Posted, and
 	// returns ErrTransactionAlreadyReversed otherwise. Conditional because a
@@ -89,7 +93,15 @@ type Tx interface {
 
 	// BookBalance aggregates entries rather than replaying them in Go. normal is
 	// the account type's normal direction; entries in that direction add.
-	BookBalance(ctx context.Context, book BookID, id AccountID, normal Direction) (Amount, error)
+	//
+	// A Position with an empty Subsidiary is the WHOLE account and not the
+	// obligor named by the empty string: it aggregates every entry against the
+	// account, which on a control account is the control figure. The two
+	// readings cannot both apply, because PostTransactionTx leaves no account
+	// holding qualified and unqualified entries at once — so a store adds the
+	// obligor to the predicate only when it is non-empty, and Σ(detail) ==
+	// control follows from the SQL rather than from a reconciliation.
+	BookBalance(ctx context.Context, book BookID, pos Position, normal Direction) (Amount, error)
 
 	// ValueDateBalance is BookBalance restricted to entries that take economic
 	// effect before the bound: it aggregates entries whose value date is
@@ -110,7 +122,7 @@ type Tx interface {
 	// no entry written through the ledger is ever in this case — it can only arise
 	// from a Tx caller constructing an Entry directly, as store/storetest's
 	// fixtures do.
-	ValueDateBalance(ctx context.Context, book BookID, id AccountID, normal Direction, before time.Time) (Amount, error)
+	ValueDateBalance(ctx context.Context, book BookID, pos Position, normal Direction, before time.Time) (Amount, error)
 
 	// ValueDatedSeries returns the balance carried into from, plus the net
 	// movement on each value date in [from, to) that had any.
@@ -127,7 +139,7 @@ type Tx interface {
 	// naive "before the bound" test would put it. store/sqlite gets both halves
 	// from storing a zero date as NULL: NULL fails every comparison and falls
 	// out of every grouping.
-	ValueDatedSeries(ctx context.Context, book BookID, id AccountID, normal Direction, from, to time.Time) (Series, error)
+	ValueDatedSeries(ctx context.Context, book BookID, pos Position, normal Direction, from, to time.Time) (Series, error)
 
 	AppendAudit(ctx context.Context, e AuditEvent) error
 	ListAudit(ctx context.Context, f AuditFilter) ([]AuditEvent, error)

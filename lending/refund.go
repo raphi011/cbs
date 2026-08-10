@@ -73,7 +73,7 @@ func (p *Portfolio) refundPayableTx(ctx context.Context, tx Tx, f Facility) (led
 	if f.RefundGL == "" {
 		return 0, nil
 	}
-	return p.gl.BookBalanceTx(ctx, tx, f.RefundGL)
+	return p.gl.BookBalanceTx(ctx, tx, f.RefundGL.Total())
 }
 
 // ListRefundsPayable returns every outstanding interest refund in the book,

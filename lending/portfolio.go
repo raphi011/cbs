@@ -735,7 +735,7 @@ func (p *Portfolio) Drawn(ctx context.Context, id FacilityID) (ledger.Amount, er
 // assertion about an account type made from outside the layer that owns it, and
 // would be silently sign-flipped by any change to AccountType.NormalBalance().
 func (p *Portfolio) drawnTx(ctx context.Context, tx Tx, f Facility) (ledger.Amount, error) {
-	return p.gl.BookBalanceTx(ctx, tx, f.PrincipalGL)
+	return p.gl.BookBalanceTx(ctx, tx, f.PrincipalGL.Total())
 }
 
 // drawnSeriesTx is the value-dated history of what the borrower owed over
@@ -746,11 +746,11 @@ func (p *Portfolio) drawnTx(ctx context.Context, tx Tx, f Facility) (ledger.Amou
 // The window bounds are snapped by SeriesTx, in the ledger, alongside the store
 // contract that requires them.
 func (p *Portfolio) drawnSeriesTx(ctx context.Context, tx Tx, f Facility, from, to time.Time) (ledger.Series, error) {
-	return p.gl.SeriesTx(ctx, tx, f.PrincipalGL, from, to)
+	return p.gl.SeriesTx(ctx, tx, f.PrincipalGL.Total(), from, to)
 }
 
 // receivableTx is the book balance of a facility's accrued-interest receivable.
 // It is created alongside the principal account in openTx, so it is never empty.
 func (p *Portfolio) receivableTx(ctx context.Context, tx Tx, f Facility) (ledger.Amount, error) {
-	return p.gl.BookBalanceTx(ctx, tx, f.InterestGL)
+	return p.gl.BookBalanceTx(ctx, tx, f.InterestGL.Total())
 }

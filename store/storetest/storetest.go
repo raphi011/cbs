@@ -202,13 +202,164 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Sto
 			assertEqual(t, "transactions listed", len(all), 1)
 			check("ListTransactions entries", all[0].Entries)
 
-			forAccount, err := tx.ListTransactionsForAccount(ctx, bookA, "200.100.002")
+			forAccount, err := tx.ListTransactionsForPosition(ctx, bookA, ledger.AccountID("200.100.002").Total())
 			if err != nil {
 				return err
 			}
 			assertEqual(t, "transactions for the account", len(forAccount), 1)
 			// Every leg comes back, not only the ones naming the account.
-			check("ListTransactionsForAccount entries", forAccount[0].Entries)
+			check("ListTransactionsForPosition entries", forAccount[0].Entries)
+			return nil
+		})
+	})
+
+	t.Run("AccountRoundTripsItsControlFlag", func(t *testing.T) {
+		s := open(t, newStore, bookA)
+
+		// Whether an account pools obligors decides which entries the domain
+		// will accept against it, both ways round. A store that dropped the flag
+		// on the way out would report every account as plain, and the refusal
+		// that keeps money from landing in a pool with nobody's name on it would
+		// stop firing everywhere at once.
+		update(t, s, func(ctx context.Context, tx ledger.Tx) error {
+			if err := tx.PutAccount(ctx, bookA, ledger.Account{
+				ID: "200.100.001", SubledgerID: "100", Name: "Customer Deposits",
+				Type: ledger.Liability, Asset: "EUR", Control: true,
+			}); err != nil {
+				return err
+			}
+			return tx.PutAccount(ctx, bookA, ledger.Account{
+				ID: "100.100.001", SubledgerID: "100", Name: "Vault Cash",
+				Type: ledger.Asset, Asset: "EUR",
+			})
+		})
+
+		view(t, s, func(ctx context.Context, tx ledger.Tx) error {
+			pooled, err := tx.GetAccount(ctx, bookA, "200.100.001")
+			if err != nil {
+				return err
+			}
+			assertEqual(t, "the pooling account's flag", pooled.Control, true)
+			plain, err := tx.GetAccount(ctx, bookA, "100.100.001")
+			if err != nil {
+				return err
+			}
+			assertEqual(t, "the plain account's flag", plain.Control, false)
+
+			list, err := tx.ListAccounts(ctx, bookA)
+			if err != nil {
+				return err
+			}
+			assertEqual(t, "accounts listed", len(list), 2)
+			for _, a := range list {
+				assertEqual(t, "listed "+string(a.ID)+"'s flag", a.Control, a.ID == "200.100.001")
+			}
+			return nil
+		})
+	})
+
+	t.Run("SubsidiaryScopedReadsSumToTheWholeAccount", func(t *testing.T) {
+		s := open(t, newStore, bookA)
+
+		// One control account, three obligors, and the reads that have to tell
+		// them apart. What this pins is the whole claim the dimension rests on:
+		// a position with no obligor is the WHOLE account and not the obligor
+		// named by the empty string, so the control figure is the same aggregate
+		// with one predicate dropped rather than a total stored beside the
+		// detail. A store that filtered on subsidiary_id = '' instead would
+		// report a control balance of zero and every subtest above would still
+		// pass.
+		const (
+			pooled ledger.AccountID = "200.100.001"
+			contra ledger.AccountID = "100.100.001"
+		)
+		day := func(n int) time.Time {
+			return time.Date(2025, 1, n, 12, 0, 0, 0, time.UTC)
+		}
+		post := func(id ledger.TransactionID, obligor string, amount ledger.Amount, on time.Time) {
+			t.Helper()
+			update(t, s, func(ctx context.Context, tx ledger.Tx) error {
+				return tx.PutTransaction(ctx, bookA, ledger.Transaction{
+					ID: id, Status: ledger.Posted, CreatedAt: on,
+					Entries: []ledger.Entry{
+						{ID: ledger.EntryID(string(id) + "_a"), AccountID: contra,
+							Amount: amount, Direction: ledger.Debit, ValueDate: on},
+						{ID: ledger.EntryID(string(id) + "_b"), AccountID: pooled, Subsidiary: obligor,
+							Amount: amount, Direction: ledger.Credit, ValueDate: on},
+					},
+				})
+			})
+		}
+		post("tx_1", "dep_1", 1000, day(4))
+		post("tx_2", "dep_2", 250, day(4))
+		post("tx_3", "dep_1", 40, day(6))
+
+		view(t, s, func(ctx context.Context, tx ledger.Tx) error {
+			// The dimension is on the entry it was written on, and only on it.
+			one, err := tx.GetTransaction(ctx, bookA, "tx_1")
+			if err != nil {
+				return err
+			}
+			assertEqual(t, "the pooled leg's obligor", one.Entries[1].Subsidiary, "dep_1")
+			assertEqual(t, "the plain leg's obligor", one.Entries[0].Subsidiary, "")
+
+			whole, err := tx.BookBalance(ctx, bookA, pooled.Total(), ledger.Credit)
+			if err != nil {
+				return err
+			}
+			assertEqual(t, "the control balance", whole, ledger.Amount(1290))
+
+			var detail ledger.Amount
+			for obligor, want := range map[string]ledger.Amount{"dep_1": 1040, "dep_2": 250} {
+				got, err := tx.BookBalance(ctx, bookA, pooled.For(obligor), ledger.Credit)
+				if err != nil {
+					return err
+				}
+				assertEqual(t, "the balance of "+obligor, got, want)
+				detail += got
+			}
+			assertEqual(t, "the detail against the control", detail, whole)
+
+			// An obligor nothing was ever posted for is zero, like an account
+			// with no entries. Nothing here holds a list to check it against.
+			absent, err := tx.BookBalance(ctx, bookA, pooled.For("dep_9"), ledger.Credit)
+			if err != nil {
+				return err
+			}
+			assertEqual(t, "an obligor with no postings", absent, ledger.Amount(0))
+
+			// The value-dated reads carry the obligor too: interest is computed
+			// from these, and a series that read the pool would accrue the whole
+			// bank's balance for every customer under it.
+			asAt, err := tx.ValueDateBalance(ctx, bookA, pooled.For("dep_1"), ledger.Credit, day(5))
+			if err != nil {
+				return err
+			}
+			assertEqual(t, "dep_1 as at the 5th", asAt, ledger.Amount(1000))
+
+			series, err := tx.ValueDatedSeries(ctx, bookA, pooled.For("dep_1"), ledger.Credit, day(5), day(7))
+			if err != nil {
+				return err
+			}
+			assertEqual(t, "dep_1's opening on the 5th", series.Opening, ledger.Amount(1000))
+			assertEqual(t, "days dep_1 moved on", len(series.Movements), 1)
+			assertEqual(t, "dep_1's movement", series.Movements[0].Amount, ledger.Amount(40))
+
+			// And the listing: one obligor's statement is their own postings,
+			// each carrying the other leg of its own event.
+			forObligor, err := tx.ListTransactionsForPosition(ctx, bookA, pooled.For("dep_1"))
+			if err != nil {
+				return err
+			}
+			assertOrder(t, "dep_1's transactions",
+				ids(forObligor, func(t ledger.Transaction) string { return string(t.ID) }), "tx_1", "tx_3")
+			assertEqual(t, "legs on dep_1's first transaction", len(forObligor[0].Entries), 2)
+
+			forWhole, err := tx.ListTransactionsForPosition(ctx, bookA, pooled.Total())
+			if err != nil {
+				return err
+			}
+			assertEqual(t, "the pool's transactions", len(forWhole), 3)
 			return nil
 		})
 	})
@@ -529,7 +680,7 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Sto
 			}
 			assertEqual(t, "orphan account's subledger", string(a.SubledgerID), "900")
 
-			balance, err := tx.BookBalance(ctx, bookA, "999.999.001", ledger.Debit)
+			balance, err := tx.BookBalance(ctx, bookA, ledger.AccountID("999.999.001").Total(), ledger.Debit)
 			if err != nil {
 				return err
 			}
@@ -636,7 +787,7 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Sto
 			if transactions, err = tx.ListTransactions(ctx, bookA); err != nil {
 				return err
 			}
-			forAccount, err = tx.ListTransactionsForAccount(ctx, bookA, "200.100.008")
+			forAccount, err = tx.ListTransactionsForPosition(ctx, bookA, ledger.AccountID("200.100.008").Total())
 			return err
 		})
 
@@ -1040,7 +1191,7 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Sto
 		var all []ledger.Transaction
 		view(t, s, func(ctx context.Context, tx ledger.Tx) error {
 			var err error
-			all, err = tx.ListTransactionsForAccount(ctx, bookA, cash)
+			all, err = tx.ListTransactionsForPosition(ctx, bookA, ledger.AccountID(cash).Total())
 			return err
 		})
 		assertEqual(t, "transactions for the account", len(all), 2)
@@ -1086,7 +1237,7 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Sto
 			var got ledger.Amount
 			view(t, s, func(ctx context.Context, tx ledger.Tx) error {
 				var err error
-				got, err = tx.ValueDateBalance(ctx, bookA, "900.001.001", ledger.Debit, c.before)
+				got, err = tx.ValueDateBalance(ctx, bookA, ledger.AccountID("900.001.001").Total(), ledger.Debit, c.before)
 				return err
 			})
 			assertEqual(t, fmt.Sprintf("balance before %v", c.before), got, c.want)
@@ -1099,7 +1250,7 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Sto
 		var got ledger.Amount
 		view(t, s, func(ctx context.Context, tx ledger.Tx) error {
 			var err error
-			got, err = tx.ValueDateBalance(ctx, bookA, "999.999.001", ledger.Debit,
+			got, err = tx.ValueDateBalance(ctx, bookA, ledger.AccountID("999.999.001").Total(), ledger.Debit,
 				time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC))
 			return err
 		})
@@ -1141,7 +1292,7 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Sto
 			// A bound far in the future would catch this entry were a zero
 			// ValueDate treated as "before everything", which is what the naive
 			// in-Go check does.
-			got, err = tx.ValueDateBalance(ctx, bookA, "900.001.003", ledger.Debit,
+			got, err = tx.ValueDateBalance(ctx, bookA, ledger.AccountID("900.001.003").Total(), ledger.Debit,
 				time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC))
 			return err
 		})
@@ -1175,7 +1326,7 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Sto
 		var gross ledger.Amount
 		view(t, s, func(ctx context.Context, tx ledger.Tx) error {
 			var err error
-			gross, err = tx.ValueDateBalance(ctx, bookA, cash, ledger.Debit, before)
+			gross, err = tx.ValueDateBalance(ctx, bookA, ledger.AccountID(cash).Total(), ledger.Debit, before)
 			return err
 		})
 		assertEqual(t, "balance before the reversal", gross, ledger.Amount(10_000))
@@ -1202,7 +1353,7 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Sto
 		var netted ledger.Amount
 		view(t, s, func(ctx context.Context, tx ledger.Tx) error {
 			var err error
-			netted, err = tx.ValueDateBalance(ctx, bookA, cash, ledger.Debit, before)
+			netted, err = tx.ValueDateBalance(ctx, bookA, ledger.AccountID(cash).Total(), ledger.Debit, before)
 			return err
 		})
 		assertEqual(t, "balance after the reversal, read on the original's day", netted, ledger.Amount(0))
@@ -1218,7 +1369,7 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Sto
 		var got ledger.Series
 		view(t, s, func(ctx context.Context, tx ledger.Tx) error {
 			var err error
-			got, err = tx.ValueDatedSeries(ctx, bookA, "901.001.001", ledger.Debit, day(4), day(9))
+			got, err = tx.ValueDatedSeries(ctx, bookA, ledger.AccountID("901.001.001").Total(), ledger.Debit, day(4), day(9))
 			return err
 		})
 
@@ -1252,7 +1403,7 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Sto
 		var got ledger.Series
 		view(t, s, func(ctx context.Context, tx ledger.Tx) error {
 			var err error
-			got, err = tx.ValueDatedSeries(ctx, bookA, "901.001.002", ledger.Credit, day(4), day(9))
+			got, err = tx.ValueDatedSeries(ctx, bookA, ledger.AccountID("901.001.002").Total(), ledger.Credit, day(4), day(9))
 			return err
 		})
 		assertEqual(t, "opening", got.Opening, ledger.Amount(100))
@@ -1265,7 +1416,7 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Sto
 		// the 7th, which stays 0 either way (there is no negative zero).
 		view(t, s, func(ctx context.Context, tx ledger.Tx) error {
 			var err error
-			got, err = tx.ValueDatedSeries(ctx, bookA, "901.001.002", ledger.Debit, day(4), day(9))
+			got, err = tx.ValueDatedSeries(ctx, bookA, ledger.AccountID("901.001.002").Total(), ledger.Debit, day(4), day(9))
 			return err
 		})
 		if got.Opening != -100 || len(got.Movements) != 3 ||
@@ -1286,7 +1437,7 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Sto
 		var got ledger.Series
 		view(t, s, func(ctx context.Context, tx ledger.Tx) error {
 			var err error
-			got, err = tx.ValueDatedSeries(ctx, bookA, "901.001.001", ledger.Debit, day(8), day(9))
+			got, err = tx.ValueDatedSeries(ctx, bookA, ledger.AccountID("901.001.001").Total(), ledger.Debit, day(8), day(9))
 			return err
 		})
 		assertEqual(t, "opening (the 1st, the 4th, both of the 5th, and the 7th's net-zero pair)", got.Opening, ledger.Amount(550))
@@ -1333,7 +1484,7 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Sto
 		var got ledger.Series
 		view(t, s, func(ctx context.Context, tx ledger.Tx) error {
 			var err error
-			got, err = tx.ValueDatedSeries(ctx, bookA, "901.001.001", ledger.Debit, day(4), day(9))
+			got, err = tx.ValueDatedSeries(ctx, bookA, ledger.AccountID("901.001.001").Total(), ledger.Debit, day(4), day(9))
 			return err
 		})
 		assertEqual(t, "opening (unchanged by an entry that is not value-dated)", got.Opening, ledger.Amount(100))
@@ -1345,7 +1496,7 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Sto
 		// range rather than merely before the window.
 		view(t, s, func(ctx context.Context, tx ledger.Tx) error {
 			var err error
-			got, err = tx.ValueDatedSeries(ctx, bookA, "901.001.001", ledger.Debit, time.Time{}, day(9))
+			got, err = tx.ValueDatedSeries(ctx, bookA, ledger.AccountID("901.001.001").Total(), ledger.Debit, time.Time{}, day(9))
 			return err
 		})
 		assertEqual(t, "opening from the beginning of time", got.Opening, ledger.Amount(0))
@@ -1367,7 +1518,7 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Sto
 		var got ledger.Series
 		view(t, s, func(ctx context.Context, tx ledger.Tx) error {
 			var err error
-			got, err = tx.ValueDatedSeries(ctx, bookA, "999.999.001", ledger.Debit, day(1), day(9))
+			got, err = tx.ValueDatedSeries(ctx, bookA, ledger.AccountID("999.999.001").Total(), ledger.Debit, day(1), day(9))
 			return err
 		})
 		assertEqual(t, "opening", got.Opening, ledger.Amount(0))
@@ -1944,7 +2095,7 @@ func balance(t *testing.T, s ledger.Store, id ledger.AccountID) ledger.Amount {
 	var out ledger.Amount
 	view(t, s, func(ctx context.Context, tx ledger.Tx) error {
 		var err error
-		out, err = tx.BookBalance(ctx, bookA, id, ledger.Debit)
+		out, err = tx.BookBalance(ctx, bookA, ledger.AccountID(id).Total(), ledger.Debit)
 		return err
 	})
 	return out

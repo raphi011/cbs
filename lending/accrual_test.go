@@ -149,7 +149,7 @@ func accountNamed(t *testing.T, book *ledger.Book, name string) ledger.AccountID
 
 func bookBalance(t *testing.T, book *ledger.Book, id ledger.AccountID) ledger.Amount {
 	t.Helper()
-	bal, err := book.BookBalance(context.Background(), id)
+	bal, err := book.BookBalance(context.Background(), id.Total())
 	if err != nil {
 		t.Fatalf("BookBalance: %v", err)
 	}
@@ -175,7 +175,7 @@ func TestAccrue_PostsTheDeltaOfTheRoundedValue(t *testing.T) {
 		if got.Accrued != wantAccrued[i-1] {
 			t.Errorf("day %d accrued = %d, want %d", i, got.Accrued, wantAccrued[i-1])
 		}
-		balance, err := book.BookBalance(ctx, got.InterestGL)
+		balance, err := book.BookBalance(ctx, got.InterestGL.Total())
 		if err != nil {
 			t.Fatalf("BookBalance: %v", err)
 		}
@@ -294,7 +294,7 @@ func TestChargeInterest_CapitalizesAndBillsTheCycle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetFacility: %v", err)
 	}
-	receivable, err := book.BookBalance(ctx, after.InterestGL)
+	receivable, err := book.BookBalance(ctx, after.InterestGL.Total())
 	if err != nil {
 		t.Fatalf("BookBalance: %v", err)
 	}
@@ -415,7 +415,7 @@ func TestChargeInterest_NegativeResidueStaysInStepWithTheLedger(t *testing.T) {
 	// — 0 — which is the whole point: the invariant holds on both sides of
 	// the rounding threshold, not just the one the capitalization test above
 	// happens to land on.
-	receivable, err := book.BookBalance(ctx, after.InterestGL)
+	receivable, err := book.BookBalance(ctx, after.InterestGL.Total())
 	if err != nil {
 		t.Fatalf("BookBalance: %v", err)
 	}
@@ -538,7 +538,7 @@ func TestChargeInterest_ADrawnLineWithNoInterestStillBillsACycle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetFacility: %v", err)
 	}
-	receivable, err := book.BookBalance(ctx, after.InterestGL)
+	receivable, err := book.BookBalance(ctx, after.InterestGL.Total())
 	if err != nil {
 		t.Fatalf("BookBalance: %v", err)
 	}

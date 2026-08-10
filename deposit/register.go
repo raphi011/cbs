@@ -993,7 +993,7 @@ func (r *Register) CloseTx(ctx context.Context, tx Tx, id AccountID) error {
 		return ErrInvalidStatusTransition
 	}
 
-	book, err := r.gl.BookBalanceTx(ctx, tx, acct.GLAccount)
+	book, err := r.gl.BookBalanceTx(ctx, tx, acct.GLAccount.Total())
 	if err != nil {
 		return err
 	}
@@ -1003,7 +1003,7 @@ func (r *Register) CloseTx(ctx context.Context, tx Tx, id AccountID) error {
 	// An account that never had a rate set has no receivable to settle: there
 	// is nothing to read a balance for.
 	if acct.InterestGL != "" {
-		receivable, err := r.gl.BookBalanceTx(ctx, tx, acct.InterestGL)
+		receivable, err := r.gl.BookBalanceTx(ctx, tx, acct.InterestGL.Total())
 		if err != nil {
 			return err
 		}
@@ -1394,7 +1394,7 @@ func requireCreditable(acct Account) error {
 // balance of Book - Holds for an account that has a facility is the kind of
 // wrong answer that reads as a working system.
 func (r *Register) balanceTx(ctx context.Context, tx Tx, acct Account) (Balance, error) {
-	book, err := r.gl.BookBalanceTx(ctx, tx, acct.GLAccount)
+	book, err := r.gl.BookBalanceTx(ctx, tx, acct.GLAccount.Total())
 	if err != nil {
 		return Balance{}, err
 	}
@@ -1645,7 +1645,7 @@ func (r *Register) accrueOverdraftAccountTx(ctx context.Context, tx Tx, acct Acc
 		return nil
 	}
 
-	series, err := r.gl.SeriesTx(ctx, tx, acct.GLAccount, window, date)
+	series, err := r.gl.SeriesTx(ctx, tx, acct.GLAccount.Total(), window, date)
 	if err != nil {
 		return err
 	}
@@ -1767,7 +1767,7 @@ func (r *Register) accrueOverdraftAccountTx(ctx context.Context, tx Tx, acct Acc
 // the same shape as ChargeOverdraftInterestTx, which also posts, moves Accrued
 // by what settled, and persists. Only this function knows the split.
 func (r *Register) correctOverdraftAccrualTx(ctx context.Context, tx Tx, acct *Account, income ledger.AccountID, amount ledger.Amount, date time.Time) error {
-	receivable, err := r.gl.BookBalanceTx(ctx, tx, acct.InterestGL)
+	receivable, err := r.gl.BookBalanceTx(ctx, tx, acct.InterestGL.Total())
 	if err != nil {
 		return err
 	}
@@ -2036,7 +2036,7 @@ func (r *Register) TotalsTx(ctx context.Context, tx Tx) (Totals, error) {
 		Overdrafts: make(map[ledger.AssetCode]ledger.Amount),
 	}
 	for _, acct := range accounts {
-		balance, err := r.gl.BookBalanceTx(ctx, tx, acct.GLAccount)
+		balance, err := r.gl.BookBalanceTx(ctx, tx, acct.GLAccount.Total())
 		if err != nil {
 			return Totals{}, err
 		}

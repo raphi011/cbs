@@ -1026,7 +1026,7 @@ func TestAFoundedBankCanNeitherPayNorBePaid(t *testing.T) {
 			// bank that submitted the healthy payment, whose own money is
 			// legitimately sitting there.
 			payer := h.getBank(t, tc.payer(h, b))
-			before, err := payer.Ledger.BookBalance(ctx, payer.Assets["EUR"].Suspense)
+			before, err := payer.Ledger.BookBalance(ctx, payer.Assets["EUR"].Suspense.Total())
 			if err != nil {
 				t.Fatalf("reading the payer's clearing suspense: %v", err)
 			}
@@ -1042,7 +1042,7 @@ func TestAFoundedBankCanNeitherPayNorBePaid(t *testing.T) {
 			// Refused at the door means refused before the submitting bank's half ran,
 			// so no debtor leg was posted. The on-us guard is in the same place for the
 			// same reason.
-			after, err := payer.Ledger.BookBalance(ctx, payer.Assets["EUR"].Suspense)
+			after, err := payer.Ledger.BookBalance(ctx, payer.Assets["EUR"].Suspense.Total())
 			if err != nil {
 				t.Fatalf("reading the payer's clearing suspense: %v", err)
 			}

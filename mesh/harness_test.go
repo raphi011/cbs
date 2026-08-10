@@ -1230,7 +1230,7 @@ func (h *meshHarness) suspense(t *testing.T, id payment.ParticipantID) ledger.Am
 	if err != nil {
 		t.Fatalf("AccountsFor EUR: %v", err)
 	}
-	bal, err := p.Ledger.BookBalance(ctx, accts.Suspense)
+	bal, err := p.Ledger.BookBalance(ctx, accts.Suspense.Total())
 	if err != nil {
 		t.Fatalf("BookBalance: %v", err)
 	}
@@ -1276,7 +1276,7 @@ func (h *meshHarness) vaultCash(t *testing.T, id payment.ParticipantID) ledger.A
 	if err != nil {
 		t.Fatalf("AccountsFor EUR: %v", err)
 	}
-	bal, err := p.Ledger.BookBalance(ctx, accts.VaultCash)
+	bal, err := p.Ledger.BookBalance(ctx, accts.VaultCash.Total())
 	if err != nil {
 		t.Fatalf("BookBalance: %v", err)
 	}
@@ -1301,7 +1301,7 @@ func (h *meshHarness) reserveMirror(t *testing.T, id payment.ParticipantID) ledg
 	if err != nil {
 		t.Fatalf("AccountsFor EUR: %v", err)
 	}
-	bal, err := p.Ledger.BookBalance(ctx, accts.Reserve)
+	bal, err := p.Ledger.BookBalance(ctx, accts.Reserve.Total())
 	if err != nil {
 		t.Fatalf("BookBalance: %v", err)
 	}

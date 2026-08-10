@@ -396,9 +396,9 @@ func (r *recordingTx) ListTransactions(ctx context.Context, book ledger.BookID) 
 	return r.Tx.ListTransactions(ctx, book)
 }
 
-func (r *recordingTx) ListTransactionsForAccount(ctx context.Context, book ledger.BookID, id ledger.AccountID) ([]ledger.Transaction, error) {
+func (r *recordingTx) ListTransactionsForPosition(ctx context.Context, book ledger.BookID, pos ledger.Position) ([]ledger.Transaction, error) {
 	r.rec.note(book)
-	return r.Tx.ListTransactionsForAccount(ctx, book, id)
+	return r.Tx.ListTransactionsForPosition(ctx, book, pos)
 }
 
 func (r *recordingTx) MarkReversed(ctx context.Context, book ledger.BookID, id ledger.TransactionID) error {
@@ -406,19 +406,19 @@ func (r *recordingTx) MarkReversed(ctx context.Context, book ledger.BookID, id l
 	return r.Tx.MarkReversed(ctx, book, id)
 }
 
-func (r *recordingTx) BookBalance(ctx context.Context, book ledger.BookID, id ledger.AccountID, normal ledger.Direction) (ledger.Amount, error) {
+func (r *recordingTx) BookBalance(ctx context.Context, book ledger.BookID, pos ledger.Position, normal ledger.Direction) (ledger.Amount, error) {
 	r.rec.note(book)
-	return r.Tx.BookBalance(ctx, book, id, normal)
+	return r.Tx.BookBalance(ctx, book, pos, normal)
 }
 
-func (r *recordingTx) ValueDateBalance(ctx context.Context, book ledger.BookID, id ledger.AccountID, normal ledger.Direction, before time.Time) (ledger.Amount, error) {
+func (r *recordingTx) ValueDateBalance(ctx context.Context, book ledger.BookID, pos ledger.Position, normal ledger.Direction, before time.Time) (ledger.Amount, error) {
 	r.rec.note(book)
-	return r.Tx.ValueDateBalance(ctx, book, id, normal, before)
+	return r.Tx.ValueDateBalance(ctx, book, pos, normal, before)
 }
 
-func (r *recordingTx) ValueDatedSeries(ctx context.Context, book ledger.BookID, id ledger.AccountID, normal ledger.Direction, from, to time.Time) (ledger.Series, error) {
+func (r *recordingTx) ValueDatedSeries(ctx context.Context, book ledger.BookID, pos ledger.Position, normal ledger.Direction, from, to time.Time) (ledger.Series, error) {
 	r.rec.note(book)
-	return r.Tx.ValueDatedSeries(ctx, book, id, normal, from, to)
+	return r.Tx.ValueDatedSeries(ctx, book, pos, normal, from, to)
 }
 
 // The two whose book travels inside the argument. See structCarriedBooks.

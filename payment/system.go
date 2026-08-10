@@ -942,19 +942,31 @@ func (s *Network) FoundBankTx(ctx context.Context, tx Tx, name string, bic iso20
 		if err != nil {
 			return nil, err
 		}
-		// A Liability, because it is money the bank owes somebody it has not yet
-		// identified — the same class as a customer's deposit, and specifically
-		// not an asset of the bank's.
-		unclaimed, err := bank.CreateAccountTx(ctx, tx, interbank.ID, "Unclaimed Balances ("+string(asset)+")", ledger.Liability, asset)
+		// A Liability, because it is money the bank owes somebody — the same
+		// class as a customer's deposit, and specifically not an asset of the
+		// bank's.
+		//
+		// It is the one of this bank's own accounts that pools obligors, so it
+		// is a CONTROL account and every leg against it names whose money it is:
+		// the deposit account that could not take the credit. The claimant is
+		// always known — this bank resolved the payee before it accepted the
+		// payment, and the account is closed rather than absent — so what makes
+		// the balance unclaimed is that nobody has come for it, not that nobody
+		// can be named. Pooled without the dimension, one balance could not say
+		// who was owed what, and a release against it could pay one customer out
+		// of another's money and still balance, a Liability never being caught
+		// by the sufficiency check.
+		unclaimed, err := bank.CreateControlAccountTx(ctx, tx, interbank.ID, "Unclaimed Balances ("+string(asset)+")", ledger.Liability, asset)
 		if err != nil {
 			return nil, err
 		}
 		// An Asset, and the contrast with Unclaimed Balances above is the
-		// point. Unclaimed is money the bank OWES to somebody it has not
-		// identified; this is money OWED TO the bank by somebody it has
-		// identified perfectly well — a biller whose account could not fund a
-		// refund the bank was obliged to honour anyway. Same event, opposite
-		// sides of the balance sheet.
+		// point. Unclaimed is money the bank OWES to a holder it cannot pay;
+		// this is money OWED TO the bank by a biller whose account could not
+		// fund a refund the bank was obliged to honour anyway. Same event,
+		// opposite sides of the balance sheet. Plain rather than control, for
+		// the reason the whole class of a bank's own positions is: what it
+		// records is the bank's claim, and it does not stand in for anybody.
 		returnsReceivable, err := bank.CreateAccountTx(ctx, tx, interbank.ID, "Returns Receivable ("+string(asset)+")", ledger.Asset, asset)
 		if err != nil {
 			return nil, err
@@ -2370,7 +2382,7 @@ func (s *Network) SettleCycleTx(ctx context.Context, tx Tx, id CycleID, instruct
 		if leg.net >= 0 {
 			continue
 		}
-		held, err := book.BookBalanceTx(ctx, tx, leg.settlement)
+		held, err := book.BookBalanceTx(ctx, tx, leg.settlement.Total())
 		if err != nil {
 			return Settlement{}, nil, err
 		}
@@ -2407,7 +2419,7 @@ func (s *Network) SettleCycleTx(ctx context.Context, tx Tx, id CycleID, instruct
 		//    reading it before would produce an opening balance labelled CLBD, which
 		//    is the exact error closingBalanceIn refuses on the other side.
 		for _, leg := range legs {
-			closing, err := book.BookBalanceTx(ctx, tx, leg.settlement)
+			closing, err := book.BookBalanceTx(ctx, tx, leg.settlement.Total())
 			if err != nil {
 				return Settlement{}, nil, err
 			}
@@ -2862,7 +2874,13 @@ func (s *Network) SettleAtBankTx(ctx context.Context, tx Tx, id PaymentID) (Paym
 
 	// Where the money goes: the payee's account if it can take it, and the
 	// unclaimed-balances account if it cannot. Both are this bank's own.
+	//
+	// Unclaimed Balances is a control account, so the diverting arm also says
+	// WHOSE the money is. It is the payee this bank already resolved above: a
+	// closed account still names its owner, and that is what a later release
+	// pays out.
 	target, description := glAccount, p.Description
+	claimant := ""
 	if err := creditor.Deposit.CheckCreditTx(ctx, tx, p.Creditor.Account); err != nil {
 		if !errors.Is(err, deposit.ErrAccountClosed) {
 			// ErrAccountClosed is the ONLY refusal CheckCreditTx makes —
@@ -2873,6 +2891,7 @@ func (s *Network) SettleAtBankTx(ctx context.Context, tx Tx, id PaymentID) (Paym
 			return Payment{}, err
 		}
 		target, description = accts.Unclaimed, "Unclaimed: "+p.Description
+		claimant = string(p.Creditor.Account)
 	}
 
 	posted, err := creditor.Ledger.PostTransactionTx(ctx, tx, ledger.PostTransactionRequest{
@@ -2882,7 +2901,7 @@ func (s *Network) SettleAtBankTx(ctx context.Context, tx Tx, id PaymentID) (Paym
 		Metadata:       paymentMetadata(&p),
 		Entries: []ledger.Entry{
 			{AccountID: accts.Suspense, Amount: p.Amount, Direction: ledger.Debit},
-			{AccountID: target, Amount: p.Amount, Direction: ledger.Credit},
+			{AccountID: target, Subsidiary: claimant, Amount: p.Amount, Direction: ledger.Credit},
 		},
 	})
 	if err != nil {
@@ -4148,7 +4167,7 @@ func (s *Network) SettleReturnTx(ctx context.Context, tx Tx, in ReturnInstructio
 		return nil, err
 	}
 
-	held, err := book.BookBalanceTx(ctx, tx, creditorSettlement)
+	held, err := book.BookBalanceTx(ctx, tx, creditorSettlement.Total())
 	if err != nil {
 		return nil, err
 	}
@@ -4201,7 +4220,7 @@ func (s *Network) SettleReturnTx(ctx context.Context, tx Tx, in ReturnInstructio
 		{in.CreditorAgent, creditorSettlement, -in.Amount},
 		{in.DebtorAgent, debtorSettlement, in.Amount},
 	} {
-		closing, err := book.BookBalanceTx(ctx, tx, side.account)
+		closing, err := book.BookBalanceTx(ctx, tx, side.account.Total())
 		if err != nil {
 			return nil, err
 		}
@@ -4509,12 +4528,20 @@ func (s *Network) clawbackTx(ctx context.Context, tx Tx, creditor *Bank, accts B
 			return ledger.Transaction{}, err
 		}
 	}
+	// Whose obligation is being released, on the one arm of the three that
+	// reaches a control account. It is re-derived from the payee rather than
+	// stored beside CreditorLegAccount: SettleAtBankTx wrote this same value
+	// from this same field, so a second copy could only disagree.
+	claimant := ""
+	if from == accts.Unclaimed {
+		claimant = string(p.Creditor.Account)
+	}
 	return creditor.Ledger.PostTransactionTx(ctx, tx, ledger.PostTransactionRequest{
 		IdempotencyKey: returnLegKey(p.ID, "return-claw", replacing),
 		Description:    description,
 		Metadata:       paymentMetadata(&p),
 		Entries: []ledger.Entry{
-			{AccountID: from, Amount: p.Amount, Direction: ledger.Debit},
+			{AccountID: from, Subsidiary: claimant, Amount: p.Amount, Direction: ledger.Debit},
 			{AccountID: accts.Suspense, Amount: p.Amount, Direction: ledger.Credit},
 		},
 	})
@@ -4534,6 +4561,10 @@ func (s *Network) refundTx(ctx context.Context, tx Tx, debtor *Bank, accts BankA
 ) (ledger.Transaction, error) {
 	description := "Return of payment " + string(p.ID) + ": " + reason
 	to := accts.Unclaimed
+	// The payer, on the arm that lands in the control account. Here the
+	// claimant is the DEBTOR's account, not the creditor's: this is the payer's
+	// own bank holding a refund the payer's closed account would not take.
+	claimant := string(p.Debtor.Account)
 	err := debtor.Deposit.CheckCreditTx(ctx, tx, p.Debtor.Account)
 	switch {
 	case err == nil:
@@ -4542,6 +4573,7 @@ func (s *Network) refundTx(ctx context.Context, tx Tx, debtor *Bank, accts BankA
 		if to, err = debtor.glAccountTx(ctx, tx, p.Debtor.Account); err != nil {
 			return ledger.Transaction{}, err
 		}
+		claimant = ""
 	case errors.Is(err, deposit.ErrAccountClosed):
 		description = "Unclaimed: " + description
 	default:
@@ -4553,7 +4585,7 @@ func (s *Network) refundTx(ctx context.Context, tx Tx, debtor *Bank, accts BankA
 		Metadata:       paymentMetadata(&p),
 		Entries: []ledger.Entry{
 			{AccountID: accts.Suspense, Amount: p.Amount, Direction: ledger.Debit},
-			{AccountID: to, Amount: p.Amount, Direction: ledger.Credit},
+			{AccountID: to, Subsidiary: claimant, Amount: p.Amount, Direction: ledger.Credit},
 		},
 	})
 }
@@ -4829,7 +4861,7 @@ func (s *Network) ReserveBalance(ctx context.Context, bic iso20022.BIC, asset le
 		if err != nil {
 			return err
 		}
-		out, err = book.BookBalanceTx(ctx, tx, settlement)
+		out, err = book.BookBalanceTx(ctx, tx, settlement.Total())
 		return err
 	})
 	return out, err

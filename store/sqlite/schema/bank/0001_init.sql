@@ -272,6 +272,27 @@ CREATE TABLE accounts (
     -- subledgers (book_id, ledger_id) broke that same subtest and was removed for
     -- the same reason.
     asset        TEXT NOT NULL,
+    -- Whether this account pools obligors: one chart-of-accounts line standing
+    -- for many customers, with entries.subsidiary_id saying which. Fixed at
+    -- creation, like type and asset, and for a stronger reason than either —
+    -- flipping it would strand every leg already posted on the wrong side of
+    -- both refusals below, and nothing afterwards could tell which pool they
+    -- had belonged to.
+    --
+    -- The two refusals are the substance and neither is expressible here, since
+    -- a control account and a plain one differ only in which entries they will
+    -- ACCEPT. ledger.Book.PostTransactionTx refuses an entry against a control
+    -- account that names no obligor — money in the pool belonging to nobody,
+    -- with the control figure right and every detail under it wrong — and
+    -- refuses one against a plain account that names an obligor, which writes a
+    -- dimension nothing will ever read. Both post cleanly under a CHECK-less
+    -- schema, both keep debits equal to credits, and neither is recoverable
+    -- afterwards.
+    --
+    -- What this column is NOT is a stored control figure. A control account's
+    -- balance is still an aggregation over entries — see entries.subsidiary_id,
+    -- which carries that argument.
+    control      INTEGER NOT NULL DEFAULT 0,
     created_at   TEXT,
     seq          INTEGER NOT NULL,
     PRIMARY KEY (book_id, id)
@@ -353,6 +374,24 @@ CREATE TABLE entries (
     position       INTEGER NOT NULL,
     id             TEXT NOT NULL,
     account_id     TEXT NOT NULL,
+    -- The obligor this leg belongs to within a control account: a deposit
+    -- account, a facility. It is '' on an account that pools nothing, and
+    -- accounts.control decides which of the two an account is — an account
+    -- never holds both kinds of leg, which is what lets a reader take the
+    -- absence of this column from a WHERE clause as "the whole pool".
+    --
+    -- It carries no foreign key and there is no table of subsidiaries, for the
+    -- reason account_id carries none: the ledger does not know what a customer
+    -- is, and the layer that does supplies a string.
+    --
+    -- What is ABSENT is the second entries table. The classic arrangement keeps
+    -- the customer detail in a subledger system, writes the control figure into
+    -- the general ledger independently, and reconciles the two nightly because
+    -- they can drift. Here the control figure IS this column dropped from the
+    -- WHERE clause, so Σ(detail) == control is one statement read two ways.
+    -- That is the whole reason a customer account can leave the chart of
+    -- accounts without a stored total taking its place.
+    subsidiary_id  TEXT NOT NULL DEFAULT '',
     amount         INTEGER NOT NULL,
     direction      INTEGER NOT NULL,
     value_date     TEXT,
@@ -364,7 +403,12 @@ CREATE INDEX entries_account_idx ON entries (
     -- The value_date suffix serves the value-dated balance and the per-day
     -- movement series. The (book_id, account_id) prefix is unchanged, so
     -- BookBalance keeps the index it always had.
-    book_id, account_id, value_date
+    --
+    -- subsidiary_id sits BETWEEN account_id and value_date so that prefix
+    -- survives: a control account's own balance reads the whole pool and must
+    -- not pay for a dimension it is not filtering on, while one obligor's
+    -- balance and one obligor's day series both get a full prefix match.
+    book_id, account_id, subsidiary_id, value_date
 );
 
 -- ---------------------------------------------------------------------------
