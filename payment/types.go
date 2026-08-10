@@ -259,27 +259,35 @@ func (r PartyRef) SameParty(o PartyRef) bool {
 type PartyDetails struct {
 	// Agent is the BIC of the bank holding this party's account.
 	//
-	// On a SUBMISSION the two sides answer differently, and the asymmetry is the
-	// whole of it. The SUBMITTING bank's own side is ignored and filled from the
+	// This element ROUTES. It goes out as CdtrAgt/DbtrAgt, the clearing house
+	// relays on it and reads nothing else, so whoever fills it in chooses which
+	// bank receives the payment.
+	//
+	// On a SUBMISSION neither side is the payer's to fill in, and the two are
+	// filled from different places. The SUBMITTING bank's own side comes from the
 	// row this listener is bound to: a payer does not reroute their own bank. The
-	// COUNTERPARTY's is ASSERTED by the instruction, and SubmitPaymentTx refuses
-	// one that names none (ErrCounterpartyAgentNotNamed).
+	// COUNTERPARTY's is DERIVED from the counterparty's own ADDRESS, through this
+	// bank's copy of the scheme's routing directory — the bank code inside an IBAN
+	// resolved to the institution the scheme published it against. There is no
+	// field on an instruction for it, so there is nowhere to put a wrong one.
 	//
-	// This element ROUTES, going out as CdtrAgt/DbtrAgt with the clearing house
-	// relaying on it and reading nothing, so a payer able to type it is a payer
-	// able to choose which bank receives their payment. See mesh/books_test.go's
-	// TestAWrongCounterpartyAgentDoesNotMisroute.
+	// The derivation reads a table THIS bank holds. That is what changed: a bank
+	// still holds only its own rows, and one of its own rows is now a snapshot of
+	// what the clearing house published. An address whose code is not in that
+	// snapshot is ErrBankCodeUnknown, which is a refusal and never a misroute,
+	// because an allocation is never reassigned.
 	//
-	// It is asserted anyway, because the row it could be derived from is the
-	// counterparty's own and a bank holds only its own. What makes asserting it
-	// safe is that a bank resolves an address in its OWN register only, so a
-	// misdirected instruction is refused AC01 by the bank it named rather than
-	// quietly accepted for somebody else's customer. An IBAN plus a BIC is also
-	// what SEPA was before 2016.
+	// An address no directory here covers — a card PAN, a proxy alias — still
+	// takes an asserted BIC beside it, which is what SEPA was before 2016 and what
+	// a cross-border transfer still is. See ErrCounterpartyAgentNotNamed and
+	// Network.routeTx.
 	//
 	// On a RECEIVED message it is what the message said, read off the wire by
 	// CreditTransferRequest/DirectDebitRequest — there the agent is the sender's
-	// assertion and this system records rather than verifies it.
+	// assertion and this system records rather than verifies it. What protects the
+	// receiving bank is unchanged and is what always did the real work: it
+	// resolves an address in its OWN register only, so a message that reached the
+	// wrong institution has nothing to resolve and is answered AC01.
 	Agent iso20022.BIC
 	// Name is the account holder's name. For the SUBMITTING bank's own side
 	// this is taken from its own deposit register, not from whatever the

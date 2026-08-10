@@ -124,6 +124,17 @@ const (
 	// told. It is the pair to EventParticipantAdded and the reason that one can
 	// stay silent about everything the founding did not know.
 	EventMembershipRecorded = "membership.recorded"
+	// EventDirectoryRefreshed is a member bank taking delivery of a snapshot of
+	// the scheme's routing directory, keyed by the SUBSCRIBER's own BIC — the act
+	// is about the bank that pulled, not about any member in the file. Its payload
+	// is the whole snapshot, which is what makes the log answer the question a
+	// stale directory raises: not "is this bank behind" but "what did it believe
+	// when it refused that payment".
+	//
+	// It is the only event in this block written by an institution about
+	// institutions it does not act for, and it records no decision about any of
+	// them: a directory says where to send a message and never whether to.
+	EventDirectoryRefreshed = "directory.refreshed"
 	EventMandateCreated     = "mandate.created"
 	EventMandateRevoked     = "mandate.revoked"
 	EventPaymentInitiated   = "payment.initiated"

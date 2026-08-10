@@ -756,7 +756,10 @@ func assertBooksTouched(t *testing.T, who string, got, want []ledger.BookID) {
 // is not its own, on the happy path, every time. A real payer's bank knows the
 // payee's name because the payer typed it in, so the two counterparty NAMES are
 // on the instruction and partiesOf reads nothing at all. The counterparty's BIC
-// is asserted too — see TestAWrongCounterpartyAgentIsRefusedByTheBankItNames.
+// is not on the instruction at all: it is derived from the counterparty's address
+// through this bank's own copy of the routing directory, which is another of this
+// bank's own rows — see payment.Network.routeTx, and the note further down on the
+// misroute case that derivation made unwritable.
 //
 // # The receiving bank reaches its own book and no other
 //
@@ -893,166 +896,35 @@ func TestWhichBooksEachBankReachesInAPull(t *testing.T) {
 	}
 }
 
-// TestAWrongCounterpartyAgentIsRefusedByTheBankItNames is the ROUTING half of
-// the two measurements above.
+// THERE IS NO TEST HERE FOR A MISROUTED PAYMENT, and the absence is a result.
 //
-// # Two failures an asserted agent could produce
+// The counterparty's BIC is what the clearing house routes on, and there was a
+// case measuring what happens when a payer types the wrong one: the message went
+// where the instruction said, the bank that received it could not resolve an
+// address it does not hold, and the payer got AC01 and their money back. Two
+// failures it defended against, both real:
 //
-// The counterparty's BIC is what the payer typed, and it is what the clearing
-// house routes on. Two failures follow, and they are what a reader will expect
-// this test to be about:
+//   - PUSH with the payee's agent set to a third member. The pacs.008 reached a
+//     bank that is no party to the payment.
+//   - PULL with the payer's agent set to a third member. The collecting bank's
+//     message reached the wrong bank, which on a pull is the bank that POSTS.
 //
-//   - PUSH, with the payee's agent set to the PAYER's own bank. The pacs.008
-//     came back to its sender, which then ANSWERED ITS OWN INSTRUCTION: the
-//     payer's bank's set became [debtor, creditor, network] and the payee's bank
-//     was handed nothing.
-//   - PULL, with the payer's agent set to the COLLECTOR's own bank. The
-//     collecting bank posted the debit in the PAYER'S BANK'S BOOK, because
-//     AcceptInboundTx posts into the book of the payment's debtor participant.
+// Neither is expressible now. An instruction carries an address and a name and
+// has no field for a bank: the submitting side comes from the port, and the
+// counterparty's is derived from the counterparty's IBAN through the submitting
+// bank's own copy of the scheme's routing directory (payment.Network.routeTx).
+// There is nothing to type wrongly, so there is nothing to defend against.
 //
-// Nothing derives it instead. A bank holds only its own row, the roster is keyed
-// by the BIC being derived and belongs to the clearing house, and this network
-// has no IBAN-to-BIC directory service. So the address on an instruction is an
-// IBAN and a BIC, which is what SEPA was before it went IBAN-only in 2016 and
-// what a cross-border transfer still is today.
+// What the case DID depend on is still true and still measured elsewhere: a bank
+// resolves an address in its OWN register and no other, so a message that reaches
+// the wrong institution has nothing to resolve. TestCreditTransferToAnUnknownAccountComesBackAsAC01
+// is that property from the reachable direction — a well-formed address under the
+// right bank's code that the bank does not hold — and the book sets in this file
+// are what say the answering bank touched nobody else's book while it said so.
 //
-// # What makes an asserted agent safe, and it is the OTHER change in this commit
-//
-// Both failures above have one mechanism: the bank the message reached could
-// resolve a payee it does not hold. A sweep over every member's register would
-// let the wrong bank look the creditor's IBAN up, find it at the RIGHT bank, and
-// act on somebody else's customer. Resolution is narrowed to the resolving
-// bank's own register — so a misdirected message has nothing to resolve and the
-// bank that receives it says so.
-//
-// So the two subtests below assert the refusal rather than the correction. A
-// payer who names the wrong bank does not get their payment routed for them;
-// they get it back, with AC01, from the bank they named. That is the honest
-// answer and it is the one a real network gives.
-//
-// The book sets are asserted again for one specific reason: the wrong bank must
-// touch its OWN book and no other. Under the sweep it touched every bank's, which
-// is precisely the crossing that made the misroute dangerous.
-//
-// # The wrong bank is a THIRD one
-//
-// Both subtests named the submitter's own bank as the counterparty's, which was
-// the sharpest available misroute while a fixture named one side. Since a
-// submission has to name BOTH agents — Mesh.Submit picks the actor out of them
-// before any bank's half runs, see creditTransferRequestTo — that request is
-// caught one guard earlier and never reaches anybody: two identical agents is
-// exactly what Submit's on-us check refuses, and refusing it there is right. A
-// payer who types their own bank's BIC for a payee is told it is a book transfer
-// rather than having a message built for it.
-//
-// So the misroute needs a bank that is neither end of the payment and is still a
-// member, and the fixture admits one. That is the case the guards genuinely
-// cannot catch — the clearing house routes on the address it was given, the
-// address belongs to a real member, and only the bank that receives the message
-// can say it holds no such account. It is also the more realistic typo: a payer
-// picking the wrong BIC out of a list picks somebody else's, not their own.
-func TestAWrongCounterpartyAgentIsRefusedByTheBankItNames(t *testing.T) {
-	// wrongBIC is a member that holds neither party's account. Admitted per
-	// subtest, because each builds its own harness.
-	const wrongBIC iso20022.BIC = "NORDSESSXXX"
-
-	t.Run("push", func(t *testing.T) {
-		h := newMeshHarness(t)
-		h.admit(t, "Nordhaven Bank", wrongBIC, euroOnly)
-		h.drain(t)
-
-		req := h.creditTransferRequest(t)
-		// A payer naming a bank that is not the payee's. Any form that asks a
-		// payer to type the payee's BIC is a form that can be handed this.
-		req.CreditorDetails.Agent = wrongBIC
-
-		h.rec.reset()
-		p, err := h.mesh.Submit(context.Background(), req)
-		if err != nil {
-			t.Fatalf("Submit: %v", err)
-		}
-		h.drain(t)
-
-		// Routed as addressed. The clearing house relays on CdtrAgt with no store
-		// read of its own, so the message goes where the instruction said.
-		if n := h.messagesSentTo(wrongBIC, "pacs.008.001.08"); n != 1 {
-			t.Errorf("the bank the payer named was handed %d credit transfers, want 1", n)
-		}
-		if n := h.messagesSentTo(h.creditorBIC, "pacs.008.001.08"); n != 0 {
-			t.Errorf("the payee's real bank was handed %d credit transfers, want 0 — nothing addressed it", n)
-		}
-
-		// And refused there, because that bank does not hold the payee's IBAN.
-		got := h.payment(t, p.ID)
-		if got.Status != payment.Rejected {
-			t.Fatalf("status = %v, want Rejected", got.Status)
-		}
-		if got.RejectCode != iso20022.StatusReasonIncorrectAccountNumber {
-			t.Errorf("reject code = %q, want AC01 — the named bank holds no such address", got.RejectCode)
-		}
-		// The payer got their money back. A misdirected payment that left the
-		// payer short would be worse than one that was quietly re-routed.
-		if bal := h.suspense(t, h.debtorPID); bal != 0 {
-			t.Errorf("clearing suspense = %d after a refusal, want 0", bal)
-		}
-
-		// The bank that was wrongly named answered out of its OWN register and
-		// reached no other book. Under the sweep this set was every bank's.
-		assertBooksTouched(t, "the bank the payer wrongly named", h.booksTouchedBy(wrongBIC),
-			[]ledger.BookID{ledger.BookID(wrongBIC)})
-
-		// And the agent is RECORDED rather than overruled: what the payment says
-		// about the counterparty's bank is what the instruction said.
-		if got := got.CreditorDetails.Agent; got != wrongBIC {
-			t.Errorf("stored creditor agent = %q, want the instruction's %q — an asserted agent is recorded, not replaced", got, wrongBIC)
-		}
-	})
-
-	t.Run("pull", func(t *testing.T) {
-		h := newMeshHarness(t)
-		h.admit(t, "Nordhaven Bank", wrongBIC, euroOnly)
-		h.drain(t)
-
-		req := h.directDebitRequest(t)
-		// A collector naming a bank that is not the payer's.
-		req.DebtorDetails.Agent = wrongBIC
-
-		h.rec.reset()
-		p, err := h.mesh.Submit(context.Background(), req)
-		if err != nil {
-			t.Fatalf("Submit: %v", err)
-		}
-		h.drain(t)
-
-		if n := h.messagesSentTo(wrongBIC, "pacs.003.001.08"); n != 1 {
-			t.Errorf("the bank the collector named was handed %d collections, want 1", n)
-		}
-		if n := h.messagesSentTo(h.debtorBIC, "pacs.003.001.08"); n != 0 {
-			t.Errorf("the payer's real bank was handed %d collections, want 0 — nothing addressed it", n)
-		}
-
-		got := h.payment(t, p.ID)
-		if got.Status != payment.Rejected {
-			t.Fatalf("status = %v, want Rejected", got.Status)
-		}
-		if got.RejectCode != iso20022.StatusReasonIncorrectAccountNumber {
-			t.Errorf("reject code = %q, want AC01 — the named bank holds no such address", got.RejectCode)
-		}
-		// Nothing was collected. On a pull the receiving bank is the one that posts,
-		// so a collection answered by the wrong bank must leave no debit anywhere —
-		// least of all in the payer's bank's book.
-		if bal := h.suspense(t, h.debtorPID); bal != 0 {
-			t.Errorf("the payer's bank's clearing suspense = %d, want 0 — it never saw this collection", bal)
-		}
-
-		assertBooksTouched(t, "the bank the collector wrongly named",
-			h.booksTouchedBy(wrongBIC), []ledger.BookID{ledger.BookID(wrongBIC)})
-
-		if got := got.DebtorDetails.Agent; got != wrongBIC {
-			t.Errorf("stored debtor agent = %q, want the instruction's %q — an asserted agent is recorded, not replaced", got, wrongBIC)
-		}
-	})
-}
+// A payer CAN still name a bank, for an address no directory here covers: a card
+// PAN, a proxy alias. That door is payment.ErrCounterpartyAgentNotNamed's, and
+// nothing in this scheme routes on it, so there is no misroute to build.
 
 // TestTheCSMTouchesOnlyItsOwnBook is the assertion the note above was written
 // for, and it holds: the clearing house's half writes the payment and the cycle

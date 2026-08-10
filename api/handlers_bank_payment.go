@@ -106,76 +106,41 @@ func (s *Server) handleSubmitPayment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	dom := req.toDomain()
-	// A bank submits on behalf of its own customer and nobody else's. This is
-	// scoping, not authorization: it says which instructions this listener is
-	// for, and verifies nothing about who is calling it.
+	// A bank submits on behalf of its own customer and nobody else's, and this
+	// listener IS that bank. This is scoping, not authorization: it says which
+	// instructions this port is for, and verifies nothing about who is calling it.
 	//
-	// Which bank may submit depends on the scheme's direction. A push is
-	// submitted by the payer's bank; a PULL is submitted by the CREDITOR's
-	// bank, because a direct debit is a collection the payee's bank initiates.
+	// Which side is this bank's depends on the scheme's direction. A push is
+	// submitted by the payer's bank; a PULL is submitted by the CREDITOR's bank,
+	// because a direct debit is a collection the payee's bank initiates.
 	//
-	// Requiring the debtor unconditionally — which is what this did before —
-	// was the wrong bank for every direct debit. It was invisible while one
-	// process validated both ends regardless of who called.
-	// A scheme nobody has registered cannot say which bank submits it, so it is
+	// A scheme nobody has registered cannot say which side that is, so it is
 	// refused here rather than falling through to the push rule — which would
 	// answer "a credit transfer is submitted by the payer's bank and a direct
 	// debit by the payee's" about a scheme that is neither and does not exist.
-	// SubmitPayment refuses it too; this is only about refusing it for the
-	// right reason.
+	// SubmitPayment refuses it too; this is only about refusing it for the right
+	// reason.
 	sc, ok := s.network().Scheme(dom.Scheme)
 	if !ok {
 		writeError(w, payment.ErrSchemeNotFound)
 		return
 	}
-	submitter := dom.DebtorDetails.Agent
+	// The submitting side's agent comes from the PORT and from nowhere else.
+	//
+	// There is no field on an instruction for it, so there is nothing here to
+	// disagree with: a payer does not name their own bank any more than they name
+	// the payee's, and SubmitPaymentTx refills this from the bank's own row a
+	// moment later. What it is doing here is earlier than that — submitterOf picks
+	// the ACTOR off this field before any bank's half runs, so an instruction that
+	// reached the mesh without it came back "no bank actor for".
+	//
+	// The COUNTERPARTY's side stays empty, and stays that way through the mesh: it
+	// is derived from the counterparty's address inside the submitting bank's own
+	// unit of work. See payment.Network.routeTx.
 	if sc.Direction() == payment.Pull {
-		submitter = dom.CreditorDetails.Agent
-	}
-	// An OMITTED submitting agent is the ORDINARY case: this bank is the authority
-	// on itself and fills its own side from its own register.
-	//
-	// The field it read was the submitter's own PARTICIPANT, which an instruction
-	// had to name because that is what the payment recorded. A payment records
-	// agents now (payment.PartyRef), and the submitting bank's own agent is
-	// discarded and refilled from its own row — a payer does not get to rename
-	// their own bank — so an instruction that leaves it out is a correct
-	// instruction and refusing it would refuse every one a customer hands in.
-	//
-	// What the refusal was FOR has not gone anywhere; it has stopped needing to be
-	// asked. The scoping is structural: this listener's network is its bank's, and
-	// the submitting side's account is resolved in that bank's own register
-	// (payment.checkPartyTx), so an instruction whose payer banks elsewhere finds
-	// no account rather than being caught here.
-	//
-	// So the check survives only for a caller that DID name its own side — the
-	// seed and this package's fixtures do — where the diagnosis is still worth
-	// more than what the domain would say two frames further in.
-	if submitter != "" && submitter != s.boundBIC() {
-		writeUnprocessable(w, "this bank does not submit this payment: a credit transfer is submitted by the payer's bank and a direct debit by the payee's")
-		return
-	}
-	// And an omitted one is FILLED IN from the port, which is the identity the
-	// paragraph above says makes the check unnecessary.
-	//
-	// Without it, Mesh.Submit has nobody to hand the instruction to.
-	// submitterOf reads the submitting side's agent off the request to choose the
-	// ACTOR, before any bank's half runs and therefore before
-	// payment.SubmitPaymentTx refills that field from the bank's own row — so an
-	// ordinary customer instruction, which names its own side nowhere, reached the
-	// mesh's bank index under the empty address and came back "no bank actor for".
-	// Every submission through this route did, which is what the audit found.
-	//
-	// This is not a payer naming their own bank: the value comes from the LISTENER,
-	// so it is the same fact SubmitPaymentTx will write a moment later, supplied
-	// early enough for the mesh to route on. A caller that named its own side
-	// already passed the check above, so this can only agree with it.
-	if submitter == "" {
-		if sc.Direction() == payment.Pull {
-			dom.CreditorDetails.Agent = s.boundBIC()
-		} else {
-			dom.DebtorDetails.Agent = s.boundBIC()
-		}
+		dom.CreditorDetails.Agent = s.boundBIC()
+	} else {
+		dom.DebtorDetails.Agent = s.boundBIC()
 	}
 	// The submitting bank's half, and then the send. Mesh.Submit runs it on this
 	// goroutine and marks it as this bank's work, so the books it touches are

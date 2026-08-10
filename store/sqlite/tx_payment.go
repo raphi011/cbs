@@ -668,6 +668,99 @@ func (t *tx) ListRosterEntries(ctx context.Context) ([]payment.RosterEntry, erro
 }
 
 // ---------------------------------------------------------------------------
+// A member bank's copy of the routing directory
+// ---------------------------------------------------------------------------
+
+// ReplaceRoutingDirectory takes delivery of a snapshot: every row goes, and the
+// list replaces it.
+//
+// The DELETE is the method. Every other writer in this file upserts one row an
+// institution decided about, and merging is right for those; a subscriber that
+// merged would end up holding the union of every snapshot it ever pulled, and a
+// member that had left the roster would still be routable from a directory
+// nobody could correct. See routing_directory in the bank schema.
+//
+// seq restarts at 1 because the table is empty when the loop begins, so the
+// stored order is the order the caller was given — the roster's own publication
+// order — rather than an accumulation across refreshes.
+func (t *tx) ReplaceRoutingDirectory(ctx context.Context, entries []payment.DirectoryEntry) error {
+	if err := t.inShape("routing_directory"); err != nil {
+		return err
+	}
+	if err := t.write(); err != nil {
+		return err
+	}
+	if _, err := t.tx.ExecContext(ctx, "DELETE FROM routing_directory"); err != nil {
+		return fmt.Errorf("sqlite: replace routing directory: %w", err)
+	}
+	for _, e := range entries {
+		_, err := t.tx.ExecContext(ctx, `
+			INSERT INTO routing_directory (country, bank_code, bic, refreshed_at, seq)
+			VALUES (?, ?, ?, ?, `+nextRowSeq("routing_directory")+`)`,
+			string(e.Issuer.Country), string(e.Issuer.BankCode), string(e.BIC), nullTime{e.RefreshedAt})
+		if err != nil {
+			return fmt.Errorf("sqlite: replace routing directory at %s %s: %w",
+				e.Issuer.Country, e.Issuer.BankCode, err)
+		}
+	}
+	return nil
+}
+
+func scanDirectoryEntry(row interface{ Scan(...any) error }) (payment.DirectoryEntry, error) {
+	var (
+		e           payment.DirectoryEntry
+		refreshedAt nullTime
+	)
+	if err := row.Scan(&e.Issuer.Country, &e.Issuer.BankCode, &e.BIC, &refreshedAt); err != nil {
+		return payment.DirectoryEntry{}, err
+	}
+	e.RefreshedAt = refreshedAt.Time
+	return e, nil
+}
+
+func (t *tx) GetDirectoryEntry(ctx context.Context, issuer iban.Issuer) (payment.DirectoryEntry, error) {
+	if err := t.inShape("routing_directory"); err != nil {
+		return payment.DirectoryEntry{}, err
+	}
+	e, err := scanDirectoryEntry(t.tx.QueryRowContext(ctx, `
+		SELECT country, bank_code, bic, refreshed_at FROM routing_directory
+		 WHERE country = ? AND bank_code = ?`, string(issuer.Country), string(issuer.BankCode)))
+	if errors.Is(err, sql.ErrNoRows) {
+		return payment.DirectoryEntry{}, payment.ErrBankCodeUnknown
+	}
+	if err != nil {
+		return payment.DirectoryEntry{}, fmt.Errorf("sqlite: get directory entry %s %s: %w",
+			issuer.Country, issuer.BankCode, err)
+	}
+	return e, nil
+}
+
+// ListDirectoryEntries answers in the order the snapshot arrived, which is the
+// roster's, rather than in the (country, bank_code) order of the key. What a
+// console shows is a directory as its publisher ordered it.
+func (t *tx) ListDirectoryEntries(ctx context.Context) ([]payment.DirectoryEntry, error) {
+	if err := t.inShape("routing_directory"); err != nil {
+		return nil, err
+	}
+	rows, err := t.tx.QueryContext(ctx,
+		"SELECT country, bank_code, bic, refreshed_at FROM routing_directory ORDER BY seq")
+	if err != nil {
+		return nil, fmt.Errorf("sqlite: list routing directory: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]payment.DirectoryEntry, 0)
+	for rows.Next() {
+		e, err := scanDirectoryEntry(rows)
+		if err != nil {
+			return nil, fmt.Errorf("sqlite: list routing directory: %w", err)
+		}
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
+// ---------------------------------------------------------------------------
 // Payments
 // ---------------------------------------------------------------------------
 

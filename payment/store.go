@@ -201,6 +201,30 @@ type Tx interface {
 	GetRosterEntryByIssuer(ctx context.Context, issuer iban.Issuer) (RosterEntry, error)
 	ListRosterEntries(ctx context.Context) ([]RosterEntry, error)
 
+	// A MEMBER BANK's copy of the roster above, in that bank's own database.
+	// See DirectoryEntry.
+	//
+	// ReplaceRoutingDirectory is a REPLACE and not an upsert, and it is the only
+	// method on this interface that is. Every other Put here writes one row an
+	// institution decided about; this one takes delivery of a whole file, and a
+	// row that has left the roster has to leave the copy — a merge would make a
+	// subscriber's directory the union of every snapshot it ever pulled, which is
+	// not a copy of anything. It is also why there is no delete: a directory is
+	// replaced wholesale or not at all.
+	//
+	// GetDirectoryEntry answers ErrBankCodeUnknown on a miss, which is a
+	// subscriber's answer about ITSELF and not the registry's about an
+	// allocation; the two sentinels' docs set out why neither can stand in for
+	// the other.
+	//
+	// ListDirectoryEntries has two readers and they want the same thing for
+	// different reasons: a bank's own console, showing what it holds and when it
+	// pulled it, and payment/recon, holding it against the published roster in
+	// order to REPORT a difference it must not fail on.
+	ReplaceRoutingDirectory(ctx context.Context, entries []DirectoryEntry) error
+	GetDirectoryEntry(ctx context.Context, issuer iban.Issuer) (DirectoryEntry, error)
+	ListDirectoryEntries(ctx context.Context) ([]DirectoryEntry, error)
+
 	PutPayment(ctx context.Context, p Payment) error
 	GetPayment(ctx context.Context, id PaymentID) (Payment, error)
 	GetPaymentByEndToEndID(ctx context.Context, endToEndID string) (Payment, error)

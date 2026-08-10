@@ -301,28 +301,25 @@ func mustMint(c iban.Country, code iban.BankCode, serial uint64) string {
 // scenario has already taken out of her account.
 func validSubmission(t *testing.T, s *Server) string {
 	t.Helper()
-	payerBIC, payer := seededParty(t, s, aliceIBAN)
-	payeeBIC, payee := seededParty(t, s, bellaIBAN)
-	// creditorAgent, because the instruction carries the routing element — see
-	// api's initiatePaymentRequest and payment.SubmitPaymentTx. The fixture reads
-	// it off the payee's bank the way a payer reads it off an invoice; nothing on
-	// the submitting path looks it up.
+	_, payer := seededParty(t, s, aliceIBAN)
+	_, payee := seededParty(t, s, bellaIBAN)
+	// NO agent on either side, and none to give: the instruction carries an
+	// address and a name, and the payer's bank derives the routing element from
+	// the address through its own copy of the scheme's directory. See api's
+	// initiatePaymentRequest and payment.SubmitPaymentTx.
 	//
-	// A party object carries no "participant": which bank a side is at is the
-	// agent. See api.partyRefDTO.
+	// A party object carries no "participant" either. Which bank a side is at is
+	// something this request never says; see api.partyRefDTO.
 	return fmt.Sprintf(`{
 		"scheme":"sepa.ct",
 		"debtor":{"account":%q,"identifier":{"scheme":"IBAN","value":%q}},
 		"creditor":{"account":%q,"identifier":{"scheme":"IBAN","value":%q}},
 		"amount":1000,
 		"description":"mesh handoff",
-		"creditorName":"Bella Bruno",
-		"debtorAgent":%q,
-		"creditorAgent":%q
+		"creditorName":"Bella Bruno"
 	}`,
 		payer.Account, aliceIBAN,
-		payee.Account, bellaIBAN,
-		payerBIC, payeeBIC)
+		payee.Account, bellaIBAN)
 }
 
 func postJSON(t *testing.T, h http.Handler, path, body string) *httptest.ResponseRecorder {
@@ -652,7 +649,7 @@ func TestAFoundedBankIsRefusedAsAPaymentPartyInEitherDirection(t *testing.T) {
 	if got := doJSON(t, bank(srv, pid), "GET", "/me", "", http.StatusOK)["status"].(string); got != "Founded" {
 		t.Fatalf("the bank is %q; this test is about one the scheme has not answered for", got)
 	}
-	aliceBIC, alice := seededParty(t, srv, aliceIBAN)
+	_, alice := seededParty(t, srv, aliceIBAN)
 	party := func(ref payment.PartyRef, iban string) string {
 		return fmt.Sprintf(`{"account":%q,"identifier":{"scheme":"IBAN","value":%q}}`,
 			ref.Account, iban)
@@ -665,30 +662,47 @@ func TestAFoundedBankIsRefusedAsAPaymentPartyInEitherDirection(t *testing.T) {
 	zIBAN := mustMint(iban.DE, "99999998", 1)
 	bodies := func(ref payment.PartyRef, addr string) (string, string) {
 		return fmt.Sprintf(`{"scheme":"sepa.ct","debtor":%s,"creditor":%s,"amount":1000,`+
-				`"description":"to a bank no scheme has admitted","creditorName":"Nora","creditorAgent":%q}`,
-				party(alice, aliceIBAN), party(ref, addr), "BNKZDEFFXXX"),
+				`"description":"to a bank no scheme has admitted","creditorName":"Nora"}`,
+				party(alice, aliceIBAN), party(ref, addr)),
 			fmt.Sprintf(`{"scheme":"sepa.ct","debtor":%s,"creditor":%s,"amount":1000,`+
-				`"description":"from a bank no scheme has admitted","creditorName":"Alice Andersson","creditorAgent":%q}`,
-				party(ref, addr), party(alice, aliceIBAN), aliceBIC)
+				`"description":"from a bank no scheme has admitted","creditorName":"Alice Andersson"}`,
+				party(ref, addr), party(alice, aliceIBAN))
 	}
 	toBankZ, fromBankZ := bodies(nora, zIBAN)
 
+	// Two refusals, and they are two institutions' and two sentinels — which is
+	// the shape a routing directory gives this. Neither instruction names a bank;
+	// each is refused by whoever first cannot place one.
+	//
+	// PAID: the payer's own bank looks Bank Z's code up in its copy of the
+	// scheme's directory, which is a copy of the ROSTER, and a bank no scheme has
+	// admitted is in no roster and therefore in no copy. The refusal never leaves
+	// Aurora, and it cannot say whether Bank Z is absent from the scheme or merely
+	// absent from this copy. That is EARLIER than the clearing house's membership
+	// guard, and it is the half of that guard subscribing subsumed.
+	//
+	// PAYING: the other half, which is still the mesh's. Bank Z's own port fills
+	// in the submitting side from the listener, so the instruction reaches the
+	// door naming Bank Z as the payer's bank, and the roster read there refuses it
+	// before Bank Z's own half runs — which is what stops a debtor leg being
+	// posted and then unwound. The directory never gets a look in, and would have
+	// refused too: nothing has pulled one for Bank Z.
 	directions := []struct {
-		name  string
-		by    http.Handler
-		body  string
-		names string
+		name string
+		by   http.Handler
+		body string
+		says string
 	}{
-		{"paid", payerRoutes(t, srv), toBankZ, "payee's bank"},
-		{"paying", bank(srv, pid), fromBankZ, "payer's bank"},
+		{"paid", payerRoutes(t, srv), toBankZ, "routing directory holds no entry"},
+		{"paying", bank(srv, pid), fromBankZ, "is not a member"},
 	}
 	for _, tc := range directions {
 		rec := postJSON(t, tc.by, "/payments", tc.body)
 		if rec.Code != http.StatusUnprocessableEntity {
 			t.Fatalf("a founded bank %s = %d, want 422 (body: %s)", tc.name, rec.Code, rec.Body)
 		}
-		if msg := rec.Body.String(); !strings.Contains(msg, "not a member") || !strings.Contains(msg, tc.names) {
-			t.Errorf("the refusal for %q does not name the %s: %s", tc.name, tc.names, msg)
+		if msg := rec.Body.String(); !strings.Contains(msg, tc.says) {
+			t.Errorf("the refusal for %q does not say %q: %s", tc.name, tc.says, msg)
 		}
 	}
 
@@ -697,6 +711,10 @@ func TestAFoundedBankIsRefusedAsAPaymentPartyInEitherDirection(t *testing.T) {
 	// and not about the request.
 	open()
 	drain(t, msh)
+	// And everybody pulls a fresh directory, which is the act that makes the
+	// difference: admission put Bank Z in the roster, and until each member asks
+	// for a copy nothing has told any of them so.
+	subscribeAll(t, srv)
 	acct := doJSON(t, bank(srv, pid), "POST", "/deposit-accounts",
 		`{"name":"Nora","asset":"EUR","productId":"`+prdOf(t, srv, pid)+`","overdraftLimit":100000}`,
 		http.StatusCreated)["id"].(string)
@@ -713,40 +731,36 @@ func TestAFoundedBankIsRefusedAsAPaymentPartyInEitherDirection(t *testing.T) {
 	drain(t, msh)
 }
 
-// TestAPaymentNamingAParticipantThatDoesNotExistIsNotFound is a status code
-// Mesh.Submit's membership guard changed on its way past, kept because nothing
-// else holds it.
+// TestAnAddressNoMemberIsPublishedUnderIsUnprocessable is the clearing house's
+// console meeting an address it cannot hand to anybody.
 //
-// A payment naming a bank that HAS NO ROW is a different request from the one the
-// test above is about: that bank is founded and waiting for a scheme, this one
-// was never founded and the id is a typo.
+// An instruction names no bank at all. On a bank's own port the submitting bank
+// is the port; on THIS one it is read out of the payer's address, through the
+// roster this institution publishes — so an address under a bank code no member
+// holds is one this console cannot act on, and 422 is the answer.
 //
-// A request names its parties by the very key the roster is keyed by, so there is
-// no bank row in the way — see payment.Network.GetRosterEntryByBIC. An address
-// nobody has been admitted on is ErrBankNotAdmitted, which is a 422.
+// It is the clearing house's own version of the refusal a member meets from its
+// copy (payment.ErrBankCodeUnknown), and the difference between the two is the
+// whole of the subscription model: this institution CAN tell that no member holds
+// the code, because the roster is where a member comes into existence. A member
+// asking the same question of its own snapshot cannot.
 //
-// That is the more honest of the two answers rather than a regression. The
-// clearing house has never been able to tell "no such institution" from "an
-// institution I have not admitted": both are an address absent from its roster,
-// and the only thing that could once distinguish them was a read into a database
-// belonging to somebody else. What is lost is a distinction the reader was not
-// entitled to make.
+// The 422 rather than a 404 is the older ruling, unchanged: an address nobody is
+// published under is a well-formed field this system will not act on, not a
+// missing resource.
 //
-// So what is asserted here is still an ORDER and not a mapping. The membership
-// read runs BEFORE the actor lookup, and anything that moves it later restores
-// the bare "no bank actor" error, which has no case in errorStatus and comes back
-// 500. Measured both ways: with the guard, 422; with it removed, 500.
-//
-// It is asked of the clearing house's console because that is the only surface
-// that can ask it. A bank's own POST /payments is bound to one bank and fills its
-// own side in from that binding, so it has no way to name a stranger as the payer.
-func TestAPaymentNamingABankNoSchemeHasAdmittedIsUnprocessable(t *testing.T) {
+// It is asked of this console because that is the only surface that can ask it. A
+// bank's own POST /payments is bound to one bank and takes the submitting side
+// from that binding, so it has no way to name a stranger as the payer.
+func TestAnAddressNoMemberIsPublishedUnderIsUnprocessable(t *testing.T) {
 	srv, _ := newAPIHarness(t)
-	payerBIC, _ := seededParty(t, srv, aliceIBAN)
-	body := strings.Replace(validSubmission(t, srv), string(payerBIC), "NOSUCHBKXXX", 1)
+	// A well-formed German address under a code this scheme has allocated to
+	// nobody. It passes mod-97, so what refuses it is the roster and not the
+	// check digits.
+	body := strings.Replace(validSubmission(t, srv), aliceIBAN, mustMint(iban.DE, "10000000", 1), 1)
 	rec := postJSON(t, csm(srv), "/payments", body)
 	if rec.Code != http.StatusUnprocessableEntity {
-		t.Fatalf("a payment whose payer's bank is in no roster = %d, want 422 (body: %s)", rec.Code, rec.Body)
+		t.Fatalf("a payer's address no member is published under = %d, want 422 (body: %s)", rec.Code, rec.Body)
 	}
 }
 
@@ -835,8 +849,8 @@ func TestResetRebuildsTheMeshSoAReadmittedBankCanPay(t *testing.T) {
 	// registered would have made it RC01 at the clearing house.
 	pay := doJSON(t, bank(h, a), "POST", "/payments", `{
 		"scheme":"sepa.ct",
-		"debtorAgent":"`+a+`","debtor":{"account":"`+alice+`"},
-		"creditorAgent":"`+b+`","creditor":{"account":"`+bob+`","identifier":{"scheme":"IBAN","value":"`+ibanFor(t, h, b, bob)+`"}},
+		"debtor":{"account":"`+alice+`","identifier":{"scheme":"IBAN","value":"`+ibanFor(t, h, a, alice)+`"}},
+		"creditor":{"account":"`+bob+`","identifier":{"scheme":"IBAN","value":"`+ibanFor(t, h, b, bob)+`"}},
 		"amount":25000,
 		"creditorName":"Bob"
 	}`, http.StatusAccepted)["paymentId"].(string)
@@ -977,7 +991,11 @@ func TestWhichRefusalsReachTheCallerAndWhichDoNot(t *testing.T) {
 
 	// Unanswerable: the IBAN is well-formed and belongs to nobody. Only the
 	// payee's bank can know that, and it is not this request's to report.
-	unknown := strings.Replace(validSubmission(t, srv), bellaIBAN, mustMint(iban.IT, "99991", 9999), 1)
+	// Under VERDE's OWN bank code, so it routes: the payer's bank resolves the
+	// code and sends, and the address is one Verde does not hold. An address under
+	// some other code would be refused here instead, by the payer's own directory,
+	// which is the case the test above is about.
+	unknown := strings.Replace(validSubmission(t, srv), bellaIBAN, mustMint(iban.IT, "99999", 9999), 1)
 	rec = postJSON(t, payerRoutes(t, srv), "/payments", unknown)
 	if rec.Code != http.StatusAccepted {
 		t.Fatalf("a payment only the far side can refuse answered %d, want 202 (body: %s)", rec.Code, rec.Body.String())

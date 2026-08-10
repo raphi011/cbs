@@ -37,6 +37,30 @@ var (
 	// comes into existence.
 	ErrBankCodeNotAllocated = errors.New("payment: no bank code has been allocated under this country and code")
 
+	// ErrBankCodeUnknown is an address whose bank code resolves to nothing in the
+	// routing directory THIS bank holds.
+	//
+	// # It cannot say which of two situations it is in, and that is the design
+	//
+	// Either no such bank is in this scheme, or one is and this bank's copy of
+	// the directory predates it. Those have different remedies — give up, or
+	// refresh — and the refusing bank has no way to tell them apart, because
+	// telling them apart would mean asking the clearing house per payment, which
+	// is the lookup this whole design replaces with a subscription. A refusal
+	// that named one of the two would be claiming to know something a subscriber
+	// structurally does not.
+	//
+	// Contrast ErrBankCodeNotAllocated, which is the ISSUER's answer to the same
+	// shape of question and CAN tell: the registry is where an allocation comes
+	// into existence, so a miss there means the code was never given out. Two
+	// sentinels because two institutions are answering, not because one lookup
+	// failed twice.
+	//
+	// What makes the refusal safe rather than merely unhelpful is that a code is
+	// never reassigned, so a copy that is behind is incomplete and never wrong.
+	// A payer is refused; a payer is never paid to the wrong bank.
+	ErrBankCodeUnknown = errors.New("payment: this bank's routing directory holds no entry for this bank code")
+
 	// ErrRosterEntryNotFound is a BIC the clearing house does not route to.
 	//
 	// Separate from the two above for the reason they are separate from each
@@ -571,37 +595,50 @@ var (
 	// instruction exists — see PartyDetails — but its answer is never wired into
 	// the payment.)
 	//
-	// The counterparty's AGENT has its own sentinel below. Two sentinels rather
-	// than one because the two omissions have different remedies — a payer who left
-	// the name out types a name, and a payer who left the BIC out has to go and
-	// find one.
+	// The NAME is the only thing an instruction still asserts about the other
+	// side. The agent beside it is derived from the address (see
+	// ErrCounterpartyAgentNotNamed), which is why this one has no sibling for a
+	// payer who typed the wrong bank: there is no field to type it in.
 	ErrCounterpartyNotNamed = errors.New("payment: the instruction does not name the counterparty")
 
-	// ErrCounterpartyAgentNotNamed is a submission that did not say which BANK
-	// the other side is at, or said it in something that is not a BIC.
+	// ErrCounterpartyAgentNotNamed is an address THIS system has no directory for,
+	// on an instruction that named no BIC beside it — or named something that is
+	// not one.
 	//
 	// ONE sentinel for both, because the remedy is the same and the distinction
 	// is not one a caller can act on differently: an instruction that carries no
 	// routing element and one that carries an unusable one are equally
 	// unsendable, and the message names which it was.
 	//
-	// It is the routing element, and this system has nowhere to get it from: the
-	// counterparty's own row is the counterparty's, the roster is keyed by the
-	// BIC being asked for and belongs to the clearing house, and there is no
-	// IBAN-to-BIC directory service here. SEPA is IBAN-only because every bank
-	// subscribes to one; without it an address is an IBAN and a BIC, as SEPA's
-	// was before 2016 and a cross-border transfer's still is.
+	// # It is the narrow case now, and what is left in it is real
+	//
+	// An IBAN is DERIVED from — Network.routeTx reads the bank code out of the
+	// address and resolves it in this bank's copy of the scheme's routing
+	// directory — so a payer types an address and a name and nothing else. That is
+	// what SEPA has been since February 2016, and it is possible here for the
+	// reason it is possible there: every member subscribes to a published table.
+	//
+	// What this sentinel covers is everything that is not such an address. A card
+	// PAN is issued by a scheme elsewhere and quoted; a proxy alias is resolved by
+	// a central service this system does not have — the EPC's Proxy Lookup
+	// Service, UPI — precisely because no bank can guarantee an alias is unique;
+	// an address in a country nothing here issues in has no structure to read a
+	// bank code out of. For all of those the BIC genuinely is the payer's to
+	// supply, exactly as it is on a cross-border transfer.
+	//
+	// The sibling refusal, for an address that DOES have a directory here and
+	// resolves to nothing in it, is ErrBankCodeUnknown. Different remedies: supply
+	// a BIC, versus refresh or give up.
 	//
 	// Refused at SUBMISSION rather than at message-building, even though the
 	// missing element is the message's, because a submission that committed the
 	// payer's debit and then failed to render an instruction is the money bug
 	// SubmitAndInstruct exists to prevent — see its doc for the shape.
 	//
-	// What this refusal does NOT claim is that the BIC is right. Nothing here can
-	// check it: the whole point of the split is that this bank cannot read the
-	// counterparty's register, so a wrong-but-well-formed BIC is delivered to the
-	// bank it names and refused THERE, with AC01, by a bank that does not hold
-	// the address. See SubmitPaymentTx and
+	// What this refusal does NOT claim is that a supplied BIC is right. Nothing
+	// here can check one: this bank cannot read the counterparty's register, so a
+	// wrong-but-well-formed BIC is delivered to the bank it names and refused
+	// THERE, with AC01, by a bank that does not hold the address. See
 	// mesh's TestAWrongCounterpartyAgentIsRefusedByTheBankItNames.
 	ErrCounterpartyAgentNotNamed = errors.New("payment: the instruction does not name a usable BIC for the counterparty's bank")
 )

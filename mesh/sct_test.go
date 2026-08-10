@@ -75,7 +75,7 @@ func TestTheCreditTransferChainIsFourMessages(t *testing.T) {
 
 func TestCreditTransferToAnUnknownAccountComesBackAsAC01(t *testing.T) {
 	h := newMeshHarness(t)
-	p := h.submitCreditTransferTo(t, unknownIBAN)
+	p := h.submitCreditTransferTo(t, unknownIBANAt(h.creditor))
 	h.drain(t)
 
 	got := h.payment(t, p.ID)
@@ -97,7 +97,7 @@ func TestCreditTransferToAnUnknownAccountComesBackAsAC01(t *testing.T) {
 // receive one carrying the code.
 func TestARejectedCreditTransferIsAnsweredToThePayersBank(t *testing.T) {
 	h := newMeshHarness(t)
-	h.submitCreditTransferTo(t, unknownIBAN)
+	h.submitCreditTransferTo(t, unknownIBANAt(h.creditor))
 	h.drain(t)
 
 	h.assertLastStatusTo(t, h.debtorBIC, iso20022.StatusReasonIncorrectAccountNumber)
@@ -205,7 +205,7 @@ func TestAMessageAnActorHasNoHandlerForIsADeadLetter(t *testing.T) {
 // what refuses it. See TestABankRefusesToReverseAPaymentThatIsNotRejected.
 func TestABankRefusesAStatusAboutAnotherBanksPayment(t *testing.T) {
 	h := newMeshHarness(t)
-	p := h.submitCreditTransferTo(t, unknownIBAN)
+	p := h.submitCreditTransferTo(t, unknownIBANAt(h.creditor))
 	h.drain(t)
 	if got := h.payment(t, p.ID); got.Status != payment.Rejected {
 		t.Fatalf("the fixture payment is %v, want Rejected", got.Status)

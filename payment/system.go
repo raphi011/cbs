@@ -1909,11 +1909,11 @@ func (s *Network) ReceiveLodgementTx(ctx context.Context, tx Tx, in LodgementIns
 
 // CreateMandate records a debtor's authorization for a creditor to collect
 // funds via direct debit. A MaxAmount of 0 means unlimited.
-func (s *Network) CreateMandate(ctx context.Context, debtorAgent iso20022.BIC, debtor, creditor PartyRef, maxAmount ledger.Amount) (Mandate, error) {
+func (s *Network) CreateMandate(ctx context.Context, assertedAgent iso20022.BIC, debtor, creditor PartyRef, maxAmount ledger.Amount) (Mandate, error) {
 	var out Mandate
 	err := s.store.Update(ctx, func(ctx context.Context, tx Tx) error {
 		var err error
-		out, err = s.CreateMandateTx(ctx, tx, debtorAgent, debtor, creditor, maxAmount)
+		out, err = s.CreateMandateTx(ctx, tx, assertedAgent, debtor, creditor, maxAmount)
 		return err
 	})
 	return out, err
@@ -1952,9 +1952,26 @@ func (s *Network) CreateMandate(ctx context.Context, debtorAgent iso20022.BIC, d
 // account id that is not one of this bank's comes back ErrAccountNotInParticipant
 // from checkPartyTx.
 //
-// debtorAgent is the address the collection will be sent to, and it is the whole
-// of what this row records about the other side.
-func (s *Network) CreateMandateTx(ctx context.Context, tx Tx, debtorAgent iso20022.BIC, debtor, creditor PartyRef, maxAmount ledger.Amount) (Mandate, error) {
+// # The debtor's agent is DERIVED, and derived ONCE
+//
+// It comes out of this bank's routing directory, from the debtor's own address,
+// by the same routeTx a submission uses — so assertedAgent is the fallback for an
+// address no directory here covers and is ignored for an IBAN.
+//
+// Deriving it AT CREATION and never again is the substance. A mandate authorises
+// debits from an account at the bank the debtor signed up against, and an
+// authorisation that silently followed a later directory to a different
+// institution is a behaviour no real scheme has: the debtor consented to a
+// creditor collecting from THAT account at THAT bank. So the row keeps the answer
+// it was given, and a directory that changes underneath it changes nothing about
+// what was authorised.
+//
+// It is also consistent with the rule that a mandate compares its parties by
+// (participant, account) and survives a reissued IBAN — the address is how the
+// debtor was reached once, and the authorisation is not made of it.
+//
+// DebtorAgent is the whole of what this row records about the other side.
+func (s *Network) CreateMandateTx(ctx context.Context, tx Tx, assertedAgent iso20022.BIC, debtor, creditor PartyRef, maxAmount ledger.Amount) (Mandate, error) {
 	if _, err := s.self(); err != nil {
 		return Mandate{}, fmt.Errorf("%w: %w", ErrNotThisBanksMandate, err)
 	}
@@ -1973,21 +1990,21 @@ func (s *Network) CreateMandateTx(ctx context.Context, tx Tx, debtorAgent iso200
 	}
 	// ValidateText accepts the empty string — it refuses control characters and
 	// invalid UTF-8 and nothing else — so the presence check is separate and
-	// explicit. A mandate whose debtor names neither a bank nor an account
-	// authorises debits from nothing, and SameParty would match it against any
-	// payment quoting the same emptiness.
-	if debtorAgent == "" || debtor.Account == "" {
+	// explicit. A mandate whose debtor names no account authorises debits from
+	// nothing, and SameParty would match it against any payment quoting the same
+	// emptiness.
+	if debtor.Account == "" {
 		return Mandate{}, fmt.Errorf(
-			"payment: a mandate names the account it authorises debits from; this one quotes agent %q and account %q",
-			debtorAgent, debtor.Account)
+			"payment: a mandate names the account it authorises debits from; this one quotes account %q",
+			debtor.Account)
 	}
-	// The agent is checked for STRUCTURE and for nothing else, which is the same
-	// stance the payments path takes on a counterparty's agent
-	// (ErrCounterpartyAgentNotNamed): this institution has no table to check the
-	// address against, because the bank it names is the one whose database this is
-	// not.
-	if err := debtorAgent.Validate(); err != nil {
-		return Mandate{}, fmt.Errorf("mandate debtor.agent: %w", err)
+	// And the agent, out of this bank's routing directory. The refusals are a
+	// submission's — an address whose bank code is not in this copy is
+	// ErrBankCodeUnknown here too, so a mandate cannot be signed against a bank
+	// this one could not then collect from.
+	debtorAgent, err := s.routeTx(ctx, tx, debtor.Identifier, assertedAgent)
+	if err != nil {
+		return Mandate{}, err
 	}
 
 	id, err := tx.NextID(ctx, s.book(), "mnd")
@@ -2910,11 +2927,12 @@ type InitiatePaymentRequest struct {
 	// anything supplied for it is ignored, because a payer does not get to
 	// rename themselves on an instruction.
 	//
-	// The COUNTERPARTY's Agent is REQUIRED. A bank holds only its own row, so
-	// there is nothing to derive the counterparty's BIC from, and SubmitPaymentTx
-	// refuses an instruction that names no agent (ErrCounterpartyAgentNotNamed).
-	// The address is an IBAN and a BIC, which is what SEPA was before 2016. See
-	// SubmitPaymentTx for what makes asserting it safe.
+	// The COUNTERPARTY's Agent is IGNORED for an address this system has a
+	// directory for, which today means every IBAN: SubmitPaymentTx derives it from
+	// the address, so an instruction carries an address and a name and no routing
+	// element at all. What is left of the field is the door for everything else —
+	// a card PAN, a proxy alias — where the BIC is genuinely the payer's to
+	// supply and its absence is ErrCounterpartyAgentNotNamed.
 	//
 	// The SUBMITTING bank's own agent is ignored, for the reason its name is: this
 	// bank is the authority on itself and fills its own side from its own
@@ -3171,8 +3189,10 @@ func (s *Network) SubmitPaymentTx(ctx context.Context, tx Tx, req InitiatePaymen
 	// side call, so an instruction that names nobody is refused before the
 	// debtor leg is posted rather than after.
 	counterparty := &p.CreditorDetails
+	counterpartyRef := p.Creditor
 	if !push {
 		counterparty = &p.DebtorDetails
+		counterpartyRef = p.Debtor
 	}
 
 	// The NAME is asserted by the payer and there is nowhere else it could come
@@ -3186,35 +3206,27 @@ func (s *Network) SubmitPaymentTx(ctx context.Context, tx Tx, req InitiatePaymen
 		return Payment{}, err
 	}
 
-	// The AGENT is ASSERTED rather than derived. A bank holds only its own row, so
-	// there is no source to derive the counterparty's BIC from: the roster is
-	// keyed by the BIC being derived and is the CLEARING HOUSE's row, and this
-	// network has no IBAN-to-BIC directory service. So the address on an
-	// instruction here is an IBAN AND a BIC — what SEPA was before February 2016,
-	// and what a cross-border transfer still is.
+	// The AGENT is DERIVED from the counterparty's ADDRESS, through this bank's
+	// own copy of the scheme's routing directory. That is what makes an
+	// instruction here IBAN-only: a payer types an address and a name, and the
+	// element the whole network routes on is read out of a table rather than out
+	// of the instruction.
 	//
-	// What makes that safe is that ResolveIdentifierTx resolves only against the
-	// resolving bank's OWN register. A misdirected message has nothing to resolve,
-	// and the bank that receives it answers AC01 — the true statement about what
-	// it was sent, and what a real bank does with a payment for an IBAN it does
-	// not hold. The payer's debit is reversed by the rejection. See mesh's
-	// TestAWrongCounterpartyAgentIsRefusedByTheBankItNames.
+	// It is derived from a table this bank HOLDS. No read crosses an institutional
+	// boundary — the copy was delivered by a refresh, and between two refreshes
+	// this bank routes from what it was given, which is why the refusal below can
+	// mean "not yet" as easily as "never". See routeTx for the three outcomes and
+	// their remedies.
 	//
-	// # What is refused here
-	//
-	// The FORMAT, and nothing else. An unnamed agent is refused by name, because
-	// the message cannot be built without CdtrAgt/DbtrAgt and a submission that
-	// committed the payer's debit before discovering that would be the money bug
-	// SubmitAndInstruct exists to prevent. A malformed one is refused for the
-	// reason FoundBankTx validates a BIC at founding rather than at first use:
-	// the mesh cannot route to it, so the refusal belongs where the payer can
-	// still fix it.
-	if counterparty.Agent == "" {
-		return Payment{}, ErrCounterpartyAgentNotNamed
+	// It happens BEFORE the debtor leg is posted, for the reason the name check
+	// does: a payment refused after the payer has been debited is the money bug
+	// SubmitAndInstruct exists to prevent, and an address that will not route
+	// cannot be turned into a message at all.
+	agent, err := s.routeTx(ctx, tx, counterpartyRef.Identifier, counterparty.Agent)
+	if err != nil {
+		return Payment{}, err
 	}
-	if err := counterparty.Agent.Validate(); err != nil {
-		return Payment{}, fmt.Errorf("%w: %w", ErrCounterpartyAgentNotNamed, err)
-	}
+	counterparty.Agent = agent
 
 	// The submitting bank's own side comes from its own register, overwriting
 	// anything the request supplied: a payer does not rename themselves on an

@@ -175,7 +175,33 @@ func admitMember(t *testing.T, s *Server, body string, want int) map[string]any 
 	body = withAllocation(t, body)
 	out := doJSON(t, cb(s), "POST", "/members", body, want)
 	drainServer(t, s)
+	subscribeAll(t, s)
 	return out
+}
+
+// subscribeAll has every member pull the scheme's routing directory, over the
+// route a bank's operator would use.
+//
+// It is a FIFTH request and no part of an admission. Being in the roster is what
+// makes a bank reachable; holding a copy of the roster is what makes it able to
+// reach anybody, and nothing publishes one — each member asks. So a bank admitted
+// after its neighbours last pulled is unreachable from them (422,
+// payment.ErrBankCodeUnknown) until they pull again.
+//
+// It runs after every admission because these suites are about something else and
+// want banks that can pay each other. The staleness it papers over is measured in
+// mesh, over the real conversation, where nothing calls this for anybody.
+func subscribeAll(t *testing.T, s *Server) {
+	t.Helper()
+	var members []map[string]any
+	getJSON(t, cb(s), "/members", &members)
+	for _, m := range members {
+		pid, _ := m["id"].(string)
+		if pid == "" {
+			continue
+		}
+		assertStatus(t, bank(s, pid), "POST", "/directory/banks/refresh", "", http.StatusOK)
+	}
 }
 
 // withAllocation splices the country a joining bank applies in into an
@@ -357,8 +383,8 @@ func TestSCTEndToEnd(t *testing.T) {
 	// register, and the pacs.008 it is about to build has to carry one.
 	pay := doJSON(t, csm(h), "POST", "/payments", `{
 		"scheme":"sepa.ct",
-		"debtorAgent":"`+a+`","debtor":{"account":"`+alice+`"},
-		"creditorAgent":"`+b+`","creditor":{"account":"`+bob+`","identifier":{"scheme":"IBAN","value":"`+ibanFor(t, h, b, bob)+`"}},
+		"debtor":{"account":"`+alice+`","identifier":{"scheme":"IBAN","value":"`+ibanFor(t, h, a, alice)+`"}},
+		"creditor":{"account":"`+bob+`","identifier":{"scheme":"IBAN","value":"`+ibanFor(t, h, b, bob)+`"}},
 		"amount":25000,
 		"endToEndId":"e2e-1",
 		"creditorName":"Bob"
@@ -927,8 +953,8 @@ func TestCrossAssetPaymentReturns422(t *testing.T) {
 
 	assertStatus(t, csm(h), "POST", "/payments", `{
 		"scheme":"sepa.ct",
-		"debtorAgent":"`+a+`","debtor":{"account":"`+alice+`"},
-		"creditorAgent":"`+b+`","creditor":{"account":"`+bob+`"},
+		"debtor":{"account":"`+alice+`","identifier":{"scheme":"IBAN","value":"`+ibanFor(t, h, a, alice)+`"}},
+		"creditor":{"account":"`+bob+`"},
 		"amount":1000,
 		"creditorName":"Bob"
 	}`, http.StatusUnprocessableEntity)
@@ -964,7 +990,7 @@ func TestPaymentDTOsCarryAsset(t *testing.T) {
 	// request is being made to, and a field naming it could only ever repeat the
 	// port or contradict it. See createMandateRequest.
 	mandate := doJSON(t, bank(h, b), "POST", "/mandates", `{
-		"debtorAgent":"`+a+`","debtor":{"account":"`+aliceUSD+`"},
+		"debtor":{"account":"`+aliceUSD+`","identifier":{"scheme":"IBAN","value":"`+ibanFor(t, h, a, aliceUSD)+`"}},
 		"creditor":{"account":"`+bobUSD+`"},
 		"maxAmount":50000
 	}`, http.StatusCreated)
@@ -1010,8 +1036,8 @@ func TestPaymentDTOsCarryAsset(t *testing.T) {
 
 	doJSON(t, csm(h), "POST", "/payments", `{
 		"scheme":"sepa.ct",
-		"debtorAgent":"`+a+`","debtor":{"account":"`+aliceEUR+`"},
-		"creditorAgent":"`+b+`","creditor":{"account":"`+bob+`","identifier":{"scheme":"IBAN","value":"`+ibanFor(t, h, b, bob)+`"}},
+		"debtor":{"account":"`+aliceEUR+`","identifier":{"scheme":"IBAN","value":"`+ibanFor(t, h, a, aliceEUR)+`"}},
+		"creditor":{"account":"`+bob+`","identifier":{"scheme":"IBAN","value":"`+ibanFor(t, h, b, bob)+`"}},
 		"amount":1000,
 		"creditorName":"Bob"
 	}`, http.StatusAccepted)
@@ -1174,8 +1200,8 @@ func TestARefusedSettlementIsRecoverableOverHTTP(t *testing.T) {
 	cyc := doJSON(t, csm(h), "POST", "/cycles", `{"scheme":"sepa.ct"}`, http.StatusCreated)["id"].(string)
 	pay := doJSON(t, csm(h), "POST", "/payments", `{
 		"scheme":"sepa.ct",
-		"debtorAgent":"`+a+`","debtor":{"account":"`+alice+`"},
-		"creditorAgent":"`+b+`","creditor":{"account":"`+bob+`","identifier":{"scheme":"IBAN","value":"`+ibanFor(t, h, b, bob)+`"}},
+		"debtor":{"account":"`+alice+`","identifier":{"scheme":"IBAN","value":"`+ibanFor(t, h, a, alice)+`"}},
+		"creditor":{"account":"`+bob+`","identifier":{"scheme":"IBAN","value":"`+ibanFor(t, h, b, bob)+`"}},
 		"amount":25000,
 		"endToEndId":"short-reserve",
 		"creditorName":"Bob"
@@ -1664,8 +1690,8 @@ func auditFixture(t *testing.T, h *Server) (bankA, bankB, payID string) {
 	cyc := doJSON(t, csm(h), "POST", "/cycles", `{"scheme":"sepa.ct"}`, http.StatusCreated)["id"].(string)
 	pay := doJSON(t, csm(h), "POST", "/payments", `{
 		"scheme":"sepa.ct",
-		"debtorAgent":"`+a+`","debtor":{"account":"`+alice+`"},
-		"creditorAgent":"`+b+`","creditor":{"account":"`+bob+`","identifier":{"scheme":"IBAN","value":"`+ibanFor(t, h, b, bob)+`"}},
+		"debtor":{"account":"`+alice+`","identifier":{"scheme":"IBAN","value":"`+ibanFor(t, h, a, alice)+`"}},
+		"creditor":{"account":"`+bob+`","identifier":{"scheme":"IBAN","value":"`+ibanFor(t, h, b, bob)+`"}},
 		"amount":25000,
 		"creditorName":"Bob"
 	}`, http.StatusAccepted)["id"].(string)
@@ -1802,8 +1828,8 @@ func TestAuditRejectedAndReturnedPayments(t *testing.T) {
 	doJSON(t, csm(h), "POST", "/cycles", `{"scheme":"sepa.ct"}`, http.StatusCreated)
 	second := doJSON(t, csm(h), "POST", "/payments", `{
 		"scheme":"sepa.ct",
-		"debtorAgent":"`+a+`","debtor":{"account":"`+aAccounts[0].ID+`"},
-		"creditorAgent":"`+b+`","creditor":{"account":"`+bAccounts[0].ID+`","identifier":{"scheme":"IBAN","value":"`+ibanFor(t, h, b, bAccounts[0].ID)+`"}},
+		"debtor":{"account":"`+aAccounts[0].ID+`","identifier":{"scheme":"IBAN","value":"`+ibanFor(t, h, a, aAccounts[0].ID)+`"}},
+		"creditor":{"account":"`+bAccounts[0].ID+`","identifier":{"scheme":"IBAN","value":"`+ibanFor(t, h, b, bAccounts[0].ID)+`"}},
 		"amount":1000,
 		"creditorName":"Bob"
 	}`, http.StatusAccepted)["id"].(string)
@@ -1838,8 +1864,8 @@ func TestRejectPaymentRendersItsCode(t *testing.T) {
 	doJSON(t, csm(h), "POST", "/cycles", `{"scheme":"sepa.ct"}`, http.StatusCreated)
 	payID := doJSON(t, csm(h), "POST", "/payments", `{
 		"scheme":"sepa.ct",
-		"debtorAgent":"`+a+`","debtor":{"account":"`+aAccounts[0].ID+`"},
-		"creditorAgent":"`+b+`","creditor":{"account":"`+bAccounts[0].ID+`","identifier":{"scheme":"IBAN","value":"`+ibanFor(t, h, b, bAccounts[0].ID)+`"}},
+		"debtor":{"account":"`+aAccounts[0].ID+`","identifier":{"scheme":"IBAN","value":"`+ibanFor(t, h, a, aAccounts[0].ID)+`"}},
+		"creditor":{"account":"`+bAccounts[0].ID+`","identifier":{"scheme":"IBAN","value":"`+ibanFor(t, h, b, bAccounts[0].ID)+`"}},
 		"amount":1000,
 		"creditorName":"Bob"
 	}`, http.StatusAccepted)["id"].(string)
@@ -1881,8 +1907,8 @@ func TestRejectPaymentGivesThePayerTheirMoneyBack(t *testing.T) {
 	doJSON(t, csm(h), "POST", "/cycles", `{"scheme":"sepa.ct"}`, http.StatusCreated)
 	payID := doJSON(t, csm(h), "POST", "/payments", `{
 		"scheme":"sepa.ct",
-		"debtorAgent":"`+a+`","debtor":{"account":"`+aAccounts[0].ID+`"},
-		"creditorAgent":"`+b+`","creditor":{"account":"`+bAccounts[0].ID+`","identifier":{"scheme":"IBAN","value":"`+ibanFor(t, h, b, bAccounts[0].ID)+`"}},
+		"debtor":{"account":"`+aAccounts[0].ID+`","identifier":{"scheme":"IBAN","value":"`+ibanFor(t, h, a, aAccounts[0].ID)+`"}},
+		"creditor":{"account":"`+bAccounts[0].ID+`","identifier":{"scheme":"IBAN","value":"`+ibanFor(t, h, b, bAccounts[0].ID)+`"}},
 		"amount":1000,
 		"creditorName":"Bob"
 	}`, http.StatusAccepted)["id"].(string)
@@ -1920,8 +1946,8 @@ func TestARejectionWhoseRefundFailsStandsAndIsDeadLettered(t *testing.T) {
 	doJSON(t, csm(h), "POST", "/cycles", `{"scheme":"sepa.ct"}`, http.StatusCreated)
 	payID := doJSON(t, csm(h), "POST", "/payments", `{
 		"scheme":"sepa.ct",
-		"debtorAgent":"`+a+`","debtor":{"account":"`+aAccounts[0].ID+`"},
-		"creditorAgent":"`+b+`","creditor":{"account":"`+bAccounts[0].ID+`","identifier":{"scheme":"IBAN","value":"`+ibanFor(t, h, b, bAccounts[0].ID)+`"}},
+		"debtor":{"account":"`+aAccounts[0].ID+`","identifier":{"scheme":"IBAN","value":"`+ibanFor(t, h, a, aAccounts[0].ID)+`"}},
+		"creditor":{"account":"`+bAccounts[0].ID+`","identifier":{"scheme":"IBAN","value":"`+ibanFor(t, h, b, bAccounts[0].ID)+`"}},
 		"amount":1000,
 		"creditorName":"Bob"
 	}`, http.StatusAccepted)["id"].(string)
@@ -1972,7 +1998,7 @@ func TestAuditMandateEvents(t *testing.T) {
 	getJSON(t, bank(h, b), "/deposit-accounts", &bAccounts)
 
 	mid := doJSON(t, bank(h, b), "POST", "/mandates", `{
-		"debtorAgent":"`+a+`","debtor":{"account":"`+aAccounts[0].ID+`"},
+		"debtor":{"account":"`+aAccounts[0].ID+`","identifier":{"scheme":"IBAN","value":"`+ibanFor(t, h, a, aAccounts[0].ID)+`"}},
 		"creditor":{"account":"`+bAccounts[0].ID+`"},
 		"maxAmount":50000
 	}`, http.StatusCreated)["id"].(string)
@@ -2850,8 +2876,8 @@ func TestSEPADebtorLegsValueDateApart(t *testing.T) {
 	doJSON(t, csm(h), "POST", "/cycles", `{"scheme":"sepa.ct"}`, http.StatusCreated)
 	doJSON(t, csm(h), "POST", "/payments", `{
 		"scheme":"sepa.ct",
-		"debtorAgent":"`+a+`","debtor":{"account":"`+alice["id"].(string)+`"},
-		"creditorAgent":"`+b+`","creditor":{"account":"`+bob+`","identifier":{"scheme":"IBAN","value":"`+ibanFor(t, h, b, bob)+`"}},
+		"debtor":{"account":"`+alice["id"].(string)+`","identifier":{"scheme":"IBAN","value":"`+ibanFor(t, h, a, alice["id"].(string))+`"}},
+		"creditor":{"account":"`+bob+`","identifier":{"scheme":"IBAN","value":"`+ibanFor(t, h, b, bob)+`"}},
 		"amount":25000,
 		"endToEndId":"e2e-1",
 		"creditorName":"Bob"
@@ -3265,7 +3291,7 @@ func TestDirectoryResolvesItsOwnCustomer(t *testing.T) {
 		Agent   string `json:"agent"`
 		Account string `json:"account"`
 	}
-	getJSON(t, bank(srv, string(pid)), "/directory?scheme=IBAN&value="+aliceAddress, &got)
+	getJSON(t, bank(srv, string(pid)), "/directory/accounts?scheme=IBAN&value="+aliceAddress, &got)
 	if got.Agent != string(pid) || got.Account == "" {
 		t.Fatalf("directory response = %#v, want this bank's own account", got)
 	}
@@ -3282,10 +3308,10 @@ func TestDirectoryUnknownIBANIs404(t *testing.T) {
 	pid, _ := someAccount(t, srv)
 	// A WELL-FORMED address this bank does not hold. That is the 404 — the
 	// question was askable and the answer is no.
-	doJSON(t, bank(srv, pid), "GET", "/directory?scheme=IBAN&value="+mustMintDE(9_999_999), "", http.StatusNotFound)
+	doJSON(t, bank(srv, pid), "GET", "/directory/accounts?scheme=IBAN&value="+mustMintDE(9_999_999), "", http.StatusNotFound)
 	// Something that is not an address at all is a different answer: 422, because
 	// the check digits refuse it before any register is asked.
-	doJSON(t, bank(srv, pid), "GET", "/directory?scheme=IBAN&value=NOBODY-0001", "", http.StatusUnprocessableEntity)
+	doJSON(t, bank(srv, pid), "GET", "/directory/accounts?scheme=IBAN&value=NOBODY-0001", "", http.StatusUnprocessableEntity)
 }
 
 // TestDirectoryDoesNotAnswerForAnotherBanksCustomer is the narrowing itself, on
@@ -3315,7 +3341,7 @@ func TestDirectoryDoesNotAnswerForAnotherBanksCustomer(t *testing.T) {
 		return nil
 	})
 
-	doJSON(t, bank(srv, string(asker)), "GET", "/directory?scheme=IBAN&value="+aliceAddress, "",
+	doJSON(t, bank(srv, string(asker)), "GET", "/directory/accounts?scheme=IBAN&value="+aliceAddress, "",
 		http.StatusNotFound)
 }
 
@@ -3325,8 +3351,8 @@ func TestDirectoryDoesNotAnswerForAnotherBanksCustomer(t *testing.T) {
 func TestDirectoryMissingParamsIs400(t *testing.T) {
 	srv := newServer(t, nil)
 	pid, _ := someAccount(t, srv)
-	doJSON(t, bank(srv, pid), "GET", "/directory?scheme=IBAN", "", http.StatusBadRequest)
-	doJSON(t, bank(srv, pid), "GET", "/directory?value=X", "", http.StatusBadRequest)
+	doJSON(t, bank(srv, pid), "GET", "/directory/accounts?scheme=IBAN", "", http.StatusBadRequest)
+	doJSON(t, bank(srv, pid), "GET", "/directory/accounts?value=X", "", http.StatusBadRequest)
 }
 
 // TestAddAndRemoveIdentifierEndpoints covers the per-account identifier
@@ -3342,7 +3368,7 @@ func TestAddAndRemoveIdentifierEndpoints(t *testing.T) {
 		`{"scheme":"PAN","value":"4000000000000001"}`, http.StatusNoContent)
 
 	// Now resolvable, by its own bank.
-	doJSON(t, bank(srv, pid), "GET", "/directory?scheme=PAN&value=4000000000000001", "", http.StatusOK)
+	doJSON(t, bank(srv, pid), "GET", "/directory/accounts?scheme=PAN&value=4000000000000001", "", http.StatusOK)
 
 	// A second account at the same bank cannot take it.
 	other := anotherAccountAtSameBank(t, srv, pid)
@@ -3350,7 +3376,7 @@ func TestAddAndRemoveIdentifierEndpoints(t *testing.T) {
 		`{"scheme":"PAN","value":"4000000000000001"}`, http.StatusConflict)
 
 	doJSON(t, bank(srv, pid), "DELETE", base+did+"/identifiers/PAN/4000000000000001", "", http.StatusNoContent)
-	doJSON(t, bank(srv, pid), "GET", "/directory?scheme=PAN&value=4000000000000001", "", http.StatusNotFound)
+	doJSON(t, bank(srv, pid), "GET", "/directory/accounts?scheme=PAN&value=4000000000000001", "", http.StatusNotFound)
 }
 
 // TestDirectoryAmbiguousIdentifierIs409 pins deposit.ErrIdentifierAmbiguous's
@@ -3401,7 +3427,7 @@ func TestDirectoryAmbiguousIdentifierIs409(t *testing.T) {
 		t.Fatalf("planting the duplicate: %v", err)
 	}
 
-	doJSON(t, bank(srv, pid), "GET", "/directory?scheme=PAN&value=4000000000000009", "", http.StatusConflict)
+	doJSON(t, bank(srv, pid), "GET", "/directory/accounts?scheme=PAN&value=4000000000000009", "", http.StatusConflict)
 }
 
 // TestPaymentAddressingRefusalsAre422 pins the status codes of the three ways
@@ -3479,8 +3505,8 @@ func TestPaymentAddressingRefusalsAre422(t *testing.T) {
 	// payee's BIC is derived from that payee's own bank row, never sent.
 	assertStatus(t, csm(h), "POST", "/payments", `{
 		"scheme":"sepa.ct",
-		"debtorAgent":"`+a+`","debtor":{"account":"`+alice+`"},
-		"creditorAgent":"`+b+`","creditor":{"account":"`+nobody+`"},
+		"debtor":{"account":"`+alice+`","identifier":{"scheme":"IBAN","value":"`+ibanFor(t, h, a, alice)+`"}},
+		"creditor":{"account":"`+nobody+`"},
 		"amount":1000,
 		"creditorName":"Nobody"
 	}`, http.StatusUnprocessableEntity)
@@ -3489,8 +3515,8 @@ func TestPaymentAddressingRefusalsAre422(t *testing.T) {
 	// ErrIdentifierMismatch — the creditor's own address, on the debtor leg.
 	assertStatus(t, csm(h), "POST", "/payments", `{
 		"scheme":"sepa.ct",
-		"debtorAgent":"`+a+`","debtor":{"account":"`+alice+`","identifier":{"scheme":"IBAN","value":"`+ibanFor(t, h, a, alice)+`"}},
-		"creditorAgent":"`+b+`","creditor":{"account":"`+bob+`"},
+		"debtor":{"account":"`+alice+`","identifier":{"scheme":"IBAN","value":"`+ibanFor(t, h, a, alice)+`"}},
+		"creditor":{"account":"`+bob+`"},
 		"amount":1000,
 		"creditorName":"Bob"
 	}`, http.StatusUnprocessableEntity)
@@ -3504,8 +3530,8 @@ func TestPaymentAddressingRefusalsAre422(t *testing.T) {
 	// the address was filled in later by the bank at the other end.
 	assertStatus(t, csm(h), "POST", "/payments", `{
 		"scheme":"sepa.ct",
-		"debtorAgent":"`+a+`","debtor":{"account":"`+alice+`"},
-		"creditorAgent":"`+b+`","creditor":{"account":"`+bob+`"},
+		"debtor":{"account":"`+alice+`","identifier":{"scheme":"IBAN","value":"`+ibanFor(t, h, a, alice)+`"}},
+		"creditor":{"account":"`+bob+`"},
 		"amount":1000,
 		"creditorName":"Bob"
 	}`, http.StatusUnprocessableEntity)
@@ -3516,8 +3542,8 @@ func TestPaymentAddressingRefusalsAre422(t *testing.T) {
 	// sends, and the one a retrying app would send again.
 	assertStatus(t, bank(h, a), "POST", "/payments", `{
 		"scheme":"sepa.ct",
-		"debtorAgent":"`+a+`","debtor":{"account":"`+alice+`"},
-		"creditorAgent":"`+b+`","creditor":{"account":"`+bob+`"},
+		"debtor":{"account":"`+alice+`","identifier":{"scheme":"IBAN","value":"`+ibanFor(t, h, a, alice)+`"}},
+		"creditor":{"account":"`+bob+`"},
 		"amount":1000,
 		"creditorName":"Bob"
 	}`, http.StatusUnprocessableEntity)
@@ -3544,8 +3570,8 @@ func TestPaymentAddressingRefusalsAre422(t *testing.T) {
 	// already in the request.
 	pay := doJSON(t, csm(h), "POST", "/payments", `{
 		"scheme":"sepa.ct",
-		"debtorAgent":"`+a+`","debtor":{"account":"`+alice+`"},
-		"creditorAgent":"`+b+`","creditor":{"account":"`+bob+`","identifier":{"scheme":"IBAN","value":"`+ibanFor(t, h, b, bob)+`"}},
+		"debtor":{"account":"`+alice+`","identifier":{"scheme":"IBAN","value":"`+ibanFor(t, h, a, alice)+`"}},
+		"creditor":{"account":"`+bob+`","identifier":{"scheme":"IBAN","value":"`+ibanFor(t, h, b, bob)+`"}},
 		"amount":1000,
 		"creditorName":"Bob"
 	}`, http.StatusAccepted)
@@ -3570,10 +3596,15 @@ func TestPaymentAddressingRefusalsAre422(t *testing.T) {
 	// that both read before either wrote — and this is what it looks like from
 	// inside the register.
 	plantSecondAddress(t, h, a, alice)
-	assertStatus(t, csm(h), "POST", "/payments", `{
+	// On the PAYER'S BANK's port, because the payer's leg has to quote NO address
+	// for the ambiguity to be reachable — and the clearing house's console reads
+	// the submitting bank out of the payer's address, so an instruction that
+	// quotes none does not get that far there. A bank's port takes the submitting
+	// bank from the port itself, which is the door a customer uses in any case.
+	assertStatus(t, bank(h, a), "POST", "/payments", `{
 		"scheme":"sepa.ct",
-		"debtorAgent":"`+a+`","debtor":{"account":"`+alice+`"},
-		"creditorAgent":"`+b+`","creditor":{"account":"`+bob+`","identifier":{"scheme":"IBAN","value":"`+ibanFor(t, h, b, bob)+`"}},
+		"debtor":{"account":"`+alice+`"},
+		"creditor":{"account":"`+bob+`","identifier":{"scheme":"IBAN","value":"`+ibanFor(t, h, b, bob)+`"}},
 		"amount":1000,
 		"creditorName":"Bob"
 	}`, http.StatusUnprocessableEntity)
@@ -3595,51 +3626,52 @@ func TestPaymentAddressingRefusalsAre422(t *testing.T) {
 	}
 }
 
-// TestPostPaymentRequiresTheCounterpartyName is the dedicated pin for
-// payment.ErrCounterpartyNotNamed's and ErrCounterpartyAgentNotNamed's 422 over
-// HTTP. Both are 422 and not 500: well-formed JSON this system will not act on,
-// the same class as the addressing refusals TestPaymentAddressingRefusalsAre422
+// TestPostPaymentRefusesEachWayAnAddressFails is the dedicated pin for the three
+// refusals a payer can meet on the other side of an instruction, over HTTP. All
+// three are 422 and not 500: well-formed JSON this system will not act on, the
+// same class as the addressing refusals TestPaymentAddressingRefusalsAre422
 // covers.
 //
 // Two other tests in this file also expect a 422 from a payment submission —
-// TestCrossAssetPaymentReturns422 and TestPaymentAddressingRefusalsAre422 —
-// and both supply creditorName and creditorAgent specifically so the request
-// reaches their own subject instead of these guards; their comments say so.
-// This is the test that hits them on purpose.
+// TestCrossAssetPaymentReturns422 and TestPaymentAddressingRefusalsAre422 — and
+// both supply a creditorName and a resolvable address specifically so the request
+// reaches their own subject instead of these guards; their comments say so. This
+// is the test that hits them on purpose.
 //
-// Both accounts carry an IBAN and the creditor's is quoted on every request:
-// a request that instead left addressing to chance could be refused by
-// ErrUnaddressableAccount (api/errors.go's other 422) with both counterparty
-// guards deleted entirely, and every refusal subtest would stay green having
-// pinned nothing.
+// # Three refusals, three remedies, and only one of them is about a field
+//
+// The NAME is the only thing an instruction still asserts about the other side,
+// so it is the only one of the three a caller fixes by typing something. The
+// other two are about the ADDRESS: one says this bank cannot route it, and one
+// says this bank has no directory for addresses of that kind at all. See
+// payment.ErrCounterpartyNotNamed, ErrBankCodeUnknown and
+// ErrCounterpartyAgentNotNamed, which set out why no two of them can be merged.
 //
 // # What this table has been, twice
 //
-// Two rows over two fields: the counterparty's name and its agent are both the
-// caller's to supply, because the row either could be derived from is the
-// counterparty's own and a bank holds only its own.
+// Two rows over two fields, when the counterparty's agent was the caller's to
+// supply. There is no such field now — the bank derives it — so the row that went
+// is "a malformed agent", and what replaced it is the pair above: an address that
+// resolves to nothing, and an address with nothing to resolve it against.
 //
-// The row that is NOT coming back is the pair that left creditorAgent empty and
-// stayed 422 with the guard deleted, because an empty BIC failed
-// iso20022.BIC.Validate() further down. An empty agent is now refused by name,
-// which is what makes it a pin instead of a coincidence.
-//
-// Re-derived by mutation on the code as it now stands, not carried over.
-// Deleting each guard in payment/system.go and rerunning:
+// Re-derived by mutation on the code as it now stands. Deleting each guard in
+// payment/system.go and payment/directory.go and rerunning:
 //
 //   - "no name" flips 422 -> 500. Nothing else in SubmitPaymentTx rejects an
 //     empty counterparty name — ledger.ValidateText permits "" — so the request
-//     proceeds into building the outbound pacs.008, which fails the message's
-//     own mandatory-element check (iso20022.ErrMissingElement, "Cdtr/Nm"), for
-//     which api/errors.go has no entry.
-//   - "no agent" flips 422 -> 500 the same way, on Cdtr/CdtrAgt: the message
-//     cannot be rendered without a BIC either, and the failure lands after the
-//     payer's leg would have posted, which is exactly why the guard is at
-//     submission and not at message-building. See SubmitAndInstruct.
-//   - "a malformed agent" flips 422 -> 500 for the same reason, one validation
-//     later.
-//   - "a name and an agent — the control" is unaffected, as a control should be.
-func TestPostPaymentRequiresTheCounterpartyName(t *testing.T) {
+//     proceeds into building the outbound pacs.008, which fails the message's own
+//     mandatory-element check (iso20022.ErrMissingElement, "Cdtr/Nm"), for which
+//     api/errors.go has no entry.
+//   - "a bank code this copy has no entry for" flips 422 -> 500 on Cdtr/CdtrAgt:
+//     the derivation returns nothing, the message cannot be rendered without a
+//     BIC, and the failure lands after the payer's leg would have posted — which
+//     is exactly why the refusal is at submission and not at message-building.
+//     See SubmitAndInstruct.
+//   - "an address no directory here covers" flips the same way, one branch
+//     earlier.
+//   - "an address that resolves — the control" is unaffected, as a control should
+//     be.
+func TestPostPaymentRefusesEachWayAnAddressFails(t *testing.T) {
 	h := newServer(t, nil)
 	a := admitMember(t, h, `{"bic":"BNKADEFFXXX","name":"Bank A","country":"DE"}`, http.StatusAccepted)["id"].(string)
 	b := admitMember(t, h, `{"bic":"BNKBDEFFXXX","name":"Bank B","country":"DE"}`, http.StatusAccepted)["id"].(string)
@@ -3648,29 +3680,37 @@ func TestPostPaymentRequiresTheCounterpartyName(t *testing.T) {
 	fundAndLodge(t, h, a, alice, 100000)
 	doJSON(t, csm(h), "POST", "/cycles", `{"scheme":"sepa.ct"}`, http.StatusCreated)
 
-	// No creditorAgent here: it is the field three of the four cases below are
-	// about, so it belongs in each case's own body rather than in the shared
-	// prefix, which would otherwise silently supply the value the "no agent" case
-	// exists to withhold.
-	parties := `"debtorAgent":"` + a + `","debtor":{"account":"` + alice + `"},` +
-		`"creditor":{"account":"` + bob + `","identifier":{"scheme":"IBAN","value":"` + ibanFor(t, h, b, bob) + `"}},`
+	// A well-formed German address under a bank code no member of this scheme has
+	// been allocated, so Bank A's copy of the directory answers nothing for it. It
+	// passes mod-97 first, which is the point: a refusal about routing has to be
+	// reachable without a check-digit failure standing in for it.
+	unroutable := mustMint(iban.DE, "10000000", 1)
+
+	creditor := func(ident string) string {
+		return `"creditor":{"account":"` + bob + `","identifier":` + ident + `},`
+	}
+	asIBAN := func(v string) string { return `{"scheme":"IBAN","value":"` + v + `"}` }
 
 	for _, tc := range []struct {
 		name       string
 		body       string
 		wantStatus int
 	}{
-		{"no name", `{"scheme":"sepa.ct",` + parties + `"amount":1000,
-			"creditorAgent":"` + bicOf(t, h, b) + `"}`, http.StatusUnprocessableEntity},
-		{"no agent", `{"scheme":"sepa.ct",` + parties + `"amount":1000,
-			"creditorName":"Bob"}`, http.StatusUnprocessableEntity},
-		{"a malformed agent", `{"scheme":"sepa.ct",` + parties + `"amount":1000,
-			"creditorName":"Bob","creditorAgent":"not-a-bic"}`, http.StatusUnprocessableEntity},
-		{"a name and an agent — the control", `{"scheme":"sepa.ct",` + parties + `"amount":1000,
-			"creditorName":"Bob","creditorAgent":"` + bicOf(t, h, b) + `"}`, http.StatusAccepted},
+		{"no name", `{"scheme":"sepa.ct","debtor":{"account":"` + alice + `"},` +
+			creditor(asIBAN(ibanFor(t, h, b, bob))) + `"amount":1000}`, http.StatusUnprocessableEntity},
+		{"a bank code this copy has no entry for", `{"scheme":"sepa.ct","debtor":{"account":"` + alice + `"},` +
+			creditor(asIBAN(unroutable)) + `"amount":1000,"creditorName":"Bob"}`, http.StatusUnprocessableEntity},
+		{"an address no directory here covers", `{"scheme":"sepa.ct","debtor":{"account":"` + alice + `"},` +
+			creditor(`{"scheme":"PAN","value":"4000000000000001"}`) + `"amount":1000,"creditorName":"Bob"}`,
+			http.StatusUnprocessableEntity},
+		{"an address that resolves — the control", `{"scheme":"sepa.ct","debtor":{"account":"` + alice + `"},` +
+			creditor(asIBAN(ibanFor(t, h, b, bob))) + `"amount":1000,"creditorName":"Bob"}`, http.StatusAccepted},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			assertStatus(t, csm(h), "POST", "/payments", tc.body, tc.wantStatus)
+			// The PAYER'S BANK's port: an instruction names no bank at all now, so
+			// this is the only door that knows which bank is submitting without
+			// reading the payer's address — and it is the door a customer uses.
+			assertStatus(t, bank(h, a), "POST", "/payments", tc.body, tc.wantStatus)
 		})
 	}
 }
@@ -3723,17 +3763,23 @@ func TestAQuotedAddressIsCanonicalisedOnTheWayIn(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			body := `{"scheme":"sepa.ct",
-				"debtorAgent":"` + a + `","debtor":{"account":"` + alice + `"},
-				"creditorAgent":"` + b + `","creditor":{"account":"` + bob + `","identifier":{"scheme":"IBAN","value":"` + tc.quoted + `"}},
+				"debtor":{"account":"` + alice + `"},
+				"creditor":{"account":"` + bob + `","identifier":{"scheme":"IBAN","value":"` + tc.quoted + `"}},
 				"amount":100,"creditorName":"Bob"}`
-			got := doJSON(t, csm(h), "POST", "/payments", body, tc.wantStatus)
+			// On the PAYER'S BANK's port, which is where a person's typing actually
+			// arrives: the quoted address is the only one on this instruction, and
+			// the clearing house's console would have to read a submitting bank out
+			// of the payer's leg, which quotes none.
+			got := doJSON(t, bank(h, a), "POST", "/payments", body, tc.wantStatus)
 			if tc.wantStatus != http.StatusAccepted {
 				return
 			}
 			// Read back off the PAYER's bank, which is the copy the request was
 			// persisted into and the one the outbound message was built from.
 			drainServer(t, h)
-			carried := doJSON(t, bank(h, a), "GET", "/payments/"+got["id"].(string), "", http.StatusOK)
+			// A bank's port answers an identifier and nothing else — the outcome is
+			// a second request. See submittedPaymentDTO.
+			carried := doJSON(t, bank(h, a), "GET", "/payments/"+got["paymentId"].(string), "", http.StatusOK)
 			assertEqual(t, "the creditor address persisted from a "+tc.name+" request",
 				carried["creditor"].(map[string]any)["identifier"].(map[string]any)["value"].(string), stored)
 		})

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/raphi011/cbs/deposit"
+	"github.com/raphi011/cbs/iban"
 	"github.com/raphi011/cbs/iso20022"
 	"github.com/raphi011/cbs/ledger"
 	"github.com/raphi011/cbs/payment"
@@ -657,6 +658,92 @@ func RunPayment(t *testing.T, newStore func(*testing.T, ledger.BookID) payment.S
 		paymentRecordsBothReturnLegs(t, openPayment(t, newStore, bookA))
 	})
 
+	// RoutingDirectoryIsReplacedWholesale pins the one write on payment.Tx that is
+	// not an upsert, and the reason it is not one.
+	//
+	// A member's routing directory is a COPY of a file somebody else publishes.
+	// Every other Put in this suite writes a row its institution decided about, so
+	// merging is right for those; a subscriber that merged would hold the union of
+	// every snapshot it ever pulled, and a member that had left the roster would
+	// stay routable out of a directory nobody could correct. So the second refresh
+	// here drops an entry, and the assertion is that the entry is GONE.
+	//
+	// The two allocations that share a code are the other half of the case: 99999
+	// is an ABI in Italy and a code banque in France, they name different banks,
+	// and a copy keyed by the code alone would hold one of them.
+	t.Run("RoutingDirectoryIsReplacedWholesale", func(t *testing.T) {
+		s := openPayment(t, newStore, bookA)
+
+		de := iban.Issuer{Country: iban.DE, BankCode: "99999999"}
+		it := iban.Issuer{Country: iban.IT, BankCode: "99999"}
+		fr := iban.Issuer{Country: iban.FR, BankCode: "99999"}
+
+		updatePayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+			return tx.ReplaceRoutingDirectory(ctx, []payment.DirectoryEntry{
+				{Issuer: de, BIC: auroraBIC, RefreshedAt: early},
+				{Issuer: it, BIC: verdeBIC, RefreshedAt: early},
+				{Issuer: fr, BIC: "SOLEFRPPXXX", RefreshedAt: early},
+			})
+		})
+
+		viewPayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+			// One code, two countries, two banks.
+			got, err := tx.GetDirectoryEntry(ctx, it)
+			if err != nil {
+				return err
+			}
+			assertEqual(t, "the bank answering for IT 99999", string(got.BIC), string(verdeBIC))
+			assertEqual(t, "when that answer was refreshed", got.RefreshedAt.Equal(early), true)
+
+			got, err = tx.GetDirectoryEntry(ctx, fr)
+			if err != nil {
+				return err
+			}
+			assertEqual(t, "the bank answering for FR 99999", string(got.BIC), "SOLEFRPPXXX")
+
+			_, err = tx.GetDirectoryEntry(ctx, iban.Issuer{Country: iban.SE, BankCode: "999"})
+			assertErrorIs(t, "GetDirectoryEntry on a code this copy has no entry for",
+				err, payment.ErrBankCodeUnknown)
+
+			// Listed in the order the snapshot was written, which is the order the
+			// publisher had them in.
+			entries, err := tx.ListDirectoryEntries(ctx)
+			if err != nil {
+				return err
+			}
+			assertOrder(t, "routing directory", ids(entries, func(e payment.DirectoryEntry) string {
+				return string(e.BIC)
+			}), string(auroraBIC), string(verdeBIC), "SOLEFRPPXXX")
+			return nil
+		})
+
+		// A second delivery, later, with Verde no longer in it.
+		later := early.Add(48 * time.Hour)
+		updatePayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+			return tx.ReplaceRoutingDirectory(ctx, []payment.DirectoryEntry{
+				{Issuer: de, BIC: auroraBIC, RefreshedAt: later},
+				{Issuer: fr, BIC: "SOLEFRPPXXX", RefreshedAt: later},
+			})
+		})
+
+		viewPayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+			_, err := tx.GetDirectoryEntry(ctx, it)
+			assertErrorIs(t, "GetDirectoryEntry on a code the new snapshot omits",
+				err, payment.ErrBankCodeUnknown)
+
+			entries, err := tx.ListDirectoryEntries(ctx)
+			if err != nil {
+				return err
+			}
+			assertOrder(t, "routing directory after the second delivery",
+				ids(entries, func(e payment.DirectoryEntry) string { return string(e.BIC) }),
+				string(auroraBIC), "SOLEFRPPXXX")
+			assertEqual(t, "refreshed at, after the second delivery",
+				entries[0].RefreshedAt.Equal(later), true)
+			return nil
+		})
+	})
+
 	t.Run("UpdateRollsBackAllThreeLayersTogether", func(t *testing.T) {
 		s := openPayment(t, newStore, bookA)
 
@@ -753,7 +840,9 @@ func RunPayment(t *testing.T, newStore func(*testing.T, ledger.BookID) payment.S
 			if err := tx.PutMandate(ctx, mandate("mnd_1", early)); err != nil {
 				return err
 			}
-			return nil
+			return tx.ReplaceRoutingDirectory(ctx, []payment.DirectoryEntry{
+				{Issuer: iban.Issuer{Country: iban.DE, BankCode: "99999999"}, BIC: auroraBIC, RefreshedAt: early},
+			})
 		})
 
 		if err := s.Reset(context.Background()); err != nil {
@@ -778,6 +867,15 @@ func RunPayment(t *testing.T, newStore func(*testing.T, ledger.BookID) payment.S
 				return err
 			}
 			assertEqual(t, "mandates after reset", len(mandates), 0)
+
+			// A directory a bank pulled is this bank's state like any other, and a
+			// reset leaves it holding nothing rather than holding a snapshot of a
+			// roster that no longer exists.
+			entries, err := tx.ListDirectoryEntries(ctx)
+			if err != nil {
+				return err
+			}
+			assertEqual(t, "routing directory after reset", len(entries), 0)
 
 			// The end-to-end index is state too: a reference claimed before the
 			// reset must be free afterwards.

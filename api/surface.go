@@ -183,17 +183,30 @@ func (s *Server) bankRouter() *router {
 	// this listener reads the bound identity instead of the path.
 	mux.HandleFunc("GET /me", s.handleGetParticipant)
 	mux.HandleFunc("GET /assets", s.handleListAssets)
-	// A bank resolving an address in its OWN register. It cannot validate a payee's
-	// address before accepting an instruction: that payee is another bank's
-	// customer.
+	// TWO DIRECTORIES, and a bank owns one of them.
 	//
-	// What is left is a real question and a narrower one: which of this bank's
-	// accounts holds this address. A customer's own IBAN, an on-us payee, an
-	// operator checking an address before issuing another one. A payee at another
-	// bank is not something this bank can confirm, and the honest answer is the
-	// not-found this now gives — see api/handlers_directory.go and
-	// payment.ResolveIdentifier.
-	mux.HandleFunc("GET /directory", s.handleResolveIdentifier)
+	// The first resolves an address in this bank's OWN register: which of this
+	// bank's accounts holds it. A customer's own IBAN, an on-us payee, an operator
+	// checking an address before issuing another one. A payee at ANOTHER bank is
+	// not something this bank can confirm, and the honest answer is a not-found —
+	// see payment.ResolveIdentifier.
+	//
+	// The second answers where to SEND, which is the question the first cannot
+	// reach and which every payment out of here needs: an IBAN carries a bank
+	// code, no arithmetic turns one into a BIC, so the pairing has to be
+	// published and copied. What is under it is this bank's own snapshot of the
+	// clearing house's roster, pulled by the refresh below and possibly behind.
+	//
+	// They share a prefix because they are the same act seen from two sides — an
+	// address being turned into somewhere — and they are separate paths because
+	// only one of them is answered out of a table this institution owns.
+	mux.HandleFunc("GET /directory/accounts", s.handleResolveIdentifier)
+	mux.HandleFunc("GET /directory/banks", s.handleResolveBankCode)
+	// The subscription. It is a POST because it writes this bank's copy, and it is
+	// on the BANK's port because subscribing is the subscriber's act: no route on
+	// the clearing house's port pushes anything at anybody, which is what keeps
+	// that institution a publisher rather than a delivery system.
+	mux.HandleFunc("POST /directory/banks/refresh", s.handleRefreshDirectory)
 	mux.HandleFunc("POST /deposits", s.handleFundDeposit)
 	// The other half of taking cash in. Cash in is one institution's act and lands
 	// in this bank's vault; moving it onto reserve is a conversation with the

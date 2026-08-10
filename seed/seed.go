@@ -302,6 +302,17 @@ func (b *builder) admit(name string, bic iso20022.BIC, country iban.Country, ass
 	return bank
 }
 
+// subscribe is one bank pulling the scheme's routing directory, through the same
+// door an operator's POST /directory/banks/refresh goes through.
+//
+// It is not part of admission and is not a message: nothing is queued and nobody
+// answers later, so there is no drain here where admit needs one. What it does
+// is read the roster as it stands and replace this bank's copy with it. See
+// mesh.Mesh.RefreshDirectory.
+func (b *builder) subscribe(p *payment.Bank) {
+	must(b.mesh.RefreshDirectory(b.ctx, p.BIC))
+}
+
 // seedAsset is the asset the whole sample scenario is denominated in.
 //
 // The scenario is a SEPA one, and SEPA is a euro scheme, so every account it
@@ -779,13 +790,32 @@ func (b *builder) build() {
 	// which "the bank code" lives, so nothing can extract one without knowing
 	// which country's structure to apply.
 	//
-	// Verde and Soleil share the code 99991 and are two different banks. A bank
-	// code is unique within a COUNTRY and nowhere else, which is why every table
-	// keyed by one is keyed by the pair.
+	// Verde and Soleil are allocated the same code and are two different banks:
+	// each country's registry allocates from its own range, and Italy's and
+	// France's are both five digits wide. A bank code is unique within a COUNTRY
+	// and nowhere else, which is why every table keyed by one is keyed by the pair.
 	aurora := b.admit("Aurora Bank", "AURODEFFXXX", iban.DE, euro)
 	verde := b.admit("Banca Verde", "VERDITMMXXX", iban.IT, euro)
 	nord := b.admit("Nordhaven Bank", "NORDSESSXXX", iban.SE, euro)
 	soleil := b.admit("Crédit Soleil", "SOLEFRPPXXX", iban.FR, euro)
+
+	// --- Each bank subscribes to the routing directory ---------------------
+	//
+	// A fifth act, and nobody's part of an admission. Being in the roster is what
+	// makes a bank REACHABLE; holding a copy of the roster is what makes it able
+	// to reach anybody, and the two are separate because the copy is pulled by
+	// each member on its own account. Nothing has told Aurora that Soleil exists
+	// until Aurora asks.
+	//
+	// It runs after all four are admitted because this seed wants a scenario where
+	// every bank can pay every other. Refreshing inside admit would give Aurora a
+	// directory holding only itself, Verde one holding two, and a dataset whose
+	// payments worked or did not depending on the order the banks joined — which
+	// is real behaviour, and is measured in mesh rather than baked into the
+	// fixture every other suite reads.
+	for _, p := range []*payment.Bank{aurora, verde, nord, soleil} {
+		b.subscribe(p)
+	}
 
 	// --- Each bank's catalogue ---------------------------------------------
 	// Before any account, because every deposit account is opened FROM a

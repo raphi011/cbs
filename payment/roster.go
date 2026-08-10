@@ -51,6 +51,57 @@ type BankCodeAllocation struct {
 	AllocatedAt time.Time
 }
 
+// DirectoryEntry is one row of a MEMBER BANK's own copy of the scheme's routing
+// directory: which institution answers for a bank code, and when that answer was
+// last refreshed. It lives in that bank's database, one copy per member.
+//
+// It is the third of the three tables an address is routed through, and the only
+// one a bank holds. BankCodeAllocation is the issuer's record of what it gave
+// out; RosterEntry is the clearing house's published pairing; this is a snapshot
+// of the second, pulled by a subscriber and used to derive a counterparty's agent
+// from the counterparty's IBAN. SEPA is IBAN-only because every bank holds one of
+// these, not because routing is computable from an address.
+//
+// # A copy, and therefore possibly behind
+//
+// RefreshDirectoryTx replaces the whole set — a directory is a file a subscriber
+// downloads, not a delta feed — so between two refreshes this bank routes from
+// what it was given last. A member admitted in between cannot be paid, and
+// ErrBankCodeUnknown says so. That is the behaviour of every real routing
+// directory rather than a defect being tolerated, and it is safe because an
+// allocation is never reassigned: a copy that is behind is INCOMPLETE and never
+// WRONG.
+//
+// Nothing holds it against the roster it came from. payment/recon reports the
+// difference and passes.
+type DirectoryEntry struct {
+	// Issuer is the allocation this row resolves: the country, and the code.
+	// Both, because a code is unique within one country and this copy holds
+	// members in several.
+	Issuer iban.Issuer
+
+	// BIC is the institution to send to, and the whole of what this row says
+	// about it.
+	//
+	// No name beside it, because the roster carries none, because the acmt.010
+	// that writes the roster carries none. That absence arrives at the moment a
+	// payer most expects a name: an address resolves, and what comes back is
+	// AURODEFFXXX.
+	//
+	// No assets either, and that one is a refusal deliberately not made — an
+	// early "this member does not clear in euro", computed from a copy that may
+	// be behind, would refuse a payment the clearing house would have taken. The
+	// asset check belongs to whoever reads the live roster; see
+	// Network.bothBanksAreMembersTx.
+	BIC iso20022.BIC
+
+	// RefreshedAt is when the snapshot this row came from was taken, and every
+	// row of one refresh carries the same instant. It is what a console shows to
+	// make the subscription visible — "14 banks, refreshed 3 days ago" — and it
+	// is the only thing here that is about the COPY rather than about the member.
+	RefreshedAt time.Time
+}
+
 // SettlementMember is the CENTRAL BANK's own record of a bank it holds a
 // settlement account for. It lives in the central bank's database and in no
 // other, which is what stopped the settlement agent borrowing the clearing

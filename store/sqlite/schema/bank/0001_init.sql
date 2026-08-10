@@ -1254,6 +1254,77 @@ CREATE TABLE bank_assets (
     PRIMARY KEY (bank_id, asset)
 ) STRICT;
 
+CREATE TABLE routing_directory (
+    -- THIS BANK'S OWN COPY of the scheme's published routing directory: which
+    -- institution answers for which bank code, in which country. It is what
+    -- turns an IBAN into an agent, and it is the only table in this schema whose
+    -- rows are about other institutions.
+    --
+    -- IT IS A COPY AND THAT IS THE DESIGN. The original is the clearing house's
+    -- roster, in the clearing house's database, which nothing here can open. A
+    -- member SUBSCRIBES: it asks for a snapshot, replaces this table wholesale
+    -- with what it was given, and routes from what it holds. That is what every
+    -- real routing directory is — the EPC's Register of Participants is a file a
+    -- bank downloads, not a service it queries per payment — and it is why SEPA
+    -- can be IBAN-only without any bank being able to read another's register.
+    --
+    -- WHICH MAKES STALENESS REAL, and it is a behaviour rather than a defect. A
+    -- bank admitted this morning cannot be paid by a member that refreshed
+    -- yesterday: the payer's bank finds no row, refuses with
+    -- payment.ErrBankCodeUnknown, and a refresh makes the same payment work. The
+    -- refusal is safe only because AN ALLOCATION IS NEVER REASSIGNED — see
+    -- bank_codes in centralbank/0001_init.sql — so a copy that is behind is
+    -- INCOMPLETE and never WRONG. The failure mode is "I cannot route this yet"
+    -- and never "I routed it to the wrong bank", and nothing in this system may
+    -- introduce a path that gives a code back to be issued again.
+    --
+    -- Nothing checks this table against the roster it came from, because
+    -- disagreeing with it is legal. payment/recon REPORTS the difference — "this
+    -- bank's directory is two entries behind" — and passes, and a reconciliation
+    -- that FAILED on one would assert the opposite of the design.
+    --
+    -- KEYED BY (country, bank_code), for the reason every table keyed by an
+    -- allocation is: a code is unique within one country and nowhere else, so
+    -- 99999 names Banca Verde in Italy and Crédit Soleil in France and this copy
+    -- holds both. The pair is also the whole of the uniqueness rule here, which
+    -- is why there is no second unique index; see
+    -- TestExactlyOneUniqueIndexPerShapeThatHasABook.
+    country      TEXT NOT NULL,
+    bank_code    TEXT NOT NULL,
+    -- The institution to send to, and the only thing this row says about it.
+    --
+    -- THERE IS NO NAME HERE, and the absence is domain content rather than a
+    -- column somebody forgot. The roster has none because an acmt.010 delivers
+    -- none, so a copy of the roster can have none either. The consequence lands
+    -- exactly where a payer feels it: a send form that resolves an IBAN can show
+    -- AURODEFFXXX and cannot show "Aurora Bank". Confirming the payee's NAME is a
+    -- different question with a different message pair behind it, and this scheme
+    -- does not ask it.
+    --
+    -- NO ASSETS EITHER, and that one is a refusal deliberately not made. This
+    -- copy could carry which currencies a member clears in and refuse a payment
+    -- early — and it would then refuse, from data that may be behind, a payment
+    -- the clearing house would have accepted. The asset check has an owner that
+    -- reads the live roster: payment's bothBanksAreMembersTx, at the clearing
+    -- house. A stale copy may fail to route; it may not decide membership.
+    bic          TEXT NOT NULL,
+    -- When the snapshot this row came from was taken. Per row rather than per
+    -- table because there is no table to hang it on, and every row of one refresh
+    -- carries the same instant — a snapshot is one act, not a merge of many.
+    --
+    -- It is the whole of the staleness story a console can show: "14 banks,
+    -- refreshed 3 days ago" teaches the subscription model in one line, and the
+    -- payment that will not route teaches the rest of it.
+    refreshed_at TEXT NOT NULL,
+    seq          INTEGER NOT NULL,
+    -- The order the snapshot arrived in, which is the roster's own publication
+    -- order — oldest member first. A refresh deletes every row and writes the
+    -- whole list again, so seq restarts from the top of the table each time and
+    -- carries no history; the ordering rule ledgers.seq states is about a table
+    -- rows are APPENDED to, and this is a table rows are REPLACED in.
+    PRIMARY KEY (country, bank_code)
+) STRICT;
+
 CREATE TABLE mandates (
     -- A MANDATE IS THE CREDITOR'S BANK'S ROW, and it is in this file and in no
     -- other for that reason. In SEPA the creditor holds the mandate: the biller

@@ -119,6 +119,12 @@ func TestAnAdmittedBankCanPayAndBePaid(t *testing.T) {
 		t.Fatalf("Admit: %v", err)
 	}
 	h.drain(t)
+	// And everybody pulls a fresh directory. Admission put the joiner in the
+	// roster; nothing has told the two banks that were already here, and until one
+	// asks it cannot address the joiner's customers. See
+	// TestABankAdmittedAfterTheLastRefreshCannotBePaidUntilTheNextOne, which is
+	// that gap measured rather than closed.
+	h.subscribeAll(t)
 	joiner = h.getBank(t, joiner.ID)
 
 	acct := h.openCustomer(t, joiner, "Nora", "EUR", 0)

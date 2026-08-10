@@ -57,13 +57,20 @@ const (
 // follows from the ALLOCATIONS the two banks are admitted under rather than from
 // two literals — see harnessIssuers.
 
-// unknownIBAN is well-formed and belongs to no account in this network. It is
-// the address TestCreditTransferToAnUnknownAccountComesBackAsAC01 sends to, and
-// it has to be well-formed twice over: an IBAN failing the schema's pattern
-// would be refused by the codec on the way out, and one failing mod-97 would be
-// refused by the payer's own bank — either way the message never leaves, and the
-// creditor's bank never gets the chance to answer AC01.
-var unknownIBAN = mustMint(iban.DE, "99900001", 999_999)
+// unknownIBANAt is an address in one bank's own range that the bank does not
+// hold: a serial far above anything a fixture opens, under that bank's allocated
+// code.
+//
+// Both halves are what make it useful. It has to be well-formed twice over — an
+// IBAN failing the schema's pattern is refused by the codec on the way out, and
+// one failing mod-97 is refused by the payer's own bank — and it has to carry the
+// RECIPIENT's bank code, because that is what routes it there. An address under
+// some other code is refused by the payer's own directory
+// (payment.ErrBankCodeUnknown) and the recipient never gets the chance to answer
+// AC01, which is the answer these tests are about.
+func unknownIBANAt(p *payment.Bank) string {
+	return mustMint(p.Issuer.Country, p.Issuer.BankCode, 999_999)
+}
 
 func mustMint(c iban.Country, code iban.BankCode, serial uint64) string {
 	a, err := iban.New(c, code, serial)
@@ -358,6 +365,14 @@ func newHarness(t *testing.T, opts harnessOptions) *meshHarness {
 	h.debtor = h.admit(t, "Aurora Bank", "AURODEFFXXX", assets)
 	h.creditor = h.admit(t, "Banca Verde", "VERDITMMXXX", assets)
 	h.drain(t)
+	// And a fifth act, which is nobody's part of an admission: each of them pulls
+	// the scheme's routing directory. Being in the roster is what makes a bank
+	// reachable; holding a copy of the roster is what makes it able to reach
+	// anybody, and nothing publishes one. A fixture that skipped this would have
+	// two members neither of which could address the other — which is a real state
+	// and is what TestABankAdmittedAfterTheLastRefreshCannotBePaidUntilTheNextOne
+	// is about.
+	h.subscribeAll(t)
 	h.debtor = h.getBank(t, h.debtor.ID)
 	h.creditor = h.getBank(t, h.creditor.ID)
 	for _, p := range []*payment.Bank{h.debtor, h.creditor} {
@@ -472,6 +487,26 @@ func (h *meshHarness) admit(t *testing.T, name string, bic iso20022.BIC, assets 
 		t.Fatalf("Admit returned %s as %q; the scheme's answer arrives as a message, not from this call", bic, p.Status)
 	}
 	return p
+}
+
+// subscribeAll has every member of the scheme pull the routing directory as it
+// stands, through the same call an operator's POST /directory/banks/refresh
+// makes.
+//
+// It reads the roster to find the members, which is what a deployment can do and
+// no institution may: each of them then pulls for itself.
+func (h *meshHarness) subscribeAll(t *testing.T) {
+	t.Helper()
+	ctx := context.Background()
+	entries, err := h.net.ListRosterEntries(ctx)
+	if err != nil {
+		t.Fatalf("ListRosterEntries: %v", err)
+	}
+	for _, e := range entries {
+		if _, err := h.mesh.RefreshDirectory(ctx, e.BIC); err != nil {
+			t.Fatalf("RefreshDirectory %s: %v", e.BIC, err)
+		}
+	}
 }
 
 // admitWithoutTheRoster builds a bank the SETTLEMENT AGENT has answered and the
@@ -724,20 +759,18 @@ func (h *meshHarness) creditTransferRequestTo(t *testing.T, iban string) payment
 		Creditor:    h.creditorRef(iban),
 		Amount:      harnessAmount,
 		Description: "invoice 42",
-		// Push: the creditor is the counterparty, so the request must name it — the
-		// NAME and the BIC. Nothing derives the second: the row it would be derived
-		// from is the counterparty's own.
-		// TestAWrongCounterpartyAgentIsRefusedByTheBankItNames sets a WRONG one on
-		// purpose, which is the only place in this package that should.
-		CreditorDetails: payment.PartyDetails{Agent: h.creditorBIC, Name: h.creditorAcct.Name},
+		// Push: the creditor is the counterparty, and the NAME is the whole of what
+		// this instruction says about it. No agent, because there is nowhere to put
+		// one that would be read: the submitting bank derives it from the address
+		// above, through its own copy of the routing directory.
+		CreditorDetails: payment.PartyDetails{Name: h.creditorAcct.Name},
 		// And the payer's own bank, which this fixture has to name and a customer's
 		// instruction does not. Mesh.Submit picks the SUBMITTING actor out of the
 		// two agents (submitterOf) before any bank's half runs, so a request that
 		// left this empty would be refused with "no bank actor for" — the mesh
 		// having nobody to hand it to. api's POST /payments fills the same field
 		// from the port's bound identity and the seed names it outright; this is a
-		// caller that names both, which is the case Submit's on-us guard says it
-		// covers.
+		// caller that names its own side, which every fixture here is.
 		DebtorDetails: payment.PartyDetails{Agent: h.debtorBIC, Name: h.debtorAcct.Name},
 	}
 }
@@ -778,14 +811,15 @@ func (h *meshHarness) directDebitRequest(t *testing.T) payment.InitiatePaymentRe
 		Amount:      harnessAmount,
 		MandateID:   h.mandate.ID,
 		Description: "subscription 7",
-		// Pull: the debtor is the counterparty, so the request must name it. See
-		// creditTransferRequest on why the BIC sits beside the name.
-		DebtorDetails: payment.PartyDetails{Agent: h.debtorBIC, Name: h.debtorAcct.Name},
+		// Pull: the debtor is the counterparty, so the request names it — the NAME
+		// and nothing else. See creditTransferRequestTo on why no agent sits beside
+		// it.
+		DebtorDetails: payment.PartyDetails{Name: h.debtorAcct.Name},
 		// And the SUBMITTER, which on a pull is the payee's bank. Mesh.Submit picks
-		// the actor out of the two agents before any bank's half runs, so a request
-		// naming one side leaves it with nobody to hand the collection to. See
-		// creditTransferRequestTo, where the same field arrived for the same reason
-		// on the other side.
+		// the actor out of the submitting side's agent before any bank's half runs,
+		// so a request leaving it empty has nobody to hand the collection to. See
+		// creditTransferRequestTo, where the same field is here for the same
+		// reason on the other side.
 		CreditorDetails: payment.PartyDetails{Agent: h.creditorBIC, Name: h.creditorAcct.Name},
 	}
 }
@@ -843,9 +877,9 @@ func (h *meshHarness) submitCreditTransferInUSD(t *testing.T) payment.Payment {
 		DebtorDetails: payment.PartyDetails{Agent: h.debtorBIC, Name: h.debtorUSDAcct.Name},
 		Amount:        harnessAmount,
 		Description:   "invoice 43",
-		// Push: the creditor is the counterparty, so the request must name it. See
-		// creditTransferRequest on why there is no Agent beside the name.
-		CreditorDetails: payment.PartyDetails{Agent: h.creditorBIC, Name: h.creditorUSDAcct.Name},
+		// Push: the creditor is the counterparty, so the request names it. See
+		// creditTransferRequestTo on why there is no Agent beside the name.
+		CreditorDetails: payment.PartyDetails{Name: h.creditorUSDAcct.Name},
 	})
 	if err != nil {
 		t.Fatalf("Submit in USD: %v", err)

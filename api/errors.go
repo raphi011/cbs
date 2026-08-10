@@ -174,10 +174,27 @@ func errorStatus(err error) int {
 		// on the submission path looks the other side up, so the instruction
 		// must carry it.
 		errors.Is(err, payment.ErrCounterpartyNotNamed),
-		// Its sibling: the counterparty's BIC is asserted rather than derived, so an
-		// instruction can omit or mangle it. Same category and same 422 — the caller
-		// can fix it by supplying one.
+		// Its sibling, and now the narrow case: the counterparty's BIC is derived
+		// from their address, so it is only ever asserted for an address no
+		// directory here covers. Same category and same 422 — the caller can fix it
+		// by supplying one.
 		errors.Is(err, payment.ErrCounterpartyAgentNotNamed),
+		// The address is well formed, its check digits verify, and this bank's copy
+		// of the routing directory has no entry for the code inside it. Same
+		// category and the same 422, and the status is the whole of what can
+		// honestly be said: the bank cannot tell "no such member" from "my copy is
+		// behind", so a 404 claiming the payee's bank does not exist would be
+		// asserting something a subscriber has no way to know. The remedy is a
+		// refresh, or giving up, and only the caller can choose. See
+		// payment.ErrBankCodeUnknown.
+		errors.Is(err, payment.ErrBankCodeUnknown),
+		// And the clearing house's version of the same shape, from the one route
+		// that reads the roster to decide which bank an instruction belongs to: an
+		// address under a code no member is published under. Same category, same
+		// 422, and NOT a 404 — an address nobody holds is a well-formed field this
+		// system will not act on, not a missing resource. See
+		// payment.Network.RosterAgentFor.
+		errors.Is(err, payment.ErrRosterEntryNotFound),
 		// A malformed BIC is well-formed JSON naming a field that is not a
 		// structurally valid ISO 9362 code — the same category as an
 		// unaddressable account, not a decoding failure.

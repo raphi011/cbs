@@ -1297,6 +1297,20 @@ func (m *Mesh) Submit(ctx context.Context, req payment.InitiatePaymentRequest) (
 	// ErrBankNotAdmitted rather than a 404. The clearing house cannot tell "no
 	// such institution" from "an institution I have not admitted", and answering
 	// 404 would be it reporting a bank row it should not be reading.
+	//
+	// # In practice it now fires on the SUBMITTING side only, and the other side
+	// is covered by something stronger
+	//
+	// An instruction names no counterparty bank: the submitting bank derives one
+	// from the counterparty's address, out of its own copy of this same roster.
+	// So an address at a non-member resolves to nothing and is refused before the
+	// debtor leg posts — payment.ErrBankCodeUnknown, at the payer's own bank,
+	// which is EARLIER than this door and needs no read here at all. A copy of the
+	// roster is a membership list, so subscribing subsumed half of this guard.
+	//
+	// The loop still walks both, because a caller that names both is a caller this
+	// can answer precisely: the seed, this package's fixtures, and any future door
+	// that fills the field in.
 	for _, side := range []struct {
 		role  string
 		agent iso20022.BIC
@@ -1659,6 +1673,49 @@ func (m *Mesh) Settle(ctx context.Context, id payment.CycleID) (payment.Clearing
 		return payment.ClearingCycle{}, errors.New("mesh: no network, so there is no cycle to settle")
 	}
 	return m.csm.settle(ctx, id)
+}
+
+// RefreshDirectory is one member bank subscribing: it takes the roster the
+// clearing house publishes and replaces that bank's own copy with it.
+//
+// # It is not a message, and that is why it is here
+//
+// Every other hop in this package is an ISO 20022 document going into an inbox.
+// This one is a FILE being delivered — the shape a real routing directory
+// arrives in, since the EPC's Register of Participants is downloaded and not
+// queried per payment — so there is no envelope, no correlation and no
+// asynchrony to arrange. What the mesh is standing in for is the vendor, and the
+// mesh is the only thing here that holds both institutions' handles.
+//
+// It runs on the CALLER's goroutine and reaches two databases, exactly as Admit
+// does and for the same reason: the subscriber has an actor, but the act is not
+// something that arrived in its inbox.
+//
+// The two reads cannot be one unit of work and must not look like one. The
+// roster is read at the clearing house and committed there before the copy is
+// written at the bank, so a member admitted between the two shows up on the next
+// refresh — which is the staleness this design is built out of, arriving at the
+// smallest scale it has.
+//
+// # Not a timer, and not a push
+//
+// A background poller would buy realism in a repository whose suites run on a
+// fake clock and pay for it in flaky tests. A push would make the clearing house
+// hold a subscriber list and a retry policy, which is a delivery system rather
+// than a publisher — and the real vendor does not know who is listening.
+func (m *Mesh) RefreshDirectory(ctx context.Context, bic iso20022.BIC) ([]payment.DirectoryEntry, error) {
+	if m.nets == nil {
+		return nil, errors.New("mesh: no network, so there is no directory to refresh")
+	}
+	published, err := m.clearingHouse.ListRosterEntries(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("mesh: reading the published roster for %s: %w", bic, err)
+	}
+	subscriber, err := m.nets.Bank(ctx, payment.ParticipantID(bic))
+	if err != nil {
+		return nil, fmt.Errorf("mesh: opening %s's store: %w", bic, err)
+	}
+	return subscriber.RefreshDirectory(ctx, published)
 }
 
 // Reject is the clearing house declining a payment it is holding, on an

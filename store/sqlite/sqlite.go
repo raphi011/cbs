@@ -147,14 +147,15 @@ func (s Shape) String() string { return s.dir }
 // The three shapes. See Shape.
 var (
 	// Bank is one member bank: a ledger, a deposit register, products, lending,
-	// its own single row in banks, the mandates it holds as creditor bank, its
-	// own copy of each payment it is a party to, and the advices it was sent.
+	// its own single row in banks, its copy of the scheme's routing directory,
+	// the mandates it holds as creditor bank, its own copy of each payment it is
+	// a party to, and the advices it was sent.
 	Bank = shape("bank",
 		"books", "ledgers", "subledgers", "accounts", "transactions", "entries",
 		"deposit_accounts", "deposit_account_identifiers", "holds", "snapshots", "overdraft_terms",
 		"products", "product_versions",
 		"facilities", "installments", "facility_terms",
-		"banks", "bank_assets", "mandates", "payments", "settlement_advices",
+		"banks", "bank_assets", "routing_directory", "mandates", "payments", "settlement_advices",
 		"audit_events", "id_sequences").withPaymentLegs()
 
 	// CSM is the clearing house: a roster, cycles, its own copy of each payment

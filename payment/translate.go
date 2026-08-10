@@ -131,6 +131,19 @@ var reasonTable = []reasonMapping{
 	// any message exists to carry it.
 	{ErrCounterpartyAgentNotNamed, "ErrCounterpartyAgentNotNamed", iso20022.StatusReasonBankIdentifierIncorrect},
 
+	// And the third of the address refusals, which gets the same RC01 for the
+	// same reason: an address whose bank code resolves to nothing in this bank's
+	// copy of the directory is a payee this scheme cannot be told to reach, which
+	// is what RC01 says. The two sit together because a payer cannot act on the
+	// difference — one asks for a BIC and one asks for a refresh, and both mean
+	// "this instruction names nowhere to send it".
+	//
+	// It is refused at submission and carries no message either. What the CODE is
+	// for is the day this refusal is reached with a payment in hand — a relayed
+	// instruction the receiving bank cannot route onward — and the table classifies
+	// every sentinel whether or not a path to the wire exists today.
+	{ErrBankCodeUnknown, "ErrBankCodeUnknown", iso20022.StatusReasonBankIdentifierIncorrect},
+
 	// --- Classified as never reaching a counterparty ---
 	//
 	// Each is a failure of THIS system's own bookkeeping rather than a

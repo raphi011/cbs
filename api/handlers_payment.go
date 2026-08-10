@@ -83,7 +83,9 @@ func (s *Server) handleCreateMandate(w http.ResponseWriter, r *http.Request) {
 		writeBadRequest(w, err.Error())
 		return
 	}
-	m, err := s.network().CreateMandate(r.Context(), iso20022.BIC(req.DebtorAgent),
+	// No agent is asserted, because this request has no field for one: the
+	// debtor's bank is derived from the debtor's address. See createMandateRequest.
+	m, err := s.network().CreateMandate(r.Context(), "",
 		req.Debtor.toDomain(), req.Creditor.toDomain(), ledger.Amount(req.MaxAmount))
 	if err != nil {
 		writeError(w, err)
@@ -175,7 +177,37 @@ func (s *Server) handleInitiatePayment(w http.ResponseWriter, r *http.Request) {
 		writeBadRequest(w, err.Error())
 		return
 	}
-	p, err := s.mesh.Submit(r.Context(), req.toDomain())
+	dom := req.toDomain()
+	// Which bank's act this is, read out of the SUBMITTING side's address.
+	//
+	// An instruction names no bank at all now — the counterparty's is derived by
+	// the submitting bank from its own directory copy — so this console has
+	// nothing to hand the instruction to until it derives one. A bank's own port
+	// fills this in from the LISTENER (handleSubmitPayment); this console is not
+	// any bank, so it reads the roster it publishes instead. Same fact, two
+	// sources, and each is the only one its caller has.
+	//
+	// A push is submitted by the payer's bank and a pull by the payee's, which is
+	// the same rule Mesh.Submit applies a moment later to pick the actor.
+	sc, ok := s.network().Scheme(dom.Scheme)
+	if !ok {
+		writeError(w, payment.ErrSchemeNotFound)
+		return
+	}
+	submitting := &dom.DebtorDetails
+	address := dom.Debtor.Identifier
+	if sc.Direction() == payment.Pull {
+		submitting, address = &dom.CreditorDetails, dom.Creditor.Identifier
+	}
+	if submitting.Agent == "" {
+		agent, err := s.network().RosterAgentFor(r.Context(), address)
+		if err != nil {
+			writeError(w, err)
+			return
+		}
+		submitting.Agent = agent
+	}
+	p, err := s.mesh.Submit(r.Context(), dom)
 	if err != nil {
 		// A submission that committed and could not be SENT hands the payment
 		// back beside the error: Initiated, its debtor leg posted on a push, and

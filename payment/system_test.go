@@ -3369,16 +3369,25 @@ func TestTheFarLegsAddressAndAccountCannotDisagree(t *testing.T) {
 	// it — see relayedFrom — and it would be refused a leg earlier, by the
 	// address-against-account comparison rather than by the resolution.
 	//
-	// The address is Alice's, which Verde does not hold.
+	// The address is one under VERDE's own allocation with a serial Verde has
+	// never issued, and it has to be: the agent is derived from the address, so an
+	// address belonging to some other bank is delivered to that other bank and
+	// never reaches Verde at all. What is left to reach Verde and fail there is an
+	// address in Verde's own range that Verde does not hold — an account that was
+	// closed, or a payer who mistyped a digit the check digits happened to
+	// absolve — which is exactly the case AC01 exists for.
 	_, err := initiate(ctx, net, InitiatePaymentRequest{
 		Scheme: SchemeSEPACT,
 		Debtor: PartyRef{Account: alice.ID},
 		Creditor: PartyRef{
-			Identifier: addressOf(t, alice),
+			Identifier: mintAt(t, verde, 987654),
 		},
 		Amount:          10_00,
-		CreditorDetails: PartyDetails{Agent: verde.BIC, Name: bruno.Name},
-		DebtorDetails:   PartyDetails{Agent: aurora.BIC}})
+		CreditorDetails: PartyDetails{Name: bruno.Name},
+		// The submitting bank's own agent, which this fixture uses to pick the
+		// network that submits. Submission overwrites it from Aurora's own row.
+		DebtorDetails: PartyDetails{Agent: aurora.BIC},
+	})
 	if !errors.Is(err, ErrAccountNotInParticipant) {
 		t.Fatalf("initiation = %v, want ErrAccountNotInParticipant", err)
 	}
