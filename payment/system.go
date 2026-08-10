@@ -4935,12 +4935,15 @@ func validateParty(field string, ref PartyRef) error {
 // A bank has no standing to say whether an address at ANOTHER bank exists — that
 // is the other bank's register and the other bank's customer.
 //
-// There is no network-wide lookup, because this network has no directory SERVICE
-// to provide one. A real one does: SEPA banks resolve an IBAN's bank out of a
-// subscribed IBAN-to-BIC table, and aliases that are not bank-issued (a phone
-// number, an email address) go to a separate central service — the EPC's Proxy
-// Lookup Service, or UPI — precisely because no bank can guarantee they are
-// unique.
+// There is no network-wide lookup of ACCOUNTS, and there is no institution here
+// that could hold one. What does exist is the other question, and it is a
+// different act: ResolveBankCode answers which BANK an address routes to, out of
+// this bank's copy of the scheme's published directory. That is the whole of what
+// a subscribed IBAN-to-BIC table gives a real SEPA bank, and it stops at the
+// institution. Aliases that are not bank-issued (a phone number, an email
+// address) go to a separate central service — the EPC's Proxy Lookup Service, or
+// UPI — precisely because no bank can guarantee they are unique, and nothing here
+// stands in for one.
 //
 // The register searched is this network's own, and a network that is not a member
 // bank's has no register to search. See Network.self.

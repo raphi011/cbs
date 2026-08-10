@@ -4149,10 +4149,12 @@ func TestSubmitDoesNotCheckTheCreditorAccount(t *testing.T) {
 }
 
 // TestSubmitTakesTheCounterpartyNameFromTheRequest pins the direction rule: the
-// submitting bank fills in its OWN side from its own register and is TOLD both
-// of the counterparty's, the name and the agent
-// (TestSubmitRecordsTheCounterpartyAgentTheInstructionAsserts). It never reads
-// the counterparty's register for either.
+// submitting bank fills in its OWN side from its own register and is TOLD the
+// counterparty's NAME. The agent beside it is derived rather than told, out of
+// this bank's own copy of the scheme's directory, and asserted only where there
+// is no address to derive from
+// (TestSubmitRecordsAnAssertedAgentWhereThereIsNoAddressToDeriveFrom). Neither
+// reads the counterparty's register.
 func TestSubmitTakesTheCounterpartyNameFromTheRequest(t *testing.T) {
 	ctx := context.Background()
 	n, req := networkWithTwoBanks(t)
@@ -4222,35 +4224,32 @@ func TestSubmitRefusesAnUnnamedCounterparty(t *testing.T) {
 	}
 }
 
-// TestSubmitRecordsTheCounterpartyAgentTheInstructionAsserts is the domain half
-// of mesh/books_test.go's TestAWrongCounterpartyAgentIsRefusedByTheBankItNames.
+// TestSubmitRecordsAnAssertedAgentWhereThereIsNoAddressToDeriveFrom measures the
+// door ErrCounterpartyAgentNotNamed keeps open.
 //
-// # What it asserted, and what took the derivation away
+// The counterparty here is named by ACCOUNT and by no address at all, and with
+// no address there is nothing for the routing directory to be asked about. So
+// routeTx falls back to what the instruction asserted and stores it — which is
+// SEPA before 2016, a cross-border transfer today, and the shape of every scheme
+// this bank keeps no directory for.
 //
-// It was TestSubmitDerivesTheCounterpartyAgentFromTheRoster: the instruction
-// named a BIC that was not the counterparty's — the submitting bank's own, the
-// worst case, because a message routed on it comes straight back to its sender
-// — and SubmitPaymentTx discarded it and read the counterparty's own Bank row
-// instead. (The name said "the roster" and the code read the bank row; the two
-// differ for a founded-and-not-admitted bank, and the row was the right one.)
+// It is deliberately the WORST assertion, the submitting bank's own BIC, because
+// a message routed on that one comes straight back to its sender. Nothing here
+// corrects it, and nothing here can: what happens to a payment carrying a wrong
+// agent is answered by the bank the message reaches, which is mesh's to measure.
+// The narrow claim is that the fallback is a fallback and not a correction.
 //
-// Deriving it would read the counterparty's row, in the counterparty's own
-// store, and there is no second source: the roster is keyed by the BIC being
-// asked for and is the clearing house's, and this network has no IBAN-to-BIC
-// directory service. So the payer asserts it, as SEPA's payers did before 2016
-// and as a cross-border payer still does.
+// Where an address IS quoted the assertion is ignored entirely — there is no
+// field for it on the API at all, and the copy of the scheme's directory is the
+// only source. TestABankAdmittedAfterTheLastRefreshCannotBePaidUntilTheNextOne
+// is where that path is measured.
 //
-// # What is asserted here, and what is asserted a layer up
-//
-// This test's claim is narrow and complete: what the payer typed is what is
-// STORED, on both sides, and the bank's own side is still overwritten from its
-// own register. What happens to a payment carrying a WRONG agent is not a
-// question this layer can answer — it is answered by the bank the message
-// reaches, and mesh's test is where that lives.
+// The submitting bank's OWN side is overwritten from its own register in both
+// arms, and that asymmetry is the whole of what a bank is the authority on.
 //
 // Both directions, because which side is the counterparty follows the scheme's
 // direction and nothing else.
-func TestSubmitRecordsTheCounterpartyAgentTheInstructionAsserts(t *testing.T) {
+func TestSubmitRecordsAnAssertedAgentWhereThereIsNoAddressToDeriveFrom(t *testing.T) {
 	t.Run("push: the creditor is the counterparty", func(t *testing.T) {
 		ctx := context.Background()
 		n, req := networkWithTwoBanks(t)
@@ -4262,7 +4261,7 @@ func TestSubmitRecordsTheCounterpartyAgentTheInstructionAsserts(t *testing.T) {
 		p, err := n.submit(ctx, req)
 		assertNoError(t, err)
 		if p.CreditorDetails.Agent != debtorBank.BIC {
-			t.Errorf("creditor agent is %q, want the instruction's %q — an asserted agent is recorded, not replaced", p.CreditorDetails.Agent, debtorBank.BIC)
+			t.Errorf("creditor agent is %q, want the instruction's %q — an asserted agent is a fallback, not a correction", p.CreditorDetails.Agent, debtorBank.BIC)
 		}
 		if p.CreditorDetails.Name != "Whoever The Payer Typed" {
 			t.Errorf("creditor name is %q, want the name the instruction carried", p.CreditorDetails.Name)
@@ -4286,7 +4285,7 @@ func TestSubmitRecordsTheCounterpartyAgentTheInstructionAsserts(t *testing.T) {
 		p, err := n.submit(ctx, req)
 		assertNoError(t, err)
 		if p.DebtorDetails.Agent != creditorBank.BIC {
-			t.Errorf("debtor agent is %q, want the instruction's %q — an asserted agent is recorded, not replaced", p.DebtorDetails.Agent, creditorBank.BIC)
+			t.Errorf("debtor agent is %q, want the instruction's %q — an asserted agent is a fallback, not a correction", p.DebtorDetails.Agent, creditorBank.BIC)
 		}
 		if p.DebtorDetails.Name != "Whoever The Biller Typed" {
 			t.Errorf("debtor name is %q, want the name the instruction carried", p.DebtorDetails.Name)

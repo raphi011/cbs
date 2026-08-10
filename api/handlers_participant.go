@@ -23,15 +23,15 @@ import (
 // not answered with. Nor can it LODGE anything on reserve, since only the central
 // bank can credit an account in the central bank's book and none is held for this
 // bank yet — 422 from POST /lodgements, naming the reserve account it cannot
-// name. It is in no routing
-// directory either, and the cost of that is wider than this bank: nothing STOPS
-// a payment being addressed to it, and a cut-off carrying one cannot be
-// instructed at all, so EVERY member in that cycle is left with its payments
-// Cleared, its payees unpaid and its payers' money in suspense until this bank
-// is admitted. mesh/doc.go measures it and records that no test pins it; "no
-// clearing house routes to it" is not a check anybody makes. The DTO says which
-// of the two states this bank is in: Founded here, and Member once the scheme
-// has answered.
+// name. It is in no routing directory either, which is now what stops a payment
+// reaching it: a bank in no roster is in no member's COPY of one, so an address
+// under its code resolves to nothing at the payer's own bank and the payment is
+// refused before any leg posts. That refusal is worth its cost, because for two
+// tasks nothing made it — a cut-off carrying such a payment cannot be instructed
+// at all, so EVERY member in that cycle was left with its payments Cleared, its
+// payees unpaid and its payers' money in suspense until the bank was admitted.
+// The DTO says which of the two states this bank is in: Founded here, and Member
+// once the scheme has answered.
 //
 // Whether the scheme accepts is not this call's to report. It is decided at two
 // other institutions and arrives as a message, so the honest status code is 202

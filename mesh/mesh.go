@@ -1348,13 +1348,14 @@ func (m *Mesh) Submit(ctx context.Context, req payment.InitiatePaymentRequest) (
 	// On-us, asked by ADDRESS, and this is the arm that fires for an instruction
 	// a customer actually hands in.
 	//
-	// It RESOLVES rather than comparing BICs. The counterparty's BIC is the
-	// PAYER'S ASSERTION (payment.SubmitPaymentTx says why nothing derives it), so
-	// "the asserted agent is this bank" is a statement about what somebody typed
-	// rather than about where the payee banks — and a payer who types their own
-	// bank's BIC for a payee at another bank would be told their instruction is a
-	// book transfer, which it is not. What IS a fact this bank holds is whether
-	// the address resolves in its own register.
+	// It RESOLVES rather than comparing BICs, and the reason survives the
+	// derivation landing. A derived agent answers at INSTITUTION granularity, out
+	// of a copy that pairs a bank code with a BIC — so "the counterparty's agent
+	// is this bank" says the payee's address was issued under this bank's code,
+	// and not that this bank holds the account. Those differ for exactly the case
+	// that matters: an address under the right bank's code that the bank does not
+	// hold, which is somebody else's customer or nobody's. What IS a fact this
+	// bank holds is whether the address resolves in its own register.
 	//
 	// The participant comparison further up covers the instructions this cannot:
 	// a caller that names both internal ids — the seed, and this package's

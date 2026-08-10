@@ -50,19 +50,23 @@ type participantDTO struct {
 	// two a client is holding.
 	//
 	// A founded bank has a book, a chart of accounts and a product, and that part
-	// of it is unrestricted: it opens customer accounts, publishes products, adds
-	// ledgers. What it cannot do is anything needing another institution. It
-	// cannot take a cash deposit — funding raises its reserve at the central bank
-	// in the same step and no settlement agent holds an account for it to raise —
-	// and the refusal is a 422 naming the membership rather than the account. Nor
-	// can any cut-off it takes part in settle, because the instruction turns net
-	// positions into addresses through a routing directory this bank is not in.
+	// of it is unrestricted: it publishes products and adds ledgers. What it
+	// cannot do is anything that needs something another institution gives out,
+	// and the sharpest of those is an ADDRESS — no registry has allocated it a
+	// bank code, so it can open no customer account at all (deposit.ErrNoIssuer).
+	// It cannot lodge cash on reserve either, because no settlement agent holds an
+	// account for it, and no cut-off it took part in could settle, because the
+	// instruction turns net positions into addresses through a roster it is not
+	// in.
 	//
-	// It does NOT say the bank cannot be paid. The mesh routes on its ACTOR TABLE,
-	// which Mesh.Admit fills at founding, so a payment addressed to a founded bank
-	// is relayed, accepted and reaches Cleared like any other and the cut-off
-	// carrying it is what fails. What refuses it is payment.ErrBankNotAdmitted, at
-	// Mesh.Submit and at the clearing house.
+	// It cannot be PAID, and the refusal is the payer's bank's rather than this
+	// scheme's: a bank in no roster is in nobody's copy of one, so an address
+	// under its code resolves to nothing and the payment dies before either leg
+	// posts (payment.ErrBankCodeUnknown). Paying is refused separately, of the
+	// submitting side, by payment.ErrBankNotAdmitted at Mesh.Submit and again at
+	// the clearing house — and both halves are needed, because the mesh routes on
+	// an ACTOR TABLE that Mesh.Admit fills at founding, so nothing about the
+	// transport makes a founded bank unreachable.
 	//
 	// It became a state a client can SEE when admission became a conversation: POST /members
 	// answers 202 with a founded bank, and the scheme's answer arrives at two
