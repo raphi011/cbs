@@ -40,7 +40,6 @@ func newTestPortfolioOn(t *testing.T, clock func() time.Time) (*lending.Portfoli
 
 	store := testenv.New(t, clock)
 	book := ledger.NewBook(store, bookID, clock)
-	portfolio := lending.NewPortfolio(store.Lending(), book, bookID, clock)
 
 	gl, err := book.CreateLedger(ctx, "GL")
 	if err != nil {
@@ -50,6 +49,7 @@ func newTestPortfolioOn(t *testing.T, clock func() time.Time) (*lending.Portfoli
 	if err != nil {
 		t.Fatalf("CreateSubledger: %v", err)
 	}
+	portfolio := lending.NewPortfolio(store.Lending(), book, bookID, clock, sub.ID)
 	customer, err := book.CreateAccount(ctx, sub.ID, "Alice Current", ledger.Liability, "EUR")
 	if err != nil {
 		t.Fatalf("CreateAccount: %v", err)
@@ -57,11 +57,11 @@ func newTestPortfolioOn(t *testing.T, clock func() time.Time) (*lending.Portfoli
 	return portfolio, book, sub.ID, customer.ID.Total()
 }
 
-func TestOpenTermLoan_CreatesTwoAssetAccountsAndNoSchedule(t *testing.T) {
+func TestOpenTermLoan_PoolsUnderTheAssetsControlLinesAndHasNoSchedule(t *testing.T) {
 	ctx := context.Background()
-	p, book, sub, _ := newTestPortfolio(t)
+	p, book, _, _ := newTestPortfolio(t)
 
-	loan, err := p.OpenTermLoan(ctx, sub, "Alice Home Loan", "EUR", 1_000_000, 60_000, interest.ACT365, lending.Annuity, 60)
+	loan, err := p.OpenTermLoan(ctx, "Alice Home Loan", "EUR", 1_000_000, 60_000, interest.ACT365, lending.Annuity, 60)
 	if err != nil {
 		t.Fatalf("OpenTermLoan: %v", err)
 	}
@@ -73,13 +73,15 @@ func TestOpenTermLoan_CreatesTwoAssetAccountsAndNoSchedule(t *testing.T) {
 		t.Errorf("commitment = %d, want 1000000", loan.Commitment)
 	}
 
-	// Two accounts, both Asset, both in the loan's own asset. Separate because
+	// Two lines, both Asset, both in the loan's own asset, and the loan is an
+	// obligor under each rather than a row of its own. Separate lines because
 	// repayment allocates to interest before principal.
+	at := positions(t, p, loan.ID)
 	for _, tt := range []struct {
 		label string
-		id    ledger.AccountID
-	}{{"principal", loan.PrincipalGL}, {"interest", loan.InterestGL}} {
-		gl, err := book.GetAccount(ctx, tt.id)
+		pos   ledger.Position
+	}{{"principal", at.Principal}, {"interest", at.Receivable}} {
+		gl, err := book.GetAccount(ctx, tt.pos.Account)
 		if err != nil {
 			t.Fatalf("GetAccount(%s): %v", tt.label, err)
 		}
@@ -89,9 +91,25 @@ func TestOpenTermLoan_CreatesTwoAssetAccountsAndNoSchedule(t *testing.T) {
 		if gl.Asset != "EUR" {
 			t.Errorf("%s account asset = %s, want EUR", tt.label, gl.Asset)
 		}
+		if !gl.Control {
+			t.Errorf("%s account does not pool obligors", tt.label)
+		}
+		if tt.pos.Subsidiary != string(loan.ID) {
+			t.Errorf("%s obligor = %q, want %s", tt.label, tt.pos.Subsidiary, loan.ID)
+		}
 	}
-	if loan.PrincipalGL == loan.InterestGL {
+	if at.Principal.Account == at.Receivable.Account {
 		t.Fatal("principal and interest share one account")
+	}
+
+	// A second loan in the same asset adds nothing to the chart of accounts:
+	// that is what pooling is for.
+	before := chartSize(t, book)
+	if _, err := p.OpenTermLoan(ctx, "Bruno Home Loan", "EUR", 500_000, 60_000, interest.ACT365, lending.Annuity, 60); err != nil {
+		t.Fatalf("OpenTermLoan: %v", err)
+	}
+	if after := chartSize(t, book); after != before {
+		t.Errorf("chart of accounts grew from %d to %d rows for a second borrower", before, after)
 	}
 
 	// Nothing is drawn and there is no schedule until disbursement: the first
@@ -115,7 +133,7 @@ func TestOpenTermLoan_CreatesTwoAssetAccountsAndNoSchedule(t *testing.T) {
 
 func TestOpenTermLoan_Rejects(t *testing.T) {
 	ctx := context.Background()
-	p, _, sub, _ := newTestPortfolio(t)
+	p, _, _, _ := newTestPortfolio(t)
 
 	for _, tt := range []struct {
 		name      string
@@ -136,28 +154,28 @@ func TestOpenTermLoan_Rejects(t *testing.T) {
 		{"an absurd term", 1_000_000, 60_000, 100_000_000, lending.ErrInvalidTerm},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := p.OpenTermLoan(ctx, sub, "Loan", "EUR", tt.principal, tt.rate, interest.ACT365, lending.Annuity, tt.months)
+			_, err := p.OpenTermLoan(ctx, "Loan", "EUR", tt.principal, tt.rate, interest.ACT365, lending.Annuity, tt.months)
 			assertErrorIs(t, err, tt.want)
 		})
 	}
 
 	// The cap itself is accepted — the bound is on absurdity, not on long
 	// mortgages — so the guard cannot quietly become off-by-one.
-	if _, err := p.OpenTermLoan(ctx, sub, "Fifty Year", "EUR", 1_000_000, 60_000, interest.ACT365, lending.Annuity, lending.MaxTermMonths); err != nil {
+	if _, err := p.OpenTermLoan(ctx, "Fifty Year", "EUR", 1_000_000, 60_000, interest.ACT365, lending.Annuity, lending.MaxTermMonths); err != nil {
 		t.Fatalf("OpenTermLoan at MaxTermMonths: %v", err)
 	}
 
 	// An unknown asset is refused by the ledger before anything is written,
 	// rather than opening a facility whose accounts could not be created.
-	_, err := p.OpenTermLoan(ctx, sub, "Loan", "XYZ", 1_000_000, 60_000, interest.ACT365, lending.Annuity, 60)
+	_, err := p.OpenTermLoan(ctx, "Loan", "XYZ", 1_000_000, 60_000, interest.ACT365, lending.Annuity, 60)
 	assertErrorIs(t, err, ledger.ErrAssetNotFound)
 }
 
 func TestDisburse_PostsPrincipalAndGeneratesTheSchedule(t *testing.T) {
 	ctx := context.Background()
-	p, book, sub, customer := newTestPortfolio(t)
+	p, book, _, customer := newTestPortfolio(t)
 
-	loan, err := p.OpenTermLoan(ctx, sub, "Alice Home Loan", "EUR", 1_000_000, 60_000, interest.ACT365, lending.Annuity, 60)
+	loan, err := p.OpenTermLoan(ctx, "Alice Home Loan", "EUR", 1_000_000, 60_000, interest.ACT365, lending.Annuity, 60)
 	if err != nil {
 		t.Fatalf("OpenTermLoan: %v", err)
 	}
@@ -174,7 +192,7 @@ func TestDisburse_PostsPrincipalAndGeneratesTheSchedule(t *testing.T) {
 	// Dr loan principal (Asset) / Cr the customer's current account
 	// (Liability): the bank's claim on the borrower rises, and so does what it
 	// owes them, because the money is now in their account.
-	principal, err := book.BookBalance(ctx, loan.PrincipalGL.Total())
+	principal, err := book.BookBalance(ctx, positions(t, p, loan.ID).Principal)
 	if err != nil {
 		t.Fatalf("BookBalance: %v", err)
 	}
@@ -238,9 +256,9 @@ func TestDisburse_PostsPrincipalAndGeneratesTheSchedule(t *testing.T) {
 
 func TestDraw_RespectsTheCommitmentAndRepeats(t *testing.T) {
 	ctx := context.Background()
-	p, book, sub, customer := newTestPortfolio(t)
+	p, book, _, customer := newTestPortfolio(t)
 
-	line, err := p.OpenRevolvingLine(ctx, sub, "Alice Line", "EUR", 250_000, 180_000, interest.ACT365, 20_000)
+	line, err := p.OpenRevolvingLine(ctx, "Alice Line", "EUR", 250_000, 180_000, interest.ACT365, 20_000)
 	if err != nil {
 		t.Fatalf("OpenRevolvingLine: %v", err)
 	}
@@ -264,7 +282,7 @@ func TestDraw_RespectsTheCommitmentAndRepeats(t *testing.T) {
 		t.Errorf("drawn = %d, want 250000", drawn)
 	}
 
-	principal, err := book.BookBalance(ctx, line.PrincipalGL.Total())
+	principal, err := book.BookBalance(ctx, positions(t, p, line.ID).Principal)
 	if err != nil {
 		t.Fatalf("BookBalance: %v", err)
 	}
@@ -410,7 +428,7 @@ func TestSetFacilityTermsRefusesAFutureDatedTermLoanRepricing(t *testing.T) {
 	clock := &mutableClock{at: dayN(0)}
 	p, _, sub, customer := newTestPortfolioOn(t, clock.now)
 
-	loan, err := p.OpenTermLoan(ctx, sub, "Alice Home Loan", "EUR",
+	loan, err := p.OpenTermLoan(ctx, "Alice Home Loan", "EUR",
 		1_000_000, opening, interest.ACT365, lending.Annuity, 12)
 	assertNoError(t, err)
 
@@ -494,9 +512,9 @@ func TestSetFacilityTermsMapsAZeroEffectiveDateToToday(t *testing.T) {
 // line the moment it was billed once.
 func TestSetFacilityTermsAllowsALineThatHasBeenBilled(t *testing.T) {
 	ctx := context.Background()
-	p, _, sub, customer := newTestPortfolio(t)
+	p, _, _, customer := newTestPortfolio(t)
 
-	line, err := p.OpenRevolvingLine(ctx, sub, "Alice Line", "EUR", 250_000, 180_000, interest.ACT365, 20_000)
+	line, err := p.OpenRevolvingLine(ctx, "Alice Line", "EUR", 250_000, 180_000, interest.ACT365, 20_000)
 	assertNoError(t, err)
 	_, err = p.Draw(ctx, line.ID, customer, 100_000, "First draw")
 	assertNoError(t, err)
@@ -520,9 +538,9 @@ func TestSetFacilityTermsAllowsALineThatHasBeenBilled(t *testing.T) {
 // guards are ahead of the schedule check, so neither can be reached by way of it.
 func TestSetFacilityTermsRejects(t *testing.T) {
 	ctx := context.Background()
-	p, _, sub, customer := newTestPortfolio(t)
+	p, _, _, customer := newTestPortfolio(t)
 
-	line, err := p.OpenRevolvingLine(ctx, sub, "Alice Line", "EUR", 250_000, 180_000, interest.ACT365, 20_000)
+	line, err := p.OpenRevolvingLine(ctx, "Alice Line", "EUR", 250_000, 180_000, interest.ACT365, 20_000)
 	assertNoError(t, err)
 
 	// A negative rate is not a product, whatever the facility's state.
@@ -546,7 +564,7 @@ func TestSetFacilityTermsRejects(t *testing.T) {
 // and therefore no schedule.
 func openUndisbursedTermLoan(t *testing.T, p *lending.Portfolio, sub ledger.SubledgerID) lending.Facility {
 	t.Helper()
-	loan, err := p.OpenTermLoan(context.Background(), sub, "Bob Home Loan", "EUR",
+	loan, err := p.OpenTermLoan(context.Background(), "Bob Home Loan", "EUR",
 		1_000_000, 60_000, interest.ACT365, lending.Annuity, 60)
 	assertNoError(t, err)
 	return loan
@@ -555,7 +573,7 @@ func openUndisbursedTermLoan(t *testing.T, p *lending.Portfolio, sub ledger.Subl
 // openLine opens an undrawn revolving line.
 func openLine(t *testing.T, p *lending.Portfolio, sub ledger.SubledgerID) lending.Facility {
 	t.Helper()
-	line, err := p.OpenRevolvingLine(context.Background(), sub, "Bob Line", "EUR",
+	line, err := p.OpenRevolvingLine(context.Background(), "Bob Line", "EUR",
 		250_000, 180_000, interest.ACT365, 20_000)
 	assertNoError(t, err)
 	return line

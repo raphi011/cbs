@@ -798,8 +798,20 @@ CREATE INDEX product_versions_product_idx ON product_versions (
 
 CREATE TABLE facilities (
     -- A credit facility: a term loan or a revolving credit line. The mirror of a
-    -- deposit account — it wraps two Asset GL accounts and stores no money
-    -- itself.
+    -- deposit account, and no more a line in the chart of accounts than one:
+    -- what is ABSENT here is principal_gl, interest_gl and refund_gl. A
+    -- facility is an OBLIGOR under three control accounts — drawn principal,
+    -- accrued interest receivable, and interest the bank owes back — and its own
+    -- id is the value in entries.subsidiary_id that says which of them is
+    -- whose. A bank lending to ten thousand borrowers has three
+    -- chart-of-accounts rows for the loan book and ten thousand rows here.
+    --
+    -- The refunds payable is the line that most looks like it should be per
+    -- borrower, and it is the sharpest case for the dimension rather than an
+    -- exception to it: pooled with no obligor, one balance cannot say who is
+    -- owed what, and a refund against it could pay one borrower out of
+    -- another's money and still balance, a Liability never being caught by the
+    -- sufficiency check. What answers both is the obligor on the entry.
     --
     -- There is no row here for an arranged overdraft, and that is the design
     -- rather than an omission. An overdrawn current account's drawn amount IS
@@ -812,40 +824,18 @@ CREATE TABLE facilities (
     id                TEXT NOT NULL,
     kind              INTEGER NOT NULL,
     name              TEXT NOT NULL,
-    -- The asset this facility is denominated in, duplicated from the GL accounts
-    -- named by principal_gl, interest_gl and refund_gl — every one of which is
-    -- created in it and cannot change asset afterwards, so they cannot drift.
-    -- Duplicated for the same reason deposit_accounts.asset is: deriving it
-    -- would turn every listing of facilities into a join for a value that can
-    -- never change, and store/storetest asserts the copies always agree
-    -- (FacilityAssetMatchesItsGLAccounts). Unconstrained, for the reason given
-    -- on accounts.asset.
+    -- The asset this facility is denominated in, and the whole of what decides
+    -- which three control accounts it posts to — the same role
+    -- deposit_accounts.asset plays. Fixed for life: a facility whose asset
+    -- changed would have its history under one set of lines and its balance
+    -- under another. Unconstrained, for the reason given on accounts.asset.
     asset             TEXT NOT NULL,
-    principal_gl      TEXT NOT NULL,
-    interest_gl       TEXT NOT NULL,
-    -- The Liability account holding interest this bank charged on THIS facility
-    -- and never earned, and so owes the borrower back. Unlike principal_gl and
-    -- interest_gl it is empty on almost every row: the account is created
-    -- lazily, only when a backdated posting cuts accrued interest below what the
-    -- borrower has already settled in cash and neither the receivable nor the
-    -- drawn principal can absorb the whole correction. Empty therefore means no
-    -- correction has ever overshot, and is read as a zero obligation rather than
-    -- as a missing account — which is why the read path checks this column
-    -- before touching the ledger. It is per facility rather than one pooled
-    -- account per asset (which is what interest income is) because the balance
-    -- answers "what does the bank owe THIS borrower": pooled, one balance cannot
-    -- say who is owed what, and a refund against it could pay one borrower out
-    -- of another's money and still balance, since a Liability is never caught by
-    -- the sufficiency check. The Payables subledger's total is the control
-    -- figure over these subsidiary rows. Stored as an ID rather than resolved by
-    -- account name because name is a mutable column on this row and a rename
-    -- would otherwise orphan the obligation.
-    refund_gl         TEXT NOT NULL DEFAULT '',
     -- What the bank has committed: a term loan's original principal, a revolving
     -- line's limit. One column rather than two because it plays the same role in
     -- both — the amount beyond which drawing is refused. The amount actually
-    -- DRAWN is not stored: it is the book balance of principal_gl, derived from
-    -- the entries like every other balance here.
+    -- DRAWN is not stored: it is the balance of the loan-principal control
+    -- account under this row's id, derived from the entries like every other
+    -- balance here.
     commitment        INTEGER NOT NULL,
     method            INTEGER NOT NULL,
     term_months       INTEGER NOT NULL,
@@ -862,7 +852,8 @@ CREATE TABLE facilities (
     -- never sum it alongside one. It is SIGNED and routinely negative: a
     -- capitalization charges the rounded receivable, which can exceed what was
     -- earned, and the residue is absorbed by the next day's accrual. The general
-    -- ledger holds the rounded figure in interest_gl. Recorded here because a
+    -- ledger holds the rounded figure under this row's id in the
+    -- accrued-interest receivable. Recorded here because a
     -- scale carried in an integer column is invisible in a schema dump, and
     -- because a reader who saw the negative values would otherwise read them as
     -- corruption.
@@ -870,7 +861,7 @@ CREATE TABLE facilities (
     -- What this facility has accrued over its WHOLE LIFE, same scale as
     -- accrued_interest. Facility interest is recomputed rather than incremented:
     -- every end-of-day re-derives every day since the facility's opening terms
-    -- row from the VALUE-DATED balance of principal_gl, and accrued_interest
+    -- row from this facility's VALUE-DATED drawn balance, and accrued_interest
     -- moves by the change in this column. That is what makes a backdated
     -- repayment or advance correct itself — the days it takes effect over are
     -- re-derived with it in place, this figure moves, and the next run posts the

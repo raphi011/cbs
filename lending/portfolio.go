@@ -10,10 +10,10 @@ import (
 	"github.com/raphi011/cbs/ledger"
 )
 
-// loansSubledgerName is where facilities' principal and receivable accounts are
-// filed. Its own folder, not the customer-deposit one: that folder is what a
-// bank's deposit total aggregates over, and an Asset account in it would be a
-// standing invitation to sum the wrong rows.
+// loansSubledgerName is where facilities' principal and receivable lines are
+// filed. Its own folder, not the customer-deposit one: that folder holds what
+// the bank owes its customers, and an Asset in it would be summed with the
+// wrong sign by anything that totals a folder.
 const loansSubledgerName = "Loans and Advances"
 
 // incomeSubledgerName and interestIncomeName mirror the deposit layer's. The
@@ -23,35 +23,38 @@ const loansSubledgerName = "Loans and Advances"
 // account per asset however its interest was earned.
 const incomeSubledgerName = "Income"
 
-func interestIncomeName(asset ledger.AssetCode) string {
-	return "Interest Income (" + string(asset) + ")"
-}
-
-// payablesSubledgerName is where the bank's own obligations to customers are
-// filed. Its own folder rather than Income or Loans and Advances: those two are
-// aggregated as revenue and as assets, and a Liability filed in either would be
-// summed with the wrong sign by anything that totals a folder.
+// payablesSubledgerName is where the bank's own obligations to borrowers are
+// filed. Its own folder rather than Income or Loans and Advances, for the reason
+// loansSubledgerName gives: a Liability in either would be totalled as revenue
+// or as an asset.
 const payablesSubledgerName = "Payables"
 
-// interestRefundPayableName names a facility's own refunds-payable account, and
-// is keyed on the facility rather than only on its asset — unlike
-// interestIncomeName above, which is one account per asset however many
-// facilities feed it.
+// The four lines an asset's facilities post to. Three of them are CONTROL
+// accounts and carry the facility on every entry, so a bank lending to ten
+// thousand borrowers has three chart-of-accounts rows for them rather than
+// thirty thousand.
 //
-// The difference is what each balance has to answer. Interest income is a
-// bank-wide total and nothing ever needs it split by borrower. A refund payable
-// is a debt to ONE borrower that somebody eventually has to pay back, so the
-// figure only means anything per facility: pooled, the account holds one number
-// that cannot say who is owed what, and a discharge against it is unbounded —
-// it could pay one borrower out of another's money and still balance, because a
-// Liability is never caught by the sufficiency check.
-//
-// It is a subsidiary ledger, in other words, with the Payables folder's total as
-// the control figure. It shares the naming of a facility's other two accounts
-// ("Loan Principal: …", "Accrued Interest: …") because it is the same kind of
-// thing: an account belonging to one facility.
-func interestRefundPayableName(name string, asset ledger.AssetCode) string {
-	return "Interest Refunds Payable: " + name + " (" + string(asset) + ")"
+// The refunds payable is one of the three, and it is the line that most looks
+// like it should not be. A balance pooled with NO obligor cannot say who is owed
+// what, and a discharge against it is unbounded — able to pay one borrower out
+// of another's money and still balance, a Liability never being caught by the
+// sufficiency check. Both objections are about the pooling and not about the
+// account: the obligor is on every entry, and Book.checkSufficientBalance reads
+// a Position, so what stops the unbounded discharge is the dimension.
+func loanPrincipalName(asset ledger.AssetCode) string {
+	return "Loan Principal (" + string(asset) + ")"
+}
+
+func accruedInterestName(asset ledger.AssetCode) string {
+	return "Accrued Interest (" + string(asset) + ")"
+}
+
+func interestRefundPayableName(asset ledger.AssetCode) string {
+	return "Interest Refunds Payable (" + string(asset) + ")"
+}
+
+func interestIncomeName(asset ledger.AssetCode) string {
+	return "Interest Income (" + string(asset) + ")"
 }
 
 // Portfolio is the lending layer over a general ledger. It manages credit
@@ -66,6 +69,16 @@ type Portfolio struct {
 	gl     *ledger.Book
 	bookID ledger.BookID
 	clock  func() time.Time
+
+	// customers is the subledger this portfolio hangs its own folders off. It
+	// files nothing in it — a facility is not a customer deposit — and reads it
+	// only for the ledger it belongs to, so that a bank ends up with one Loans
+	// and Advances folder however many facilities it writes.
+	//
+	// It is CONSTRUCTOR state for the reason deposit.Register's is: as a
+	// per-call argument, one caller naming a different tree would give the bank
+	// a second set of control lines, each holding part of the loan book.
+	customers ledger.SubledgerID
 }
 
 // NewPortfolio creates a lending portfolio over the given store, layered on the
@@ -74,8 +87,11 @@ type Portfolio struct {
 // id must be book.ID(): the portfolio's rows and the book's rows are scoped by
 // the same BookID, which is what lets one Tx read both. Share the clock with
 // the backing ledger.Book so audit timestamps line up across layers.
-func NewPortfolio(store Store, book *ledger.Book, id ledger.BookID, clock func() time.Time) *Portfolio {
-	return &Portfolio{store: store, gl: book, bookID: id, clock: clock}
+//
+// customers is the subledger whose ledger this portfolio files its own folders
+// under; see the field.
+func NewPortfolio(store Store, book *ledger.Book, id ledger.BookID, clock func() time.Time, customers ledger.SubledgerID) *Portfolio {
+	return &Portfolio{store: store, gl: book, bookID: id, clock: clock, customers: customers}
 }
 
 // Store returns the underlying store, so a caller spanning several layers can
@@ -118,8 +134,8 @@ func (p *Portfolio) appendAuditTx(ctx context.Context, tx Tx, eventType, entityI
 // OpenTermLoan opens a term loan: a fixed principal, disbursed once, amortized
 // over termMonths instalments.
 //
-// It creates the loan's two Asset GL accounts and records the facility as
-// Pending. It does NOT generate the schedule and does not move any money: the
+// It records the facility as Pending, adding nothing to the chart of accounts
+// unless it is the first facility in its asset. It does NOT generate the schedule and does not move any money: the
 // first due date is not known until the money is paid out, and a schedule for
 // money that was never disbursed is a plan to repay nothing.
 //
@@ -140,11 +156,11 @@ func (p *Portfolio) appendAuditTx(ctx context.Context, tx Tx, eventType, entityI
 // Returns ErrInvalidAmount, ErrInvalidRate, ErrInvalidTerm, and any error from
 // the ledger — ledger.ErrSubledgerNotFound, or ledger.ErrAssetNotFound if the
 // asset is not one the system knows.
-func (p *Portfolio) OpenTermLoan(ctx context.Context, subledger ledger.SubledgerID, name string, asset ledger.AssetCode, principal ledger.Amount, rate interest.Rate, dc interest.DayCount, method AmortMethod, termMonths int) (Facility, error) {
+func (p *Portfolio) OpenTermLoan(ctx context.Context, name string, asset ledger.AssetCode, principal ledger.Amount, rate interest.Rate, dc interest.DayCount, method AmortMethod, termMonths int) (Facility, error) {
 	var out Facility
 	err := p.store.Update(ctx, func(ctx context.Context, tx Tx) error {
 		var err error
-		out, err = p.OpenTermLoanTx(ctx, tx, subledger, name, asset, principal, rate, dc, method, termMonths)
+		out, err = p.OpenTermLoanTx(ctx, tx, name, asset, principal, rate, dc, method, termMonths)
 		return err
 	})
 	return out, err
@@ -155,14 +171,14 @@ func (p *Portfolio) OpenTermLoan(ctx context.Context, subledger ledger.Subledger
 const MaxTermMonths = 600
 
 // OpenTermLoanTx is OpenTermLoan within a caller-supplied unit of work.
-func (p *Portfolio) OpenTermLoanTx(ctx context.Context, tx Tx, subledger ledger.SubledgerID, name string, asset ledger.AssetCode, principal ledger.Amount, rate interest.Rate, dc interest.DayCount, method AmortMethod, termMonths int) (Facility, error) {
+func (p *Portfolio) OpenTermLoanTx(ctx context.Context, tx Tx, name string, asset ledger.AssetCode, principal ledger.Amount, rate interest.Rate, dc interest.DayCount, method AmortMethod, termMonths int) (Facility, error) {
 	if termMonths <= 0 || termMonths > MaxTermMonths {
 		return Facility{}, ErrInvalidTerm
 	}
 	return p.openTx(ctx, tx, Facility{
 		Kind: TermLoan, Name: name, Asset: asset, Commitment: principal,
 		Method: method, TermMonths: termMonths,
-	}, rate, dc, subledger)
+	}, rate, dc)
 }
 
 // OpenRevolvingLine opens a revolving credit line: a commitment that may be
@@ -178,34 +194,34 @@ func (p *Portfolio) OpenTermLoanTx(ctx context.Context, tx Tx, subledger ledger.
 //
 // A line has no maturity and no up-front schedule; its instalments are its
 // billing cycles, appended by ChargeInterest.
-func (p *Portfolio) OpenRevolvingLine(ctx context.Context, subledger ledger.SubledgerID, name string, asset ledger.AssetCode, limit ledger.Amount, rate interest.Rate, dc interest.DayCount, minPayment interest.Fraction) (Facility, error) {
+func (p *Portfolio) OpenRevolvingLine(ctx context.Context, name string, asset ledger.AssetCode, limit ledger.Amount, rate interest.Rate, dc interest.DayCount, minPayment interest.Fraction) (Facility, error) {
 	var out Facility
 	err := p.store.Update(ctx, func(ctx context.Context, tx Tx) error {
 		var err error
-		out, err = p.OpenRevolvingLineTx(ctx, tx, subledger, name, asset, limit, rate, dc, minPayment)
+		out, err = p.OpenRevolvingLineTx(ctx, tx, name, asset, limit, rate, dc, minPayment)
 		return err
 	})
 	return out, err
 }
 
 // OpenRevolvingLineTx is OpenRevolvingLine within a caller-supplied unit of work.
-func (p *Portfolio) OpenRevolvingLineTx(ctx context.Context, tx Tx, subledger ledger.SubledgerID, name string, asset ledger.AssetCode, limit ledger.Amount, rate interest.Rate, dc interest.DayCount, minPayment interest.Fraction) (Facility, error) {
+func (p *Portfolio) OpenRevolvingLineTx(ctx context.Context, tx Tx, name string, asset ledger.AssetCode, limit ledger.Amount, rate interest.Rate, dc interest.DayCount, minPayment interest.Fraction) (Facility, error) {
 	if minPayment < 0 {
 		return Facility{}, ErrInvalidRate
 	}
 	return p.openTx(ctx, tx, Facility{
 		Kind: RevolvingLine, Name: name, Asset: asset, Commitment: limit,
 		MinPayment: minPayment,
-	}, rate, dc, subledger)
+	}, rate, dc)
 }
 
-// openTx is the shared body of both openers: validate, create the two GL
-// accounts, write the facility and its opening terms row, record the event.
+// openTx is the shared body of both openers: validate, ensure the asset's chart
+// lines, write the facility and its opening terms row, record the event.
 //
 // rate and dc are parameters rather than fields on f because they are not fields
 // on a Facility at all: they are what the facility's first FacilityTerms row
 // carries.
-func (p *Portfolio) openTx(ctx context.Context, tx Tx, f Facility, rate interest.Rate, dc interest.DayCount, subledger ledger.SubledgerID) (Facility, error) {
+func (p *Portfolio) openTx(ctx context.Context, tx Tx, f Facility, rate interest.Rate, dc interest.DayCount) (Facility, error) {
 	if err := ledger.ValidateText("name", f.Name); err != nil {
 		return Facility{}, err
 	}
@@ -216,26 +232,11 @@ func (p *Portfolio) openTx(ctx context.Context, tx Tx, f Facility, rate interest
 		return Facility{}, err
 	}
 
-	// The facility's own accounts go in a Loans and Advances subledger under
-	// whichever ledger the caller's subledger belongs to, so a bank ends up
-	// with one such folder however many facilities it writes.
-	callerSub, err := tx.GetSubledger(ctx, p.bookID, subledger)
-	if err != nil {
-		return Facility{}, err
-	}
-	loans, err := p.gl.EnsureSubledgerTx(ctx, tx, callerSub.LedgerID, loansSubledgerName)
-	if err != nil {
-		return Facility{}, err
-	}
-
-	principalGL, err := p.gl.CreateAccountTx(ctx, tx, loans.ID,
-		"Loan Principal: "+f.Name+" ("+string(f.Asset)+")", ledger.Asset, f.Asset)
-	if err != nil {
-		return Facility{}, err
-	}
-	interestGL, err := p.gl.CreateAccountTx(ctx, tx, loans.ID,
-		"Accrued Interest: "+f.Name+" ("+string(f.Asset)+")", ledger.Asset, f.Asset)
-	if err != nil {
+	// The first facility in an asset puts that asset's four lines in the chart
+	// of accounts; the ten thousandth adds nothing to it. This is also where an
+	// unknown asset code is refused, because every ensure below falls through to
+	// a create when the line is absent and a create validates it.
+	if err := p.ensureChartTx(ctx, tx, f.Asset); err != nil {
 		return Facility{}, err
 	}
 
@@ -245,8 +246,6 @@ func (p *Portfolio) openTx(ctx context.Context, tx Tx, f Facility, rate interest
 	}
 
 	f.ID = FacilityID(id)
-	f.PrincipalGL = principalGL.ID
-	f.InterestGL = interestGL.ID
 	f.Status = Pending
 	f.OpenedAt = p.now()
 	f.Arrears = Arrears{Bucket: Current}
@@ -448,12 +447,16 @@ func (p *Portfolio) advanceTx(ctx context.Context, tx Tx, f Facility, counterpar
 	if description == "" {
 		description = "Advance: " + f.Name
 	}
+	at, err := p.accountsTx(ctx, tx, f)
+	if err != nil {
+		return ledger.Transaction{}, err
+	}
 	return p.gl.PostTransactionTx(ctx, tx, ledger.PostTransactionRequest{
 		Description: description,
 		BookingDate: p.now(),
 		ValueDate:   p.now(),
 		Entries: []ledger.Entry{
-			{AccountID: f.PrincipalGL, Amount: amount, Direction: ledger.Debit},
+			{AccountID: at.Principal.Account, Subsidiary: at.Principal.Subsidiary, Amount: amount, Direction: ledger.Debit},
 			{AccountID: counterparty.Account, Subsidiary: counterparty.Subsidiary, Amount: amount, Direction: ledger.Credit},
 		},
 	})
@@ -731,27 +734,183 @@ func (p *Portfolio) Drawn(ctx context.Context, id FacilityID) (ledger.Amount, er
 
 // drawnTx is Drawn against a facility the caller has already loaded.
 //
-// These three helpers name WHICH of a facility's GL accounts answers a question;
+// These three helpers name WHICH of a facility's positions answers a question;
 // the ledger decides how to sign it. Passing ledger.Debit directly would be an
 // assertion about an account type made from outside the layer that owns it, and
 // would be silently sign-flipped by any change to AccountType.NormalBalance().
 func (p *Portfolio) drawnTx(ctx context.Context, tx Tx, f Facility) (ledger.Amount, error) {
-	return p.gl.BookBalanceTx(ctx, tx, f.PrincipalGL.Total())
+	at, err := p.accountsTx(ctx, tx, f)
+	if err != nil {
+		return 0, err
+	}
+	return p.gl.BookBalanceTx(ctx, tx, at.Principal)
 }
 
 // drawnSeriesTx is the value-dated history of what the borrower owed over
-// [from, to]. Like drawnTx it reads PrincipalGL; unlike drawnTx it returns each
-// day's own figure rather than today's, which is what lets the accrual re-derive
-// a past day with a posting that only reached the ledger after it.
+// [from, to]. Like drawnTx it reads the principal position; unlike drawnTx it
+// returns each day's own figure rather than today's, which is what lets the
+// accrual re-derive a past day with a posting that only reached the ledger after
+// it.
+//
+// ONE facility's series and not the pool's: the control account nets every other
+// borrower's principal into it, and interest charged on that would be interest
+// on the whole loan book.
 //
 // The window bounds are snapped by SeriesTx, in the ledger, alongside the store
 // contract that requires them.
 func (p *Portfolio) drawnSeriesTx(ctx context.Context, tx Tx, f Facility, from, to time.Time) (ledger.Series, error) {
-	return p.gl.SeriesTx(ctx, tx, f.PrincipalGL.Total(), from, to)
+	at, err := p.accountsTx(ctx, tx, f)
+	if err != nil {
+		return ledger.Series{}, err
+	}
+	return p.gl.SeriesTx(ctx, tx, at.Principal, from, to)
 }
 
-// receivableTx is the book balance of a facility's accrued-interest receivable.
-// It is created alongside the principal account in openTx, so it is never empty.
+// receivableTx is the book balance of a facility's share of the accrued-interest
+// receivable — never the pool's, which holds what every other borrower owes too.
 func (p *Portfolio) receivableTx(ctx context.Context, tx Tx, f Facility) (ledger.Amount, error) {
-	return p.gl.BookBalanceTx(ctx, tx, f.InterestGL.Total())
+	at, err := p.accountsTx(ctx, tx, f)
+	if err != nil {
+		return 0, err
+	}
+	return p.gl.BookBalanceTx(ctx, tx, at.Receivable)
+}
+
+// FacilityPositions is where one facility's money is: what it has drawn, what it
+// owes in interest, and what the bank owes it back. All three are positions
+// under a control account, and all three carry the same obligor — the facility
+// itself, which is what a subsidiary ledger keyed on the borrower means here.
+//
+// Exported for a layer above that renders or posts to them; Positions is the
+// read. Nothing on the facility record points at any of them.
+type FacilityPositions struct {
+	Principal  ledger.Position
+	Receivable ledger.Position
+	Payable    ledger.Position
+}
+
+// Positions is FacilityPositions for one facility. Returns ErrFacilityNotFound,
+// and ledger.ErrAccountNotFound if the bank holds no lines for its asset.
+func (p *Portfolio) Positions(ctx context.Context, id FacilityID) (FacilityPositions, error) {
+	var out FacilityPositions
+	err := p.store.View(ctx, func(ctx context.Context, tx Tx) error {
+		f, err := tx.GetFacility(ctx, p.bookID, id)
+		if err != nil {
+			return err
+		}
+		out, err = p.accountsTx(ctx, tx, f)
+		return err
+	})
+	return out, err
+}
+
+// accountsTx resolves all three by name, in the folder this portfolio files
+// them in. openTx created them when the first facility in the asset was opened,
+// so a missing line is a chart that has been tampered with rather than a first
+// use — which is why these RESOLVE and only openTx ensures.
+//
+// The three together rather than one at a time: they share the folder lookup,
+// and every caller that wants one of them is one line from wanting another.
+func (p *Portfolio) accountsTx(ctx context.Context, tx Tx, f Facility) (FacilityPositions, error) {
+	loans, payables, err := p.foldersTx(ctx, tx)
+	if err != nil {
+		return FacilityPositions{}, err
+	}
+	principal, err := p.gl.FindControlAccountTx(ctx, tx, loans, loanPrincipalName(f.Asset), ledger.Asset, f.Asset)
+	if err != nil {
+		return FacilityPositions{}, err
+	}
+	receivable, err := p.gl.FindControlAccountTx(ctx, tx, loans, accruedInterestName(f.Asset), ledger.Asset, f.Asset)
+	if err != nil {
+		return FacilityPositions{}, err
+	}
+	payable, err := p.gl.FindControlAccountTx(ctx, tx, payables, interestRefundPayableName(f.Asset), ledger.Liability, f.Asset)
+	if err != nil {
+		return FacilityPositions{}, err
+	}
+	obligor := string(f.ID)
+	return FacilityPositions{
+		Principal:  principal.ID.For(obligor),
+		Receivable: receivable.ID.For(obligor),
+		Payable:    payable.ID.For(obligor),
+	}, nil
+}
+
+// foldersTx resolves the two folders this portfolio files its lines in, both
+// under the ledger the register's own subledger belongs to.
+func (p *Portfolio) foldersTx(ctx context.Context, tx Tx) (loans, payables ledger.SubledgerID, err error) {
+	ledgerID, err := p.ledgerIDTx(ctx, tx)
+	if err != nil {
+		return "", "", err
+	}
+	loansSub, err := p.gl.FindSubledgerTx(ctx, tx, ledgerID, loansSubledgerName)
+	if err != nil {
+		return "", "", err
+	}
+	payablesSub, err := p.gl.FindSubledgerTx(ctx, tx, ledgerID, payablesSubledgerName)
+	if err != nil {
+		return "", "", err
+	}
+	return loansSub.ID, payablesSub.ID, nil
+}
+
+// ledgerIDTx resolves the ledger this portfolio's folders hang off.
+func (p *Portfolio) ledgerIDTx(ctx context.Context, tx Tx) (ledger.LedgerID, error) {
+	sub, err := tx.GetSubledger(ctx, p.bookID, p.customers)
+	if err != nil {
+		return "", err
+	}
+	return sub.LedgerID, nil
+}
+
+// ensureChartTx creates the four lines an asset's facilities post to, on the
+// first facility opened in that asset. Three are control accounts and one — the
+// income line — is the bank's own, so it takes no obligor.
+func (p *Portfolio) ensureChartTx(ctx context.Context, tx Tx, asset ledger.AssetCode) error {
+	ledgerID, err := p.ledgerIDTx(ctx, tx)
+	if err != nil {
+		return err
+	}
+	loans, err := p.gl.EnsureSubledgerTx(ctx, tx, ledgerID, loansSubledgerName)
+	if err != nil {
+		return err
+	}
+	if _, err := p.gl.EnsureControlAccountTx(ctx, tx, loans.ID, loanPrincipalName(asset), ledger.Asset, asset); err != nil {
+		return err
+	}
+	if _, err := p.gl.EnsureControlAccountTx(ctx, tx, loans.ID, accruedInterestName(asset), ledger.Asset, asset); err != nil {
+		return err
+	}
+	payables, err := p.gl.EnsureSubledgerTx(ctx, tx, ledgerID, payablesSubledgerName)
+	if err != nil {
+		return err
+	}
+	if _, err := p.gl.EnsureControlAccountTx(ctx, tx, payables.ID, interestRefundPayableName(asset), ledger.Liability, asset); err != nil {
+		return err
+	}
+	income, err := p.gl.EnsureSubledgerTx(ctx, tx, ledgerID, incomeSubledgerName)
+	if err != nil {
+		return err
+	}
+	_, err = p.gl.EnsureAccountTx(ctx, tx, income.ID, interestIncomeName(asset), ledger.Revenue, asset)
+	return err
+}
+
+// incomeTx resolves the bank's interest-income line for an asset. Plain rather
+// than control: what the bank has earned is the bank's own and stands in for
+// nobody.
+func (p *Portfolio) incomeTx(ctx context.Context, tx Tx, asset ledger.AssetCode) (ledger.AccountID, error) {
+	ledgerID, err := p.ledgerIDTx(ctx, tx)
+	if err != nil {
+		return "", err
+	}
+	income, err := p.gl.FindSubledgerTx(ctx, tx, ledgerID, incomeSubledgerName)
+	if err != nil {
+		return "", err
+	}
+	acct, err := p.gl.FindAccountTx(ctx, tx, income.ID, interestIncomeName(asset), ledger.Revenue, asset)
+	if err != nil {
+		return "", err
+	}
+	return acct.ID, nil
 }

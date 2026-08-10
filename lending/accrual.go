@@ -183,7 +183,11 @@ func (p *Portfolio) accrueFacilityTx(ctx context.Context, tx Tx, f Facility, dat
 		return p.appendAuditTx(ctx, tx, ledger.EventFacilityAccrued, string(f.ID), f)
 	}
 
-	income, err := p.interestIncomeTx(ctx, tx, f)
+	at, err := p.accountsTx(ctx, tx, f)
+	if err != nil {
+		return err
+	}
+	income, err := p.incomeTx(ctx, tx, f.Asset)
 	if err != nil {
 		return err
 	}
@@ -191,7 +195,7 @@ func (p *Portfolio) accrueFacilityTx(ctx context.Context, tx Tx, f Facility, dat
 	// Accrued again, so it owns the write — the same shape ChargeInterestTx has
 	// for the same reason. Only it knows what was actually given back.
 	if delta < 0 {
-		return p.correctFacilityAccrualTx(ctx, tx, &f, income, -delta, date)
+		return p.correctFacilityAccrualTx(ctx, tx, &f, at, income, -delta, date)
 	}
 
 	if _, err := p.gl.PostTransactionTx(ctx, tx, ledger.PostTransactionRequest{
@@ -199,7 +203,7 @@ func (p *Portfolio) accrueFacilityTx(ctx context.Context, tx Tx, f Facility, dat
 		BookingDate: date,
 		ValueDate:   date,
 		Entries: []ledger.Entry{
-			{AccountID: f.InterestGL, Amount: delta, Direction: ledger.Debit},
+			{AccountID: at.Receivable.Account, Subsidiary: at.Receivable.Subsidiary, Amount: delta, Direction: ledger.Debit},
 			{AccountID: income, Amount: delta, Direction: ledger.Credit},
 		},
 	}); err != nil {
@@ -269,7 +273,7 @@ func (p *Portfolio) accrueFacilityTx(ctx context.Context, tx Tx, f Facility, dat
 //
 // It takes f by pointer for that reason and writes the facility itself. Only
 // this function knows the split.
-func (p *Portfolio) correctFacilityAccrualTx(ctx context.Context, tx Tx, f *Facility, income ledger.AccountID, amount ledger.Amount, date time.Time) error {
+func (p *Portfolio) correctFacilityAccrualTx(ctx context.Context, tx Tx, f *Facility, at FacilityPositions, income ledger.AccountID, amount ledger.Amount, date time.Time) error {
 	receivable, err := p.receivableTx(ctx, tx, *f)
 	if err != nil {
 		return err
@@ -297,20 +301,17 @@ func (p *Portfolio) correctFacilityAccrualTx(ctx context.Context, tx Tx, f *Faci
 	// always posts: amount is positive by contract.
 	entries := []ledger.Entry{{AccountID: income, Amount: amount, Direction: ledger.Debit}}
 	if absorbed > 0 {
-		entries = append(entries, ledger.Entry{AccountID: f.InterestGL, Amount: absorbed, Direction: ledger.Credit})
+		entries = append(entries, ledger.Entry{AccountID: at.Receivable.Account, Subsidiary: at.Receivable.Subsidiary, Amount: absorbed, Direction: ledger.Credit})
 	}
 	if refund > 0 {
-		entries = append(entries, ledger.Entry{AccountID: f.PrincipalGL, Amount: refund, Direction: ledger.Credit})
+		entries = append(entries, ledger.Entry{AccountID: at.Principal.Account, Subsidiary: at.Principal.Subsidiary, Amount: refund, Direction: ledger.Credit})
 	}
 	if payable > 0 {
-		// Resolving this also sets f.RefundGL, which the PutFacility below
-		// persists: the obligation has to be findable afterwards by something
-		// that is not this function. See interestRefundPayableTx.
-		owed, err := p.interestRefundPayableTx(ctx, tx, f)
-		if err != nil {
-			return err
-		}
-		entries = append(entries, ledger.Entry{AccountID: owed, Amount: payable, Direction: ledger.Credit})
+		// Under the facility's own id, which is what makes the obligation
+		// findable afterwards by something that is not this function: the
+		// payable line pools every borrower's, and this one's is the balance
+		// under its subsidiary.
+		entries = append(entries, ledger.Entry{AccountID: at.Payable.Account, Subsidiary: at.Payable.Subsidiary, Amount: payable, Direction: ledger.Credit})
 	}
 
 	glTx, err := p.gl.PostTransactionTx(ctx, tx, ledger.PostTransactionRequest{
@@ -338,71 +339,6 @@ func (p *Portfolio) correctFacilityAccrualTx(ctx context.Context, tx Tx, f *Faci
 		"transaction_id": string(glTx.ID),
 		"residue":        int64(f.Accrued),
 	})
-}
-
-// interestIncomeTx resolves the bank's interest-income account for a
-// facility's asset, creating it and its subledger on first use.
-func (p *Portfolio) interestIncomeTx(ctx context.Context, tx Tx, f Facility) (ledger.AccountID, error) {
-	return p.bankAccountTx(ctx, tx, f, incomeSubledgerName,
-		interestIncomeName(f.Asset), ledger.Revenue)
-}
-
-// interestRefundPayableTx resolves a facility's interest-refunds-payable
-// account, creating it and the Payables subledger on first use, and returns the
-// ID it also writes back to f.RefundGL. It exists for correctFacilityAccrualTx —
-// see there for what lands in it.
-//
-// It takes f by pointer so the caller persists the ID rather than re-deriving it
-// by name later: a facility can be renamed, and a name-resolved obligation would
-// be orphaned by that. Once set the field is stable, and every read path uses it
-// instead of coming back through here — which matters because this function
-// CREATES, and a read must not.
-func (p *Portfolio) interestRefundPayableTx(ctx context.Context, tx Tx, f *Facility) (ledger.AccountID, error) {
-	if f.RefundGL != "" {
-		return f.RefundGL, nil
-	}
-	id, err := p.bankAccountTx(ctx, tx, *f, payablesSubledgerName,
-		interestRefundPayableName(f.Name, f.Asset), ledger.Liability)
-	if err != nil {
-		return "", err
-	}
-	f.RefundGL = id
-	return id, nil
-}
-
-// bankAccountTx resolves an account that is not one of the two a facility is
-// opened with, in the same ledger the facility is filed in, creating it and its
-// folder on first use.
-//
-// The lookup starts from the facility's principal account because that is the
-// only handle a facility has on where it lives: the account knows its
-// subledger, and the subledger knows the ledger everything else hangs off. So
-// whatever it resolves lands in the same tree as the facilities that produced
-// it.
-//
-// Whether one account serves the whole bank or one serves each facility is
-// decided entirely by the name the caller passes: interestIncomeName keys on the
-// asset alone and so collapses every facility onto one account, while
-// interestRefundPayableName keys on the facility too and so gives each its own.
-// See interestRefundPayableName for why the two differ.
-func (p *Portfolio) bankAccountTx(ctx context.Context, tx Tx, f Facility, folder, name string, t ledger.AccountType) (ledger.AccountID, error) {
-	principal, err := tx.GetAccount(ctx, p.bookID, f.PrincipalGL)
-	if err != nil {
-		return "", err
-	}
-	loansSub, err := tx.GetSubledger(ctx, p.bookID, principal.SubledgerID)
-	if err != nil {
-		return "", err
-	}
-	sub, err := p.gl.EnsureSubledgerTx(ctx, tx, loansSub.LedgerID, folder)
-	if err != nil {
-		return "", err
-	}
-	acct, err := p.gl.EnsureAccountTx(ctx, tx, sub.ID, name, t, f.Asset)
-	if err != nil {
-		return "", err
-	}
-	return acct.ID, nil
 }
 
 // AccruedInterest is a facility's receivable in whole minor units — the balance
@@ -545,6 +481,11 @@ func (p *Portfolio) ChargeInterestTx(ctx context.Context, tx Tx, id FacilityID, 
 		}
 	}
 
+	at, err := p.accountsTx(ctx, tx, f)
+	if err != nil {
+		return Charge{}, err
+	}
+
 	var glTx ledger.Transaction
 	if charge > 0 {
 		// Value-dated at date, which means the day ENDING on it is re-priced at
@@ -560,8 +501,8 @@ func (p *Portfolio) ChargeInterestTx(ctx context.Context, tx Tx, id FacilityID, 
 			BookingDate: date,
 			ValueDate:   date,
 			Entries: []ledger.Entry{
-				{AccountID: f.PrincipalGL, Amount: charge, Direction: ledger.Debit},
-				{AccountID: f.InterestGL, Amount: charge, Direction: ledger.Credit},
+				{AccountID: at.Principal.Account, Subsidiary: at.Principal.Subsidiary, Amount: charge, Direction: ledger.Debit},
+				{AccountID: at.Receivable.Account, Subsidiary: at.Receivable.Subsidiary, Amount: charge, Direction: ledger.Credit},
 			},
 		})
 		if err != nil {

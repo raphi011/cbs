@@ -3072,7 +3072,7 @@ func TestParticipantRunEndOfDay_DrivesBothLayers(t *testing.T) {
 	fundAccount(t, ctx, net, bank, bruno, 5_000)
 
 	// And a drawn revolving line.
-	line, err := bank.Lending.OpenRevolvingLine(ctx, bank.CustomerSubledger, "Bruno Line", testAsset, 250_000, 180_000, interest.ACT365, 20_000)
+	line, err := bank.Lending.OpenRevolvingLine(ctx, "Bruno Line", testAsset, 250_000, 180_000, interest.ACT365, 20_000)
 	assertNoError(t, err)
 	brunoPos, err := bank.Deposit.Position(ctx, bruno.ID)
 	assertNoError(t, err)

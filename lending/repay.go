@@ -99,12 +99,16 @@ func (p *Portfolio) RepayTx(ctx context.Context, tx Tx, id FacilityID, counterpa
 	}
 	toPrincipal := amount - toInterest
 
+	at, err := p.accountsTx(ctx, tx, f)
+	if err != nil {
+		return ledger.Transaction{}, err
+	}
 	entries := []ledger.Entry{{AccountID: counterparty.Account, Subsidiary: counterparty.Subsidiary, Amount: amount, Direction: ledger.Debit}}
 	if toInterest > 0 {
-		entries = append(entries, ledger.Entry{AccountID: f.InterestGL, Amount: toInterest, Direction: ledger.Credit})
+		entries = append(entries, ledger.Entry{AccountID: at.Receivable.Account, Subsidiary: at.Receivable.Subsidiary, Amount: toInterest, Direction: ledger.Credit})
 	}
 	if toPrincipal > 0 {
-		entries = append(entries, ledger.Entry{AccountID: f.PrincipalGL, Amount: toPrincipal, Direction: ledger.Credit})
+		entries = append(entries, ledger.Entry{AccountID: at.Principal.Account, Subsidiary: at.Principal.Subsidiary, Amount: toPrincipal, Direction: ledger.Credit})
 	}
 	if description == "" {
 		description = "Repayment: " + f.Name

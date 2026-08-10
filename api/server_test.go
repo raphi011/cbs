@@ -2978,10 +2978,10 @@ func overpaidFacilityViaAPI(t *testing.T, h *Server) (pid, fid, did string, owed
 		"description":"backdated settlement",
 		"valueDate":%q,
 		"entries":[
-			{"accountId":%q,"amount":1000000,"direction":"Credit"},
+			{"accountId":%q,"subsidiary":%q,"amount":1000000,"direction":"Credit"},
 			{"accountId":%q,"subsidiary":%q,"amount":1000000,"direction":"Debit"}
 		]
-	}`, drawdown.Format(time.RFC3339), facility.PrincipalGL, aliceGL, did), http.StatusCreated)
+	}`, drawdown.Format(time.RFC3339), facility.PrincipalAccount, fid, aliceGL, did), http.StatusCreated)
 	assertStatus(t, bank(h, pid), "POST", "/end-of-day", `{"date":"`+drawdown.AddDate(0, 0, 11).Format("2006-01-02")+`"}`, http.StatusNoContent)
 
 	getJSON(t, bank(h, pid), "/facilities/"+fid, &facility)
@@ -2989,8 +2989,8 @@ func overpaidFacilityViaAPI(t *testing.T, h *Server) (pid, fid, did string, owed
 		t.Fatalf("refundPayable = %d after the correction, want positive; the fixture needs a debt to discharge",
 			facility.RefundPayable)
 	}
-	if facility.RefundGL == "" {
-		t.Error("refundGlAccount is empty on a facility with an outstanding refund")
+	if facility.RefundAccount == "" {
+		t.Error("refundAccount is empty on a facility with an outstanding refund")
 	}
 	// It is not netted into what the borrower owes: the money runs the other way.
 	if facility.Outstanding != 0 {
@@ -3053,7 +3053,7 @@ func TestInterestRefundIsListedAndDischargeable(t *testing.T) {
 
 // TestInterestRefundsPayableIsEmptyForAnOrdinaryBank pins the common case: the
 // listing is an empty array, not an error and not null, and an ordinary facility
-// reports no refund and no refund account.
+// reports no refund — while still naming the line one would sit in.
 func TestInterestRefundsPayableIsEmptyForAnOrdinaryBank(t *testing.T) {
 	h := newServer(t, nil)
 	pid := admitMember(t, h, `{"bic":"BNKADEFFXXX","name":"Bank A","country":"DE"}`, http.StatusAccepted)["id"].(string)
@@ -3066,8 +3066,8 @@ func TestInterestRefundsPayableIsEmptyForAnOrdinaryBank(t *testing.T) {
 	if got := loan["refundPayable"]; got != float64(0) {
 		t.Errorf("refundPayable on a fresh facility = %v, want 0", got)
 	}
-	if _, ok := loan["refundGlAccount"]; ok {
-		t.Error("refundGlAccount is rendered on a facility that has no such account")
+	if got, _ := loan["refundAccount"].(string); got == "" {
+		t.Error("refundAccount is empty; the line exists from the first facility in the asset")
 	}
 
 	res := do(t, bank(h, pid), "GET", "/interest-refunds-payable", "")

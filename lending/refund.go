@@ -19,20 +19,22 @@ import (
 // there is somebody to make it.
 
 // RefundPayable is what the bank still owes one borrower in interest it took and
-// never earned: the facility it arose on, and the balance of that facility's
-// refunds-payable account.
+// never earned: the facility it arose on, and the balance the refunds-payable
+// line holds under it.
 //
-// Amount is DERIVED — the account's own book balance — rather than a figure kept
+// Amount is DERIVED — the balance of that position — rather than a figure kept
 // on the facility, for the same reason Drawn is: a second copy of a number is a
-// second thing that can be wrong. The facility stores only which account holds
-// it.
+// second thing that can be wrong. The facility stores neither the figure nor
+// where it sits.
 type RefundPayable struct {
 	FacilityID FacilityID
 	// Name and Asset are the facility's, copied so a caller listing every
 	// outstanding refund can render it without a lookup per row.
 	Name  string
 	Asset ledger.AssetCode
-	// Account is the Liability GL account holding the obligation.
+	// Account is the Liability control account the obligation sits in. The
+	// obligor under it is FacilityID above, so a client reading a statement for
+	// this one refund has both halves.
 	Account ledger.AccountID
 	// Amount is what is still owed, in the asset's minor units. Always positive:
 	// a facility owing nothing is not listed at all.
@@ -44,7 +46,7 @@ type RefundPayable struct {
 
 // RefundPayableFor is what the bank owes one borrower back. It is 0 for a
 // facility no correction has ever overshot on, which is the overwhelming
-// majority: RefundGL is only created when one does.
+// majority: nothing has been posted under it.
 //
 // Returns ErrFacilityNotFound.
 func (p *Portfolio) RefundPayableFor(ctx context.Context, id FacilityID) (ledger.Amount, error) {
@@ -61,19 +63,19 @@ func (p *Portfolio) RefundPayableFor(ctx context.Context, id FacilityID) (ledger
 }
 
 // refundPayableTx is RefundPayableFor against a facility the caller has already
-// loaded. The refunds-payable account is a Liability, so its balance runs the
-// opposite way to the facility's other two accounts — which is the ledger's
+// loaded. The refunds-payable line is a Liability, so its balance runs the
+// opposite way to the facility's other two positions — which is the ledger's
 // business, not this layer's, and is why the direction is not named here.
 //
-// An empty RefundGL short-circuits to 0 rather than reading anything. That is
-// not just an optimisation: the account does not exist yet, and resolving it by
-// name would CREATE it, which is not something a read may do. It is why
-// interestRefundPayableTx persists the ID in the first place.
+// It reads the position and not the account: the pool holds what the bank owes
+// every other borrower too, and answering with that would tell one borrower they
+// are owed the whole book's refunds.
 func (p *Portfolio) refundPayableTx(ctx context.Context, tx Tx, f Facility) (ledger.Amount, error) {
-	if f.RefundGL == "" {
-		return 0, nil
+	at, err := p.accountsTx(ctx, tx, f)
+	if err != nil {
+		return 0, err
 	}
-	return p.gl.BookBalanceTx(ctx, tx, f.RefundGL.Total())
+	return p.gl.BookBalanceTx(ctx, tx, at.Payable)
 }
 
 // ListRefundsPayable returns every outstanding interest refund in the book,
@@ -88,8 +90,8 @@ func (p *Portfolio) refundPayableTx(ctx context.Context, tx Tx, f Facility) (led
 // invisible — the ones with no further accrual, statement or repayment to
 // surface them.
 //
-// It reads one balance per facility that has a refunds-payable account, and
-// nothing at all for the rest.
+// It reads one balance per facility, which is one per obligor under a single
+// chart-of-accounts line.
 func (p *Portfolio) ListRefundsPayable(ctx context.Context) ([]RefundPayable, error) {
 	var out []RefundPayable
 	err := p.store.View(ctx, func(ctx context.Context, tx Tx) error {
@@ -109,10 +111,11 @@ func (p *Portfolio) ListRefundsPayableTx(ctx context.Context, tx Tx) ([]RefundPa
 	}
 	out := make([]RefundPayable, 0)
 	for _, f := range facilities {
-		if f.RefundGL == "" {
-			continue
+		at, err := p.accountsTx(ctx, tx, f)
+		if err != nil {
+			return nil, err
 		}
-		owed, err := p.refundPayableTx(ctx, tx, f)
+		owed, err := p.gl.BookBalanceTx(ctx, tx, at.Payable)
 		if err != nil {
 			return nil, err
 		}
@@ -123,7 +126,7 @@ func (p *Portfolio) ListRefundsPayableTx(ctx context.Context, tx Tx) ([]RefundPa
 			FacilityID:     f.ID,
 			Name:           f.Name,
 			Asset:          f.Asset,
-			Account:        f.RefundGL,
+			Account:        at.Payable.Account,
 			Amount:         owed,
 			FacilityStatus: f.Status,
 		})
@@ -135,8 +138,8 @@ func (p *Portfolio) ListRefundsPayableTx(ctx context.Context, tx Tx) ([]RefundPa
 // earned, discharging what a backdated correction left in the facility's
 // refunds-payable account.
 //
-//	Dr  Interest Refunds Payable: … (Liability)   4_932
-//	  Cr counterparty                               4_932
+//	Dr  Interest Refunds Payable (Liability), this borrower   4_932
+//	  Cr counterparty                                          4_932
 //
 // It is the mirror of Repay, and every difference between the two follows from
 // the money running the other way.
@@ -172,9 +175,11 @@ func (p *Portfolio) ListRefundsPayableTx(ctx context.Context, tx Tx) ([]RefundPa
 // # Why the amount is bounded
 //
 // A Liability is never caught by the ledger's sufficiency check — that guards
-// Asset and Expense accounts only — so an over-refund would post cleanly and
-// leave the payable with a NEGATIVE balance: an account saying the borrower owes
-// the bank a refund, which is not a thing. Partial refunds are allowed, because
+// Asset and Expense positions only — so an over-refund would post cleanly and
+// leave this borrower's share of the payable NEGATIVE: a balance saying the
+// borrower owes the bank a refund, which is not a thing. The pool would stay
+// comfortably positive on other borrowers' money throughout, which is exactly
+// the reading a control account must not be given. Partial refunds are allowed, because
 // paying an obligation down in instalments is ordinary; paying out more than was
 // ever owed is not.
 //
@@ -200,7 +205,11 @@ func (p *Portfolio) RefundInterestTx(ctx context.Context, tx Tx, id FacilityID, 
 	if amount <= 0 {
 		return ledger.Transaction{}, ErrInvalidAmount
 	}
-	owed, err := p.refundPayableTx(ctx, tx, f)
+	at, err := p.accountsTx(ctx, tx, f)
+	if err != nil {
+		return ledger.Transaction{}, err
+	}
+	owed, err := p.gl.BookBalanceTx(ctx, tx, at.Payable)
 	if err != nil {
 		return ledger.Transaction{}, err
 	}
@@ -224,7 +233,7 @@ func (p *Portfolio) RefundInterestTx(ctx context.Context, tx Tx, id FacilityID, 
 		BookingDate: date,
 		ValueDate:   date,
 		Entries: []ledger.Entry{
-			{AccountID: f.RefundGL, Amount: amount, Direction: ledger.Debit},
+			{AccountID: at.Payable.Account, Subsidiary: at.Payable.Subsidiary, Amount: amount, Direction: ledger.Debit},
 			{AccountID: counterparty.Account, Subsidiary: counterparty.Subsidiary, Amount: amount, Direction: ledger.Credit},
 		},
 	})
@@ -240,7 +249,7 @@ func (p *Portfolio) RefundInterestTx(ctx context.Context, tx Tx, id FacilityID, 
 		"facility_id":    string(f.ID),
 		"amount":         amount,
 		"remaining":      owed - amount,
-		"account":        string(f.RefundGL),
+		"account":        at.Payable.String(),
 		"counterparty":   counterparty.String(),
 		"transaction_id": string(glTx.ID),
 	}); err != nil {

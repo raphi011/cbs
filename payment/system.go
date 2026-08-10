@@ -336,7 +336,7 @@ func (s *Network) CentralBank() (*ledger.Book, error) { return s.centralBankBook
 func (s *Network) bind(p Bank) *Bank {
 	p.Ledger = ledger.NewBook(s.ledgers, p.BookID, s.clock)
 	p.Deposit = deposit.NewRegister(s.deposits, p.Ledger, p.BookID, s.clock, p.Issuer, p.CustomerSubledger)
-	p.Lending = lending.NewPortfolio(s.lendings, p.Ledger, p.BookID, s.clock)
+	p.Lending = lending.NewPortfolio(s.lendings, p.Ledger, p.BookID, s.clock, p.CustomerSubledger)
 	p.Catalogue = product.NewCatalogue(s.products, p.Ledger, p.BookID, s.clock)
 	return &p
 }

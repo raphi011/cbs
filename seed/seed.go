@@ -391,7 +391,7 @@ func (b *builder) openOverdraft(p *payment.Bank, name string, limit ledger.Amoun
 // openLoan opens a term loan and disburses it in full into the borrower's own
 // account, so the caller is left with a facility that has begun accruing.
 func (b *builder) openLoan(p *payment.Bank, borrower deposit.Account, name string, principal ledger.Amount, rate interest.Rate, termMonths int, firstDue time.Time, description string) lending.Facility {
-	loan := must(p.Lending.OpenTermLoan(b.ctx, p.CustomerSubledger, name, seedAsset, principal, rate, interest.ACT365, lending.Annuity, termMonths))
+	loan := must(p.Lending.OpenTermLoan(b.ctx, name, seedAsset, principal, rate, interest.ACT365, lending.Annuity, termMonths))
 	borrowerPos := must(p.Deposit.Position(b.ctx, borrower.ID))
 	must(p.Lending.Disburse(b.ctx, loan.ID, borrowerPos, firstDue, description))
 	return must(p.Lending.GetFacility(b.ctx, loan.ID))
@@ -400,7 +400,7 @@ func (b *builder) openLoan(p *payment.Bank, borrower deposit.Account, name strin
 // openLine opens a revolving line and draws it once into the borrower's own
 // account, so the caller is left with a facility carrying a balance.
 func (b *builder) openLine(p *payment.Bank, borrower deposit.Account, name string, limit ledger.Amount, rate interest.Rate, minPayment interest.Fraction, draw ledger.Amount, description string) lending.Facility {
-	line := must(p.Lending.OpenRevolvingLine(b.ctx, p.CustomerSubledger, name, seedAsset, limit, rate, interest.ACT365, minPayment))
+	line := must(p.Lending.OpenRevolvingLine(b.ctx, name, seedAsset, limit, rate, interest.ACT365, minPayment))
 	borrowerPos := must(p.Deposit.Position(b.ctx, borrower.ID))
 	must(p.Lending.Draw(b.ctx, line.ID, borrowerPos, draw, description))
 	return must(p.Lending.GetFacility(b.ctx, line.ID))

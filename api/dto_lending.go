@@ -27,22 +27,24 @@ import (
 // one is not visible here at all. lending.Portfolio.FacilityTermsHistory is what
 // shows the whole timeline; there is no HTTP route onto it yet.
 type facilityDTO struct {
-	ID          string `json:"id"`
-	Kind        string `json:"kind"`
-	Name        string `json:"name"`
-	Asset       string `json:"asset"`
-	PrincipalGL string `json:"principalGlAccount"`
-	InterestGL  string `json:"interestGlAccount"`
+	ID    string `json:"id"`
+	Kind  string `json:"kind"`
+	Name  string `json:"name"`
+	Asset string `json:"asset"`
 
-	// RefundGL is the facility's interest-refunds-payable account, absent until
-	// a backdated correction has overshot on it — see lending.Facility.RefundGL.
-	RefundGL string `json:"refundGlAccount,omitempty"`
+	// The three control accounts this facility's money sits in: what it has
+	// drawn, what it owes in interest, and what the bank owes it back. The
+	// obligor under each is this facility's own ID, above, which is why there
+	// is no fourth field for it — see lending.FacilityPositions.
+	PrincipalAccount string `json:"principalAccount"`
+	InterestAccount  string `json:"interestAccount"`
+	RefundAccount    string `json:"refundAccount"`
 
 	Commitment int64 `json:"commitment"`
-	// Drawn and AccruedInterest are derived, not stored: Drawn is the principal
-	// GL account's book balance; AccruedInterest is Minor() of the facility's
-	// own stored accrued figure, which the interest GL account's balance always
-	// equals but is not itself read from.
+	// Drawn and AccruedInterest are derived, not stored: Drawn is the balance of
+	// the principal control account under this facility; AccruedInterest is
+	// Minor() of the facility's own stored accrued figure, which that
+	// facility's share of the receivable always equals but is not read from.
 	Drawn           int64 `json:"drawn"`
 	AccruedInterest int64 `json:"accruedInterest"`
 	Outstanding     int64 `json:"outstanding"`
@@ -83,20 +85,21 @@ type facilityDTO struct {
 // Method is rendered only for a term loan: AmortMethod's zero value (Annuity)
 // is indistinguishable from an explicitly-set one, and a revolving line — which
 // has no amortization method — would otherwise render a misleading "Annuity".
-func toFacilityDTO(f lending.Facility, t lending.FacilityTerms, drawn, accrued, refund ledger.Amount) facilityDTO {
+func toFacilityDTO(f lending.Facility, t lending.FacilityTerms, at lending.FacilityPositions, drawn, accrued, refund ledger.Amount) facilityDTO {
 	outstanding := drawn
 	if accrued > 0 {
 		outstanding += accrued
 	}
 
 	dto := facilityDTO{
-		ID:          string(f.ID),
-		Kind:        f.Kind.String(),
-		Name:        f.Name,
-		Asset:       string(f.Asset),
-		PrincipalGL: string(f.PrincipalGL),
-		InterestGL:  string(f.InterestGL),
-		RefundGL:    string(f.RefundGL),
+		ID:    string(f.ID),
+		Kind:  f.Kind.String(),
+		Name:  f.Name,
+		Asset: string(f.Asset),
+
+		PrincipalAccount: string(at.Principal.Account),
+		InterestAccount:  string(at.Receivable.Account),
+		RefundAccount:    string(at.Payable.Account),
 
 		Commitment: int64(f.Commitment),
 

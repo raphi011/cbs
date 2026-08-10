@@ -38,7 +38,7 @@ func overpaidLoan(t *testing.T) (*lending.Portfolio, *ledger.Book, ledger.Subled
 	if _, err := p.Repay(ctx, loan.ID, customer, settled, drawdown.AddDate(0, 0, 30), "Interest"); err != nil {
 		t.Fatalf("Repay: %v", err)
 	}
-	postTo(t, book, sub, loan.PrincipalGL, loan.Asset, 1_000_000, ledger.Credit, drawdown)
+	postTo(t, book, sub, positions(t, p, loan.ID).Principal, loan.Asset, 1_000_000, ledger.Credit, drawdown)
 	if err := p.Accrue(ctx, loan.ID, drawdown.AddDate(0, 0, 31)); err != nil {
 		t.Fatalf("Accrue: %v", err)
 	}
@@ -56,19 +56,16 @@ func overpaidLoan(t *testing.T) (*lending.Portfolio, *ledger.Book, ledger.Subled
 // refundDate is a day after the correction that produced the payable.
 var refundDate = drawdown.AddDate(0, 0, 40)
 
-// TestRefundPayableFor_IsZeroWithoutAnAccount pins the read path's
-// short-circuit. Almost every facility has no refunds-payable account at all —
-// it is created only by a correction that overshoots — and reporting 0 for one
-// must not mean resolving an account by name, because resolving it is what
-// CREATES it. A read that materialises a Liability account on the bank's chart
-// of accounts is not a read.
-func TestRefundPayableFor_IsZeroWithoutAnAccount(t *testing.T) {
+// TestRefundPayableFor_IsZeroForAFacilityNothingWasPostedUnder pins what a
+// pooled line has to answer for a borrower who is owed nothing. The line exists
+// from the first facility in the asset and holds whatever every other borrower
+// is owed, so a read that answered with the ACCOUNT's balance would tell this
+// borrower they are owed the whole book's refunds. The obligor is what makes the
+// answer zero.
+func TestRefundPayableFor_IsZeroForAFacilityNothingWasPostedUnder(t *testing.T) {
 	ctx := context.Background()
 	p, book, loan, _ := disbursedLoan(t)
 
-	if got := facility(t, p, loan.ID).RefundGL; got != "" {
-		t.Errorf("RefundGL = %q on an ordinary loan, want empty", got)
-	}
 	owed, err := p.RefundPayableFor(ctx, loan.ID)
 	if err != nil {
 		t.Fatalf("RefundPayableFor: %v", err)
@@ -77,21 +74,18 @@ func TestRefundPayableFor_IsZeroWithoutAnAccount(t *testing.T) {
 		t.Errorf("refund payable = %d, want 0", owed)
 	}
 
-	// And no Payables folder was conjured up by asking.
-	ledgers, err := book.ListLedgers(ctx)
-	if err != nil {
-		t.Fatalf("ListLedgers: %v", err)
+	// The line itself is there — a chart of accounts is a statement about the
+	// bank, not about which of its borrowers happen to be owed money today.
+	payable := positions(t, p, loan.ID).Payable
+	if payable.Subsidiary != string(loan.ID) {
+		t.Errorf("payable obligor = %q, want %s", payable.Subsidiary, loan.ID)
 	}
-	for _, l := range ledgers {
-		subs, err := book.ListSubledgers(ctx, l.ID)
-		if err != nil {
-			t.Fatalf("ListSubledgers: %v", err)
-		}
-		for _, s := range subs {
-			if s.Name == "Payables" {
-				t.Error("reading a refund payable created the Payables subledger; a read must not write")
-			}
-		}
+	gl, err := book.GetAccount(ctx, payable.Account)
+	if err != nil {
+		t.Fatalf("GetAccount: %v", err)
+	}
+	if gl.Type != ledger.Liability || !gl.Control {
+		t.Errorf("payable account = %s %v, want a Liability that pools obligors", gl.Type, gl.Control)
 	}
 }
 
@@ -101,16 +95,16 @@ func TestRefundInterest_DischargesThePayable(t *testing.T) {
 	ctx := context.Background()
 	p, book, _, loan, customer := overpaidLoan(t)
 
-	before := bookBalance(t, book, customer.Account)
+	before := bookBalance(t, book, customer)
 	tx, err := p.RefundInterest(ctx, loan.ID, customer, 4_932, refundDate, "")
 	if err != nil {
 		t.Fatalf("RefundInterest: %v", err)
 	}
 
-	if got := bookBalance(t, book, loan.RefundGL); got != 0 {
+	if got := bookBalance(t, book, positions(t, p, loan.ID).Payable); got != 0 {
 		t.Errorf("refund payable = %d, want 0; the obligation must be discharged", got)
 	}
-	if got := bookBalance(t, book, customer.Account) - before; got != 4_932 {
+	if got := bookBalance(t, book, customer) - before; got != 4_932 {
 		t.Errorf("customer credited %d, want 4932", got)
 	}
 	if len(tx.Entries) != 2 {
@@ -129,10 +123,10 @@ func TestRefundInterest_DischargesThePayable(t *testing.T) {
 	// Allocating any of this back onto the loan would hand the borrower money
 	// the correction had already used to reduce what they owed.
 	after := facility(t, p, loan.ID)
-	if got := bookBalance(t, book, loan.PrincipalGL); got != 0 {
+	if got := bookBalance(t, book, positions(t, p, loan.ID).Principal); got != 0 {
 		t.Errorf("principal = %d after a refund, want 0 — a refund is not a repayment", got)
 	}
-	if got := bookBalance(t, book, loan.InterestGL); got != 0 {
+	if got := bookBalance(t, book, positions(t, p, loan.ID).Receivable); got != 0 {
 		t.Errorf("receivable = %d after a refund, want 0", got)
 	}
 	if after.Accrued != loan.Accrued {
@@ -195,13 +189,13 @@ func TestRefundInterest_PaysPartially(t *testing.T) {
 	if _, err := p.RefundInterest(ctx, loan.ID, customer, 2_000, refundDate, ""); err != nil {
 		t.Fatalf("RefundInterest: %v", err)
 	}
-	if got := bookBalance(t, book, loan.RefundGL); got != 2_932 {
+	if got := bookBalance(t, book, positions(t, p, loan.ID).Payable); got != 2_932 {
 		t.Errorf("refund payable = %d, want 2932 still owed", got)
 	}
 	if _, err := p.RefundInterest(ctx, loan.ID, customer, 2_932, refundDate, ""); err != nil {
 		t.Fatalf("RefundInterest, second: %v", err)
 	}
-	if got := bookBalance(t, book, loan.RefundGL); got != 0 {
+	if got := bookBalance(t, book, positions(t, p, loan.ID).Payable); got != 0 {
 		t.Errorf("refund payable = %d, want 0", got)
 	}
 	// And now there is nothing left to pay.
@@ -222,7 +216,7 @@ func TestRefundInterest_RefusesMoreThanIsOwed(t *testing.T) {
 	if _, err := p.RefundInterest(ctx, loan.ID, customer, 4_933, refundDate, ""); !errors.Is(err, lending.ErrInvalidAmount) {
 		t.Errorf("over-refund err = %v, want ErrInvalidAmount", err)
 	}
-	if got := bookBalance(t, book, loan.RefundGL); got != 4_932 {
+	if got := bookBalance(t, book, positions(t, p, loan.ID).Payable); got != 4_932 {
 		t.Errorf("refund payable = %d after a refused refund, want 4932 untouched", got)
 	}
 	for _, amount := range []ledger.Amount{0, -1} {
@@ -273,7 +267,7 @@ func TestRefundInterest_SurvivesTheFacilityClosing(t *testing.T) {
 	if _, err := p.RefundInterest(ctx, loan.ID, customer, 4_932, refundDate, ""); err != nil {
 		t.Fatalf("RefundInterest on a closed facility: %v", err)
 	}
-	if got := bookBalance(t, book, loan.RefundGL); got != 0 {
+	if got := bookBalance(t, book, positions(t, p, loan.ID).Payable); got != 0 {
 		t.Errorf("refund payable = %d, want 0", got)
 	}
 }
@@ -283,12 +277,12 @@ func TestRefundInterest_SurvivesTheFacilityClosing(t *testing.T) {
 // drop — which is exactly the set of obligations nothing else surfaces.
 func TestListRefundsPayable_ListsOnlyWhatIsOwed(t *testing.T) {
 	ctx := context.Background()
-	p, _, sub, loan, customer := overpaidLoan(t)
+	p, _, _, loan, customer := overpaidLoan(t)
 
 	// A second, ordinary facility in the same book. It must not appear: it has
 	// no refunds-payable account, and a pooled per-asset account would have made
 	// these two indistinguishable.
-	if _, err := p.OpenRevolvingLine(ctx, sub, "Bob Line", "EUR", 500_000, 120_000, loanDayCount, 20_000); err != nil {
+	if _, err := p.OpenRevolvingLine(ctx, "Bob Line", "EUR", 500_000, 120_000, loanDayCount, 20_000); err != nil {
 		t.Fatalf("OpenRevolvingLine: %v", err)
 	}
 
@@ -309,8 +303,8 @@ func TestListRefundsPayable_ListsOnlyWhatIsOwed(t *testing.T) {
 	if got.Name != "Alice Home Loan" || got.Asset != "EUR" {
 		t.Errorf("name/asset = %q/%q, want Alice Home Loan/EUR", got.Name, got.Asset)
 	}
-	if got.Account != loan.RefundGL {
-		t.Errorf("account = %q, want %q", got.Account, loan.RefundGL)
+	if want := positions(t, p, loan.ID).Payable; got.Account != want.Account {
+		t.Errorf("account = %q, want %q", got.Account, want.Account)
 	}
 	if got.FacilityStatus != lending.Active {
 		t.Errorf("facility status = %s, want Active", got.FacilityStatus)
