@@ -244,17 +244,23 @@ func (t *tx) hydrateIdentifiers(ctx context.Context, book ledger.BookID, account
 // deposit_account_identifiers in the schema — still surfaces once and not twice.
 //
 // The scheme matches exactly and the VALUE matches under the scheme's own
-// comparison rule, which for an IBAN means with display separators removed from
-// both sides: the register stores SE89-AURORA-1001 and a pacs.008 carries
-// SE89AURORA1001, and those are one address. See deposit.Identifier.MatchValue,
-// which is where the rule and its reasons live.
+// comparison rule, which for an IBAN means separators removed and case folded
+// on both sides: a register stores DE20999000010000000001 and a customer types
+// DE20 9990 0001 0000 0000 01 off their statement, and those are one address.
+// See deposit.Identifier.MatchValue, which is where the rule and its reasons
+// live.
+//
+// upper() as well as replace(), because iban.Compact folds case and this has to
+// reach the same answer. The bind parameter arrives folded already — it is
+// MatchValue's output — so the column is the side that needs it, and a row this
+// bank did not mint is the only way one gets here unfolded.
 //
 // The predicate is chosen in Go from the scheme rather than written as a CASE,
-// because only the IBAN arm may strip anything: an identifier scheme whose
-// values legitimately contain hyphens would have two addresses silently merged.
-// This SQL is the third place the separator set is written — the other two are
-// deposit.ibanSeparators and iso20022.IBAN — and it is the one the compiler
-// cannot check, so it is pinned by
+// because only the IBAN arm may normalise anything: an identifier scheme whose
+// values legitimately contain hyphens, or whose case is significant, would have
+// two addresses silently merged. This SQL is the third place the rule is
+// written — the other two are iban.Compact and iso20022.IBAN — and it is the one
+// the compiler cannot check, so it is pinned by
 // storetest/ListDepositAccountsByIdentifierMatchesAnIBANThroughItsSeparators,
 // which fails if this SQL and deposit.Identifier.MatchValue disagree.
 //
@@ -271,7 +277,7 @@ func (t *tx) ListDepositAccountsByIdentifier(ctx context.Context, book ledger.Bo
 	}
 	value := `i.value = ?`
 	if ident.Scheme == deposit.IdentifierIBAN {
-		value = `replace(replace(i.value, ' ', ''), '-', '') = ?`
+		value = `upper(replace(replace(i.value, ' ', ''), '-', '')) = ?`
 	}
 	rows, err := t.tx.QueryContext(ctx, `
 		SELECT `+depositAccountColumns+`

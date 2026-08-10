@@ -450,10 +450,23 @@ CREATE TABLE deposit_account_identifiers (
     -- ambiguous is the address.
     -- storetest/IdentifierUniquenessIsNotEnforced pins all of this.
     --
-    -- Second, there is no CHECK on scheme or value. The known schemes are Go
-    -- constants (deposit.IdentifierIBAN), the way assets and payment schemes
-    -- are, and the FORMAT of a value is deliberately unvalidated — no mod-97
-    -- check digit — so that the seed's readable SE89-AURORA-1001 stays legal.
+    -- Second, there is no CHECK on scheme or value, and the value half of that
+    -- is where the argument for an absent constraint is at its strongest in this
+    -- file. The known schemes are Go constants (deposit.IdentifierIBAN), the way
+    -- assets and payment schemes are. The FORMAT of a value IS validated, and it
+    -- is validated in Go: an IBAN is ISO 13616, so the rule is a table of country
+    -- structures plus mod-97-10 plus Italy's CIN plus France's clé RIB, none of
+    -- which SQLite can express. A CHECK could at best restate a length, which
+    -- would be one country's length written in the place least able to change
+    -- and no help at all against a transposed digit. See the canonical absent-
+    -- CHECK argument on accounts.asset; this is the same rule with a rule too
+    -- large to copy rather than merely too located elsewhere.
+    --
+    -- What this table therefore holds is any string a caller could persuade the
+    -- register to write. That is not a gap: deposit.Identifier.Validate refuses a
+    -- malformed IBAN on the way in, a bank MINTS its customers' addresses rather
+    -- than accepting them, and a row here that fails the check digits is one no
+    -- code path can produce.
     --
     -- The parent FOREIGN KEY, unlike subledgers.ledger_id, DOES stay. It is the
     -- exemption stated on subledgers: PutDepositAccount writes both sides
@@ -476,23 +489,26 @@ CREATE INDEX deposit_account_identifiers_lookup_idx
         --
         -- Its third column does not serve an IBAN lookup, and that is worth
         -- stating here rather than leaving someone to discover it from a query
-        -- plan. An IBAN is stored in its readable display form
-        -- (SE89-AURORA-1001) and arrives from a payment message compact
-        -- (SE89AURORA1001); they are one address, so the lookup compares both
-        -- sides with the separators removed, and a predicate on
-        -- replace(value, …) cannot use an index on value. The (book_id, scheme)
-        -- PREFIX still can, so the scan is over one bank's identifiers in one
-        -- scheme rather than the table — the index is narrowed here, not dead.
+        -- plan. A stored address is already canonical, so it is not the ROW that
+        -- forces a derived comparison — it is the QUERY: an IBAN read off a
+        -- statement is grouped in fours and may be lower-cased, and those are
+        -- the same address. The lookup therefore normalises both sides, and a
+        -- predicate on upper(replace(value, …)) cannot use an index on value.
+        -- The (book_id, scheme) PREFIX still can, so the scan is over one bank's
+        -- identifiers in one scheme rather than the table — the index is
+        -- narrowed here, not dead.
+        --
+        -- Normalising the query alone would restore the column and would be
+        -- WRONG rather than merely narrow: the store is handed rows and cannot
+        -- assume every one of them came from the minter, and a comparison rule
+        -- that held only for canonical rows is not the rule
+        -- deposit.Identifier.MatchValue states.
         --
         -- An index on the same expression would restore the third column;
-        -- replace() is deterministic, so an expression index is legal here as it
-        -- was in Postgres — measured on this driver. It is not created because
-        -- no database is deployed and a bank here has a handful of accounts, so
-        -- there is nothing to measure it against. Normalising the stored value
-        -- instead would take the readable IBAN out of every statement, worked
-        -- example and screenshot in the repository, which is the trade this
-        -- schema already refused when it declined to enforce mod-97 check
-        -- digits.
+        -- upper() and replace() are deterministic, so an expression index is
+        -- legal here as it was in Postgres — measured on this driver. It is not
+        -- created because no database is deployed and a bank here has a handful
+        -- of accounts, so there is nothing to measure it against.
         book_id, scheme, value
     );
 

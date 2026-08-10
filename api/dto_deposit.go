@@ -204,10 +204,11 @@ type openDepositAccountRequest struct {
 	Asset          string `json:"asset"`
 	ProductID      string `json:"productId"`
 	OverdraftLimit int64  `json:"overdraftLimit"`
-	// Identifiers are the external addresses to open the account with — an
-	// IBAN, say. Optional: most accounts open with none and gain one later
-	// through POST .../identifiers, and a scheme that requires one to be
-	// addressed will refuse a payment rather than let this go unnoticed.
+	// Identifiers are the external addresses to open the account with, in the
+	// schemes SOMEBODY ELSE issues — a card PAN is the shape. An IBAN here is
+	// refused (422): the bank mints the account's own address, and one arriving
+	// in a request body would be a caller asserting who holds the account.
+	// Optional, and usually empty; the account comes out addressed either way.
 	Identifiers []identifierDTO `json:"identifiers"`
 }
 

@@ -658,10 +658,14 @@ semantics under one type in one pass is the ambiguity that makes a design rot.
 Also absent: fee schedules, tiered and bonus rates, and capitalisation frequency.
 A catalogue carrying only the parameters the code reads is the honest version.
 
-**Account addressing.** Format validation including the mod-97 check digit — it
-would make the seed's readable `SE89-AURORA-1001` illegal and costs more teaching
-than it buys — a proxy-alias registry, a second identifier scheme, and BIC-level
-addressing.
+**Account addressing.** A proxy-alias registry, a second identifier scheme, and
+BIC-level addressing. Format validation has shipped: an address is an ISO 13616
+IBAN in four countries, with mod-97-10 and, where the country has one of its own,
+Italy's CIN or France's clé RIB. What is still absent is the rest of the
+registry — eighty-odd countries, which is licensed reference data — and
+**virtual IBANs**, where a PSP issues addresses under another institution's
+bank-code range. That case breaks "the bank code identifies the account holder's
+bank", and it is a live regulatory argument in SEPA rather than a hypothetical.
 
 **ISO 20022.** `pain.001`/`pain.008` customer initiation, `camt.056`/`pacs.007`
 recalls and reversals, runtime XSD validation, and message signing. Two are

@@ -531,7 +531,47 @@ func RunDeposit(t *testing.T, newStore func(*testing.T, ledger.BookID) deposit.S
 				return err
 			}
 			if len(hit) != 1 || hit[0].ID != "dep_2" {
-				t.Fatalf("hyphenated lookup of a compact row = %#v, want just dep_2", hit)
+				t.Fatalf("canonical lookup of a separated row = %#v, want just dep_2", hit)
+			}
+			return nil
+		})
+	})
+
+	// CASE is folded too, and on the ROW as well as the query.
+	//
+	// It is a separate case because it is a separate half of iban.Compact, and a
+	// store that stripped separators without folding case passes every direction
+	// above: an address is upper-cased everywhere it is minted, so nothing else
+	// here writes a row that would notice. The query side is folded before it
+	// arrives — it is MatchValue's output — so a store folding only what it was
+	// given would look correct and would answer "no such account" to the one row
+	// that needed it.
+	//
+	// A lower-cased row is not a state the register writes. It is exactly the
+	// state this contract has to cover anyway: the store is handed rows, and a
+	// comparison rule with an unstated precondition on its inputs is not the rule
+	// deposit.Identifier.MatchValue states.
+	t.Run("ListDepositAccountsByIdentifierFoldsCaseOnAnIBAN", func(t *testing.T) {
+		s := openDeposit(t, newStore, bookA)
+		lowered := deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "de20 9990 0001 0000 0000 01"}
+		canonical := deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "DE20999000010000000001"}
+
+		updateDeposit(t, s, func(ctx context.Context, tx deposit.Tx) error {
+			return tx.PutDepositAccount(ctx, bookA, deposit.Account{
+				ID: "dep_1", Name: "Alice", Asset: "EUR",
+				Identifiers: []deposit.Identifier{lowered},
+			})
+		})
+
+		viewDeposit(t, s, func(ctx context.Context, tx deposit.Tx) error {
+			for _, quoted := range []deposit.Identifier{canonical, lowered} {
+				hit, err := tx.ListDepositAccountsByIdentifier(ctx, bookA, quoted)
+				if err != nil {
+					return err
+				}
+				if len(hit) != 1 || hit[0].ID != "dep_1" {
+					t.Fatalf("lookup of %q against a lower-cased row = %#v, want just dep_1", quoted.Value, hit)
+				}
 			}
 			return nil
 		})
