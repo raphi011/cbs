@@ -259,58 +259,8 @@ short a number someone can see.
 
 ## Domain gaps worth building
 
-Ranked by value per unit of effort. Nothing here blocks the sequence above. The
-first entry is the one large item and is sequenced internally; the four after it
-are each a self-contained afternoon-to-a-week.
-
-### The subsidiary ledger — designed, not built
-
-Customer accounts leave the chart of accounts. Today a customer holding a current
-account and a term loan is five rows in `accounts` —
-`deposit_accounts.gl_account` and `.interest_gl`, and `facilities`' three — and
-no core banking system this repository is modelled on puts them there.
-
-Designed in
-[`2026-08-10-subsidiary-ledger-design.md`](superpowers/specs/2026-08-10-subsidiary-ledger-design.md),
-in seven tasks. The move is one column: `entries.subsidiary_id`, an opaque string
-the layer above supplies, with the posting target always a GL account. A
-customer's balance is a control account's balance with a `WHERE`; the control
-account's is the same sum without one. So the classic structure arrives and the
-stored second figure does not — `Σ(detail) == control` is one statement read two
-ways rather than a nightly proof.
-
-What it buys beyond the chart of accounts: a trial balance bounded by the
-institution rather than by the customer base, a place for a reclassification
-journal to post *to* — the README's *Overdraft* has none — and the
-deletion of two constructs that exist only to dodge a control account —
-`deposit`'s per-account receivables and lending's `Payables`. That two packages
-independently invented per-obligor accounts is the argument that the dimension is
-the primitive both were missing.
-
-**Take the trial balance below first.** It is the acceptance test for the third
-task here: the row count drops from one-per-customer to one-per-control-line, and
-that is the observable point of the whole change.
-
-The one silent defect this design can produce is named in the spec and is worth
-naming twice: under pooling, a control account is never overdrawn while an
-obligor under it is, so `checkSufficientBalance` must read the pair. A version
-that keeps reading the account compiles, balances, and stops guarding.
-
-### Trial balance — designed, not built
-
-Per book **and per asset**, because a single-asset total in a multi-asset ledger
-balances by accident.
-
-The shape is worth not re-deriving: `ledger/trialbalance.go`, a walk over
-`tx.ListAccounts` inside ONE `View` summing each account restated debit-positive
-— `TrialBalance{AsOf, Rows}`, `TrialBalanceRow{Asset, Debits, Credits,
-InFlight}`, `Balanced() bool`, and `Book.TrialBalance` / `TrialBalanceTx`. No
-store method and no schema change.
-
-In a system where every posting is forced to balance, a trial balance can never
-fail arithmetically — **which is exactly why it is worth computing.** It is a
-control on the pipeline, not on the arithmetic, and it would catch a bad
-migration or a direct store write that nothing currently catches.
+Ranked by value per unit of effort. Nothing here blocks the sequence above, and
+each is a self-contained afternoon-to-a-week.
 
 ### Reject future booking dates — designed, not built
 
@@ -350,21 +300,21 @@ Cheap, because the arithmetic is asset-agnostic and already tested. It is also
 what makes the README's claim that lending "is the mirror image of the deposit
 layer" true rather than half-true.
 
-### The overdraft reclassification — wants the subsidiary ledger first
+### The overdraft reclassification — the target account now exists
 
 An overdrawn customer's drawn balance is a loan and advance to that customer, and
 a real bank's ledger says so with a nightly journal onto an Asset-side
 receivable. This system posts no such thing: the balance stays in the customer's
-Liability account, merely negative, and the Asset-side total is aggregated
-`Σ max(0, −balance)` when asked. The README's *Overdraft* states this, and
+position within the deposit control account, merely negative, and the Asset-side
+total is aggregated `Σ max(0, −balance)` when asked. The README's *Overdraft* states this, and
 `deposit.TestTotals_OverdraftsAreDerivedAndNothingIsPosted` pins it.
 
-Recorded here because the reason it is absent is about to change. Today there is
-no target account to post *to* that is not one per customer, which is the thing
-the chart of accounts is being kept clear of; after *The subsidiary ledger* there
-is one — a `Loans and Advances to Customers (<asset>)` control account with the
-same obligor dimension on both legs. It moves from barely expressible to
-ordinary.
+The reason it is absent has changed, which is why this entry is worth reading
+again. It was that there was no target account to post *to* that was not one per
+customer — the thing the chart of accounts is kept clear of. Since §20 there is
+one: a `Loans and Advances to Customers (<asset>)` control account, with the same
+obligor dimension on both legs, is an ordinary line to add. What is left is not
+the journal but the third decision below.
 
 Three domain decisions, none of them the journal itself:
 
@@ -768,11 +718,10 @@ scope, not on merit.
 
 **A thin GL, in the half that stores a second figure**: per-key-per-day
 aggregation tables, period close, a closed-period lock, and the subledger-to-GL
-reconciliation those three make necessary. Control accounts and a posting-rules
-engine are *not* deferred with them, and separating the two is the whole of
-*The subsidiary ledger* above: a control account implies a stored control figure
-only if you store one. What stays here is the stored copy and the toil that
-follows it.
+reconciliation those three make necessary. Control accounts and the posting-rules
+mapping are not deferred with them — both shipped in §20 — and separating the two
+was the whole of it: a control account implies a stored control figure only if
+you store one. What stays here is the stored copy and the toil that follows it.
 
 **Everywhere else.** Real authn/authz — the port is the claim and nothing
 verifies the caller. Separate processes, two-phase commit, and any distributed
@@ -803,6 +752,11 @@ One line apiece, for resolving a reference by number. The spec is the record.
 | 8 | Per-entity stores — N+2 databases, three shapes | [`2026-08-02-db-per-entity-design.md`](superpowers/specs/2026-08-02-db-per-entity-design.md) |
 | 9 | One store, and it is SQLite | [`2026-08-03-sqlite-only-store-design.md`](superpowers/specs/2026-08-03-sqlite-only-store-design.md) |
 | 19 | Reconciliation a bank can do for itself | [`2026-08-09-bank-reconciliation-design.md`](superpowers/specs/2026-08-09-bank-reconciliation-design.md) |
+| 20 | The subsidiary ledger — customer accounts leave the chart of accounts, and the trial balance that measures it | [`2026-08-10-subsidiary-ledger-design.md`](superpowers/specs/2026-08-10-subsidiary-ledger-design.md) |
+
+Sub-project 20 shipped the trial balance with it: the report is the acceptance
+test for the third task, and a row count bounded by the institution rather than
+by the customer base is the observable point of the whole change.
 
 Sub-projects 3, 4 and 7c are the only numbers with work left; §9 was not foreseen
 and landed inside §8's task sequence, which is why the numbering skips. The last
