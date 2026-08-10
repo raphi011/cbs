@@ -111,6 +111,53 @@ func TestATwoAssetNetworkReconciles(t *testing.T) {
 	recon.Check(t, h.nets)
 }
 
+// TestABookTransferReconcilesAndMovesNothingBetweenInstitutions is the control
+// for the one act that stays inside a member bank.
+//
+// It is worth its own control because a book transfer is exactly what the
+// refused on-us payment produced three wrong answers doing: a cycle that settled
+// nothing, a reserve mirror moved by an amount the central bank never posted,
+// and a bank on both sides of one return. Two of those three are findings this
+// harness makes, so a transfer that reached the clearing route would show up
+// here — and the check is that it does not.
+//
+// The three claims are separate. The books agree (recon.Check), the settlement
+// agent posted nothing (its transaction count), and the payer's bank's claim on
+// it is where it was (the reserve balance). A transfer that quietly netted
+// against reserves would pass the first two.
+func TestABookTransferReconcilesAndMovesNothingBetweenInstitutions(t *testing.T) {
+	ctx := context.Background()
+	h := reconciled(t)
+	payee := h.openCustomer(t, h.debtor, "Aaron", "EUR", 0)
+	reserve := h.accounts(t, h.debtorBIC, "EUR").Reserve
+
+	before, err := h.debtor.Ledger.BookBalance(ctx, reserve)
+	if err != nil {
+		t.Fatalf("reading %s's reserve: %v", h.debtorBIC, err)
+	}
+	posted := h.centralBankTransactionCount(t)
+
+	if _, err := h.debtor.Deposit.Transfer(ctx, h.debtorAcct.ID, payee.ID, 1000, "rent"); err != nil {
+		t.Fatalf("Transfer: %v", err)
+	}
+	// Drained, because the claim is about messages that do not exist. Reading
+	// the books while a pacs.008 was still in flight would pass either way.
+	h.drain(t)
+
+	recon.Check(t, h.nets)
+
+	if got := h.centralBankTransactionCount(t); got != posted {
+		t.Errorf("the settlement agent posted %d transactions over a book transfer, want %d", got-posted, 0)
+	}
+	after, err := h.debtor.Ledger.BookBalance(ctx, reserve)
+	if err != nil {
+		t.Fatalf("reading %s's reserve: %v", h.debtorBIC, err)
+	}
+	if after != before {
+		t.Errorf("the payer's bank's reserve moved by %d over a book transfer, want 0", after-before)
+	}
+}
+
 // TestTheHarnessCatchesAReserveMirrorThatDiverged is the nostro/vostro check:
 // one account, two books, two institutions, and no act in this system able to
 // compare them.

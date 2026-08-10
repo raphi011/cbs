@@ -38,6 +38,68 @@ func (s *Server) registerDepositRoutes(mux *router) {
 	mux.HandleFunc("GET /deposit-accounts/{did}/snapshots", s.handleGetSnapshots)
 }
 
+// handleTransfer moves money between two of this bank's own deposit accounts.
+//
+// # 200, because the act is finished when it returns
+//
+// POST /deposits is the precedent and the argument carries over unchanged: one
+// institution, one posting, and nobody else to ask. 202 is for the routes where
+// another institution has still to decide — see handleLodgeReserves — and
+// nobody has to agree to a book transfer.
+//
+// # An address this bank does not hold is a 404, and that is the boundary
+//
+// An address that resolves anywhere else is not a transfer at all; it is a
+// payment, and POST /payments is where it goes. The two routes state one rule
+// from opposite sides: this one refuses an address that is not here, and
+// submission refuses one that is (mesh.ErrOnUsPayment).
+func (s *Server) handleTransfer(w http.ResponseWriter, r *http.Request) {
+	p, ok := s.participant(w, r)
+	if !ok {
+		return
+	}
+	var req transferRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeBadRequest(w, err.Error())
+		return
+	}
+	// The address is resolved BEFORE the transfer's unit of work, and it cannot
+	// go stale in between: an IBAN at this bank never moves between accounts.
+	// Reissuing gives one account a fresh address rather than handing an old one
+	// to another account, and AddIdentifier refuses the scheme outright. So the
+	// account this answers is the account that address means, then and later.
+	payee, err := p.Deposit.ResolveIdentifier(r.Context(), deposit.Identifier{
+		Scheme: deposit.IdentifierIBAN,
+		Value:  req.To,
+	})
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	from := deposit.AccountID(req.From)
+	glTx, err := p.Deposit.Transfer(r.Context(), from, payee.ID, ledger.Amount(req.Amount), req.Description)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	payer, err := p.Deposit.GetAccount(r.Context(), from)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	bal, err := p.Deposit.GetBalance(r.Context(), from)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, transferDTO{
+		TransactionID: string(glTx.ID),
+		From:          string(from),
+		To:            string(payee.ID),
+		Balance:       toBalanceDTO(bal, payer.Asset),
+	})
+}
+
 func (s *Server) handleOpenDepositAccount(w http.ResponseWriter, r *http.Request) {
 	p, ok := s.participant(w, r)
 	if !ok {

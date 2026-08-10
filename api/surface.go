@@ -208,6 +208,12 @@ func (s *Server) bankRouter() *router {
 	// that institution a publisher rather than a delivery system.
 	mux.HandleFunc("POST /directory/banks/refresh", s.handleRefreshDirectory)
 	mux.HandleFunc("POST /deposits", s.handleFundDeposit)
+	// The BOOK TRANSFER: two of this bank's own customers, one posting, no
+	// scheme. It is beside POST /deposits and not under /payments because it is
+	// the same kind of act — this institution's alone, finished when it returns
+	// — and it is the remedy POST /payments names when it refuses an on-us
+	// instruction. See handleTransfer.
+	mux.HandleFunc("POST /transfers", s.handleTransfer)
 	// The other half of taking cash in. Cash in is one institution's act and lands
 	// in this bank's vault; moving it onto reserve is a conversation with the
 	// central bank, so it is a second request and answers 202. See

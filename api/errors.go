@@ -158,6 +158,12 @@ func errorStatus(err error) int {
 		errors.Is(err, product.ErrVersionPublished),
 		errors.Is(err, product.ErrRetroactivePublish),
 		errors.Is(err, deposit.ErrProductRequired),
+		// Two accounts at one bank in two currencies. Both are real, the request
+		// is well formed, and what refuses it is that the amount would have to
+		// mean two different numbers — converting is a second operation with a
+		// price in it, and this bank has no desk that quotes one. Same category
+		// as payment.ErrAssetMismatch, which is the same rule across two books.
+		errors.Is(err, deposit.ErrAssetMismatch),
 		// The account exists and the request is well formed; it simply carries no
 		// address in the kind the scheme routes on, or the address it quoted
 		// belongs to a different account, or it quoted none and the account has
@@ -253,6 +259,10 @@ func errorStatus(err error) int {
 		errors.Is(err, ledger.ErrAssetNotFound),
 		errors.Is(err, deposit.ErrInvalidAmount),
 		errors.Is(err, deposit.ErrInvalidRate),
+		// A transfer naming one account twice. 400 and not 422 because nothing
+		// about either account's state refuses it: the request contradicts
+		// itself, exactly as an unbalanced transaction does.
+		errors.Is(err, deposit.ErrSameAccount),
 		errors.Is(err, product.ErrInvalidRate),
 		errors.Is(err, product.ErrNameRequired),
 		errors.Is(err, payment.ErrInvalidPaymentAmount),

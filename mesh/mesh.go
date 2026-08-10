@@ -99,9 +99,10 @@ func (admissionInFlight) Unwrap() error { return ErrAddressTaken }
 // it does not depend on this refusal holding.
 //
 // A sentinel and not just a message because the layer above has a remedy for
-// it: api answers 422 and the caller asks its bank for a book transfer instead.
-// Building that transfer is a task of its own and this system does not have it
-// yet, which is what the refusal honestly says.
+// it: api answers 422 and the caller asks its bank for a book transfer instead,
+// which is deposit.Register.TransferTx and, over HTTP, POST /transfers on that
+// bank's own port. So this is a signpost rather than a dead end — the same
+// address, on the route that carries it.
 var ErrOnUsPayment = errors.New("mesh: both parties bank at the same institution, which is a book transfer and not a clearing payment")
 
 // Config names the two institutions. Member banks are discovered from the
@@ -1235,7 +1236,8 @@ func (m *Mesh) takeDeadLetters() error {
 // Nothing leaves the institution, so no reserves move, no position nets and no
 // settlement agent has anything to settle. That refusal is this system declining
 // a ROUTE and not the payment; a book transfer between two customers of one bank
-// is a real product and a task of its own. See ErrOnUsPayment.
+// is a real product and a different one, performed by the bank's own register.
+// See ErrOnUsPayment.
 //
 // A payment to or from a bank the scheme has NOT ADMITTED is refused in the same
 // place — see payment.ErrBankNotAdmitted.

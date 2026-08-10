@@ -238,6 +238,39 @@ type fundRequest struct {
 	Description string `json:"description"`
 }
 
+// transferRequest is a book transfer between two of this bank's own customers.
+//
+// The payer names their own account by ID and the payee by ADDRESS, and the
+// asymmetry is what a payer actually holds: you know which of your accounts the
+// money is leaving, and about anybody else you know the address they gave you.
+// It is the same pair the send form types for a payment, which is the point —
+// what a payer says does not change because the money stays in the building.
+//
+// To carries no scheme beside it, because there is only one it could be. Every
+// account this bank opens is minted an IBAN; a card PAN is a scheme somebody
+// else issues and quotes to this bank, and it is not somewhere money is sent.
+type transferRequest struct {
+	From        string `json:"from"`
+	To          string `json:"to"`
+	Amount      int64  `json:"amount"`
+	Description string `json:"description"`
+}
+
+// transferDTO is the receipt: what the posting is called in the ledger, which
+// account the address turned out to be, and what the PAYER has left.
+//
+// One balance and not two. The caller is the payer, and a transfer is not an
+// authorisation to read the payee's balance — that both accounts sit in one
+// register is a fact about this route, not a permission it confers. The payee's
+// account id is here because GET /directory/accounts already answers exactly
+// that on this port; their NAME is not, for the reason that route states.
+type transferDTO struct {
+	TransactionID string     `json:"transactionId"`
+	From          string     `json:"from"`
+	To            string     `json:"to"`
+	Balance       balanceDTO `json:"balance"`
+}
+
 // The three requests that replaced setOverdraftTermsRequest, one per decision
 // the old single call conflated.
 //

@@ -618,9 +618,10 @@ func TestABulkCollectionIsRefusedByTheClearingHouse(t *testing.T) {
 // # What it does NOT refuse
 //
 // A book transfer between two customers of one bank is a real product and this
-// system does not offer it yet. The refusal says so: it is a statement about the
-// wrong ROUTE, not about the payment being illegitimate, so a caller reading it
-// knows to ask its bank rather than to give up.
+// system offers it — deposit.Register.TransferTx, which is the register's own
+// act and reaches no mesh at all. The refusal is a statement about the wrong
+// ROUTE and not about the payment being illegitimate, so a caller reading it
+// knows which of the two to ask for instead.
 func TestAnOnUsPaymentIsRefusedBeforeItReachesAClearingHouse(t *testing.T) {
 	// Both directions, because the submitting bank differs — a push is submitted
 	// by the payer's bank and a collection by the payee's — and on-us is the one
