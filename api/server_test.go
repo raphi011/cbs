@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync"
 	"testing"
@@ -3510,6 +3511,63 @@ func TestTheRosterPublishesTheAllocationAndAMemberCopiesIt(t *testing.T) {
 	// Both parameters or neither: a narrowing on the country alone would answer
 	// every German member, which is not a question this route has.
 	doJSON(t, bank(h, a), "GET", "/directory/banks?country=DE", "", http.StatusBadRequest)
+
+	// And the narrowing a send form actually has, which is an ADDRESS. It must
+	// answer what the pair above answered, because pulling the allocation out of
+	// an IBAN is the country table's job and a browser holds no copy of that
+	// table. This is the assertion that keeps it from needing one.
+	bAcct := doJSON(t, bank(h, b), "POST", "/deposit-accounts",
+		`{"name":"Bella","asset":"EUR","productId":"`+prdOf(t, h, b)+`"}`, http.StatusCreated)["id"].(string)
+	address := ibanFor(t, h, b, bAcct)
+	var byAddress map[string]any
+	getJSON(t, bank(h, a), "/directory/banks?iban="+address, &byAddress)
+	if byAddress["bic"] != b {
+		t.Fatalf("%s routes to %v in Bank A's copy, want %s", address, byAddress["bic"], b)
+	}
+	if byAddress["bankCode"] != one["bankCode"] {
+		t.Errorf("the address narrowing reads code %v and the pair narrowing %v; one address, one allocation",
+			byAddress["bankCode"], one["bankCode"])
+	}
+
+	// A grouped address off a statement is the same address: Parse is the front
+	// door and it normalises before it validates.
+	var grouped map[string]any
+	getJSON(t, bank(h, a), "/directory/banks?iban="+url.QueryEscape(groupsOfFour(address)), &grouped)
+	if grouped["bic"] != b {
+		t.Errorf("the grouped spelling routes to %v, want %s — a person types fours", grouped["bic"], b)
+	}
+
+	// A mistyped address is 422 and not 404: the parameter is present and
+	// well-typed, and what is wrong with it is a rule. It is the same refusal
+	// submission gives, which is the point of resolving through this route at all.
+	typo := do(t, bank(h, a), "GET", "/directory/banks?iban="+mistype(address), "")
+	if typo.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("a mistyped address = %d, want 422 (%s)", typo.Code, typo.Body.String())
+	}
+
+	// Two narrowings at once is the caller asking two questions, and there is no
+	// answer that is both.
+	doJSON(t, bank(h, a), "GET", "/directory/banks?iban="+address+"&country=DE&bankCode="+code,
+		"", http.StatusBadRequest)
+}
+
+// groupsOfFour is what a statement prints and a person copies.
+func groupsOfFour(compact string) string {
+	var b strings.Builder
+	for i, r := range compact {
+		if i > 0 && i%4 == 0 {
+			b.WriteByte(' ')
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
+}
+
+// mistype swaps the last two characters, which is the error mod-97 exists to
+// catch and the one a payer actually makes.
+func mistype(address string) string {
+	n := len(address)
+	return address[:n-2] + string(address[n-1]) + string(address[n-2])
 }
 
 // TestPaymentAddressingRefusalsAre422 pins the status codes of the three ways
@@ -3885,23 +3943,13 @@ func TestDepositAccountDTOCarriesIdentifiers(t *testing.T) {
 	}
 }
 
-// bicOf answers which address a bank is at.
-//
-// It exists because the counterparty's BIC is something the INSTRUCTION carries:
-// deriving it would read the counterparty's own bank row, which a bank does not
-// hold. Every submission body below therefore names a creditorAgent (or a
-// debtorAgent on a pull), exactly as the payer would.
-//
-// The test asking the server for it is the fixture standing in for an invoice.
-// A real payer reads the BIC off one; there is no invoice here, so this is where
-// the value comes from — and it must not be mistaken for something the SUBMITTING
-// BANK does, which is the whole point of the change.
-// bicOf is the identity function and is kept for what it says at its call sites.
+// bicOf answers which address a bank is at, and is the identity function.
 //
 // A bank's ParticipantID IS its BIC (see payment.AsBank), so there is nothing to
-// look up. What the name buys is the reader knowing that the value in a
-// creditorAgent field is an ADDRESS, at the four call sites where the same string
-// is also being used as an id.
+// look up. What the name buys is the reader knowing that a value is being used as
+// an ADDRESS at that call site, where the same string is elsewhere an id — an
+// assertion a submission body no longer has anywhere to make, since an
+// instruction names no bank at all.
 func bicOf(t *testing.T, h *Server, pid string) string {
 	t.Helper()
 	return pid

@@ -111,26 +111,44 @@ func routingEntryOf(e payment.DirectoryEntry) routingEntryDTO {
 	}
 }
 
-// handleResolveBankCode answers GET /directory/banks, and it answers two
-// questions off one route depending on whether it is narrowed.
+// handleResolveBankCode answers GET /directory/banks, and how it is narrowed
+// decides which question it answers.
 //
-// With country and bankCode it resolves ONE allocation, which is what a send
-// form asks the moment an IBAN's check digits pass — the same read submission
-// makes, so what the form shows and where the payment goes cannot disagree.
-// Without them it lists the whole copy, which is what a bank's console shows
-// beside the refresh.
+// Unnarrowed it lists the whole copy, which is what a bank's console shows
+// beside the refresh. Narrowed by country and bankCode it resolves ONE
+// allocation, which is what a caller already holding one asks.
 //
-// Both are answered from THIS bank's copy and from nothing else. A miss is
-// payment.ErrBankCodeUnknown and 422, and it cannot say whether no such bank is
-// in the scheme or this copy is simply behind.
+// # ?iban= is the third, and it exists because the structure table is Go's
+//
+// A send form has an ADDRESS, not an allocation, and pulling the allocation out
+// of one takes the country table: variable-length codes at country-dependent
+// offsets, which is the fact the whole of iban exists for. A browser narrowing
+// this route itself would need that table, and a second copy of it with nothing
+// holding the two together is precisely what iban's doc refuses. So the address
+// is handed over whole and read here, by the same package that minted it — the
+// caller's half stays mod-97, which needs no table and is the check a form runs
+// per keystroke.
+//
+// An address that will not parse is 422, from the same group as every other
+// malformed address; it is not a 400, because the parameter is present and
+// well-typed and what is wrong with it is a rule.
+//
+// All three are answered from THIS bank's copy and from nothing else — the same
+// read submission makes, so what a form shows and where the payment goes cannot
+// disagree. A miss is payment.ErrBankCodeUnknown and 422, and it cannot say
+// whether no such bank is in the scheme or this copy is simply behind.
 func (s *Server) handleResolveBankCode(w http.ResponseWriter, r *http.Request) {
-	country := r.URL.Query().Get("country")
-	bankCode := r.URL.Query().Get("bankCode")
+	q := r.URL.Query()
+	country, bankCode, address := q.Get("country"), q.Get("bankCode"), q.Get("iban")
+	if address != "" && (country != "" || bankCode != "") {
+		writeBadRequest(w, "iban names an allocation, so it is not given with country and bankCode")
+		return
+	}
 	if (country == "") != (bankCode == "") {
 		writeBadRequest(w, "country and bankCode are given together or not at all")
 		return
 	}
-	if country == "" {
+	if country == "" && address == "" {
 		entries, err := s.network().ListDirectory(r.Context())
 		if err != nil {
 			writeError(w, err)
@@ -143,8 +161,21 @@ func (s *Server) handleResolveBankCode(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, out)
 		return
 	}
-	e, err := s.network().ResolveBankCode(r.Context(),
-		iban.Issuer{Country: iban.Country(country), BankCode: iban.BankCode(bankCode)})
+	issuer := iban.Issuer{Country: iban.Country(country), BankCode: iban.BankCode(bankCode)}
+	if address != "" {
+		parsed, err := iban.Parse(address)
+		if err != nil {
+			writeError(w, err)
+			return
+		}
+		code, err := parsed.BankCode()
+		if err != nil {
+			writeError(w, err)
+			return
+		}
+		issuer = iban.Issuer{Country: parsed.Country(), BankCode: code}
+	}
+	e, err := s.network().ResolveBankCode(r.Context(), issuer)
 	if err != nil {
 		writeError(w, err)
 		return

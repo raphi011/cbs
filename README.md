@@ -1956,7 +1956,7 @@ Two of those are new, and both were impossible before. **`GET /payments` is narr
 
 **Which bank submits is the scheme's direction, and this listener supplies it.** A credit transfer is submitted by the *payer's* bank and a direct debit by the *payee's*, so this port fills in whichever side is its own before the instruction reaches the mesh. There is no field for it and nothing to disagree with: an instruction names no bank at all, its own side coming from the port and the counterparty's being derived from their address. A scheme nobody has registered is refused before that rule is reached, rather than falling through to the push case and being told which bank submits a scheme that does not exist. Like everything else here this is **scoping, not authorization**: it says which instructions this listener is for, and verifies nothing about who is calling it.
 
-**Two directories, and a bank owns one of them.** `GET /directory/accounts` asks which of *this bank's* accounts holds an address — a customer's own IBAN, an on-us payee, an operator checking one before issuing another — and a payee at another bank is not something this bank can confirm. `GET /directory/banks` asks which institution a bank code belongs to, out of a copy of the clearing house's roster that this bank pulled; it answers a BIC and cannot answer a name. `POST /directory/banks/refresh` is the pull. Subscribing is the subscriber's act, which is why the refresh is here and no route on the clearing house's port pushes anything at anybody.
+**Two directories, and a bank owns one of them.** `GET /directory/accounts` asks which of *this bank's* accounts holds an address — a customer's own IBAN, an on-us payee, an operator checking one before issuing another — and a payee at another bank is not something this bank can confirm. `GET /directory/banks` asks which institution a bank code belongs to, out of a copy of the clearing house's roster that this bank pulled; it answers a BIC and cannot answer a name. It takes `?country=&bankCode=` from a caller that already holds an allocation, or `?iban=` from one that holds an address — and the second is not a convenience. Pulling the allocation out of an address needs the country structure table, and that table is `iban`'s: a browser narrowing this route itself would need a second copy of it, with nothing holding the two together. So a send form hands over the address whole, and keeps only mod-97, which needs no table. `POST /directory/banks/refresh` is the pull. Subscribing is the subscriber's act, which is why the refresh is here and no route on the clearing house's port pushes anything at anybody.
 
 `GET /assets` is on all three listeners, deliberately: an asset definition is a compiled-in constant every operator needs to render money at the right scale, and duplicating a constant is not duplicating state. A test holds that allowlist, so a third accidental overlap fails.
 
@@ -2000,10 +2000,12 @@ BOB_IBAN=$(curl -s $BANK_B/deposit-accounts/$BOB \
   | jq -r '.identifiers[] | select(.scheme=="IBAN") | .value')   # e.g. IT95P9999900000000000000004
 curl -s $H -X POST $BANK_A/deposits -d "{\"account\":\"$ALICE\",\"amount\":100000,\"description\":\"opening\"}"
 
-# What Alice's bank will do with that address, asked out loud. The bank code
-# sits at a country-dependent offset, so read it off the copy rather than
-# slicing the string: this answers a BIC and — deliberately — no name.
-curl -s "$BANK_A/directory/banks?country=IT&bankCode=99999" | jq -r .bic
+# What Alice's bank will do with that address, asked out loud — and asked the way
+# a send form asks it, by handing over the address rather than an allocation. The
+# bank code sits at a country-dependent offset, so the reading is the server's:
+# `?country=&bankCode=` is the same question for a caller that already has one.
+# Either way it answers a BIC and — deliberately — no name.
+curl -s "$BANK_A/directory/banks?iban=$BOB_IBAN" | jq -r .bic
 
 # Alice instructs HER OWN BANK, on its own listener. A retail client has no CSM
 # connection in the real thing and none here; the clearing house serves the same
