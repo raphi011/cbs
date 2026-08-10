@@ -45,6 +45,28 @@
 // the second, because a harness that treated an unreconciled position as a break
 // would be a harness nobody could run against a network with a payment in it.
 //
+// # And ONE finding that is a report and can never be a break
+//
+// A member bank's routing directory is a COPY of the clearing house's roster,
+// pulled by that member and used to derive where its payments go. A copy that is
+// behind the roster is LEGAL BY CONSTRUCTION — it is the behaviour the whole
+// subscription model was chosen for, and it is why a bank admitted this morning
+// cannot be paid by a bank that pulled yesterday. So this harness says "Aurora's
+// directory is two entries behind" and passes.
+//
+// A reconciliation that FAILED on a stale copy would assert the opposite of the
+// design, and it would be an easy thing to write: the roster and the copy are two
+// tables holding one pairing, which is exactly the shape of every break above.
+// The difference is that the other pairs have no path back to agreement — nothing
+// in the system could make a bank's reserve and the agent's liability differ
+// legitimately — while this one has a path and the path is a request somebody
+// makes. This is the most likely way the design gets quietly undone later, which
+// is why it is written here and not only in a case.
+//
+// What IS a break is the pairing the copy comes FROM: the roster against the
+// settlement agent's registry, and every account's address against the registry
+// that issued its bank code. Those two cannot legitimately disagree.
+//
 // # Where the figures come from
 //
 // Nothing here goes through a payment.Network. A Network is one institution's
@@ -70,7 +92,10 @@ import (
 	"maps"
 	"slices"
 	"testing"
+	"time"
 
+	"github.com/raphi011/cbs/deposit"
+	"github.com/raphi011/cbs/iban"
 	"github.com/raphi011/cbs/iso20022"
 	"github.com/raphi011/cbs/ledger"
 	"github.com/raphi011/cbs/payment"
@@ -133,10 +158,48 @@ type Unreconciled struct {
 	InFlight []payment.PaymentID
 }
 
+// StaleDirectory is one member bank's copy of the routing directory disagreeing
+// with the roster it was copied from.
+//
+// It is a REPORT and never a break, and the distinction is the design rather than
+// a tolerance. A member pulls a snapshot and routes from it, so between two pulls
+// its copy is behind whatever the clearing house has published since — which is
+// what makes a bank admitted this morning unpayable by a bank that pulled
+// yesterday, and is the behaviour the subscription model exists to have. See the
+// package doc.
+//
+// Missing is the ordinary direction and Extra is the interesting one. A copy is
+// INCOMPLETE because allocations are never reassigned, so an entry the roster no
+// longer publishes means a member left the scheme and this bank has not pulled
+// since — still legal, still not a break, and still worth reporting, because a
+// bank routing to an ex-member is a payment the clearing house will refuse.
+type StaleDirectory struct {
+	Bank iso20022.BIC
+	// RefreshedAt is the instant the whole copy carries, or the zero time if this
+	// bank has never pulled one at all. Every row of one snapshot shares it.
+	RefreshedAt time.Time
+	// Missing is published and not copied; Extra is copied and no longer
+	// published. Both are BICs, in address order.
+	Missing []iso20022.BIC
+	Extra   []iso20022.BIC
+}
+
+func (d StaleDirectory) String() string {
+	when := "never pulled"
+	if !d.RefreshedAt.IsZero() {
+		when = "pulled " + d.RefreshedAt.Format(time.RFC3339)
+	}
+	return fmt.Sprintf("%s (%s): %d published entries not copied %v, %d copied entries no longer published %v",
+		d.Bank, when, len(d.Missing), d.Missing, len(d.Extra), d.Extra)
+}
+
 // Report is everything one run found.
 type Report struct {
 	Breaks       []Break
 	Unreconciled []Unreconciled
+	// Stale is every member whose routing directory disagrees with the roster. It
+	// does not make a run fail; see StaleDirectory.
+	Stale []StaleDirectory
 }
 
 // Reconciled reports whether the network's books agree. Unreconciled positions
@@ -156,6 +219,12 @@ func at(bic iso20022.BIC, asset ledger.AssetCode) string {
 // betweenCHAndAgent is the Where of a finding about the two rows one cut-off
 // leaves in two institutions.
 const betweenCHAndAgent = "the clearing house and the settlement agent"
+
+// betweenCHAndRegistry is the Where of a finding about the pairing one admission
+// leaves in two registers: the one the settlement agent allocated from, and the
+// one the clearing house publishes. Separate from the constant above because the
+// settlement agent keeps two registers and a reader has to know which.
+const betweenCHAndRegistry = "the clearing house and the bank-code registry"
 
 // ---------------------------------------------------------------------------
 // Running one
@@ -201,6 +270,9 @@ func Reconcile(ctx context.Context, nets *payment.Networks) (*Report, error) {
 	snap.cyclesAndSettlementsAgree(rep)
 	snap.partiesHoldTheirCopy(rep)
 	snap.admissionWroteItsThreeRows(rep)
+	snap.addressesResolveToTheirIssuer(rep)
+	snap.rosterAgreesWithTheRegistry(rep)
+	snap.directoriesAgainstTheRoster(rep)
 	return rep, nil
 }
 
@@ -224,6 +296,15 @@ type bankView struct {
 	reserve  map[ledger.AssetCode]ledger.Amount
 	advices  map[adviceKey]payment.SettlementAdvice
 	payments map[payment.PaymentID]payment.Payment
+	// addresses is every IBAN this bank has issued to a customer account, in the
+	// order the register lists them. It is what the registry's allocations are
+	// held against: an account addressed under somebody else's code is a payment
+	// routable to the wrong institution, and no institution can see it.
+	addresses []string
+	// directory is this bank's own copy of the scheme's routing directory, which
+	// is the one table here that is ALLOWED to disagree with its source. See
+	// StaleDirectory.
+	directory []payment.DirectoryEntry
 }
 
 // snapshot is every institution's books at one moment, as far as that is a thing
@@ -243,6 +324,12 @@ type snapshot struct {
 	// anything a member keeps.
 	reserves map[iso20022.BIC]map[ledger.AssetCode]ledger.Amount
 
+	// allocations is the settlement agent's SECOND register: which institution
+	// holds which bank code, in which country. It is the ISSUER's own record and
+	// no bank ever reads it, which is exactly why holding it against what banks
+	// have issued is this harness's and nobody else's.
+	allocations map[iban.Issuer]payment.BankCodeAllocation
+
 	// The clearing house's.
 	roster   map[iso20022.BIC]payment.RosterEntry
 	cycles   []payment.ClearingCycle
@@ -260,10 +347,11 @@ func take(ctx context.Context, nets *payment.Networks) (*snapshot, error) {
 	ch := nets.ClearingHouse()
 
 	snap := &snapshot{
-		banks:    map[iso20022.BIC]*bankView{},
-		members:  map[iso20022.BIC]payment.SettlementMember{},
-		reserves: map[iso20022.BIC]map[ledger.AssetCode]ledger.Amount{},
-		roster:   map[iso20022.BIC]payment.RosterEntry{},
+		banks:       map[iso20022.BIC]*bankView{},
+		members:     map[iso20022.BIC]payment.SettlementMember{},
+		reserves:    map[iso20022.BIC]map[ledger.AssetCode]ledger.Amount{},
+		allocations: map[iban.Issuer]payment.BankCodeAllocation{},
+		roster:      map[iso20022.BIC]payment.RosterEntry{},
 		assetOf: func(id payment.SchemeID) (ledger.AssetCode, bool) {
 			sc, ok := ch.Scheme(id)
 			if !ok {
@@ -317,7 +405,19 @@ func take(ctx context.Context, nets *payment.Networks) (*snapshot, error) {
 			for _, a := range advices {
 				view.advices[adviceKey{reference: a.Reference, asset: a.Asset}] = a
 			}
-			return nil
+			accounts, err := tx.ListDepositAccounts(ctx, row.BookID)
+			if err != nil {
+				return err
+			}
+			for _, a := range accounts {
+				for _, id := range a.Identifiers {
+					if id.Scheme == deposit.IdentifierIBAN {
+						view.addresses = append(view.addresses, id.Value)
+					}
+				}
+			}
+			view.directory, err = tx.ListDirectoryEntries(ctx)
+			return err
 		}); err != nil {
 			return nil, fmt.Errorf("recon: reading %s's own books: %w", bic, err)
 		}
@@ -338,6 +438,13 @@ func take(ctx context.Context, nets *payment.Networks) (*snapshot, error) {
 				}
 			}
 			snap.reserves[m.BIC] = held
+		}
+		allocations, err := tx.ListBankCodes(ctx)
+		if err != nil {
+			return err
+		}
+		for _, a := range allocations {
+			snap.allocations[a.Issuer] = a
 		}
 		snap.settlements, err = tx.ListSettlements(ctx)
 		return err
@@ -815,6 +922,147 @@ func (s *snapshot) admissionWroteItsThreeRows(rep *Report) {
 			rep.breakf("the clearing house",
 				"payments are routed to %s, an address this deployment has no bank at", bic)
 		}
+	}
+}
+
+// addressesResolveToTheirIssuer holds every customer address in the deployment
+// against the registry that issued the bank code inside it.
+//
+// This is the invariant the whole routing design rests on: THE BANK CODE IN AN
+// IBAN IDENTIFIES THE BANK HOLDING THE ACCOUNT. A payer's bank derives a
+// counterparty's agent from it and sends there; if an account at one bank carries
+// another bank's code, the payment is routable to the wrong institution and the
+// bank it reaches answers AC01 for an address that genuinely exists somewhere.
+// That is a defect no institution can see — the issuing register is the settlement
+// agent's, the account is a member's, and the two never meet.
+//
+// Two shapes of break, and they are different defects. An address under a code
+// the registry has never allocated is an account nobody in this scheme can be
+// paid at; an address under a code allocated to a DIFFERENT bank is the
+// misrouting one, and it is the reason virtual IBANs are named as out of scope
+// (see the design): a PSP issuing addresses under another institution's range
+// would produce exactly this and would be legitimate.
+//
+// A malformed address is a break too, and a plain one: a register that minted a
+// value its own package will not parse has stored something no payer can use.
+func (s *snapshot) addressesResolveToTheirIssuer(rep *Report) {
+	for _, bic := range s.order {
+		for _, addr := range s.banks[bic].addresses {
+			parsed, err := iban.Parse(addr)
+			if err != nil {
+				rep.breakf(string(bic), "this bank holds the address %q, which is not a valid IBAN: %v", addr, err)
+				continue
+			}
+			code, err := parsed.BankCode()
+			if err != nil {
+				rep.breakf(string(bic), "no bank code can be read out of the address %q: %v", addr, err)
+				continue
+			}
+			issuer := iban.Issuer{Country: parsed.Country(), BankCode: code}
+			alloc, allocated := s.allocations[issuer]
+			if !allocated {
+				rep.breakf(string(bic),
+					"the address %s carries the allocation %s %s, which no registry in this deployment has issued",
+					addr, issuer.Country, issuer.BankCode)
+				continue
+			}
+			if alloc.BIC != bic {
+				rep.breakf(string(bic),
+					"the address %s carries %s %s, which is allocated to %s; a payment quoting it would be routed there",
+					addr, issuer.Country, issuer.BankCode, alloc.BIC)
+			}
+		}
+	}
+}
+
+// rosterAgreesWithTheRegistry holds the clearing house's published pairing
+// against the settlement agent's own record of what it allocated.
+//
+// The roster is what every member COPIES, so a roster that disagreed with the
+// registry would put the wrong pairing into every subscriber's directory at once
+// — and neither institution can check the other, which is the whole reason both
+// tables exist. The clearing house learns the allocation from the acmt.010 that
+// writes the row; a drift here means that message and the register it came from
+// have parted company.
+//
+// A member with no allocation published is the other half, and it is a break
+// rather than a state: a bank whose customers have addresses and whose code
+// nobody publishes is a bank that can pay and cannot be paid, with nothing in the
+// system able to say so.
+func (s *snapshot) rosterAgreesWithTheRegistry(rep *Report) {
+	for _, bic := range slices.Sorted(maps.Keys(s.roster)) {
+		entry := s.roster[bic]
+		if !entry.Issuer.Allocated() {
+			rep.breakf("the clearing house",
+				"%s is routed to with no allocation published; every member copying this row has nothing to route an address to it on", bic)
+			continue
+		}
+		alloc, allocated := s.allocations[entry.Issuer]
+		if !allocated {
+			rep.breakf(betweenCHAndRegistry,
+				"%s is published under %s %s, which the registry has never allocated",
+				bic, entry.Issuer.Country, entry.Issuer.BankCode)
+			continue
+		}
+		if alloc.BIC != bic {
+			rep.breakf(betweenCHAndRegistry,
+				"%s is published under %s %s, which the registry allocated to %s",
+				bic, entry.Issuer.Country, entry.Issuer.BankCode, alloc.BIC)
+		}
+	}
+	for _, issuer := range slices.SortedFunc(maps.Keys(s.allocations), func(a, b iban.Issuer) int {
+		return cmp.Or(cmp.Compare(a.Country, b.Country), cmp.Compare(a.BankCode, b.BankCode))
+	}) {
+		alloc := s.allocations[issuer]
+		if _, deployed := s.banks[alloc.BIC]; !deployed {
+			rep.breakf("the settlement agent",
+				"%s %s is allocated to %s, an address this deployment has no bank at",
+				issuer.Country, issuer.BankCode, alloc.BIC)
+		}
+	}
+}
+
+// directoriesAgainstTheRoster REPORTS each member's copy against what the
+// clearing house publishes, and never fails on the difference.
+//
+// See StaleDirectory and the package doc. A copy that is behind is the behaviour
+// the subscription model was chosen for, so the finding is a line an operator
+// reads — "two entries not copied, pulled three days ago" — and a run holding one
+// still passes. Turning this into a break is the mistake this comment exists to
+// stop; the pairings that CANNOT legitimately differ are the two checks above.
+//
+// It reports a bank that has never pulled at all, with an empty copy, exactly as
+// it reports one behind by two entries. There is no third state and no threshold:
+// how far behind is too far is a question about a deployment, and this harness
+// answers questions about books.
+func (s *snapshot) directoriesAgainstTheRoster(rep *Report) {
+	for _, bic := range s.order {
+		view := s.banks[bic]
+		copied := map[iso20022.BIC]bool{}
+		var refreshedAt time.Time
+		for _, e := range view.directory {
+			copied[e.BIC] = true
+			if e.RefreshedAt.After(refreshedAt) {
+				refreshedAt = e.RefreshedAt
+			}
+		}
+		var missing, extra []iso20022.BIC
+		for _, published := range slices.Sorted(maps.Keys(s.roster)) {
+			if !copied[published] {
+				missing = append(missing, published)
+			}
+		}
+		for _, held := range slices.Sorted(maps.Keys(copied)) {
+			if _, published := s.roster[held]; !published {
+				extra = append(extra, held)
+			}
+		}
+		if len(missing) == 0 && len(extra) == 0 {
+			continue
+		}
+		rep.Stale = append(rep.Stale, StaleDirectory{
+			Bank: bic, RefreshedAt: refreshedAt, Missing: missing, Extra: extra,
+		})
 	}
 }
 

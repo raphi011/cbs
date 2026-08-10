@@ -3430,6 +3430,88 @@ func TestDirectoryAmbiguousIdentifierIs409(t *testing.T) {
 	doJSON(t, bank(srv, pid), "GET", "/directory/accounts?scheme=PAN&value=4000000000000009", "", http.StatusConflict)
 }
 
+// TestTheRosterPublishesTheAllocationAndAMemberCopiesIt pins the two surfaces the
+// subscription is made of, and that they carry the same fact.
+//
+// GET /roster is the clearing house PUBLISHING: which member issues addresses
+// under which country and code. GET /directory/banks is one member's COPY of the
+// same pairing, answered out of its own database. A payer's send form asks the
+// second the moment an IBAN's check digits pass; nothing on a retail path asks
+// the first.
+//
+// Both answer a BIC and NEITHER answers a name. An acmt.010 delivers none, so the
+// roster holds none, so a copy of the roster can hold none — three documented
+// decisions reused rather than a fourth invented. The assertion is on the absence
+// as much as on the value.
+//
+// The refresh in between is a request somebody makes, and it is what these two
+// surfaces are separated by. subscribeAll is what makes it in this fixture.
+func TestTheRosterPublishesTheAllocationAndAMemberCopiesIt(t *testing.T) {
+	h := newServer(t, nil)
+	a := admitMember(t, h, `{"bic":"BNKADEFFXXX","name":"Bank A","country":"DE"}`, http.StatusAccepted)["id"].(string)
+	b := admitMember(t, h, `{"bic":"BNKBDEFFXXX","name":"Bank B","country":"DE"}`, http.StatusAccepted)["id"].(string)
+
+	var published []struct {
+		BIC      string `json:"bic"`
+		Country  string `json:"country"`
+		BankCode string `json:"bankCode"`
+	}
+	getJSON(t, csm(h), "/roster", &published)
+	if len(published) != 2 {
+		t.Fatalf("the roster publishes %d members, want 2", len(published))
+	}
+	byBIC := map[string]string{}
+	for _, e := range published {
+		if e.Country == "" || e.BankCode == "" {
+			t.Fatalf("%s is published with no allocation; a member copying this row has nothing to route on", e.BIC)
+		}
+		byBIC[e.BIC] = e.Country + " " + e.BankCode
+	}
+	if byBIC[a] == byBIC[b] {
+		t.Fatalf("both members are published under %s; one address would be ambiguous for the whole scheme", byBIC[a])
+	}
+
+	// Bank A's own copy, whole. It holds every member the roster published,
+	// including itself: a directory is the scheme's, not a list of counterparties.
+	var copied []map[string]any
+	getJSON(t, bank(h, a), "/directory/banks", &copied)
+	if len(copied) != len(published) {
+		t.Fatalf("the copy holds %d entries and the roster publishes %d", len(copied), len(published))
+	}
+	for _, e := range copied {
+		if e["refreshedAt"] == nil || e["refreshedAt"] == "" {
+			t.Errorf("a copied entry carries no refresh instant: %v", e)
+		}
+		if _, leaked := e["name"]; leaked {
+			t.Errorf("a copied entry carries a name: %v — the roster was never told one", e)
+		}
+	}
+
+	// And narrowed, which is the question a send form asks: this allocation, which
+	// bank. The answer is a BIC and it is Bank B's.
+	country, code, _ := strings.Cut(byBIC[b], " ")
+	var one map[string]any
+	getJSON(t, bank(h, a), "/directory/banks?country="+country+"&bankCode="+code, &one)
+	if one["bic"] != b {
+		t.Fatalf("%s %s resolves to %v in Bank A's copy, want %s", country, code, one["bic"], b)
+	}
+
+	// An allocation this scheme has given nobody is 422 and not 404, and the
+	// message is the one a subscriber can honestly give: this copy holds no entry.
+	// It cannot say whether there is no such member or whether it is behind.
+	miss := do(t, bank(h, a), "GET", "/directory/banks?country=DE&bankCode=10000000", "")
+	if miss.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("an unallocated code = %d, want 422 (%s)", miss.Code, miss.Body.String())
+	}
+	if !strings.Contains(miss.Body.String(), "routing directory holds no entry") {
+		t.Errorf("the refusal does not name the copy: %s", miss.Body.String())
+	}
+
+	// Both parameters or neither: a narrowing on the country alone would answer
+	// every German member, which is not a question this route has.
+	doJSON(t, bank(h, a), "GET", "/directory/banks?country=DE", "", http.StatusBadRequest)
+}
+
 // TestPaymentAddressingRefusalsAre422 pins the status codes of the three ways
 // initiation can refuse a leg on addressing grounds, AND that a refusal takes
 // no money. It drives FIVE refusals over those three sentinels —

@@ -2,9 +2,11 @@ package mesh
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"testing"
 
+	"github.com/raphi011/cbs/deposit"
 	"github.com/raphi011/cbs/iso20022"
 	"github.com/raphi011/cbs/ledger"
 	"github.com/raphi011/cbs/payment"
@@ -223,6 +225,120 @@ func TestTheHarnessCatchesTwoBanksDisagreeingAboutOnePayment(t *testing.T) {
 
 	report := reconcile(t, h.nets)
 	assertBreakAbout(t, report, string(h.debtorBIC), "on the clearing house's")
+}
+
+// TestTheHarnessCatchesAnAccountAddressedUnderAnotherBanksCode is the routing
+// invariant the whole IBAN-only design rests on, measured from outside every
+// institution.
+//
+// The bank code inside an IBAN IDENTIFIES THE BANK HOLDING THE ACCOUNT. Break
+// that and a payer's bank derives the wrong agent and sends there — a payment
+// routable to an institution that does not hold the payee, refused with AC01 for
+// an address that exists somewhere. Nothing in the system can see it: the
+// register that issued the code is the settlement agent's, the account is a
+// member's, and neither may read the other.
+//
+// The damage is a plausible one rather than a nonsense value. The address is
+// well-formed, its check digits verify, and it carries the OTHER member's
+// allocation — which is exactly what a virtual IBAN is, and is why the design
+// names them as out of scope. A fixture using a malformed value would be caught
+// by iban.Parse and would prove nothing about the invariant.
+func TestTheHarnessCatchesAnAccountAddressedUnderAnotherBanksCode(t *testing.T) {
+	h := reconciled(t)
+
+	// The payee's OWN account, re-addressed under the payer's bank's allocation.
+	acct := h.creditorAcct
+	acct.Identifiers = []deposit.Identifier{{
+		Scheme: deposit.IdentifierIBAN,
+		Value:  mustMint(h.debtor.Issuer.Country, h.debtor.Issuer.BankCode, 424242),
+	}}
+	h.putDepositAccount(t, h.creditorBIC, h.creditor.BookID, acct)
+
+	report := reconcile(t, h.nets)
+	assertBreakAbout(t, report, string(h.creditorBIC), "which is allocated to "+string(h.debtorBIC))
+}
+
+// TestTheHarnessCatchesARosterPublishingAnAllocationTheRegistryDidNotMake is the
+// second half of the same invariant, one register along.
+//
+// The roster is what every member COPIES, so a roster that disagrees with the
+// registry puts the wrong pairing into every subscriber's directory at once. The
+// clearing house learns the allocation from the acmt.010 that writes its row and
+// cannot see the register it came from; the settlement agent has never heard of
+// the roster. So the two parting company is a state neither can notice, which is
+// what makes it this harness's.
+func TestTheHarnessCatchesARosterPublishingAnAllocationTheRegistryDidNotMake(t *testing.T) {
+	h := reconciled(t)
+
+	entry := h.rosterEntry(t, h.creditorBIC)
+	entry.Issuer.BankCode = h.debtor.Issuer.BankCode
+	h.putRosterEntry(t, entry)
+
+	report := reconcile(t, h.nets)
+	assertBreakAbout(t, report, "the clearing house and the bank-code registry", "the registry allocated to "+string(h.debtorBIC))
+}
+
+// TestAStaleDirectoryIsReportedAndIsNotABreak is the case that must PASS, and it
+// is the one this file exists to hold the line on.
+//
+// A member's routing directory is a copy of the roster, pulled by that member.
+// Between two pulls it is behind whatever has been published since — which is the
+// behaviour the subscription model was chosen for, and is why a bank admitted
+// this morning cannot be paid by a bank that pulled yesterday. So the harness
+// REPORTS the difference and passes.
+//
+// The opposite is an easy thing to write by accident: the roster and the copy are
+// two tables holding one pairing, which is the shape of every break above. What
+// separates them is that this pair has a path back to agreement and the path is a
+// request somebody makes. A harness that failed here would assert the opposite of
+// the design, and every fixture in the repository would then have to refresh
+// every member after every admission to stay green — which is how the local-copy
+// model would quietly become a live lookup.
+func TestAStaleDirectoryIsReportedAndIsNotABreak(t *testing.T) {
+	h := reconciled(t)
+
+	// A third member, admitted and published, and nobody has pulled since.
+	joiner := h.admit(t, "Nordhaven Bank", "NORDSESSXXX", euroOnly)
+	h.drain(t)
+
+	// It PASSES. recon.Check fails the test on every break, so calling it here is
+	// the assertion: a network in which two members are two entries behind and a
+	// third has never pulled at all is a network whose books agree.
+	report := recon.Check(t, h.nets)
+
+	// And it is reported, per member, with what each is missing.
+	behind := map[iso20022.BIC]recon.StaleDirectory{}
+	for _, d := range report.Stale {
+		behind[d.Bank] = d
+	}
+	for _, bic := range []iso20022.BIC{h.debtorBIC, h.creditorBIC} {
+		d, ok := behind[bic]
+		if !ok {
+			t.Fatalf("%s pulled before %s was admitted and is not reported as behind", bic, joiner.BIC)
+		}
+		if !slices.Contains(d.Missing, joiner.BIC) {
+			t.Errorf("%s is reported behind by %v, want the newly admitted %s", bic, d.Missing, joiner.BIC)
+		}
+		if d.RefreshedAt.IsZero() {
+			t.Errorf("%s has pulled a directory and is reported as never having done so", bic)
+		}
+	}
+	// The joiner itself has never pulled: it is in the roster and holds no copy,
+	// so it can be paid and cannot pay. A member is not given a directory by being
+	// admitted.
+	d, ok := behind[joiner.BIC]
+	if !ok {
+		t.Fatalf("%s has never pulled a directory and is not reported", joiner.BIC)
+	}
+	if !d.RefreshedAt.IsZero() {
+		t.Errorf("%s is reported as having pulled at %s; nothing has pulled one for it", joiner.BIC, d.RefreshedAt)
+	}
+
+	// One request each, and the report is empty.
+	h.subscribeAll(t)
+	if got := reconcile(t, h.nets); len(got.Stale) != 0 {
+		t.Errorf("after every member pulled, %d directories are still behind: %v", len(got.Stale), got.Stale)
+	}
 }
 
 // TestAnUnbookedSettlementExplainsAReserveDivergence is what makes the mirror
@@ -484,6 +600,24 @@ func (h *meshHarness) putPayment(t *testing.T, bic iso20022.BIC, p payment.Payme
 	h.write(t, h.store(t, bic), string(bic), func(ctx context.Context, tx payment.Tx) error {
 		return tx.PutPayment(ctx, p)
 	})
+}
+
+func (h *meshHarness) putDepositAccount(t *testing.T, bic iso20022.BIC, book ledger.BookID, a deposit.Account) {
+	t.Helper()
+	h.write(t, h.store(t, bic), string(bic), func(ctx context.Context, tx payment.Tx) error {
+		return tx.PutDepositAccount(ctx, book, a)
+	})
+}
+
+// rosterEntry is what the clearing house publishes about one member, read out of
+// the clearing house's own store rather than through an actor.
+func (h *meshHarness) rosterEntry(t *testing.T, bic iso20022.BIC) payment.RosterEntry {
+	t.Helper()
+	e, err := h.net.GetRosterEntryByBIC(context.Background(), bic)
+	if err != nil {
+		t.Fatalf("reading %s's roster entry: %v", bic, err)
+	}
+	return e
 }
 
 func (h *meshHarness) putSettlementAdvice(t *testing.T, bic iso20022.BIC, a payment.SettlementAdvice) {
