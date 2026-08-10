@@ -441,9 +441,9 @@ CREATE TABLE deposit_account_identifiers (
     -- primary key is therefore widened with deposit_account_id so that it is a
     -- row identity rather than the domain rule in disguise, and the lookup index
     -- is a plain index. The residual duplicate is caught at READ time, ON THE
-    -- ROUTING PATH: Register.ResolveIdentifier and the network's sweep answer
-    -- ErrIdentifierAmbiguous rather than picking one, so no address ever routes
-    -- money to a bank or an account chosen by listing order. It is a claim about
+    -- ROUTING PATH: Register.ResolveIdentifier answers ErrIdentifierAmbiguous
+    -- rather than picking one, so no address ever routes money to an account
+    -- chosen by listing order. It is a claim about
     -- resolution and nothing else — SubmitPaymentTx is handed an account id and
     -- never resolves, so two accounts colliding on one address both stay payable
     -- by id. That is correct: the accounts are distinct and real, and what is
@@ -467,6 +467,16 @@ CREATE TABLE deposit_account_identifiers (
     -- malformed IBAN on the way in, a bank MINTS its customers' addresses rather
     -- than accepting them, and a row here that fails the check digits is one no
     -- code path can produce.
+    --
+    -- WHERE THE MINTING AUTHORITY COMES FROM is one column over and one
+    -- institution away: the (country, bank_code) on this bank's own row in banks,
+    -- allocated by a national registry at admission and delivered on the
+    -- acmt.010. A register can only mint under the allocation it was given, which
+    -- is what makes the bank code inside a value here a true statement about who
+    -- holds the account rather than a claim the caller made — and it is what
+    -- every other member routes on, out of its own copy of the published
+    -- directory (see routing_directory). A bank with no allocation mints nothing
+    -- and has no rows here at all.
     --
     -- The parent FOREIGN KEY, unlike subledgers.ledger_id, DOES stay. It is the
     -- exemption stated on subledgers: PutDepositAccount writes both sides
