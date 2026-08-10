@@ -38,7 +38,7 @@ function ReserveAmountCell({ reserve }: { reserve: Reserve }) {
 }
 
 const reserveColumns: Column<Reserve>[] = [
-  { key: "participant", header: "Participant", render: (r) => <IdText id={r.participant} /> },
+  { key: "agent", header: "Bank (BIC)", render: (r) => <IdText id={r.agent} /> },
   { key: "asset", header: "Asset", render: (r) => r.asset },
   {
     key: "reserve",
@@ -50,9 +50,11 @@ const reserveColumns: Column<Reserve>[] = [
 ];
 
 // Shortfall is why an instruction was refused: which bank could not cover, what
-// it owed and what it held.
+// it owed and what it held. The bank is a BIC, because that is what both sides
+// of the join are keyed by — the register the settlement agent holds, and the
+// positions the instruction carried.
 interface Shortfall {
-  participant: string;
+  agent: string;
   owed: number;
   held: number;
 }
@@ -115,7 +117,7 @@ export default function CentralBankPage() {
           <DataTable
             columns={reserveColumns}
             rows={reserves.data}
-            rowKey={(r) => `${r.participant}:${r.asset}`}
+            rowKey={(r) => `${r.agent}:${r.asset}`}
             isLoading={reserves.isLoading}
             empty="No participants yet. Admit one to see its reserve account."
           />
@@ -143,8 +145,9 @@ export default function CentralBankPage() {
 // behind it. But WHICH one that was is not something this console can know:
 // SettleCycleTx visits members in REGISTRATION order (payment/system.go's
 // settlementLegsTx, which says so and says why), and nothing here is in
-// registration order — netPositions arrives as a JSON object, whose keys Go's
-// encoder sorts lexically, and `bank_80` sorts before `bank_9`.
+// registration order — netPositions arrives as a JSON object, and the order its
+// BICs come out in is whatever the encoder wrote, which is alphabetical and not
+// the order the members joined.
 //
 // Naming a bank that genuinely cannot cover is true, and it is what the operator
 // has to act on. Naming it as the one that aborted the batch would be a claim
@@ -160,17 +163,15 @@ function shortfallOf(cycle: ClearingCycle, reserves: Reserve[]): Shortfall | nul
   const positions = Object.entries(cycle.netPositions ?? {}).sort(([a], [b]) =>
     a.localeCompare(b),
   );
-  for (const [participant, net] of positions) {
+  for (const [agent, net] of positions) {
     if (net >= 0) continue; // a net receiver is paid, not asked to pay
     const owed = -net;
     // In the cycle's OWN asset. A bank's euro reserve says nothing about
     // whether it can cover a dollar position, which is the whole reason a
     // reserve row carries its asset code.
-    const held = reserves.find(
-      (r) => r.participant === participant && r.asset === cycle.asset,
-    );
-    if (held === undefined) return { participant, owed, held: 0 };
-    if (held.reserve < owed) return { participant, owed, held: held.reserve };
+    const held = reserves.find((r) => r.agent === agent && r.asset === cycle.asset);
+    if (held === undefined) return { agent, owed, held: 0 };
+    if (held.reserve < owed) return { agent, owed, held: held.reserve };
   }
   return null;
 }
@@ -280,7 +281,7 @@ function RefusedAlert({ cycle, shortfall }: { cycle: ClearingCycle; shortfall: S
       <AlertTitle>Not settled — a net payer cannot cover its position</AlertTitle>
       <AlertDescription>
         <p>
-          <IdText id={shortfall.participant} /> owes {amount(shortfall.owed)} and
+          <IdText id={shortfall.agent} /> owes {amount(shortfall.owed)} and
           holds {amount(shortfall.held)} on reserve, so the central bank answers
           this instruction <strong>RJCT/AM04</strong>{" "}
           and posts nothing at all. Settlement is one unit of work over the whole batch: every other

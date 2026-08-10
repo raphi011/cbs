@@ -123,14 +123,13 @@ export default function CustomerSend() {
     try {
       const accepted = await submit.mutateAsync({
         scheme: SEND_SCHEME,
-        debtor: { participant: pid, account: did },
-        // The payee is named by ADDRESS and by nothing else. participant and
-        // account are the payee bank's own internal keys and a payer has no way
-        // to know them; filling them would take a directory sweep, which is a
-        // read no bank may make. The receiving bank resolves the IBAN in its own
-        // register and fills them in (payment.AcceptInboundTx).
+        debtor: { account: did },
+        // The payee is named by ADDRESS and by nothing else. The account is the
+        // payee bank's own internal key and a payer has no way to know it;
+        // filling it would take a directory sweep, which is a read no bank may
+        // make. The receiving bank resolves the IBAN in its own register and
+        // fills it in (payment.AcceptInboundTx).
         creditor: {
-          participant: "",
           account: "",
           identifier: { scheme: "IBAN", value: iban.trim() },
         },

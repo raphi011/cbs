@@ -24,6 +24,15 @@ import {
 import { describeError } from "@/lib/api/errors";
 import { formatDateTime } from "@/lib/dates";
 import type { HintKey } from "@/components/hint-content";
+import type { PartyRef } from "@/lib/types";
+
+// What this console can say about one side of a payment. The ADDRESS, because
+// that is what the messages carried: a bank's key for its own customer is not on
+// a pacs.008 and the clearing house's row therefore has none. The account is the
+// fallback for a party addressed by ids alone.
+function partyOf(ref: PartyRef): string {
+  return ref.identifier?.value || ref.account || "—";
+}
 
 function Row({
   label,
@@ -52,8 +61,9 @@ export default function PaymentDetailPage() {
   const schemes = useSchemes();
   const reject = useRejectPayment();
   const ret = useReturnPayment();
-  // See PaymentAmountCell in app/payments/page.tsx for why the debtor's
-  // participant, not the scheme, is where a payment's scale is resolved from.
+  // See PaymentAmountCell in components/payments-table.tsx: the payment carries
+  // its asset code and the network-wide list carries the scale, so a code that
+  // has not resolved means no number is rendered.
   const { byCode } = useAssetLookup();
   const asset = p ? byCode.get(p.asset) : undefined;
 
@@ -167,16 +177,21 @@ export default function PaymentDetailPage() {
                 <CardTitle className="text-base">Parties &amp; legs</CardTitle>
               </CardHeader>
               <CardContent className="py-0">
+                {/* The bank first and the party under it. Both are what the
+                    MESSAGES carried, which on this console is an IBAN and not an
+                    account: a bank's key for its own customer never leaves that
+                    bank's register, so the clearing house's copy of a party is
+                    an address. */}
                 <Row label="Debtor" hint="debtor-leg">
                   <span className="flex flex-col items-end gap-0.5">
-                    <IdText id={p.debtor.participant} />
-                    <IdText id={p.debtor.account} />
+                    <IdText id={p.debtorAgent ?? "—"} />
+                    <IdText id={partyOf(p.debtor)} />
                   </span>
                 </Row>
                 <Row label="Creditor" hint="creditor-leg">
                   <span className="flex flex-col items-end gap-0.5">
-                    <IdText id={p.creditor.participant} />
-                    <IdText id={p.creditor.account} />
+                    <IdText id={p.creditorAgent ?? "—"} />
+                    <IdText id={partyOf(p.creditor)} />
                   </span>
                 </Row>
                 {p.debtorLegTx && (

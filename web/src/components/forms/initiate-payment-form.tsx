@@ -24,19 +24,30 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { FieldLabel } from "@/components/field-label";
 import { MoneyInput } from "@/components/money";
-import { PartyRefFields, emptyPartyRef } from "@/components/forms/party-ref-fields";
+import {
+  PartyRefFields,
+  emptyParty,
+  type PartyDraft,
+} from "@/components/forms/party-ref-fields";
 import { useAssetLookup, useInitiatePayment, useSchemes } from "@/lib/api/hooks";
 import { describeError } from "@/lib/api/errors";
-import type { PartyRef } from "@/lib/types";
 
 // Initiates a payment under a scheme. The form is scheme-aware: a mandate is
 // required only when the chosen scheme requires one (pull/direct-debit).
+//
+// Both sides carry a name and a BIC, and only the COUNTERPARTY's pair is what
+// the submission needs — the creditor's on a push, the debtor's on a pull,
+// because the submitting bank overwrites its own side from its own register
+// either way. Which side that is belongs to the scheme, so this form sends both
+// rather than guessing the direction a second time.
 export function InitiatePaymentForm() {
   const [open, setOpen] = useState(false);
   const schemes = useSchemes();
   const [scheme, setScheme] = useState("");
-  const [debtor, setDebtor] = useState<PartyRef>(emptyPartyRef);
-  const [creditor, setCreditor] = useState<PartyRef>(emptyPartyRef);
+  const [debtor, setDebtor] = useState<PartyDraft>(emptyParty);
+  const [debtorName, setDebtorName] = useState("");
+  const [creditor, setCreditor] = useState<PartyDraft>(emptyParty);
+  const [creditorName, setCreditorName] = useState("");
   const [amount, setAmount] = useState<number | null>(null);
   const [mandateId, setMandateId] = useState("");
   const [endToEndId, setEndToEndId] = useState("");
@@ -53,12 +64,23 @@ export function InitiatePaymentForm() {
   const { byCode } = useAssetLookup();
   const resolvedAsset = selected ? byCode.get(selected.asset) : undefined;
 
+  // The counterparty is whichever side the submitting bank is not, and it is the
+  // side an omission is refused on: its NAME because nothing else says who is
+  // being paid (payment.ErrCounterpartyNotNamed), its IBAN because the message
+  // quotes an address the submitting bank cannot resolve. So the form asks for
+  // the pair the submission will actually read.
+  const pull = selected?.direction === "Pull";
+  const counterparty = pull ? debtor : creditor;
+  const counterpartyName = pull ? debtorName : creditorName;
+
   const valid =
     scheme &&
-    debtor.participant.trim() &&
-    debtor.account.trim() &&
-    creditor.participant.trim() &&
-    creditor.account.trim() &&
+    debtor.pid.trim() &&
+    debtor.ref.account.trim() &&
+    creditor.pid.trim() &&
+    creditor.ref.account.trim() &&
+    counterpartyName.trim() &&
+    counterparty.ref.identifier?.value.trim() &&
     resolvedAsset != null &&
     amount != null &&
     (!needsMandate || mandateId.trim());
@@ -69,16 +91,22 @@ export function InitiatePaymentForm() {
     try {
       const p = await initiate.mutateAsync({
         scheme,
-        debtor,
-        creditor,
+        debtor: debtor.ref,
+        creditor: creditor.ref,
+        debtorAgent: debtor.agent,
+        creditorAgent: creditor.agent,
+        debtorName: debtorName.trim() || undefined,
+        creditorName: creditorName.trim() || undefined,
         amount: amount!,
         mandateId: mandateId.trim() || undefined,
         endToEndId: endToEndId.trim() || undefined,
         description: description.trim() || undefined,
       });
       toast.success(`Payment initiated (${p.id})`);
-      setDebtor(emptyPartyRef);
-      setCreditor(emptyPartyRef);
+      setDebtor(emptyParty);
+      setDebtorName("");
+      setCreditor(emptyParty);
+      setCreditorName("");
       setAmount(null);
       setMandateId("");
       setEndToEndId("");
@@ -126,11 +154,21 @@ export function InitiatePaymentForm() {
             </Select>
           </div>
 
-          <PartyRefFields legend="Debtor" value={debtor} onChange={setDebtor} />
+          <PartyRefFields
+            legend="Debtor"
+            value={debtor}
+            onChange={setDebtor}
+            name={debtorName}
+            onNameChange={setDebtorName}
+            addressRequired={pull}
+          />
           <PartyRefFields
             legend="Creditor"
             value={creditor}
             onChange={setCreditor}
+            name={creditorName}
+            onNameChange={setCreditorName}
+            addressRequired={!pull}
           />
 
           <div className="space-y-2">

@@ -368,7 +368,10 @@ export interface AccountIdentifier {
 // its own register and no other, so the question it answers is "is this one of
 // mine".
 export interface DirectoryEntry {
-  participant: string;
+  // The BIC of the bank the address resolves at, which is always the bank that
+  // was asked: the lookup searches that bank's own register and no other, so
+  // there is no other answer it could carry.
+  agent: string;
   account: string;
   identifier: AccountIdentifier;
 }
@@ -387,8 +390,13 @@ export interface RosterEntry {
   admittedAt: string;
 }
 
+// One side of a payment or a mandate: the account, and the address quoted to
+// reach it. It names NO BANK. A bank's id is its BIC, so a `participant` field
+// beside the agent would be one value spelled twice; which bank a party is at
+// travels as `debtorAgent`/`creditorAgent` on the enclosing payment or mandate,
+// the same names an instruction uses on the way in. See api/dto_payment.go's
+// partyRefDTO.
 export interface PartyRef {
-  participant: string;
   account: string;
   // The external address quoted for this party — an IBAN today. Absent when
   // the party was addressed only by its ids.
@@ -403,6 +411,10 @@ export interface Payment {
   asset: string;
   debtor: PartyRef;
   creditor: PartyRef;
+  // The BICs of the two banks, and what says where each party banks now that a
+  // PartyRef does not.
+  debtorAgent?: string;
+  creditorAgent?: string;
   amount: number;
   mandateId?: string;
   endToEndId?: string;
@@ -430,6 +442,10 @@ export interface AcceptedPayment {
 export interface Mandate {
   id: string;
   debtor: PartyRef;
+  // The bank a collection under this mandate is sent to. There is no
+  // creditorAgent beside it and no row to fill one from: a mandate is the
+  // creditor's bank's, so the creditor's agent is whichever bank holds it.
+  debtorAgent?: string;
   creditor: PartyRef;
   // Resolved server-side from the debtor's own deposit account (a mandate
   // names no scheme — see api/dto_payment.go's toMandateDTO).
@@ -446,6 +462,8 @@ export interface ClearingCycle {
   asset: string;
   status: CycleStatus;
   paymentIds: string[];
+  // Keyed by BIC: the settlement instruction turns net positions into addresses,
+  // so a position is against a bank's address and not against a network id.
   netPositions?: Record<string, number>;
   openedAt: string;
   closedAt?: string;
@@ -484,8 +502,12 @@ export interface Scheme {
 
 // One bank's reserve at the central bank, in one asset. Reserves in different
 // assets are different things and are never added together.
+//
+// The bank is named by its BIC, because the settlement agent's register is keyed
+// by address and holds no participant ids — an id the network allocates is not
+// something a message ever tells anybody.
 export interface Reserve {
-  participant: string;
+  agent: string;
   asset: string;
   reserve: number;
 }
@@ -763,6 +785,10 @@ export interface ChargeFacilityInterestRequest {
 
 export interface CreateMandateRequest {
   debtor: PartyRef;
+  // Required: it is the address the collection is sent to, and the creditor's
+  // bank cannot derive it — the debtor's account is in the debtor bank's own
+  // register. It is the mandate's version of a payment's counterparty agent.
+  debtorAgent: string;
   creditor: PartyRef;
   maxAmount: number;
 }

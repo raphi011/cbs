@@ -13,6 +13,13 @@ import { useAssetLookup, useIdentityDirectory, useReserves } from "@/lib/api/hoo
 import { homeFor } from "@/lib/identity";
 import type { DepositAccount, Participant, Reserve } from "@/lib/types";
 
+// A bank's reserve rows, matched by BIC. The settlement agent's register is
+// keyed by address and holds no participant ids, so the bank's own id is not
+// what joins the two lists.
+function reservesOf(reserves: Reserve[] | undefined, bic: string): Reserve[] {
+  return (reserves ?? []).filter((r) => r.agent === bic);
+}
+
 // The lobby. `/` never redirects: a first-time visitor is shown the cast and
 // picks one. Remembering the last identity would save a repeat visitor a click
 // and cost the newcomer the one screen that makes the app's structure obvious,
@@ -72,7 +79,7 @@ export default function Lobby() {
                 key={participant.id}
                 participant={participant}
                 provisioned={provisioned}
-                reserves={(reserves ?? []).filter((r) => r.participant === participant.id)}
+                reserves={reservesOf(reserves, participant.bic)}
               />
             ))}
           </div>

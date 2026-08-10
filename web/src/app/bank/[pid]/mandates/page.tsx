@@ -79,9 +79,17 @@ export default function MandatesPage() {
   const columns: Column<Mandate>[] = [
     { key: "id", header: "ID", render: (m) => <IdText id={m.id} /> },
     {
+      // The debtor's bank and, under it, the address the collection quotes. The
+      // mandate records both and resolves neither: the account is in the debtor
+      // bank's register, which is why the collection is addressed to it.
       key: "debtor",
       header: "Debtor",
-      render: (m) => <IdText id={m.debtor.participant} />,
+      render: (m) => (
+        <span className="flex flex-col gap-0.5">
+          <IdText id={m.debtorAgent ?? "—"} />
+          <IdText id={m.debtor.identifier?.value || m.debtor.account || "—"} />
+        </span>
+      ),
     },
     {
       key: "creditor",

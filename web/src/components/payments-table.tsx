@@ -33,13 +33,17 @@ const columns: Column<Payment>[] = [
   { key: "id", header: "ID", render: (p) => <IdText id={p.id} /> },
   { key: "scheme", header: "Scheme", render: (p) => p.scheme },
   {
+    // The two BANKS, by the addresses the messages carried. A payment names no
+    // participant on either side, and the accounts it does name are each held in
+    // a different bank's register — so the pair that means the same thing on
+    // every row is the agents.
     key: "flow",
     header: "Debtor → Creditor",
     render: (p) => (
       <span className="flex items-center gap-1.5">
-        <IdText id={p.debtor.participant} />
+        <IdText id={p.debtorAgent ?? "—"} />
         <ArrowRight className="size-3.5 text-muted-foreground" />
-        <IdText id={p.creditor.participant} />
+        <IdText id={p.creditorAgent ?? "—"} />
       </span>
     ),
   },

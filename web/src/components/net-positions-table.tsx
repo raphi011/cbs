@@ -6,13 +6,14 @@ import { IdText } from "@/components/id-text";
 import { useAssetLookup } from "@/lib/api/hooks";
 
 interface NetPosition {
-  participant: string;
+  agent: string;
   amount: number;
 }
 
 // Renders a clearing cycle's / settlement's net positions: one signed number
-// per participant. Positive = net receiver (owed money); negative = net payer
-// (owes money). The whole table sums to zero — money is conserved.
+// per bank, keyed by the BIC the settlement instruction addresses it at.
+// Positive = net receiver (owed money); negative = net payer (owes money). The
+// whole table sums to zero — money is conserved.
 //
 // `asset` is the cycle's/settlement's asset code (both DTOs carry one,
 // resolved server-side from the scheme — see api/dto_payment.go's
@@ -27,7 +28,7 @@ export function NetPositionsTable({
 }) {
   const rows: NetPosition[] = positions
     ? Object.entries(positions)
-        .map(([participant, amount]) => ({ participant, amount }))
+        .map(([agent, amount]) => ({ agent, amount }))
         .sort((a, b) => b.amount - a.amount)
     : [];
 
@@ -36,10 +37,10 @@ export function NetPositionsTable({
 
   const columns: Column<NetPosition>[] = [
     {
-      key: "participant",
-      header: "Participant",
+      key: "agent",
+      header: "Bank (BIC)",
       hint: "net-positions",
-      render: (r) => <IdText id={r.participant} />,
+      render: (r) => <IdText id={r.agent} />,
     },
     {
       key: "amount",
@@ -59,7 +60,7 @@ export function NetPositionsTable({
     <DataTable
       columns={columns}
       rows={rows}
-      rowKey={(r) => r.participant}
+      rowKey={(r) => r.agent}
       empty="No net positions yet — close the cycle to compute them."
     />
   );

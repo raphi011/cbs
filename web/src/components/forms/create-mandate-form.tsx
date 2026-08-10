@@ -16,7 +16,11 @@ import {
 import { Button } from "@/components/ui/button";
 import { FieldLabel } from "@/components/field-label";
 import { MoneyInput } from "@/components/money";
-import { PartyRefFields, emptyPartyRef } from "@/components/forms/party-ref-fields";
+import {
+  PartyRefFields,
+  emptyParty,
+  type PartyDraft,
+} from "@/components/forms/party-ref-fields";
 import { useAssetLookup, useCreateMandate, useDepositAccounts } from "@/lib/api/hooks";
 import { describeError } from "@/lib/api/errors";
 import type { PartyRef } from "@/lib/types";
@@ -33,7 +37,7 @@ import type { PartyRef } from "@/lib/types";
 // over HTTP for a scale.
 export function CreateMandateForm({ pid }: { pid: string }) {
   const [open, setOpen] = useState(false);
-  const [debtor, setDebtor] = useState<PartyRef>(emptyPartyRef);
+  const [debtor, setDebtor] = useState<PartyDraft>(emptyParty);
   const [creditorAccount, setCreditorAccount] = useState("");
   const [maxAmount, setMaxAmount] = useState<number | null>(null);
   const create = useCreateMandate(pid);
@@ -41,11 +45,13 @@ export function CreateMandateForm({ pid }: { pid: string }) {
   const creditorAcct = ownAccounts.data?.find((a) => a.id === creditorAccount);
   const { byCode } = useAssetLookup();
   const resolvedAsset = creditorAcct ? byCode.get(creditorAcct.asset) : undefined;
-  const creditor: PartyRef = { participant: pid, account: creditorAccount };
+  // The creditor names no bank: this listener IS the creditor's bank, and a
+  // mandate carries no creditorAgent for that reason.
+  const creditor: PartyRef = { account: creditorAccount };
 
   const valid =
-    debtor.participant.trim() &&
-    debtor.account.trim() &&
+    debtor.agent.trim() &&
+    debtor.ref.account.trim() &&
     creditorAccount.trim() &&
     resolvedAsset != null &&
     maxAmount != null;
@@ -55,12 +61,15 @@ export function CreateMandateForm({ pid }: { pid: string }) {
     if (!valid) return;
     try {
       const m = await create.mutateAsync({
-        debtor,
+        debtor: debtor.ref,
+        // The address the collection is sent to. The debtor's account is in the
+        // debtor bank's own register, so this bank has nothing to derive it from.
+        debtorAgent: debtor.agent,
         creditor,
         maxAmount: maxAmount!,
       });
       toast.success(`Mandate created (${m.id})`);
-      setDebtor(emptyPartyRef);
+      setDebtor(emptyParty);
       setCreditorAccount("");
       setMaxAmount(null);
       setOpen(false);
