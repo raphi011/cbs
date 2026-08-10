@@ -11,6 +11,7 @@ import {
   Network,
   Receipt,
   RefreshCw,
+  Repeat,
   ScrollText,
   Search,
   Send,
@@ -126,6 +127,12 @@ export function navFor(identity: Identity): NavItem[] {
       return [
         { href: base, label: "Customers", icon: Users, exact: true },
         { href: `${base}/payments`, label: "Payments", icon: ArrowLeftRight },
+        // The book transfer, beside Payments and not inside it. Two customers of
+        // THIS bank paying each other never reaches a scheme: nothing crosses
+        // between institutions, so there is no position to clear and no reserve
+        // to move, and this bank posts both legs itself. It is the route a
+        // submitted payment is refused in favour of.
+        { href: `${base}/transfers`, label: "Transfers", icon: Repeat },
         // Mandates are here and not on the clearing house's console. In SEPA
         // the CREDITOR holds the mandate, so the row is the collecting bank's
         // and what this bank sees is its own customers' authorisations. See

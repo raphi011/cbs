@@ -18,15 +18,18 @@ import { Hint } from "@/components/hint";
 import {
   useAddressRoute,
   useAssetLookup,
+  useBankDirectory,
   useBankPayment,
   useDepositAccount,
   useDepositBalance,
   useSchemes,
   useSubmitPayment,
+  useTransfer,
 } from "@/lib/api/hooks";
 import { ApiError, describeError } from "@/lib/api/errors";
 import { useDebouncedValue } from "@/lib/use-debounced-value";
 import { checkDigitsPass, compactIban, groupIban } from "@/lib/iban";
+import type { Transfer } from "@/lib/types";
 
 // A retail "send money" is a SEPA credit transfer: a push scheme needing no
 // mandate, addressed by IBAN. Naming it here rather than offering a scheme picker
@@ -46,6 +49,7 @@ export default function CustomerSend() {
   const { data: schemes } = useSchemes();
   const { byCode, error: assetError } = useAssetLookup();
   const submit = useSubmitPayment(pid);
+  const transfer = useTransfer(pid);
 
   const [iban, setIban] = useState("");
   const [amount, setAmount] = useState<number | null>(null);
@@ -75,6 +79,11 @@ export default function CustomerSend() {
   // shape 7b needs: the answer to "did it work?" is a second request, not a
   // return value.
   const [acceptedId, setAcceptedId] = useState<string | null>(null);
+  // A transfer's receipt, which is not the same shape at all: the act is over
+  // when the response arrives, so what is held here is the answer rather than a
+  // reference to ask again with. The amount is kept beside it because the form
+  // clears its own fields on success and the receipt carries only a balance.
+  const [moved, setMoved] = useState<{ receipt: Transfer; amount: number } | null>(null);
 
   const asset = account ? byCode.get(account.asset) : undefined;
   const scheme = schemes?.find((s) => s.id === SEND_SCHEME);
@@ -118,6 +127,23 @@ export default function CustomerSend() {
   // spelling out rather than summarising. Anything else is a failure to ask.
   const unroutable = route.error instanceof ApiError && route.error.status === 422;
 
+  // The OTHER directory, and it is the one that decides which act this is: does
+  // the typed address resolve in this customer's own bank's register. A hit
+  // means the payee banks here, so nothing leaves the institution and there is
+  // no payment to make — only a book transfer. A 404 is an answer and not a
+  // failure: the payee is somebody else's customer.
+  //
+  // It runs BESIDE the routing lookup rather than before it. The two answer
+  // different questions and only one of them can be answered out of a table this
+  // bank owns; asking both at once costs a routing lookup on the addresses that
+  // turn out to be on-us, and saves a round trip on every address that does not.
+  //
+  // This is the same question the bank asks itself at submission, and it is
+  // asked of the REGISTER rather than by comparing bank codes: a code says which
+  // institution issues an address, not that the institution holds the account.
+  const own = useBankDirectory(pid, "IBAN", settledIban);
+  const onUs = own.data != null;
+
   // Folding an assets failure into "still loading" would leave a customer
   // staring at a skeleton with no error and no retry — the account can be
   // fine while /assets is the thing that is down.
@@ -128,24 +154,52 @@ export default function CustomerSend() {
   // a form error the customer can fix, so it is stated rather than hidden.
   const assetMismatch = scheme != null && scheme.asset !== account.asset;
 
+  // Neither of the two scheme rules applies to a transfer, and both would be
+  // wrong about one. A scheme's asset governs what may cross between banks; a
+  // transfer's rule is that the two ACCOUNTS agree, which is the bank's to check.
+  // And an address that resolves here needs no routing at all.
   const canSend =
     !frozen &&
     !closed &&
-    !assetMismatch &&
+    (onUs || !assetMismatch) &&
     !payingSelf &&
     !malformed &&
     // Not a second copy of the rule: this IS the bank's own answer, already
     // fetched, out of the same copy submission will read. Pressing Send would
     // ask the same question again and get the same refusal.
-    !unroutable &&
+    (onUs || !unroutable) &&
     typed !== "" &&
     amount != null &&
     amount > 0 &&
-    creditorName.trim() !== "";
+    // The payee's NAME is a payment's field and not a transfer's: it goes on the
+    // wire because nothing at the far end can be asked, and a transfer has no
+    // wire and no far end.
+    (onUs || creditorName.trim() !== "");
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
     if (!canSend) return;
+    if (onUs) {
+      try {
+        // The payee is named by the ADDRESS and by nothing else here either.
+        // The account id the register resolved is this bank's own internal key,
+        // and the payer neither has it nor needs it.
+        const receipt = await transfer.mutateAsync({
+          from: did,
+          to: typed,
+          amount: amount!,
+          description: reference.trim() || undefined,
+        });
+        setMoved({ receipt, amount: amount! });
+        setIban("");
+        setAmount(null);
+        setReference("");
+        setCreditorName("");
+      } catch (err) {
+        toast.error(describeError(err));
+      }
+      return;
+    }
     try {
       const accepted = await submit.mutateAsync({
         scheme: SEND_SCHEME,
@@ -198,7 +252,7 @@ export default function CustomerSend() {
           <AlertDescription>Closed is terminal — it cannot send or receive.</AlertDescription>
         </Alert>
       )}
-      {assetMismatch && (
+      {assetMismatch && !onUs && (
         <Alert>
           <AlertTitle>Nothing to send with</AlertTitle>
           <AlertDescription>
@@ -211,6 +265,37 @@ export default function CustomerSend() {
 
       {acceptedId && (
         <Outcome pid={pid} did={did} payid={acceptedId} onDismiss={() => setAcceptedId(null)} />
+      )}
+
+      {moved && (
+        <Alert>
+          <AlertTitle>Moved</AlertTitle>
+          <AlertDescription className="space-y-2">
+            <span>
+              <Money amount={moved.amount} asset={asset} />{" "}
+              is out of this account and in the payee&apos;s, and it is finished
+              — there is no reference to ask about later, because nothing else is
+              going to happen. Your balance is now{" "}
+              <Money amount={moved.receipt.balance.book} asset={asset} />.{" "}
+              <Hint id="book-transfer" />
+            </span>
+            <span className="flex gap-3">
+              <Link
+                href={`/customer/${pid}/${did}/activity`}
+                className="text-xs underline underline-offset-2"
+              >
+                See it on your activity
+              </Link>
+              <button
+                type="button"
+                onClick={() => setMoved(null)}
+                className="text-xs underline underline-offset-2"
+              >
+                Dismiss
+              </button>
+            </span>
+          </AlertDescription>
+        </Alert>
       )}
 
       <Card>
@@ -252,7 +337,20 @@ export default function CustomerSend() {
                   documented absence at the moment it is sharpest. */}
               {settledIban !== "" && (
                 <p className="text-xs text-muted-foreground">
-                  {route.isPending ? (
+                  {onUs ? (
+                    // The register's answer wins over the directory's wherever
+                    // both have one, because it is the stronger of the two: a
+                    // routing entry says which institution ISSUES an address,
+                    // and this says that this bank HOLDS the account.
+                    <span>
+                      That address is one of this bank&apos;s own accounts, so this
+                      one does not leave the building. It is a book transfer, not a
+                      payment: nothing crosses between institutions, so there is no
+                      position to clear, no reserves to move and nobody to tell —
+                      and it is finished the moment your bank posts it, rather than
+                      answered later by somebody else. <Hint id="book-transfer" />
+                    </span>
+                  ) : route.isPending || own.isPending ? (
                     "Asking your bank where this address goes…"
                   ) : unroutable ? (
                     // Deliberately NOT describeError: its 422 line offers
@@ -282,17 +380,24 @@ export default function CustomerSend() {
               )}
             </div>
 
-            <div className="space-y-1.5">
-              <FieldLabel htmlFor="send-creditor-name" hint="counterparty-details" required>
-                Payee&apos;s name
-              </FieldLabel>
-              <Input
-                id="send-creditor-name"
-                value={creditorName}
-                disabled={frozen || closed}
-                onChange={(e) => setCreditorName(e.target.value)}
-              />
-            </div>
+            {/* Gone when the payee banks here, and its absence is the lesson.
+                A payer types a name because it goes on the wire — nothing at
+                the far end can be asked one — and a book transfer has no wire.
+                Your bank knows who holds that address; it still will not tell
+                you, because that is the payee's business and not yours. */}
+            {!onUs && (
+              <div className="space-y-1.5">
+                <FieldLabel htmlFor="send-creditor-name" hint="counterparty-details" required>
+                  Payee&apos;s name
+                </FieldLabel>
+                <Input
+                  id="send-creditor-name"
+                  value={creditorName}
+                  disabled={frozen || closed}
+                  onChange={(e) => setCreditorName(e.target.value)}
+                />
+              </div>
+            )}
 
             <div className="space-y-1.5">
               <FieldLabel htmlFor="send-amount" required>
@@ -328,8 +433,21 @@ export default function CustomerSend() {
               />
             </div>
 
-            <Button type="submit" disabled={!canSend || submit.isPending}>
-              {submit.isPending ? "Sending…" : "Send"}
+            {/* The button says which of the two acts this is. Same form, same
+                address, same amount — what changed is that the payee banks
+                here, and so does what the word on the button can honestly
+                promise: "Sent" is a reference and "Moved" is an outcome. */}
+            <Button
+              type="submit"
+              disabled={!canSend || submit.isPending || transfer.isPending}
+            >
+              {onUs
+                ? transfer.isPending
+                  ? "Moving…"
+                  : "Transfer"
+                : submit.isPending
+                  ? "Sending…"
+                  : "Send"}
             </Button>
           </form>
         </CardContent>

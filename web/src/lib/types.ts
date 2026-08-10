@@ -757,6 +757,39 @@ export interface FundRequest {
   description?: string;
 }
 
+// TransferRequest is a book transfer between two customers of one bank.
+//
+// `from` is an account id and `to` is an IBAN, and the asymmetry is what a payer
+// actually holds: you know which of your accounts the money is leaving, and about
+// anybody else you know the address they gave you. It is the same pair a send
+// form types for a payment out of the bank — what a payer says does not change
+// because the money is not leaving.
+//
+// There is no scheme beside the address. Every account a bank opens is minted an
+// IBAN, and a card number is a scheme somebody else issues rather than somewhere
+// money is sent.
+export interface TransferRequest {
+  from: string;
+  to: string;
+  amount: number;
+  description?: string;
+}
+
+// Transfer is the receipt: what the posting is called in the ledger, which
+// account the address turned out to be, and what the PAYER has left.
+//
+// One balance and not two. The caller is the payer, and a transfer is not
+// permission to read the payee's balance — that both accounts sit in one bank's
+// register is a fact about the route, not a licence it grants. The payee's
+// account id is here because the bank's own account directory already answers
+// exactly that; their name is not.
+export interface Transfer {
+  transactionId: string;
+  from: string;
+  to: string;
+  balance: Balance;
+}
+
 // LodgementRequest is a bank asking its central bank to move vault cash onto the
 // bank's reserve account: the second half of funding one.
 //

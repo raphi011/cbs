@@ -142,6 +142,9 @@ describe("navFor", () => {
     expect(nav.map((n) => n.href)).toEqual([
       "/bank/bank_1",
       "/bank/bank_1/payments",
+      // Beside Payments and not inside it: a transfer between two of this
+      // bank's own customers reaches no scheme at all.
+      "/bank/bank_1/transfers",
       // A mandate is the CREDITOR's bank's row, so the console that shows one
       // is a bank's. It was the clearing house's until this moved.
       "/bank/bank_1/mandates",

@@ -57,6 +57,8 @@ import type {
   Subledger,
   Totals,
   Transaction,
+  Transfer,
+  TransferRequest,
 } from "../types";
 
 // --- Participants ---------------------------------------------------------
@@ -89,6 +91,17 @@ export function addParticipant(body: AddParticipantRequest): Promise<Participant
 // central bank's ledger. lodgeReserves below is the other half.
 export function fundDeposit(pid: string, body: FundRequest): Promise<Balance> {
   return request("POST", bank(pid, `/deposits`), body);
+}
+
+// The book transfer: two customers of one bank, one posting, nobody told.
+//
+// It is the route a submitted payment is refused in favour of when both parties
+// bank at the same institution. Answers 200 and the payer's new balance, because
+// the act is finished when it returns — one institution, one posting, and nobody
+// else to ask. An address this bank does not hold is a 404: it was a payment all
+// along.
+export function transfer(pid: string, body: TransferRequest): Promise<Transfer> {
+  return request("POST", bank(pid, `/transfers`), body);
 }
 
 // Places a bank's vault cash on reserve at the central bank: the lodgement.

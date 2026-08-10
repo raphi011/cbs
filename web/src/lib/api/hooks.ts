@@ -496,6 +496,25 @@ export function useFundDeposit(pid: string) {
   });
 }
 
+// Moves money between two of one bank's own customers.
+//
+// It invalidates this bank's deposits and nothing else, and the list of what is
+// NOT here is the point: no reserve, no cycle, no settlement, no payment. Nothing
+// outside this institution changed, so there is nothing outside this institution
+// to re-fetch — which is the same claim the reconciliation harness makes about a
+// book transfer, expressed as a cache.
+//
+// Both accounts are in that one subtree, so the payee's balance is re-fetched
+// too even though the response carries only the payer's.
+export function useTransfer(pid: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: import("../types").TransferRequest) =>
+      api.transfer(pid, body),
+    onSuccess: () => invalidateDeposits(qc, pid),
+  });
+}
+
 // Places the bank's vault cash on reserve, which is what actually moves a
 // reserve — so this is where the central bank's queries are invalidated.
 //
