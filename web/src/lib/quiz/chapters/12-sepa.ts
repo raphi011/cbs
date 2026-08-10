@@ -147,19 +147,18 @@ export const chapter: Chapter = {
       kind: "mc",
       id: "ch12-q9",
       difficulty: "challenge",
-      concept: "mandate",
+      concept: "bank-code",
       prompt:
-        "A creditor submits an SDD for €450 against a mandate capped at €400. The mandate exists, is active, and both parties match. What does the scheme do?",
+        "A developer proposes reading the payee's bank out of an IBAN with `iban[4:8]` — four characters, fixed offset. Against German addresses it is correct. Why does it break?",
       options: [
-        "Processes the payment — the cap is advisory when all other checks pass",
-        "Refuses it for exceeding the cap, before any posting",
-        "Approves €400 and queues the €50 excess for the next cycle",
-        "Automatically updates the mandate cap to €450 and proceeds",
+        "The bank code is encrypted and has to be decoded first",
+        "The bank code is variable-length and sits at a country-dependent offset",
+        "The bank code appears only on the message, never inside the address",
+        "The check digits occupy those positions, not the bank code",
       ],
       answer: 1,
       explanation:
-        "The [[mandate]] amount cap is a hard gate, not advisory. Even when every other mandate check passes, a collection exceeding the mandate limit is refused **for exceeding it** before any posting occurs. There is no partial approval or automatic cap increase.",
-      explore: { href: "/", label: "Pick a bank, then Mandates" },
+        "[[bank-code]] — Germany's Bankleitzahl really is 8 digits at offset 4, so a one-country system can take the shortcut and be *right*. Italy's ABI is 5 digits at offset **5**, behind a CIN check letter that is not part of it; Sweden's is 3 digits; France's is 5. Nothing can extract a bank code without first knowing which country's structure applies — which is exactly why a real system carries the ISO 13616 structure table rather than a slice expression.\n\nAnd extracting it is only half the problem. A bank code is **allocated** by a national registry and travels on a message; it is never computed from anything, least of all from a BIC. Knowing which institution holds a code takes a directory of every participant's allocation, and this network has none — which is why a payer is still asked for the payee's bank alongside the address. See [[counterparty-details]].",
     },
     {
       kind: "mc",
@@ -180,26 +179,32 @@ export const chapter: Chapter = {
       explore: { label: "View payments", href: "/clearing-house/payments" },
     },
     {
-      kind: "truefalse",
+      kind: "mc",
       id: "ch12-q11",
       difficulty: "intro",
-      concept: "scheme-direction-pull",
+      concept: "iban-check-digit",
       prompt:
-        "SEPA Direct Debit (SDD) is a push payment — the debtor's bank initiates the transfer to the creditor.",
-      answer: false,
+        "A payer types an IBAN into a send form and the form rejects it immediately, before any request leaves the browser. What did it just prove?",
+      options: [
+        "That no bank holds that address",
+        "That the address was probably mistyped — a character is wrong, or two are swapped",
+        "That the payee's bank is not reachable in this scheme",
+        "That the payee's name does not match the address",
+      ],
+      answer: 1,
       explanation:
-        "SDD is a [[scheme-direction-pull]] payment. The **creditor's** bank initiates the collection from the debtor's account. Because the creditor is reaching into someone else's account, a signed [[mandate]] is required before any debit can proceed.",
+        "[[iban-check-digit]] — positions 3 and 4 of an IBAN are mod-97-10 check digits over the rest of it, and they exist to catch a typo **offline**: before any request, any message, any bank. That is the only refusal in a payment system that needs nothing but the string.\n\nWhat it cannot say is whether the address **exists**. Measured over four published example IBANs: every one of 810 single-digit substitutions caught, and every one of 787 transpositions of two different digits — at any distance, not just neighbouring ones. But over `DE89370400440532013000`, 141 of 15,390 two-character errors slip through, 0.92%. A well-formed address belonging to nobody passes every check there is, and only the bank that keeps the register can say so — which is what an `AC01` rejection is.",
     },
     {
       kind: "truefalse",
       id: "ch12-q12",
       difficulty: "core",
-      concept: "payment-lifecycle",
+      concept: "address-issuance",
       prompt:
-        "Once mandate checks pass for an SDD, the accounting postings follow a different path from an SCT — the pull direction requires separate posting logic.",
+        "A customer opening an account may bring an IBAN of their choosing, and the bank records it.",
       answer: false,
       explanation:
-        "Once the mandate gate clears, SDD uses **exactly the same posting engine** as SCT: debtor → clearing suspense → central-bank reserves → creditor. This is a key insight of the [[payment-lifecycle]]: only the rules governing initiation and authorisation differ — the underlying ledger choreography is shared by both schemes.",
+        "[[address-issuance]] — a bank **issues** its customers' IBANs and refuses one offered to it. Opening an account allocates its address there and then, from the country and [[bank-code]] that bank holds.\n\nThe refusal is the point rather than a formality. A bank can only mint under the allocation it was given, so it *cannot* issue an address that routes somewhere else — which is what makes the bank code inside an IBAN a fact about who holds the account rather than a claim somebody typed. Accepting an address would hand that guarantee to whoever filled in the form.\n\nOther schemes are different, and the plural set is why: a card PAN is issued by a card scheme elsewhere and **is** quoted to the bank. It is only the address a bank issues that a bank will not accept.",
     },
     {
       kind: "truefalse",

@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/raphi011/cbs/deposit"
+	"github.com/raphi011/cbs/iban"
 	"github.com/raphi011/cbs/iso20022"
 	"github.com/raphi011/cbs/ledger"
 	"github.com/raphi011/cbs/payment"
@@ -184,12 +185,34 @@ func toPartyRefDTO(r payment.PartyRef) partyRefDTO {
 	return out
 }
 
+// toDomain converts the wire shape, canonicalising an address a PERSON typed.
+//
+// This is the front door iban.Parse describes. A customer reads an IBAN off a
+// statement, where it is grouped in fours, and types it in whatever case they
+// were in; everything downstream works in the one canonical form. A quoted
+// address for a party at ANOTHER bank is the case that needs it: this bank
+// cannot reach that register, so nothing later replaces the quote with a stored
+// value, and what the caller typed is what goes on the message. A document whose
+// IBAN carries spaces or a lower-case country code is not schema-valid, and the
+// codec is right to refuse it — see iso20022.IBAN.Compact, which deliberately
+// does not fold case for exactly that reason. Folding what a person typed is
+// this end's job, and this is that end.
+//
+// A value that will not parse is passed through UNCHANGED. The refusal is then
+// deposit.Identifier.Validate's, which says what is wrong with the address the
+// caller sent rather than with some tidied-up version of it.
 func (r partyRefDTO) toDomain() payment.PartyRef {
 	out := payment.PartyRef{Account: deposit.AccountID(r.Account)}
 	if r.Identifier != nil {
+		value := r.Identifier.Value
+		if deposit.IdentifierScheme(r.Identifier.Scheme) == deposit.IdentifierIBAN {
+			if parsed, err := iban.Parse(value); err == nil {
+				value = string(parsed)
+			}
+		}
 		out.Identifier = deposit.Identifier{
 			Scheme: deposit.IdentifierScheme(r.Identifier.Scheme),
-			Value:  r.Identifier.Value,
+			Value:  value,
 		}
 	}
 	return out

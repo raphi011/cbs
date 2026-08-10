@@ -3560,10 +3560,9 @@ func TestPaymentAddressingRefusalsAre422(t *testing.T) {
 	// instruction reaches it and the 202 is answered before that.
 	drainServer(t, h)
 	// On the PAYER'S BANK's copy, which is the row the request was persisted
-	// into. The clearing house's carries the address as the MESSAGE spelt it,
-	// which for an IBAN is the compact form — separators are display, and
-	// iso20022 strips them on the way out. Same address, two spellings, and the
-	// one this assertion is about is the one the caller sent.
+	// into. It reads the same on the clearing house's: a quoted address is
+	// canonicalised where the request arrives, so what is stored and what the
+	// message carries are one string.
 	carried := doJSON(t, bank(h, a), "GET", "/payments/"+pay["id"].(string), "", http.StatusOK)
 	assertEqual(t, "creditor address persisted from the request",
 		carried["creditor"].(map[string]any)["identifier"].(map[string]any)["value"].(string), ibanFor(t, h, b, bob))
@@ -3677,6 +3676,71 @@ func TestPostPaymentRequiresTheCounterpartyName(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			assertStatus(t, csm(h), "POST", "/payments", tc.body, tc.wantStatus)
+		})
+	}
+}
+
+// An address a PERSON typed goes through, and reaches the wire canonical.
+//
+// A customer copies an IBAN off an invoice: grouped in fours, in whatever case
+// they were in. The register would resolve it either way, because addresses are
+// compared canonically — but a quoted address for a party at ANOTHER bank never
+// meets that bank's register on the way out. The payer's bank cannot reach it,
+// so what the request carried is what goes into the pacs.008, and a document
+// whose IBAN holds spaces or a lower-case country code is not schema-valid. The
+// codec refuses it, and the payment fails for a reason the payer cannot act on.
+//
+// So the spelling is folded where a person's typing arrives. This drives the
+// three spellings one address has and reads the stored value back: all four
+// requests are one payment to one account, and the value persisted is the
+// canonical form every time.
+//
+// The last case is the counterfactual, and it is what keeps the normalisation
+// from swallowing a real error: a value that will not parse is passed through
+// unchanged, so the caller is told their address is malformed rather than that
+// some tidied-up version of it is.
+func TestAQuotedAddressIsCanonicalisedOnTheWayIn(t *testing.T) {
+	h := newServer(t, nil)
+	a := admitMember(t, h, `{"bic":"BNKADEFFXXX","name":"Bank A","country":"DE","bankCode":"90000825"}`, http.StatusAccepted)["id"].(string)
+	b := admitMember(t, h, `{"bic":"BNKBDEFFXXX","name":"Bank B","country":"DE","bankCode":"90000826"}`, http.StatusAccepted)["id"].(string)
+	alice := doJSON(t, bank(h, a), "POST", "/deposit-accounts", `{"name":"Alice","asset":"EUR","productId":"`+prdOf(t, h, a)+`"}`, http.StatusCreated)["id"].(string)
+	bob := doJSON(t, bank(h, b), "POST", "/deposit-accounts", `{"name":"Bob","asset":"EUR","productId":"`+prdOf(t, h, b)+`"}`, http.StatusCreated)["id"].(string)
+	fundAndLodge(t, h, a, alice, 100000)
+	doJSON(t, csm(h), "POST", "/cycles", `{"scheme":"sepa.ct"}`, http.StatusCreated)
+
+	stored := ibanFor(t, h, b, bob)
+	grouped := iban.IBAN(stored).Grouped()
+
+	for _, tc := range []struct {
+		name       string
+		quoted     string
+		wantStatus int
+	}{
+		{"canonical, as a register stores it", stored, http.StatusAccepted},
+		{"grouped, as a statement prints it", grouped, http.StatusAccepted},
+		{"lower-cased, as a keyboard produces it", strings.ToLower(stored), http.StatusAccepted},
+		{"hyphenated, as a form field invites", strings.ReplaceAll(grouped, " ", "-"), http.StatusAccepted},
+		// Not an address at all: 00 is a remainder mod-97-10 never produces, so
+		// no IBAN carries it. Nothing canonicalises this, and the refusal is the
+		// domain's own rather than a complaint about a value the caller did not
+		// send.
+		{"check digits no IBAN can carry", "DE00" + stored[4:], http.StatusUnprocessableEntity},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body := `{"scheme":"sepa.ct",
+				"debtorAgent":"` + a + `","debtor":{"account":"` + alice + `"},
+				"creditorAgent":"` + b + `","creditor":{"account":"` + bob + `","identifier":{"scheme":"IBAN","value":"` + tc.quoted + `"}},
+				"amount":100,"creditorName":"Bob"}`
+			got := doJSON(t, csm(h), "POST", "/payments", body, tc.wantStatus)
+			if tc.wantStatus != http.StatusAccepted {
+				return
+			}
+			// Read back off the PAYER's bank, which is the copy the request was
+			// persisted into and the one the outbound message was built from.
+			drainServer(t, h)
+			carried := doJSON(t, bank(h, a), "GET", "/payments/"+got["id"].(string), "", http.StatusOK)
+			assertEqual(t, "the creditor address persisted from a "+tc.name+" request",
+				carried["creditor"].(map[string]any)["identifier"].(map[string]any)["value"].(string), stored)
 		})
 	}
 }

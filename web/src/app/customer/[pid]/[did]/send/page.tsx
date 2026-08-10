@@ -24,6 +24,7 @@ import {
   useSubmitPayment,
 } from "@/lib/api/hooks";
 import { describeError } from "@/lib/api/errors";
+import { checkDigitsPass, compactIban, groupIban } from "@/lib/iban";
 
 // A retail "send money" is a SEPA credit transfer: a push scheme needing no
 // mandate, addressed by IBAN. Naming it here rather than offering a scheme picker
@@ -89,12 +90,22 @@ export default function CustomerSend() {
   const frozen = account?.status === "Frozen";
   const closed = account?.status === "Closed";
   const ownIban = account?.identifiers.find((i) => i.scheme === "IBAN");
-  // Paying yourself is the one payee mistake this form can still catch on its
-  // own, because it needs no register: the address typed is the address of the
-  // account being paid FROM. Everything else about the payee is somebody else's
-  // to answer, and the answer arrives as a rejection.
+  // Two payee mistakes this form catches on its own, and they are the only two
+  // it can: both are answerable without reading anybody's register.
+  //
+  // The CHECK DIGITS are the whole reason an IBAN carries any. Running them
+  // here, as the payer types, is where the offline half of addressing becomes
+  // visible — a transposed pair is caught before a request exists, let alone a
+  // message. What it cannot say is whether anybody holds the address; that is
+  // the payee's bank's answer, and it comes back as a rejection.
+  //
+  // And paying YOURSELF, because the address typed is the address of the
+  // account being paid from. Everything else about the payee is somebody else's
+  // to answer.
+  const typed = iban.trim();
+  const malformed = typed !== "" && !checkDigitsPass(typed);
   const payingSelf =
-    ownIban != null && iban.trim() !== "" && ownIban.value === iban.trim();
+    ownIban != null && typed !== "" && compactIban(ownIban.value) === compactIban(typed);
 
   // Folding an assets failure into "still loading" would leave a customer
   // staring at a skeleton with no error and no retry — the account can be
@@ -111,7 +122,8 @@ export default function CustomerSend() {
     !closed &&
     !assetMismatch &&
     !payingSelf &&
-    iban.trim() !== "" &&
+    !malformed &&
+    typed !== "" &&
     amount != null &&
     amount > 0 &&
     creditorName.trim() !== "" &&
@@ -131,7 +143,11 @@ export default function CustomerSend() {
         // fills it in (payment.AcceptInboundTx).
         creditor: {
           account: "",
-          identifier: { scheme: "IBAN", value: iban.trim() },
+          // Sent as the payer typed it. A register compares addresses in
+          // canonical form on both sides, so the grouping a customer copies off
+          // an invoice resolves against the compact form the payee's bank
+          // stored — there is nothing for this form to normalise away.
+          identifier: { scheme: "IBAN", value: typed },
         },
         amount: amount!,
         description: reference.trim() || undefined,
@@ -195,16 +211,28 @@ export default function CustomerSend() {
               <Input
                 id="send-iban"
                 value={iban}
-                placeholder={ownIban ? ownIban.value.replace(/\d{4}$/, "0000") : "SE89-…"}
+                placeholder="DE20 9990 0001 0000 0000 01"
                 className="font-mono"
                 disabled={frozen || closed}
                 onChange={(e) => setIban(e.target.value)}
               />
-              {payingSelf && (
+              {payingSelf ? (
                 <p className="text-xs text-destructive">
                   That is this account&apos;s own IBAN.
                 </p>
-              )}
+              ) : malformed ? (
+                <p className="text-xs text-destructive">
+                  That is not a valid IBAN — its check digits do not match the
+                  rest of it, so a character is wrong or two have been swapped.
+                  Nothing has been sent. <Hint id="iban-check-digit" />
+                </p>
+              ) : typed !== "" ? (
+                <p className="text-xs text-muted-foreground">
+                  Check digits pass: {groupIban(typed)}. That says it was
+                  probably typed correctly — not that anyone holds it.{" "}
+                  <Hint id="iban-check-digit" />
+                </p>
+              ) : null}
             </div>
 
             <div className="space-y-1.5">
