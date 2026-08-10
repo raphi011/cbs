@@ -211,6 +211,7 @@ var preSplitRoutes = []string{
 	"GET /participants/{pid}",
 	"GET /participants/{pid}/accounts/{aid}",
 	"GET /participants/{pid}/accounts/{aid}/balance",
+	"GET /participants/{pid}/accounts/{aid}/subsidiaries",
 	"GET /participants/{pid}/audit",
 	"GET /participants/{pid}/deposit-accounts",
 	"GET /participants/{pid}/deposit-accounts/{did}",

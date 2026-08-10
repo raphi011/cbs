@@ -68,11 +68,11 @@ func TestListAccountsAndTransactions(t *testing.T) {
 	assertNoError(t, err)
 	assertEqual(t, "total transactions", len(all), 1)
 
-	forAlice, err := book.ListTransactionsForAccount(ctx, alice.ID)
+	forAlice, err := book.ListTransactionsForPosition(ctx, alice.ID.Total())
 	assertNoError(t, err)
 	assertEqual(t, "transactions for alice", len(forAlice), 1)
 
-	forBob, err := book.ListTransactionsForAccount(ctx, bob.ID)
+	forBob, err := book.ListTransactionsForPosition(ctx, bob.ID.Total())
 	assertNoError(t, err)
 	assertEqual(t, "transactions for bob", len(forBob), 0)
 }

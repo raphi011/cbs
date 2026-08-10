@@ -203,7 +203,7 @@ func (s *Network) ReconcileTx(ctx context.Context, tx Tx, asset ledger.AssetCode
 func (s *Network) reserveHoldsTogether(ctx context.Context, tx Tx, bank *Bank, accts BankAccounts,
 	byMirror map[ledger.TransactionID]SettlementAdvice, rec *Reconciliation,
 ) error {
-	hist, err := bank.Ledger.AccountHistoryTx(ctx, tx, accts.Reserve)
+	hist, err := bank.Ledger.AccountHistoryTx(ctx, tx, accts.Reserve.Total())
 	if err != nil {
 		return err
 	}

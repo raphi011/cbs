@@ -16,15 +16,21 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { FieldLabel } from "@/components/field-label";
 import { MoneyInput } from "@/components/money";
-import { GLAccountPicker } from "@/components/pickers/gl-account-picker";
+import {
+  PositionPicker,
+  emptyPosition,
+  usePositionComplete,
+  type PositionValue,
+} from "@/components/pickers/position-picker";
 import { useCaptureHold } from "@/lib/api/hooks";
 import { describeError } from "@/lib/api/errors";
 import type { Asset } from "@/lib/types";
 
 // Captures a hold: posts a real ledger transaction debiting the customer and
-// crediting a counterparty GL account, for the final amount (up to the held
-// amount). The counterparty is a GL account id — copy it from the General
-// ledger tab.
+// crediting a counterparty position, for the final amount (up to the held
+// amount). The counterparty may be one of the bank's own accounts or another
+// customer of it — which is a position under the deposit control account, not
+// an account of its own.
 export function CaptureHoldForm({
   pid,
   hid,
@@ -37,25 +43,27 @@ export function CaptureHoldForm({
   asset: Asset;
 }) {
   const [open, setOpen] = useState(false);
-  const [counterparty, setCounterparty] = useState("");
+  const [counterparty, setCounterparty] = useState<PositionValue>(emptyPosition);
+  const complete = usePositionComplete(pid);
   const [amount, setAmount] = useState<number | null>(heldAmount);
   const [description, setDescription] = useState("");
   const capture = useCaptureHold(pid);
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
-    if (!counterparty.trim() || amount == null) return;
+    if (!complete(counterparty) || amount == null) return;
     try {
       const tx = await capture.mutateAsync({
         hid,
         body: {
-          counterparty: counterparty.trim(),
+          counterparty: counterparty.account,
+          subsidiary: counterparty.subsidiary.trim() || undefined,
           amount,
           description: description.trim() || undefined,
         },
       });
       toast.success(`Captured — posted ${tx.id}`);
-      setCounterparty("");
+      setCounterparty(emptyPosition);
       setDescription("");
       setOpen(false);
     } catch (err) {
@@ -81,9 +89,9 @@ export function CaptureHoldForm({
           </DialogHeader>
           <div className="space-y-2">
             <FieldLabel htmlFor="cap-counterparty" hint="hold-capture" required>
-              Counterparty GL account
+              Counterparty account
             </FieldLabel>
-            <GLAccountPicker
+            <PositionPicker
               id="cap-counterparty"
               pid={pid}
               value={counterparty}
@@ -113,7 +121,7 @@ export function CaptureHoldForm({
             <Button
               type="submit"
               disabled={
-                capture.isPending || !counterparty.trim() || amount == null
+                capture.isPending || !complete(counterparty) || amount == null
               }
             >
               {capture.isPending ? "Capturing…" : "Capture"}

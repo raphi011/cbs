@@ -76,12 +76,13 @@ const (
 //     bank books the statement it is sent — so the two sides are equal only once
 //     it has, and the interval between is the unreconciled position.
 //   - Unclaimed (Liability): where a credit goes when the payee's account will
-//     not take it. Money the bank owes somebody it has not yet identified.
+//     not take it. Money the bank owes the holder of an account that can no
+//     longer receive it, and the one of these accounts that pools obligors —
+//     each leg names whose the money is.
 //   - ReturnsReceivable (Asset): a claim on a biller, opened when this bank
 //     honours a refund it cannot fund out of the biller's account. The
-//     opposite class from Unclaimed, on purpose: that one is owed BY the bank
-//     to somebody it hasn't identified, this is owed TO the bank by somebody
-//     it has.
+//     opposite class from Unclaimed, on purpose: that one is owed BY the bank,
+//     this is owed TO it.
 //   - VaultCash (Asset): the cash the bank is holding. The only account here
 //     that is not somebody's promise, and where money paid in over the counter
 //     lands.
@@ -124,14 +125,20 @@ type BankAccounts struct {
 	// line of code. Both are closed now: SettleAtBankTx diverts a credit the
 	// payee cannot take, and PostReturnLegTx diverts a refund the payer cannot
 	// take.
+	//
+	// It is a CONTROL account, and the only one among this bank's own. Each leg
+	// names the deposit account the money was meant for, which is known at every
+	// site that posts here — the account is closed, not absent. So the balance
+	// answers "what does the bank owe THIS holder" and not only "what is
+	// unclaimed", which is the question a release has to answer before it pays
+	// anybody.
 	Unclaimed ledger.AccountID
 
 	// ReturnsReceivable is a claim on a biller: money the bank paid out to
 	// honour a refund (a SEPA direct debit's unconditional eight-week right,
 	// today) when the biller's account could not fund it. An Asset — the bank
 	// is owed this, by someone it has identified perfectly well — and the
-	// mirror image of Unclaimed, which is owed BY the bank to someone it has
-	// not identified.
+	// mirror image of Unclaimed, which is owed BY the bank.
 	//
 	// PostReturnLegTx is what posts to it, and only on a pull, and only when the
 	// biller's account is CLOSED. A biller who has spent the money but still has
@@ -147,8 +154,9 @@ type BankAccounts struct {
 	//
 	// An Asset, and the only account on a bank's chart that is nobody else's
 	// promise. A reserve is a claim on the central bank, a suspense balance is
-	// money owed to a counterparty's customer, Unclaimed is owed to somebody
-	// unidentified and ReturnsReceivable is owed by a biller. This is money, held.
+	// money owed to a counterparty's customer, Unclaimed is owed to a holder who
+	// cannot be paid and ReturnsReceivable is owed by a biller. This is money,
+	// held.
 	//
 	// # It is why taking cash in reaches no other institution
 	//
@@ -389,9 +397,9 @@ func (b *Bank) AccountsFor(asset ledger.AssetCode) (BankAccounts, error) {
 // denominated in asset.
 //
 // Customer deposits are demand-deposit accounts managed by the bank's deposit
-// layer; each is backed by a Liability GL account, since the money belongs to
-// the customer and the bank owes it to them. The account is opened with no
-// overdraft.
+// layer; their money pools in one Liability control account per asset, since it
+// belongs to the customers and the bank owes it to them. The account is opened
+// with no overdraft.
 //
 // The account is opened from the bank's configured ProductID, and is FLOATING:
 // its price is the product's, so a later published version reprices it with no
@@ -402,7 +410,7 @@ func (b *Bank) AccountsFor(asset ledger.AssetCode) (BankAccounts, error) {
 // which is also how to open an account with an overdraft limit, or from a
 // product other than the bank's default.
 func (b *Bank) OpenCustomerAccount(ctx context.Context, name string, asset ledger.AssetCode) (deposit.Account, error) {
-	return b.Deposit.OpenAccount(ctx, b.CustomerSubledger, name, asset, b.ProductID, 0)
+	return b.Deposit.OpenAccount(ctx, name, asset, b.ProductID, 0)
 }
 
 // RunEndOfDay runs this bank's end-of-day batches for one business date: the
@@ -430,13 +438,16 @@ func (b *Bank) RunEndOfDay(ctx context.Context, date time.Time) error {
 	})
 }
 
-// glAccountTx resolves a customer deposit account ID to the backing GL account
-// ID used for ledger postings, within a caller-supplied unit of work. It returns
-// ErrAccountNotInParticipant if the deposit account does not exist at this bank.
-func (b *Bank) glAccountTx(ctx context.Context, tx Tx, id deposit.AccountID) (ledger.AccountID, error) {
-	acct, err := tx.GetDepositAccount(ctx, b.BookID, id)
+// positionTx resolves a customer deposit account ID to the position its money
+// occupies in this bank's ledger — the customer-deposit control account for its
+// asset, under the account's own id — within a caller-supplied unit of work. It
+// returns ErrAccountNotInParticipant if the deposit account does not exist at
+// this bank, and if the bank holds no control line for its asset, which is a
+// chart of accounts this bank cannot post the account's money into either way.
+func (b *Bank) positionTx(ctx context.Context, tx Tx, id deposit.AccountID) (ledger.Position, error) {
+	pos, err := b.Deposit.PositionTx(ctx, tx, id)
 	if err != nil {
-		return "", ErrAccountNotInParticipant
+		return ledger.Position{}, ErrAccountNotInParticipant
 	}
-	return acct.GLAccount, nil
+	return pos, nil
 }

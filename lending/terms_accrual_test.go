@@ -81,7 +81,7 @@ func TestARevolvingLineRepricedMidLifeAccruesPerDay(t *testing.T) {
 	clock := &mutableClock{at: day(0)}
 	p, book, sub, customer := newTestPortfolioOn(t, clock.now)
 
-	line, err := p.OpenRevolvingLine(ctx, sub, "Bruno Line", "EUR", 500_000, r1, interest.ACT365, 20_000)
+	line, err := p.OpenRevolvingLine(ctx, "Bruno Line", "EUR", 500_000, r1, interest.ACT365, 20_000)
 	assertNoError(t, err)
 	_, err = p.Draw(ctx, line.ID, customer, opening, "First draw")
 	assertNoError(t, err)
@@ -101,7 +101,7 @@ func TestARevolvingLineRepricedMidLifeAccruesPerDay(t *testing.T) {
 
 	// The back-dated posting: it reaches the ledger on day 45 and takes economic
 	// effect on day 10, which is twenty days BEHIND the repricing.
-	postTo(t, book, sub, line.PrincipalGL, "EUR", extra, ledger.Debit, day(10))
+	postTo(t, book, sub, positions(t, p, line.ID).Principal, "EUR", extra, ledger.Debit, day(10))
 
 	clock.set(day(46))
 	assertNoError(t, p.Accrue(ctx, line.ID, day(46)))
@@ -141,7 +141,7 @@ func TestARevolvingLineRepricedMidLifeAccruesPerDay(t *testing.T) {
 	// The receivable holds Minor() of the record, which is the invariant every
 	// caller in this package maintains — and the true-up was POSTED, not just
 	// recorded on the row.
-	assertEqual(t, "receivable after the true-up", bookBalance(t, book, got.InterestGL), want.Minor())
+	assertEqual(t, "receivable after the true-up", bookBalance(t, book, positions(t, p, got.ID).Receivable), want.Minor())
 
 	// The timeline gained a row and lost nothing: the opening row from
 	// OpenRevolvingLine, and the repricing.
@@ -171,9 +171,9 @@ func TestAFacilityAccruesNothingBeforeItsFirstAdvance(t *testing.T) {
 	)
 
 	clock := &mutableClock{at: day(0)}
-	p, book, sub, customer := newTestPortfolioOn(t, clock.now)
+	p, book, _, customer := newTestPortfolioOn(t, clock.now)
 
-	line, err := p.OpenRevolvingLine(ctx, sub, "Bruno Line", "EUR", 250_000, rate, interest.ACT365, 20_000)
+	line, err := p.OpenRevolvingLine(ctx, "Bruno Line", "EUR", 250_000, rate, interest.ACT365, 20_000)
 	assertNoError(t, err)
 
 	// Sixty days of an open, priced, undrawn commitment. It costs the borrower
@@ -185,7 +185,7 @@ func TestAFacilityAccruesNothingBeforeItsFirstAdvance(t *testing.T) {
 	assertEqual(t, "accrued on an undrawn commitment", idle.Accrued, interest.Accrued(0))
 	assertEqual(t, "gross on an undrawn commitment", idle.AccruedGross, interest.Accrued(0))
 	assertEqual(t, "status of an undrawn commitment", idle.Status, lending.Pending)
-	assertEqual(t, "receivable on an undrawn commitment", bookBalance(t, book, idle.InterestGL), ledger.Amount(0))
+	assertEqual(t, "receivable on an undrawn commitment", bookBalance(t, book, positions(t, p, idle.ID).Receivable), ledger.Amount(0))
 
 	// Drawn on day 60, and accrued through day 90.
 	_, err = p.Draw(ctx, line.ID, customer, drawn, "First draw")
@@ -215,7 +215,7 @@ func TestAFacilityAccruesNothingBeforeItsFirstAdvance(t *testing.T) {
 	got := facility(t, p, line.ID)
 	assertEqual(t, "accrued only from the day it was drawn", got.Accrued, want)
 	assertEqual(t, "status after the first draw", got.Status, lending.Active)
-	assertEqual(t, "receivable", bookBalance(t, book, got.InterestGL), want.Minor())
+	assertEqual(t, "receivable", bookBalance(t, book, positions(t, p, got.ID).Receivable), want.Minor())
 }
 
 // A facility unpriced then priced accrues only afterwards.
@@ -237,10 +237,10 @@ func TestAFacilityUnpricedThenPricedAccruesOnlyAfterwards(t *testing.T) {
 	)
 
 	clock := &mutableClock{at: day(0)}
-	p, book, sub, customer := newTestPortfolioOn(t, clock.now)
+	p, book, _, customer := newTestPortfolioOn(t, clock.now)
 
 	// Opened interest-free: the only row is the opening one, at a zero rate.
-	line, err := p.OpenRevolvingLine(ctx, sub, "Bruno Line", "EUR", 250_000, 0, interest.ACT365, 20_000)
+	line, err := p.OpenRevolvingLine(ctx, "Bruno Line", "EUR", 250_000, 0, interest.ACT365, 20_000)
 	assertNoError(t, err)
 	_, err = p.Draw(ctx, line.ID, customer, drawn, "First draw")
 	assertNoError(t, err)
@@ -278,7 +278,7 @@ func TestAFacilityUnpricedThenPricedAccruesOnlyAfterwards(t *testing.T) {
 
 	got := facility(t, p, line.ID)
 	assertEqual(t, "accrued only from the day it was priced", got.Accrued, want)
-	assertEqual(t, "receivable", bookBalance(t, book, got.InterestGL), want.Minor())
+	assertEqual(t, "receivable", bookBalance(t, book, positions(t, p, got.ID).Receivable), want.Minor())
 }
 
 // The advancement guard resolves its day count on `date` — meaning on the ROW in
@@ -324,8 +324,8 @@ func TestTheAdvancementGuardResolvesItsDayCountOnTheAccrualDate(t *testing.T) {
 	open := func(dc interest.DayCount) (*lending.Portfolio, lending.Facility, *mutableClock) {
 		t.Helper()
 		clock := &mutableClock{at: jan1}
-		p, _, sub, customer := newTestPortfolioOn(t, clock.now)
-		line, err := p.OpenRevolvingLine(ctx, sub, "Bruno Line", "EUR", 500_000, rate, dc, 20_000)
+		p, _, _, customer := newTestPortfolioOn(t, clock.now)
+		line, err := p.OpenRevolvingLine(ctx, "Bruno Line", "EUR", 500_000, rate, dc, 20_000)
 		assertNoError(t, err)
 		_, err = p.Draw(ctx, line.ID, customer, drawn, "First draw")
 		assertNoError(t, err)
@@ -391,9 +391,9 @@ func TestANeverPricedFacilityReadsNoSeries(t *testing.T) {
 	day := func(n int) time.Time { return origin.AddDate(0, 0, n) }
 
 	clock := &mutableClock{at: day(0)}
-	p, _, sub, customer := newTestPortfolioOn(t, clock.now)
+	p, _, _, customer := newTestPortfolioOn(t, clock.now)
 
-	line, err := p.OpenRevolvingLine(ctx, sub, "Bella Line", "EUR", 250_000, 0, interest.ACT365, 20_000)
+	line, err := p.OpenRevolvingLine(ctx, "Bella Line", "EUR", 250_000, 0, interest.ACT365, 20_000)
 	assertNoError(t, err)
 	_, err = p.Draw(ctx, line.ID, customer, 100_000, "First draw")
 	assertNoError(t, err)
@@ -416,9 +416,9 @@ type countingTx struct {
 	series *int
 }
 
-func (t countingTx) ValueDatedSeries(ctx context.Context, book ledger.BookID, id ledger.AccountID, normal ledger.Direction, from, to time.Time) (ledger.Series, error) {
+func (t countingTx) ValueDatedSeries(ctx context.Context, book ledger.BookID, pos ledger.Position, normal ledger.Direction, from, to time.Time) (ledger.Series, error) {
 	*t.series++
-	return t.Tx.ValueDatedSeries(ctx, book, id, normal, from, to)
+	return t.Tx.ValueDatedSeries(ctx, book, pos, normal, from, to)
 }
 
 // Re-disbursement charges the span between a full repayment and the new
@@ -444,9 +444,9 @@ func TestReDisbursementChargesTheSpanBeforeTheRepayment(t *testing.T) {
 	const principal ledger.Amount = 1_000_000
 
 	clock := &mutableClock{at: day(0)}
-	p, book, sub, customer := newTestPortfolioOn(t, clock.now)
+	p, book, _, customer := newTestPortfolioOn(t, clock.now)
 
-	loan, err := p.OpenTermLoan(ctx, sub, "Alice Home Loan", "EUR",
+	loan, err := p.OpenTermLoan(ctx, "Alice Home Loan", "EUR",
 		principal, loanRate, loanDayCount, lending.Annuity, 60)
 	assertNoError(t, err)
 	_, err = p.Disburse(ctx, loan.ID, customer, lending.AddMonths(day(0), 1), "advance")
@@ -510,7 +510,7 @@ func TestReDisbursementChargesTheSpanBeforeTheRepayment(t *testing.T) {
 
 	// The receivable still holds Minor() of the record, which is the invariant a
 	// whole-life recompute must not break.
-	assertEqual(t, "receivable", bookBalance(t, book, after.InterestGL), after.Accrued.Minor())
+	assertEqual(t, "receivable", bookBalance(t, book, positions(t, p, after.ID).Receivable), after.Accrued.Minor())
 	assertDate(t, "LastAccrualDate", after.LastAccrualDate, day(41))
 
 	// And the idle span accrues nothing, asserted directly rather than inferred
@@ -534,9 +534,9 @@ func accrueControlThroughIdleSpan(t *testing.T, day func(int) time.Time) interes
 	ctx := context.Background()
 
 	clock := &mutableClock{at: day(0)}
-	p, _, sub, customer := newTestPortfolioOn(t, clock.now)
+	p, _, _, customer := newTestPortfolioOn(t, clock.now)
 
-	loan, err := p.OpenTermLoan(ctx, sub, "Control Loan", "EUR",
+	loan, err := p.OpenTermLoan(ctx, "Control Loan", "EUR",
 		1_000_000, loanRate, loanDayCount, lending.Annuity, 60)
 	assertNoError(t, err)
 	_, err = p.Disburse(ctx, loan.ID, customer, lending.AddMonths(day(0), 1), "advance")
@@ -559,7 +559,7 @@ func accrueControlThroughIdleSpan(t *testing.T, day func(int) time.Time) interes
 
 // repayInFull settles everything a facility owes — the receivable first, then the
 // principal, which is Repay's own allocation — value-dated on the given day.
-func repayInFull(t *testing.T, p *lending.Portfolio, id lending.FacilityID, counterparty ledger.AccountID, date time.Time) {
+func repayInFull(t *testing.T, p *lending.Portfolio, id lending.FacilityID, counterparty ledger.Position, date time.Time) {
 	t.Helper()
 	ctx := context.Background()
 	owed, err := p.Outstanding(ctx, id)

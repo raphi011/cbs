@@ -161,41 +161,23 @@ type Arrears struct {
 
 // Facility is a credit facility: a term loan or a revolving line.
 //
-// It is the mirror of deposit.Account. Where a deposit account wraps a backing
-// Liability GL account, a facility wraps two Asset ones — drawn principal and
-// accrued interest receivable — and the facility itself stores no money.
+// It is the mirror of deposit.Account, and it is no more a row in the chart of
+// accounts than one of those. A facility is an OBLIGOR under three control
+// lines — drawn principal, accrued interest receivable, and interest the bank
+// owes back — and the facility itself stores neither money nor a pointer to any
+// of them: Asset picks the lines, and the facility's own id is the dimension on
+// every entry against them.
 //
-// The two accounts are separate because repayment allocates to interest before
-// principal, and one account could not express the split.
+// Principal and the receivable are separate lines because repayment allocates to
+// interest before principal, and one account could not express the split.
 type Facility struct {
 	ID   FacilityID
 	Kind FacilityKind
 	Name string
-	// Asset is fixed at opening, like every account's. Both GL accounts are
-	// denominated in it, so a posting that mixed assets could not balance.
+	// Asset is fixed at opening, like every account's, and it is what decides
+	// which three lines this facility posts to. All three are denominated in it,
+	// so a posting that mixed assets could not balance.
 	Asset ledger.AssetCode
-	// PrincipalGL is the drawn principal, an Asset account.
-	PrincipalGL ledger.AccountID
-	// InterestGL is accrued interest receivable, an Asset account.
-	InterestGL ledger.AccountID
-	// RefundGL is interest the bank owes this borrower back, a Liability
-	// account. Unlike the two above it is created LAZILY — on the first
-	// backdated correction that cuts accrued interest below what the borrower
-	// has already settled in cash, and never on the ordinary path — so it is
-	// empty on almost every facility. Zero means no correction has ever
-	// overshot, which is indistinguishable from a zero balance and is why
-	// RefundPayable reports 0 for it rather than reading a GL account.
-	//
-	// It is per facility rather than one pooled account per asset because the
-	// balance is the answer to "what does the bank owe THIS borrower": a pooled
-	// account has one balance and so cannot say who is owed what, which leaves
-	// a discharge unbounded — able to pay one borrower out of another's money
-	// and still balance. The Payables subledger's total is the pooled figure.
-	//
-	// Stored as an ID for the same reason PrincipalGL is, and not derived by
-	// name: Name is a mutable column on this row, so a rename would otherwise
-	// orphan the obligation.
-	RefundGL ledger.AccountID
 
 	// Commitment is what the bank has committed: a term loan's original
 	// principal, a revolving line's limit. One field rather than two because it
@@ -213,8 +195,8 @@ type Facility struct {
 	MinPayment interest.Fraction
 
 	// Accrued is interest earned and not yet settled, at sub-minor-unit
-	// precision. InterestGL holds Accrued.Minor(); this holds the residue the
-	// ledger cannot represent.
+	// precision. The receivable holds Accrued.Minor() under this facility's id;
+	// this holds the residue the ledger cannot represent.
 	Accrued interest.Accrued
 	// AccruedGross is the interest this facility has produced over its WHOLE
 	// LIFE, recomputed from its value-dated drawn balance on every run. Accrued

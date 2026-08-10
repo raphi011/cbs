@@ -55,24 +55,21 @@ func (s AccountStatus) String() string {
 	}
 }
 
-// Account is a customer demand-deposit account. It wraps a backing Liability
-// account in the general ledger (GLAccount): the GL book balance of that
-// account is the customer's money.
+// Account is a customer demand-deposit account. It is not a row in the chart of
+// accounts: the customer's money sits in the bank's customer-deposit control
+// account for its asset, under this account's own id, and the balance is that
+// account's balance with the id in the WHERE clause. Register.Position is where
+// that pair is resolved, and nothing here stores it.
 //
-// Asset duplicates the backing GL account's asset. That is a deliberate
-// exception to deriving rather than duplicating: the GL account's asset is
-// immutable, so the two cannot drift, and deriving it would turn every
-// ListAccounts into a join for a value that can never change.
-// store/storetest asserts they always agree.
-//
-// A customer holding several assets holds several accounts, each with its own
-// IBAN, which is how most European retail banks work.
+// Asset is what selects the control account, so it is fixed for life exactly as
+// a GL account's own asset is. A customer holding several assets holds several
+// accounts, each with its own IBAN, which is how most European retail banks
+// work.
 type Account struct {
-	ID        AccountID
-	GLAccount ledger.AccountID
-	Name      string
-	Asset     ledger.AssetCode
-	Status    AccountStatus
+	ID     AccountID
+	Name   string
+	Asset  ledger.AssetCode
+	Status AccountStatus
 
 	// Identifiers are this account's external addresses — what a counterparty
 	// quotes to pay it. Zero is normal: an account nobody pays from outside the
@@ -85,8 +82,9 @@ type Account struct {
 	Identifiers []Identifier
 
 	// Accrued is interest earned and not yet charged, at sub-minor-unit
-	// precision. The general ledger holds Accrued.Minor() in InterestGL; this
-	// field holds the residue the ledger cannot represent.
+	// precision. The general ledger holds Accrued.Minor() in the bank's
+	// accrued-interest receivable under this account's id; this field holds the
+	// residue the ledger cannot represent.
 	Accrued interest.Accrued
 	// AccruedGross is the interest this account has produced over its WHOLE
 	// LIFE, recomputed from its value-dated balance on every run. Accrued moves
@@ -113,10 +111,6 @@ type Account struct {
 	// job it has: a whole-life recompute makes the same date produce the same gross
 	// and therefore a zero delta, so it is not what prevents a second charge.
 	LastAccrualDate time.Time
-	// InterestGL is this account's own accrued-interest-receivable account, an
-	// Asset. It is created the first time a non-zero rate is set, so an account
-	// with no overdraft facility does not carry an empty one.
-	InterestGL ledger.AccountID
 
 	CreatedAt time.Time
 }
@@ -157,11 +151,11 @@ type Hold struct {
 
 // Balance represents the balances of a deposit account.
 //
-// The customer's spendable funds are the GL book balance of the backing
-// Liability account: a positive Book balance means the bank owes the customer
-// that much.
+// The customer's spendable funds are the book balance of the customer-deposit
+// control account under this account's id: a positive Book balance means the
+// bank owes the customer that much.
 type Balance struct {
-	Book  ledger.Amount // GL book balance of the backing Liability account
+	Book  ledger.Amount // book balance of this account's position
 	Holds ledger.Amount // sum of active, non-expired holds
 	// Available is Book - Holds + the overdraft limit in force TODAY, resolved
 	// from the account's effective-dated terms timeline rather than read off
@@ -190,11 +184,11 @@ type Snapshot struct {
 //
 // In a real bank the same split falls out of subledger-to-GL summarization: the
 // nightly feed buckets accounts by the sign of their balance into two control
-// accounts. This system has no summarization step to hide it in, because it has
-// no control accounts — see README.md, "A Control Account, or an Aggregation".
-// So the split
-// is a query, exactly as "total customer deposits" already is, and no journal
-// posts it.
+// accounts. Here it is a query over ONE control account's dimension, exactly as
+// "total customer deposits" is that account's balance with the dimension
+// dropped, and no journal posts it. What is absent is the reclassification, not
+// the control account: nothing ever posts the drawn amount to an Asset account,
+// so the Asset-side figure exists only as this sum.
 //
 // Keyed by asset because a total across assets is not a number. Euro and
 // bitcoin do not add up.

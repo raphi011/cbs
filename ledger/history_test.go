@@ -46,7 +46,7 @@ func TestAccountHistoryRunsInBookOrderAndEndsAtTheBookBalance(t *testing.T) {
 		Entry{AccountID: alice.ID, Amount: 400, Direction: Debit},
 		Entry{AccountID: cash.ID, Amount: 400, Direction: Credit})
 
-	hist, err := book.AccountHistory(ctx, alice.ID)
+	hist, err := book.AccountHistory(ctx, alice.ID.Total())
 	assertNoError(t, err)
 
 	// Alice is a Liability, so a credit RAISES her. A history that signed by the
@@ -59,7 +59,7 @@ func TestAccountHistoryRunsInBookOrderAndEndsAtTheBookBalance(t *testing.T) {
 	assertEqual(t, "second movement", hist.Rows[1].Movement, -400)
 	assertEqual(t, "second running", hist.Rows[1].Running, 600)
 
-	balance, err := book.BookBalance(ctx, alice.ID)
+	balance, err := book.BookBalance(ctx, alice.ID.Total())
 	assertNoError(t, err)
 	assertEqual(t, "closing against BookBalance", hist.Closing, balance)
 }
@@ -83,7 +83,7 @@ func TestAccountHistoryCountsAReversalsOwnEntries(t *testing.T) {
 	_, err := book.ReverseTransaction(ctx, original.ID, "posted in error")
 	assertNoError(t, err)
 
-	hist, err := book.AccountHistory(ctx, alice.ID)
+	hist, err := book.AccountHistory(ctx, alice.ID.Total())
 	assertNoError(t, err)
 	assertEqual(t, "rows", len(hist.Rows), 2)
 	assertEqual(t, "closing", hist.Closing, 0)
@@ -106,7 +106,7 @@ func TestAccountHistoryNetsATransactionsEntriesOnOneAccount(t *testing.T) {
 		Entry{AccountID: alice.ID, Amount: 1500, Direction: Credit},
 		Entry{AccountID: alice.ID, Amount: 500, Direction: Debit})
 
-	hist, err := book.AccountHistory(ctx, alice.ID)
+	hist, err := book.AccountHistory(ctx, alice.ID.Total())
 	assertNoError(t, err)
 	assertEqual(t, "rows", len(hist.Rows), 1)
 	assertEqual(t, "netted movement", hist.Rows[0].Movement, 1000)
@@ -116,7 +116,7 @@ func TestAccountHistoryNetsATransactionsEntriesOnOneAccount(t *testing.T) {
 // than the alternative: an empty history would answer "no movements" to a
 // caller whose account id is wrong, and that is a bug reported as a fact.
 func TestAccountHistoryRefusesAnAccountThatIsNotThere(t *testing.T) {
-	_, err := testBook(t).AccountHistory(context.Background(), AccountID("nope"))
+	_, err := testBook(t).AccountHistory(context.Background(), AccountID("nope").Total())
 	assertError(t, err, ErrAccountNotFound)
 }
 
@@ -138,7 +138,7 @@ func TestAgeingDecomposesABalanceIntoDatedLots(t *testing.T) {
 		Entry{AccountID: cash.ID, Amount: 700, Direction: Debit},
 		Entry{AccountID: alice.ID, Amount: 700, Direction: Credit})
 
-	hist, err := book.AccountHistory(ctx, alice.ID)
+	hist, err := book.AccountHistory(ctx, alice.ID.Total())
 	assertNoError(t, err)
 	ageing := hist.AgeAt(testClock())
 
@@ -182,7 +182,7 @@ func TestANettedMovementDischargesTheOldestLotsFirst(t *testing.T) {
 		Entry{AccountID: alice.ID, Amount: 600, Direction: Debit},
 		Entry{AccountID: cash.ID, Amount: 600, Direction: Credit})
 
-	hist, err := book.AccountHistory(ctx, alice.ID)
+	hist, err := book.AccountHistory(ctx, alice.ID.Total())
 	assertNoError(t, err)
 	ageing := hist.AgeAt(testClock())
 
@@ -209,7 +209,7 @@ func TestAgeingCarriesTheMetadataOfTheLotItLeftBehind(t *testing.T) {
 		Entry{AccountID: cash.ID, Amount: 300, Direction: Debit},
 		Entry{AccountID: alice.ID, Amount: 300, Direction: Credit})
 
-	hist, err := book.AccountHistory(ctx, alice.ID)
+	hist, err := book.AccountHistory(ctx, alice.ID.Total())
 	assertNoError(t, err)
 	lots := hist.AgeAt(testClock()).Lots
 
@@ -234,7 +234,7 @@ func TestAgeingASettledAccountHasNothingToAge(t *testing.T) {
 		Entry{AccountID: alice.ID, Amount: 900, Direction: Debit},
 		Entry{AccountID: cash.ID, Amount: 900, Direction: Credit})
 
-	hist, err := book.AccountHistory(ctx, alice.ID)
+	hist, err := book.AccountHistory(ctx, alice.ID.Total())
 	assertNoError(t, err)
 	ageing := hist.AgeAt(testClock())
 
@@ -269,7 +269,7 @@ func TestAgeingABalanceThatWentTheOtherWayKeepsItsLotsOneSigned(t *testing.T) {
 		Entry{AccountID: alice.ID, Amount: 500, Direction: Debit},
 		Entry{AccountID: feeIncome.ID, Amount: 500, Direction: Credit})
 
-	hist, err := book.AccountHistory(ctx, alice.ID)
+	hist, err := book.AccountHistory(ctx, alice.ID.Total())
 	assertNoError(t, err)
 	ageing := hist.AgeAt(testClock())
 
@@ -305,7 +305,7 @@ func TestAgeingAMovementThatExactlyClearsALotOpensNothing(t *testing.T) {
 		Entry{AccountID: alice.ID, Amount: 100, Direction: Debit},
 		Entry{AccountID: cash.ID, Amount: 100, Direction: Credit})
 
-	hist, err := book.AccountHistory(ctx, alice.ID)
+	hist, err := book.AccountHistory(ctx, alice.ID.Total())
 	assertNoError(t, err)
 	ageing := hist.AgeAt(testClock())
 
@@ -329,7 +329,7 @@ func TestAgeAtSetsTheAgesAndDoesNotCutTheHistoryOff(t *testing.T) {
 		Entry{AccountID: cash.ID, Amount: 400, Direction: Debit},
 		Entry{AccountID: alice.ID, Amount: 400, Direction: Credit})
 
-	hist, err := book.AccountHistory(ctx, alice.ID)
+	hist, err := book.AccountHistory(ctx, alice.ID.Total())
 	assertNoError(t, err)
 
 	// Asked about a day BEFORE the posting: the balance is the book's, and the

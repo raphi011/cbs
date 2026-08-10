@@ -9,6 +9,46 @@ import (
 // One account's history, and the balance decomposed into dated lots
 // ---------------------------------------------------------------------------
 
+// SubsidiaryBalance is one obligor's share of a control account. It is what a
+// control line drills into: the detail whose sum IS the line's own balance, read
+// from the same entries rather than from a second place that could disagree.
+type SubsidiaryBalance struct {
+	Subsidiary string
+	Balance    Amount
+}
+
+// SubsidiaryBalances is every obligor under a control account, ordered by
+// obligor, with the ones that net to zero left out — a customer who has repaid
+// is not a row in what the bank owes.
+//
+// A PLAIN account answers with nothing at all rather than with one unnamed row.
+// It pools nobody, so there is no detail under it to show; its balance is
+// BookBalance and that is the whole of it.
+//
+// Returns ErrAccountNotFound.
+func (s *Book) SubsidiaryBalances(ctx context.Context, account AccountID) ([]SubsidiaryBalance, error) {
+	var out []SubsidiaryBalance
+	err := s.store.View(ctx, func(ctx context.Context, tx Tx) error {
+		var err error
+		out, err = s.SubsidiaryBalancesTx(ctx, tx, account)
+		return err
+	})
+	return out, err
+}
+
+// SubsidiaryBalancesTx is SubsidiaryBalances within a caller-supplied unit of
+// work.
+func (s *Book) SubsidiaryBalancesTx(ctx context.Context, tx Tx, account AccountID) ([]SubsidiaryBalance, error) {
+	acct, err := tx.GetAccount(ctx, s.id, account)
+	if err != nil {
+		return nil, err
+	}
+	if !acct.Control {
+		return []SubsidiaryBalance{}, nil
+	}
+	return tx.SubsidiaryBalances(ctx, s.id, account, acct.Type.NormalBalance())
+}
+
 // AccountHistory is every transaction that touched one account, in book order,
 // each carrying the balance the account stood at once it had posted.
 //
@@ -39,7 +79,11 @@ import (
 // the balance it claims to explain, which would make every check built on it
 // wrong in the one case an auditor cares about.
 type AccountHistory struct {
-	Account AccountID
+	// Position is what was asked for: a whole account, or one obligor within a
+	// control account. Over a control account the two are different documents —
+	// the pool's movements, or one customer's statement — and the second is the
+	// one a customer recognises.
+	Position Position
 	// Normal is the direction that INCREASES this account, taken off the
 	// account's type. Every Movement and Running figure below is signed by it,
 	// so a caller never has to know whether it is looking at an asset or a
@@ -80,11 +124,11 @@ type HistoryRow struct {
 }
 
 // AccountHistory is AccountHistoryTx in its own read-only unit of work.
-func (s *Book) AccountHistory(ctx context.Context, accountID AccountID) (AccountHistory, error) {
+func (s *Book) AccountHistory(ctx context.Context, pos Position) (AccountHistory, error) {
 	var out AccountHistory
 	err := s.store.View(ctx, func(ctx context.Context, tx Tx) error {
 		var err error
-		out, err = s.AccountHistoryTx(ctx, tx, accountID)
+		out, err = s.AccountHistoryTx(ctx, tx, pos)
 		return err
 	})
 	return out, err
@@ -103,25 +147,30 @@ func (s *Book) AccountHistory(ctx context.Context, accountID AccountID) (Account
 // the transactions the store already lists for the account and sums in Go,
 // because the running balance is a property of the ORDER and the store's
 // aggregate has no way to express one.
-func (s *Book) AccountHistoryTx(ctx context.Context, tx Tx, accountID AccountID) (AccountHistory, error) {
-	acct, err := tx.GetAccount(ctx, s.id, accountID)
+func (s *Book) AccountHistoryTx(ctx context.Context, tx Tx, pos Position) (AccountHistory, error) {
+	acct, err := tx.GetAccount(ctx, s.id, pos.Account)
 	if err != nil {
 		return AccountHistory{}, err
 	}
-	txs, err := tx.ListTransactionsForAccount(ctx, s.id, accountID)
+	txs, err := tx.ListTransactionsForPosition(ctx, s.id, pos)
 	if err != nil {
 		return AccountHistory{}, err
 	}
 
 	hist := AccountHistory{
-		Account: accountID,
-		Normal:  acct.Type.NormalBalance(),
-		Rows:    make([]HistoryRow, 0, len(txs)),
+		Position: pos,
+		Normal:   acct.Type.NormalBalance(),
+		Rows:     make([]HistoryRow, 0, len(txs)),
 	}
 	for _, t := range txs {
 		var movement Amount
 		for _, e := range t.Entries {
-			if e.AccountID != accountID {
+			// A transaction is listed whole, so a control account's rows carry
+			// every obligor's legs; the position is what selects among them.
+			if e.AccountID != pos.Account {
+				continue
+			}
+			if pos.Subsidiary != "" && e.Subsidiary != pos.Subsidiary {
 				continue
 			}
 			if e.Direction == hist.Normal {
@@ -191,10 +240,10 @@ type Lot struct {
 // every lot in the queue opens a lot of the new sign rather than a negative one
 // beside the old.
 type Ageing struct {
-	Account AccountID
-	AsOf    time.Time
-	Balance Amount
-	Lots    []Lot
+	Position Position
+	AsOf     time.Time
+	Balance  Amount
+	Lots     []Lot
 }
 
 // Oldest is the age in days of the oldest lot, and false when there is nothing
@@ -230,7 +279,7 @@ func (a Ageing) OlderThan(days int) []Lot {
 // about a balance as at a past date wants a value-dated read, and that is
 // SeriesTx.
 func (h AccountHistory) AgeAt(asOf time.Time) Ageing {
-	out := Ageing{Account: h.Account, AsOf: asOf, Balance: h.Closing}
+	out := Ageing{Position: h.Position, AsOf: asOf, Balance: h.Closing}
 	day := DayStart(asOf)
 
 	for _, r := range h.Rows {

@@ -81,9 +81,9 @@ func TestArrearsFor(t *testing.T) {
 // date must win regardless of where it sits in the slice.
 func TestArrearsFor_RevolvingLineOutOfOrderCycles(t *testing.T) {
 	ctx := context.Background()
-	p, _, sub, customer := newTestPortfolio(t)
+	p, _, _, customer := newTestPortfolio(t)
 
-	line, err := p.OpenRevolvingLine(ctx, sub, "Out of order line", "EUR", 250_000, 180_000, interest.ACT365, 20_000)
+	line, err := p.OpenRevolvingLine(ctx, "Out of order line", "EUR", 250_000, 180_000, interest.ACT365, 20_000)
 	if err != nil {
 		t.Fatalf("OpenRevolvingLine: %v", err)
 	}

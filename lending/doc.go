@@ -1,11 +1,12 @@
 // Package lending is the credit layer over a general ledger: term loans and
 // revolving credit lines, their interest, their schedules and their arrears.
 //
-// It is the mirror image of deposit. Where a deposit account wraps a backing
-// Liability GL account, a facility wraps two Asset ones — drawn principal, and
-// accrued interest receivable — and the Portfolio stores no money itself:
-// disbursing posts a real GL transaction, and so does every accrual and every
-// repayment.
+// It is the mirror image of deposit. Where a customer is an obligor under one
+// Liability control account, a facility is an obligor under three — drawn
+// principal, accrued interest receivable, and interest the bank owes back — and
+// the Portfolio stores no money itself: disbursing posts a real GL transaction,
+// and so does every accrual and every repayment. A bank's chart of accounts is
+// therefore bounded by the assets it lends in, not by the number of borrowers.
 //
 // # Why an arranged overdraft is not here
 //
@@ -30,9 +31,10 @@
 // one, not a Loans product.
 //
 // It is also what keeps this package from importing deposit. Money moves
-// against a generic ledger.AccountID counterparty, the way deposit.CaptureHold
-// already works, so a disbursement into a customer's current account and one
-// into the vault are the same call. A repayment that must also respect a
+// against a generic ledger.Position counterparty, the way deposit.CaptureHold
+// already works, so a disbursement into a customer's current account — an
+// obligor under that bank's deposit control account — and one into the vault are
+// the same call. A repayment that must also respect a
 // deposit account's status is orchestrated one layer up, through the same Tx.
 //
 // # Units of work

@@ -371,6 +371,26 @@ func (r *recordingTx) ListAccounts(ctx context.Context, book ledger.BookID) ([]l
 	return r.Tx.ListAccounts(ctx, book)
 }
 
+func (r *recordingTx) SubsidiaryBalances(ctx context.Context, book ledger.BookID, account ledger.AccountID, normal ledger.Direction) ([]ledger.SubsidiaryBalance, error) {
+	r.rec.note(book)
+	return r.Tx.SubsidiaryBalances(ctx, book, account, normal)
+}
+
+func (r *recordingTx) PutSlotAccount(ctx context.Context, book ledger.BookID, row ledger.SlotAccount) error {
+	r.rec.note(book)
+	return r.Tx.PutSlotAccount(ctx, book, row)
+}
+
+func (r *recordingTx) GetSlotAccount(ctx context.Context, book ledger.BookID, product, slot string, asset ledger.AssetCode) (ledger.AccountID, error) {
+	r.rec.note(book)
+	return r.Tx.GetSlotAccount(ctx, book, product, slot, asset)
+}
+
+func (r *recordingTx) ListSlotAccounts(ctx context.Context, book ledger.BookID) ([]ledger.SlotAccount, error) {
+	r.rec.note(book)
+	return r.Tx.ListSlotAccounts(ctx, book)
+}
+
 func (r *recordingTx) LockAccounts(ctx context.Context, book ledger.BookID, ids []ledger.AccountID) error {
 	r.rec.note(book)
 	return r.Tx.LockAccounts(ctx, book, ids)
@@ -396,9 +416,9 @@ func (r *recordingTx) ListTransactions(ctx context.Context, book ledger.BookID) 
 	return r.Tx.ListTransactions(ctx, book)
 }
 
-func (r *recordingTx) ListTransactionsForAccount(ctx context.Context, book ledger.BookID, id ledger.AccountID) ([]ledger.Transaction, error) {
+func (r *recordingTx) ListTransactionsForPosition(ctx context.Context, book ledger.BookID, pos ledger.Position) ([]ledger.Transaction, error) {
 	r.rec.note(book)
-	return r.Tx.ListTransactionsForAccount(ctx, book, id)
+	return r.Tx.ListTransactionsForPosition(ctx, book, pos)
 }
 
 func (r *recordingTx) MarkReversed(ctx context.Context, book ledger.BookID, id ledger.TransactionID) error {
@@ -406,19 +426,19 @@ func (r *recordingTx) MarkReversed(ctx context.Context, book ledger.BookID, id l
 	return r.Tx.MarkReversed(ctx, book, id)
 }
 
-func (r *recordingTx) BookBalance(ctx context.Context, book ledger.BookID, id ledger.AccountID, normal ledger.Direction) (ledger.Amount, error) {
+func (r *recordingTx) BookBalance(ctx context.Context, book ledger.BookID, pos ledger.Position, normal ledger.Direction) (ledger.Amount, error) {
 	r.rec.note(book)
-	return r.Tx.BookBalance(ctx, book, id, normal)
+	return r.Tx.BookBalance(ctx, book, pos, normal)
 }
 
-func (r *recordingTx) ValueDateBalance(ctx context.Context, book ledger.BookID, id ledger.AccountID, normal ledger.Direction, before time.Time) (ledger.Amount, error) {
+func (r *recordingTx) ValueDateBalance(ctx context.Context, book ledger.BookID, pos ledger.Position, normal ledger.Direction, before time.Time) (ledger.Amount, error) {
 	r.rec.note(book)
-	return r.Tx.ValueDateBalance(ctx, book, id, normal, before)
+	return r.Tx.ValueDateBalance(ctx, book, pos, normal, before)
 }
 
-func (r *recordingTx) ValueDatedSeries(ctx context.Context, book ledger.BookID, id ledger.AccountID, normal ledger.Direction, from, to time.Time) (ledger.Series, error) {
+func (r *recordingTx) ValueDatedSeries(ctx context.Context, book ledger.BookID, pos ledger.Position, normal ledger.Direction, from, to time.Time) (ledger.Series, error) {
 	r.rec.note(book)
-	return r.Tx.ValueDatedSeries(ctx, book, id, normal, from, to)
+	return r.Tx.ValueDatedSeries(ctx, book, pos, normal, from, to)
 }
 
 // The two whose book travels inside the argument. See structCarriedBooks.

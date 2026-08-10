@@ -105,7 +105,7 @@ func TestConcurrentPostingsOnAFileReachTheDomainGuard(t *testing.T) {
 		t.Errorf("winners = %d, want exactly 1", winners)
 	}
 
-	balance, err := book.BookBalance(ctx, cash)
+	balance, err := book.BookBalance(ctx, cash.Total())
 	if err != nil {
 		t.Fatalf("read back: %v", err)
 	}

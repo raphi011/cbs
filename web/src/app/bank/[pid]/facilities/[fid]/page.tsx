@@ -226,8 +226,8 @@ export default function FacilityDetailPage() {
           </div>
 
           <p className="flex flex-wrap items-center gap-1.5 text-sm text-muted-foreground">
-            Principal account <AccountRef pid={pid} id={f.principalGlAccount} /> ·
-            interest account <AccountRef pid={pid} id={f.interestGlAccount} />
+            Principal <AccountRef pid={pid} id={f.principalAccount} /> · interest{" "}
+            <AccountRef pid={pid} id={f.interestAccount} />, both under this facility&apos;s id
           </p>
 
           <p className="text-sm text-muted-foreground">{facilityTerms(f)}</p>

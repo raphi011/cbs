@@ -21,32 +21,16 @@ import (
 func RunLending(t *testing.T, newStore func(*testing.T, ledger.BookID) lending.Store) {
 	t.Helper()
 
-	// A facility stores its asset even though the two GL accounts it wraps
-	// already carry it — the second fact this schema duplicates on purpose,
-	// after deposit_accounts.asset. Duplication is only safe while the copies
-	// agree, so the suite says so out loud for this column too.
-	t.Run("FacilityAssetMatchesItsGLAccounts", func(t *testing.T) {
+	// A facility names no account in the chart of accounts, so its asset is the
+	// only thing that says which three control lines its money is under. A store
+	// that dropped it would leave every balance unaskable.
+	t.Run("FacilityAssetSurvivesTheRoundTrip", func(t *testing.T) {
 		s := openLending(t, newStore, bookA)
 
 		updateLending(t, s, func(ctx context.Context, tx lending.Tx) error {
-			for _, a := range []ledger.Account{
-				{ID: "300.loan.001", SubledgerID: "loans", Name: "Loan Principal: Bruno", Type: ledger.Asset, Asset: "BTC"},
-				{ID: "300.accr.001", SubledgerID: "loans", Name: "Accrued Interest: Bruno", Type: ledger.Asset, Asset: "BTC"},
-				// The refunds-payable account is a Liability where the other two
-				// are Assets, and it is created lazily — but when it exists it is
-				// created in the facility's asset like the rest, which is the
-				// claim facilities.asset's schema comment makes about all three.
-				{ID: "300.refund.001", SubledgerID: "payables", Name: "Interest Refunds Payable: Bruno Loan (BTC)", Type: ledger.Liability, Asset: "BTC"},
-			} {
-				if err := tx.PutAccount(ctx, bookA, a); err != nil {
-					return err
-				}
-			}
 			return tx.PutFacility(ctx, bookA, lending.Facility{
 				ID: "fac_1", Kind: lending.TermLoan, Name: "Bruno Loan", Asset: "BTC",
-				PrincipalGL: "300.loan.001", InterestGL: "300.accr.001",
-				RefundGL: "300.refund.001",
-				Status:   lending.Active, OpenedAt: early,
+				Status: lending.Active, OpenedAt: early,
 			})
 		})
 
@@ -55,15 +39,7 @@ func RunLending(t *testing.T, newStore func(*testing.T, ledger.BookID) lending.S
 			if err != nil {
 				return err
 			}
-			for _, id := range []ledger.AccountID{f.PrincipalGL, f.InterestGL, f.RefundGL} {
-				gl, err := tx.GetAccount(ctx, bookA, id)
-				if err != nil {
-					return err
-				}
-				if f.Asset != gl.Asset {
-					t.Errorf("facility asset %q != %s asset %q", f.Asset, id, gl.Asset)
-				}
-			}
+			assertEqual(t, "asset", string(f.Asset), "BTC")
 			listed, err := tx.ListFacilities(ctx, bookA)
 			if err != nil {
 				return err
@@ -86,8 +62,6 @@ func RunLending(t *testing.T, newStore func(*testing.T, ledger.BookID) lending.S
 		// FacilityTermsTimeline below is where they round-trip.
 		want := lending.Facility{
 			ID: "fac_1", Kind: lending.RevolvingLine, Name: "Bruno Line", Asset: "EUR",
-			PrincipalGL: "100.loans.001", InterestGL: "100.accr.001",
-			RefundGL:   "100.payables.001",
 			Commitment: 250_000,
 			Method:     lending.EqualPrincipal, TermMonths: 60, MinPayment: 20_000,
 			Accrued: -356_180, AccruedGross: 1_479_452_040,
@@ -107,12 +81,6 @@ func RunLending(t *testing.T, newStore func(*testing.T, ledger.BookID) lending.S
 			t.Helper()
 			assertEqual(t, label+" kind", got.Kind, want.Kind)
 			assertEqual(t, label+" asset", string(got.Asset), string(want.Asset))
-			assertEqual(t, label+" principal gl", string(got.PrincipalGL), string(want.PrincipalGL))
-			assertEqual(t, label+" interest gl", string(got.InterestGL), string(want.InterestGL))
-			// A dropped refund gl is an obligation to a borrower that nothing
-			// can find again: the account keeps the balance, and this column is
-			// the only handle on it.
-			assertEqual(t, label+" refund gl", string(got.RefundGL), string(want.RefundGL))
 			assertEqual(t, label+" commitment", got.Commitment, want.Commitment)
 			assertEqual(t, label+" method", got.Method, want.Method)
 			assertEqual(t, label+" term months", got.TermMonths, want.TermMonths)

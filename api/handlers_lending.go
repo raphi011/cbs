@@ -72,14 +72,14 @@ func (s *Server) handleOpenFacility(w http.ResponseWriter, r *http.Request) {
 			writeBadRequest(w, err.Error())
 			return
 		}
-		f, err = p.Lending.OpenTermLoan(r.Context(), p.CustomerSubledger, req.Name, ledger.AssetCode(req.Asset),
+		f, err = p.Lending.OpenTermLoan(r.Context(), req.Name, ledger.AssetCode(req.Asset),
 			ledger.Amount(req.Commitment), interest.Rate(req.Rate), dc, method, req.TermMonths)
 		if err != nil {
 			writeError(w, err)
 			return
 		}
 	default: // RevolvingLine
-		f, err = p.Lending.OpenRevolvingLine(r.Context(), p.CustomerSubledger, req.Name, ledger.AssetCode(req.Asset),
+		f, err = p.Lending.OpenRevolvingLine(r.Context(), req.Name, ledger.AssetCode(req.Asset),
 			ledger.Amount(req.Commitment), interest.Rate(req.Rate), dc, interest.Fraction(req.MinPayment))
 		if err != nil {
 			writeError(w, err)
@@ -100,7 +100,12 @@ func (s *Server) handleOpenFacility(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusCreated, toFacilityDTO(withTerms.Facility, withTerms.Terms, 0, 0, 0))
+	at, err := p.Lending.Positions(r.Context(), f.ID)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, toFacilityDTO(withTerms.Facility, withTerms.Terms, at, 0, 0, 0))
 }
 
 func (s *Server) handleListFacilities(w http.ResponseWriter, r *http.Request) {
@@ -135,7 +140,12 @@ func (s *Server) handleListFacilities(w http.ResponseWriter, r *http.Request) {
 		// its own store transaction to return exactly this. Drawn cannot be
 		// had that way — it is the principal account's book balance, which is
 		// not on the record at all, and nor can the refund payable.
-		out[i] = toFacilityDTO(f, withTerms.Terms, drawn, f.Accrued.Minor(), refund)
+		at, err := p.Lending.Positions(r.Context(), f.ID)
+		if err != nil {
+			writeError(w, err)
+			return
+		}
+		out[i] = toFacilityDTO(f, withTerms.Terms, at, drawn, f.Accrued.Minor(), refund)
 	}
 	writeJSON(w, http.StatusOK, out)
 }
@@ -164,7 +174,12 @@ func (s *Server) handleGetFacility(w http.ResponseWriter, r *http.Request) {
 	}
 	// f.Accrued.Minor() rather than Portfolio.AccruedInterest, which would
 	// re-read the row already in hand — see handleListFacilities.
-	writeJSON(w, http.StatusOK, toFacilityDTO(f, withTerms.Terms, drawn, f.Accrued.Minor(), refund))
+	at, err := p.Lending.Positions(r.Context(), fid)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, toFacilityDTO(f, withTerms.Terms, at, drawn, f.Accrued.Minor(), refund))
 }
 
 func (s *Server) handleFacilitySchedule(w http.ResponseWriter, r *http.Request) {
@@ -200,7 +215,7 @@ func (s *Server) handleDisburse(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	fid := lending.FacilityID(r.PathValue("fid"))
-	tx, err := p.Lending.Disburse(r.Context(), fid, ledger.AccountID(req.Counterparty), firstDue, req.Description)
+	tx, err := p.Lending.Disburse(r.Context(), fid, ledger.AccountID(req.Counterparty).For(req.Subsidiary), firstDue, req.Description)
 	if err != nil {
 		writeError(w, err)
 		return
@@ -224,7 +239,7 @@ func (s *Server) handleDraw(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	fid := lending.FacilityID(r.PathValue("fid"))
-	tx, err := p.Lending.Draw(r.Context(), fid, ledger.AccountID(req.Counterparty), ledger.Amount(req.Amount), req.Description)
+	tx, err := p.Lending.Draw(r.Context(), fid, ledger.AccountID(req.Counterparty).For(req.Subsidiary), ledger.Amount(req.Amount), req.Description)
 	if err != nil {
 		writeError(w, err)
 		return
@@ -275,7 +290,11 @@ func (s *Server) handleRepay(w http.ResponseWriter, r *http.Request) {
 		if !ok {
 			return fmt.Errorf("api: store transaction does not span the lending layer")
 		}
-		out, err = p.Lending.RepayTx(ctx, lendingTx, fid, acct.GLAccount,
+		from, err := p.Deposit.PositionTx(ctx, tx, acct.ID)
+		if err != nil {
+			return err
+		}
+		out, err = p.Lending.RepayTx(ctx, lendingTx, fid, from,
 			ledger.Amount(req.Amount), date, req.Description)
 		return err
 	})
@@ -363,7 +382,7 @@ func (s *Server) handleRefundInterest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	fid := lending.FacilityID(r.PathValue("fid"))
-	tx, err := p.Lending.RefundInterest(r.Context(), fid, ledger.AccountID(req.Counterparty),
+	tx, err := p.Lending.RefundInterest(r.Context(), fid, ledger.AccountID(req.Counterparty).For(req.Subsidiary),
 		ledger.Amount(req.Amount), date, req.Description)
 	if err != nil {
 		writeError(w, err)

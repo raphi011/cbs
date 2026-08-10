@@ -39,7 +39,7 @@ func (h *meshHarness) reserveOf(t *testing.T, id payment.ParticipantID) ledger.A
 	if err != nil {
 		t.Fatalf("AccountsFor EUR: %v", err)
 	}
-	bal, err := p.Ledger.BookBalance(ctx, accts.Reserve)
+	bal, err := p.Ledger.BookBalance(ctx, accts.Reserve.Total())
 	if err != nil {
 		t.Fatalf("BookBalance: %v", err)
 	}

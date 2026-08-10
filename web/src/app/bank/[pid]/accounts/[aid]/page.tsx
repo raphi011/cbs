@@ -15,8 +15,10 @@ import {
   useAccountStatement,
   useAssetLookup,
   useDepositAccounts,
+  useFacilities,
   useGLAccount,
   useParticipant,
+  useSubsidiaries,
 } from "@/lib/api/hooks";
 import { buildKnownAccounts } from "@/lib/statement";
 
@@ -28,13 +30,26 @@ export default function AccountDetailPage() {
   const { account, isLoading: accLoading, error: accError, refetch } = useGLAccount(pid, aid);
   const statement = useAccountStatement(pid, aid, account?.type);
   const { data: deposits } = useDepositAccounts(pid);
+  const { data: facilities } = useFacilities(pid);
   const { data: participant } = useParticipant(pid);
+  const { data: subsidiaries } = useSubsidiaries(pid, aid);
   const { byCode, isLoading: assetsLoading } = useAssetLookup();
   const asset = account ? byCode.get(account.asset) : undefined;
 
   const back = `/bank/${pid}/ledger`;
-  const backingDeposit = deposits?.find((d) => d.glAccount === aid);
   const role = participant ? buildKnownAccounts(participant)[aid] : undefined;
+
+  // What an obligor IS, the ledger does not know: it holds a string the layer
+  // above supplied. This page is that layer, so it resolves the string against
+  // the two things it can be — a deposit account or a facility — and shows the
+  // raw id when it is neither, rather than pretending it resolved.
+  const obligor = (id: string) => {
+    const deposit = deposits?.find((d) => d.id === id);
+    if (deposit) return { name: deposit.name, href: `/bank/${pid}/deposit-accounts/${deposit.id}` };
+    const facility = facilities?.find((f) => f.id === id);
+    if (facility) return { name: facility.name, href: `/bank/${pid}/facilities/${facility.id}` };
+    return undefined;
+  };
 
   return (
     <div className="space-y-5">
@@ -75,16 +90,10 @@ export default function AccountDetailPage() {
                 </>
               )}
             </p>
-            {backingDeposit && (
+            {account.control && (
               <p className="text-sm text-muted-foreground">
-                Backing account for deposit{" "}
-                <Link
-                  href={`/bank/${pid}/deposit-accounts/${backingDeposit.id}`}
-                  className="underline hover:text-foreground"
-                >
-                  {backingDeposit.name}
-                </Link>
-                .
+                A control account: one line standing for many, with every posting
+                against it naming whose money it is.
               </p>
             )}
           </div>
@@ -104,6 +113,44 @@ export default function AccountDetailPage() {
             </CardContent>
           </Card>
 
+          {account.control && (
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-base">Who this line stands for</CardTitle>
+              </CardHeader>
+              <CardContent>
+                {subsidiaries == null ? (
+                  <Skeleton className="h-16 w-full" />
+                ) : subsidiaries.length === 0 ? (
+                  <p className="text-sm text-muted-foreground">
+                    Nobody owes anything under this line today. The balance above is the sum of
+                    the rows here, so an empty list and a zero balance are the same statement.
+                  </p>
+                ) : (
+                  <ul className="divide-y text-sm">
+                    {subsidiaries.map((row) => {
+                      const who = obligor(row.subsidiary);
+                      return (
+                        <li key={row.subsidiary} className="flex items-center justify-between py-2">
+                          {who ? (
+                            <Link href={who.href} className="underline hover:text-foreground">
+                              {who.name}
+                            </Link>
+                          ) : (
+                            <IdText id={row.subsidiary} />
+                          )}
+                          <span className="tabular-nums">
+                            <Money amount={row.balance} asset={asset} />
+                          </span>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                )}
+              </CardContent>
+            </Card>
+          )}
+
           <div className="space-y-2">
             <h3 className="text-sm font-medium text-muted-foreground">Account ledger</h3>
             {statement.error ? (
@@ -114,7 +161,7 @@ export default function AccountDetailPage() {
               <StatementTable
                 rows={statement.rows}
                 book={statement.book}
-                glAccount={aid}
+                account={aid}
                 pid={pid}
                 asset={asset}
                 amountHintId="normal-balance"

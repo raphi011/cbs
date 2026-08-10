@@ -6,7 +6,10 @@
 --
 -- What is absent is again the substance. THE CENTRAL BANK HAS NO CUSTOMERS: no
 -- deposit register, no deposit account identifiers, no holds, no snapshots, no
--- overdraft terms, no product catalogue, no lending. Its account holders are
+-- overdraft terms, no product catalogue, no lending, and no slot_accounts —
+-- that table says which account a customer-facing FLOW posts to, and every
+-- posting here is the settlement agent's own act against an account it names
+-- itself. Its account holders are
 -- member banks and its accounts are their reserves, so a table of retail
 -- deposit accounts would be a table it could never write a row into. AND IT
 -- HOLDS NO PAYMENTS: there is no payments table and no cycles table here. It
@@ -225,6 +228,17 @@ CREATE TABLE accounts (
     -- asset would become a migration. settlement_member_accounts.asset below
     -- points at the same paragraph.
     asset        TEXT NOT NULL,
+    -- Whether this account pools obligors. accounts.control in
+    -- bank/0001_init.sql carries the argument and the two posting refusals it
+    -- turns on.
+    --
+    -- No account in THIS book is one, and that is the settlement agent's shape
+    -- rather than a gap: it holds a reserve account per member per asset and
+    -- has no customers at all, so there is no obligor for a line here to stand
+    -- for. The column exists because the store is one implementation over three
+    -- schemas and an account read back here must be the account that was
+    -- written.
+    control      INTEGER NOT NULL DEFAULT 0,
     created_at   TEXT,
     seq          INTEGER NOT NULL,
     PRIMARY KEY (book_id, id)
@@ -298,6 +312,15 @@ CREATE TABLE entries (
     position       INTEGER NOT NULL,
     id             TEXT NOT NULL,
     account_id     TEXT NOT NULL,
+    -- The obligor a leg belongs to within a control account.
+    -- entries.subsidiary_id in bank/0001_init.sql carries the argument, and the
+    -- point of it — the control figure being this column dropped from a WHERE
+    -- clause rather than a stored total.
+    --
+    -- Every row here holds '', because no account in this book is a control
+    -- account: see accounts.control above for why the settlement agent has no
+    -- obligor to name. The column exists for that comment's reason.
+    subsidiary_id  TEXT NOT NULL DEFAULT '',
     amount         INTEGER NOT NULL,
     direction      INTEGER NOT NULL,
     value_date     TEXT,
@@ -309,7 +332,11 @@ CREATE INDEX entries_account_idx ON entries (
     -- The value_date suffix serves the value-dated balance and the per-day
     -- movement series. The (book_id, account_id) prefix is what BookBalance
     -- uses, and a reserve balance is the read this institution makes most.
-    book_id, account_id, value_date
+    --
+    -- subsidiary_id sits between the two so that one index serves all three
+    -- shapes; the same index in bank/0001_init.sql says why that position and
+    -- not the end.
+    book_id, account_id, subsidiary_id, value_date
 );
 
 -- ---------------------------------------------------------------------------

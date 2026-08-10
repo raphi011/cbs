@@ -38,19 +38,16 @@ func (t *tx) PutFacility(ctx context.Context, book ledger.BookID, f lending.Faci
 	}
 	_, err := t.tx.ExecContext(ctx, `
 		INSERT INTO facilities (
-			book_id, id, kind, name, asset, principal_gl, interest_gl, refund_gl,
+			book_id, id, kind, name, asset,
 			commitment, method, term_months, min_payment,
 			accrued_interest, accrued_gross,
 			last_accrual_date, days_past_due, arrears_bucket,
 			non_performing, oldest_unpaid_due, status, opened_at, maturity_at, seq)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, `+nextRowSeq("facilities")+`)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, `+nextRowSeq("facilities")+`)
 		ON CONFLICT (book_id, id) DO UPDATE SET
 			kind              = EXCLUDED.kind,
 			name              = EXCLUDED.name,
 			asset             = EXCLUDED.asset,
-			principal_gl      = EXCLUDED.principal_gl,
-			interest_gl       = EXCLUDED.interest_gl,
-			refund_gl         = EXCLUDED.refund_gl,
 			commitment        = EXCLUDED.commitment,
 			method            = EXCLUDED.method,
 			term_months       = EXCLUDED.term_months,
@@ -66,7 +63,6 @@ func (t *tx) PutFacility(ctx context.Context, book ledger.BookID, f lending.Faci
 			opened_at         = EXCLUDED.opened_at,
 			maturity_at       = EXCLUDED.maturity_at`,
 		string(book), string(f.ID), int64(f.Kind), f.Name, string(f.Asset),
-		string(f.PrincipalGL), string(f.InterestGL), string(f.RefundGL),
 		int64(f.Commitment), int64(f.Method), int64(f.TermMonths), int64(f.MinPayment),
 		int64(f.Accrued), int64(f.AccruedGross),
 		nullTime{f.LastAccrualDate}, int64(f.Arrears.DaysPastDue), int64(f.Arrears.Bucket),
@@ -82,7 +78,7 @@ func (t *tx) PutFacility(ctx context.Context, book ledger.BookID, f lending.Faci
 // is what stops GetFacility and ListFacilities from scanning different column
 // sets, which is a whole class of "it round-trips one way".
 const facilityColumns = `
-	id, kind, name, asset, principal_gl, interest_gl, refund_gl,
+	id, kind, name, asset,
 	commitment, method, term_months, min_payment,
 	accrued_interest, accrued_gross,
 	last_accrual_date, days_past_due, arrears_bucket,
@@ -101,7 +97,7 @@ func scanFacility(row interface{ Scan(...any) error }) (lending.Facility, error)
 		lastAccrual, oldestUnpaid nullTime
 		openedAt, maturityAt      nullTime
 	)
-	if err := row.Scan(&f.ID, &kind, &f.Name, &f.Asset, &f.PrincipalGL, &f.InterestGL, &f.RefundGL,
+	if err := row.Scan(&f.ID, &kind, &f.Name, &f.Asset,
 		&f.Commitment, &method, &f.TermMonths, &minPayment,
 		&accrued, &gross,
 		&lastAccrual, &f.Arrears.DaysPastDue, &bucket,

@@ -59,12 +59,24 @@ export interface Account {
   name: string;
   type: AccountType;
   asset: string;
+  // Whether this line pools obligors. A control account stands for many — every
+  // customer's deposits, the whole loan book — and every posting against it
+  // names whose. Two things depend on it: a posting form has to ask for the
+  // obligor, and an account page shows the detail under the line rather than
+  // only its total.
+  control: boolean;
   createdAt: string;
 }
 
 export interface Entry {
   id?: string;
   accountId: string;
+  // The obligor this leg belongs to within a control account — a deposit
+  // account's id, a facility's. Absent means the whole account, which is what a
+  // leg against one of the bank's own positions carries. A statement for one
+  // customer is the legs against their control account WITH their id: without
+  // it, every other customer's postings are in the same list.
+  subsidiary?: string;
   amount: number;
   direction: Direction;
   // The entry's account's asset. Always populated on a response (never sent
@@ -134,9 +146,23 @@ export interface AuditEvent {
 // value-dated away from its booking date. `asOf` defaults to now.
 export interface BookBalance {
   accountId: string;
+  // The obligor these figures are for, absent when they are the whole
+  // account's. On a control account the second is the sum of the first over
+  // every obligor under it.
+  subsidiary?: string;
   asset: string;
   balance: number;
   valueDateBalance: number;
+}
+
+// GET .../accounts/{aid}/subsidiaries: who a control account is holding money
+// for, and how much of the line is each one's. Empty for a plain account, which
+// pools nobody. What a subsidiary IS — a deposit account, a facility — the
+// ledger does not know; the page that renders the link does.
+export interface SubsidiaryBalance {
+  subsidiary: string;
+  asset: string;
+  balance: number;
 }
 
 // --- Deposit layer --------------------------------------------------------
@@ -146,11 +172,15 @@ export interface BookBalance {
 // never a hardcoded 1_000_000. unarrangedRate applies to any balance drawn
 // beyond overdraftLimit; accruedInterest is what the general ledger holds
 // (rounded to a whole minor unit), not the sub-minor-unit precision the
-// backend accrues at internally. interestGlAccount is empty until the first
-// non-zero rate is set (see api/dto_deposit.go).
+// backend accrues at internally.
+//
+// A deposit account is not a line in the chart of accounts. Its money pools in
+// `controlAccount` — one line per asset, for every customer of the bank — under
+// this account's own `id`, and that pair is what a posting and a statement both
+// name.
 export interface DepositAccount {
   id: string;
-  glAccount: string;
+  controlAccount: string;
   name: string;
   asset: string;
   status: DepositStatus;
@@ -173,7 +203,6 @@ export interface DepositAccount {
   // cannot be told why their rate did not move when the product was repriced.
   pricingSource: PricingSource;
   accruedInterest: number;
-  interestGlAccount?: string;
   createdAt: string;
 }
 
@@ -544,11 +573,13 @@ export interface Reserve {
 
 // --- Lending layer ----------------------------------------------------------
 
-// Facility mirrors facilityDTO. `drawn` is DERIVED — the principal GL
-// account's book balance, not a stored field. `accruedInterest` is `Minor()`
-// of the facility's own stored accrued figure — numerically equal to the
-// interest GL account's balance by the invariant the system maintains, but
-// read from the record rather than the account; see api/dto_lending.go's
+// Facility mirrors facilityDTO. A facility is not a line in the chart of
+// accounts either: its money sits in the three control accounts below, under
+// this facility's own `id`. `drawn` is DERIVED — the balance of
+// `principalAccount` under it, not a stored field. `accruedInterest` is
+// `Minor()` of the facility's own stored accrued figure — numerically equal to
+// its share of `interestAccount` by the invariant the system maintains, but read
+// from the record rather than the account; see api/dto_lending.go's
 // toFacilityDTO. `rate` is millionths of
 // `rateScale` (render with web/src/lib/rate.ts's formatRate, never a
 // hardcoded 1_000_000). `method` is only present for a TermLoan (a
@@ -560,19 +591,21 @@ export interface Facility {
   kind: FacilityKind;
   name: string;
   asset: string;
-  principalGlAccount: string;
-  interestGlAccount: string;
-  // The facility's interest-refunds-payable account, absent until a backdated
-  // correction has overshot on it. See `refundPayable`.
-  refundGlAccount?: string;
+  principalAccount: string;
+  interestAccount: string;
+  // The line interest the bank owes this borrower back sits in. It exists from
+  // the first facility in the asset; what is per borrower is the balance under
+  // them. See `refundPayable`.
+  refundAccount: string;
   commitment: number;
   drawn: number;
   accruedInterest: number;
   outstanding: number;
   // Interest the bank owes THIS borrower back, because a backdated posting
   // showed it charged interest that was never earned and the borrower had
-  // already paid it in cash. Derived, like `drawn`: the book balance of
-  // `refundGlAccount`, and 0 when there is no such account (the ordinary case).
+  // already paid it in cash. Derived, like `drawn`: the balance of
+  // `refundAccount` under this facility, and 0 in the ordinary case where no
+  // correction has ever overshot.
   //
   // It is NOT part of `outstanding`, which is what the borrower owes the bank.
   // The money runs the other way, and netting it in would render a smaller loan
@@ -674,6 +707,10 @@ export interface CreateAccountRequest {
 // asset a leg posts in is decided by the account it names).
 export interface EntryInput {
   accountId: string;
+  // Required when accountId is a control account and refused when it is not:
+  // the ledger accepts no unqualified entry against a line that pools obligors,
+  // and no qualified one against a line that does not.
+  subsidiary?: string;
   amount: number;
   direction: Direction;
   // Optional per-leg value date. OMITTED means "the transaction's", which is
@@ -742,6 +779,10 @@ export interface CreateHoldRequest {
 
 export interface CaptureHoldRequest {
   counterparty: string;
+  // The obligor within the counterparty account, when it pools them — another
+  // customer of this bank is a position, not an account of their own. Omitted
+  // for one of the bank's own accounts.
+  subsidiary?: string;
   amount: number;
   description?: string;
 }

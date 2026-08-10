@@ -24,7 +24,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { MoneyInput, Money } from "@/components/money";
 import { FieldLabel } from "@/components/field-label";
-import { GLAccountPicker } from "@/components/pickers/gl-account-picker";
+import { PositionPicker } from "@/components/pickers/position-picker";
 import { Hint } from "@/components/hint";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useAllAccounts, useAssetLookup, usePostTransaction } from "@/lib/api/hooks";
@@ -35,13 +35,18 @@ import { cn } from "@/lib/utils";
 
 interface Leg {
   accountId: string;
+  // Whose money this leg is, when the account it posts to pools obligors. The
+  // server refuses a leg against a control account that names nobody, and one
+  // against a plain account that names somebody — so this field appears exactly
+  // when the picked account says it must.
+  subsidiary: string;
   direction: Direction;
   amount: number | null;
 }
 
 const emptyLegs = (): Leg[] => [
-  { accountId: "", direction: "Debit", amount: null },
-  { accountId: "", direction: "Credit", amount: null },
+  { accountId: "", subsidiary: "", direction: "Debit", amount: null },
+  { accountId: "", subsidiary: "", direction: "Credit", amount: null },
 ];
 
 function dateToRFC3339(date: string): string | null {
@@ -68,6 +73,9 @@ export function PostTransactionForm({ pid }: { pid: string }) {
   function assetForLeg(accountId: string) {
     const acct = accounts.data?.find((a) => a.id === accountId);
     return acct ? byCode.get(acct.asset) : undefined;
+  }
+  function poolsObligors(accountId: string) {
+    return accounts.data?.find((a) => a.id === accountId)?.control ?? false;
   }
 
   const debits = legs
@@ -108,8 +116,17 @@ export function PostTransactionForm({ pid }: { pid: string }) {
     everyLegResolved &&
     debits > 0 &&
     [...netByAsset.values()].every((net) => net === 0);
+  // A leg against a control account with no obligor is refused by the server,
+  // so the form refuses it first: the alternative is a 400 the user cannot read
+  // the cause of off a form that looked complete.
   const ready =
-    balanced && legs.every((l) => l.accountId.trim() && (l.amount ?? 0) > 0);
+    balanced &&
+    legs.every(
+      (l) =>
+        l.accountId.trim() &&
+        (l.amount ?? 0) > 0 &&
+        (!poolsObligors(l.accountId) || l.subsidiary.trim() !== ""),
+    );
 
   function reset() {
     setLegs(emptyLegs());
@@ -143,6 +160,10 @@ export function PostTransactionForm({ pid }: { pid: string }) {
         idempotencyKey,
         entries: legs.map((l) => ({
           accountId: l.accountId.trim(),
+          // Omitted rather than empty on a plain account: the wire's absence is
+          // "the whole account", and an empty string would be the same thing
+          // said twice.
+          subsidiary: l.subsidiary.trim() || undefined,
           amount: l.amount ?? 0,
           direction: l.direction,
         })),
@@ -201,10 +222,12 @@ export function PostTransactionForm({ pid }: { pid: string }) {
               return (
               <div key={i} className="flex items-end gap-2">
                 <div className="min-w-0 flex-1">
-                  <GLAccountPicker
+                  <PositionPicker
                     pid={pid}
-                    value={leg.accountId}
-                    onChange={(accountId) => updateLeg(i, { accountId })}
+                    value={{ account: leg.accountId, subsidiary: leg.subsidiary }}
+                    onChange={(pos) =>
+                      updateLeg(i, { accountId: pos.account, subsidiary: pos.subsidiary })
+                    }
                   />
                 </div>
                 <Select
@@ -254,7 +277,7 @@ export function PostTransactionForm({ pid }: { pid: string }) {
               onClick={() =>
                 setLegs((prev) => [
                   ...prev,
-                  { accountId: "", direction: "Credit", amount: null },
+                  { accountId: "", subsidiary: "", direction: "Credit", amount: null },
                 ])
               }
             >

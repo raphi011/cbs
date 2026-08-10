@@ -16,10 +16,14 @@ import (
 // bank about a book it already holds.
 //
 // It is the REGISTER's act rather than the payment layer's, because nothing in
-// it needs to know what an institution is: it touches the two customers' own GL
-// accounts and no plumbing account of the bank's. payment.Network.DepositTx is
+// it needs to know what an institution is: it touches the two customers' own
+// money and no plumbing account of the bank's. payment.Network.DepositTx is
 // the contrast that settles where the line falls — cash over the counter is up
 // there because it debits VAULT CASH, which is the bank's own.
+//
+// Both legs name ONE chart-of-accounts row, one obligor apart, so the bank's
+// total customer deposits does not move — which is exactly what happens
+// economically when money changes hands inside a bank and nothing leaves it.
 
 // Transfer moves amount between two deposit accounts in this bank's book. See
 // TransferTx, which is where the rules are.
@@ -84,13 +88,21 @@ func (r *Register) TransferTx(ctx context.Context, tx Tx, from, to AccountID, am
 		return ledger.Transaction{}, err
 	}
 
+	// Resolved once, after the assets have been compared: two accounts in one
+	// asset are two obligors under one control account, and asking twice would
+	// be asking the same question twice.
+	control, err := r.depositControlTx(ctx, tx, payer.Asset)
+	if err != nil {
+		return ledger.Transaction{}, err
+	}
+
 	// PostTransactionTx and not PostTransaction: a plain call here would open a
 	// second unit of work inside this one, which the store refuses outright.
 	glTx, err := r.gl.PostTransactionTx(ctx, tx, ledger.PostTransactionRequest{
 		Description: description,
 		Entries: []ledger.Entry{
-			{AccountID: payer.GLAccount, Amount: amount, Direction: ledger.Debit},
-			{AccountID: payee.GLAccount, Amount: amount, Direction: ledger.Credit},
+			{AccountID: control, Subsidiary: string(from), Amount: amount, Direction: ledger.Debit},
+			{AccountID: control, Subsidiary: string(to), Amount: amount, Direction: ledger.Credit},
 		},
 	})
 	if err != nil {

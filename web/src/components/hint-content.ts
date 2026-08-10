@@ -112,21 +112,37 @@ Like [[account-type-revenue|revenue]], expense accounts are **temporary** — cl
   },
   "ledger-vs-subledger": {
     title: "Ledger and subledger",
-    body: `A **ledger** is the top-level book of accounts — typically the **General Ledger (GL)** containing everything. A **subledger** is a subdivision of a ledger that groups related accounts: the GL shows one summary line while the subledger holds the individual detail.
+    body: `A **ledger** is the top-level book of accounts — typically the **General Ledger (GL)** containing everything. A **subledger** is a subdivision of a ledger that groups related accounts: Customer Deposits, Loans and Advances, Bank Assets, Revenue.
+
+What the classic design puts *inside* the deposit subledger is one account per customer, and what the GL carries is a single **control account** — one line standing for many — whose **stored** balance is supposed to equal their sum:
+
+\`\`\`
+General Ledger                      Customer Deposits subledger
+└── Customer Deposits €10,000,000   ├── Alice Checking      €1,200
+    (a control figure, written      ├── Bob Checking          €800
+     down independently)            └── … 50,000 more accounts
+\`\`\`
+
+That is the same money counted in two places, so the two can drift — a bug, a partial failure, a timing window — and the bank runs a **subledger-to-GL reconciliation** every day to prove Σ(detail) equals the control figure. A mismatch is a break somebody has to investigate.
+
+Here the folder holds **one line**, and a customer's account is not a row in the chart of accounts at all:
 
 \`\`\`
 General Ledger
 ├── Customer Deposits (subledger)
-│   ├── Alice Checking (Liability)
-│   ├── Bob Checking  (Liability)
-│   └── … 50,000 more accounts
-├── Loans (subledger)
-│   └── Loan #12345 (Asset)
+│   └── Customer Deposits (EUR)  (Liability, CONTROL)  ← 50,000 customers
+├── Loans and Advances (subledger)
+│   ├── Loan Principal (EUR)     (Asset, CONTROL)      ← every borrower
+│   └── Accrued Interest (EUR)   (Asset, CONTROL)
+├── Bank Assets (subledger)
+│   └── Cash Vault (Asset)
 └── Revenue (subledger)
     └── Fee Income (Revenue)
 \`\`\`
 
-The GL might show "Total Customer Deposits: €10M" while the Customer Deposits subledger contains 50,000 individual accounts that sum to that total. This lets regulators and management see the big picture in one row while operations can drill into any individual account. New accounts created via the API are always placed inside a subledger.`,
+It is still a control account — one line standing for many — but it is also the only place the money is recorded. Every entry against it names *whose* money the leg is: the **obligor**. Alice's balance is that line's balance filtered to Alice; total customer deposits is the same sum with the filter dropped. So Σ(detail) = control is not a nightly proof but one statement read two ways, and there is no second number to reconcile against. What it costs is speed — every balance is still added up from entries.
+
+What the control account buys is the chart of accounts itself: a bank with fifty thousand customers and ten thousand loans has a chart of a few dozen lines, one per asset per role plus its own positions, and its trial balance is a page rather than a book.`,
   },
   "minor-units": {
     title: "Amounts are integer minor units",
@@ -831,7 +847,7 @@ A break is a defect; a position is money in flight. Only the first is something 
   },
   "unclaimed-balances": {
     title: "Unclaimed balances",
-    body: `**Unclaimed Balances (\<asset\>)** is where a bank puts money that arrives for an account that cannot receive it. It is a **[[account-type-liability|liability]]**, because the bank still owes it — to whoever eventually claims it — exactly as it owes a deposit. Every bank gets one per [[asset]] it operates in, created in its own book when it is [[bank-founding|founded]] — before any scheme has heard of it.
+    body: `**Unclaimed Balances (\<asset\>)** is where a bank puts money that arrives for an account that cannot receive it. It is a **[[account-type-liability|liability]]**, because the bank still owes it — to whoever eventually claims it — exactly as it owes a deposit. Every bank gets one per [[asset]] it operates in, created in its own book when it is [[bank-founding|founded]] — before any scheme has heard of it. It is a [[ledger-vs-subledger|control account]], and it has to be: a pool that could not say *whose* money each part was would be no better than the closed account it stands in for, so every credit here names the address the money was destined for.
 
 The case it exists for: a payee closes their account between their bank's acceptance of the payment and the cut-off. [[account-status|Closed]] is the one status that refuses a credit, and crediting it anyway leaves money no withdrawal can reach and no second close can clear.
 
@@ -1032,7 +1048,7 @@ The [[audit-trail]] records every snapshot event for complete auditability.`,
   },
   statement: {
     title: "Account statement",
-    body: `A deposit account has **no ledger of its own**. Its statement is *derived* — every [[double-entry]] GL transaction that touches the account's backing GL account, projected onto that one leg, oldest→newest, with a running balance.
+    body: `A deposit account has **no ledger of its own**, and no line of its own in the chart of accounts either. Its statement is *derived* — every [[double-entry]] transaction that touches this customer's **position**, meaning the customer-deposit [[ledger-vs-subledger|control account]] filtered to them as obligor, projected onto that one leg, oldest→newest, with a running balance.
 
 The running balance reconciles to the account's **book** balance: a built-in correctness check. Holds never appear here — they post nothing to the ledger until captured.`,
   },
@@ -1044,15 +1060,17 @@ Expand a row to see the full balanced transaction: your line is one leg; the con
   },
   "relational-mapping": {
     title: "The ledger as relational tables",
-    body: `The whole accounting model is six tables, and the shape of the [[double-entry]] rule is visible in them: a transaction is a **parent row** and its legs are **child rows**, so "a posting has two or more balanced entries" is a one-to-many relationship rather than two columns.
+    body: `The whole accounting model is seven tables, and the shape of the [[double-entry]] rule is visible in them: a transaction is a **parent row** and its legs are **child rows**, so "a posting has two or more balanced entries" is a one-to-many relationship rather than two columns.
 
 \`\`\`
-ledgers ─┬─▶ subledgers ─┬─▶ accounts
-         │               │
-transactions ─▶ entries ─┘   (entry.account_id points at an account)
+ledgers ─┬─▶ subledgers ─┬─▶ accounts ◀─ slot_accounts
+         │               │      accounts.control  — one line for many?
+transactions ─▶ entries ─┘   entries.subsidiary_id — whose money this leg is
 \`\`\`
 
 Two details are easy to get wrong. \`entries\` needs an explicit **position** column, because a transaction's entries are ordered and a table has no order. And listings are ordered by \`(created_at, seq)\`, never by id — IDs are counter-derived strings, so \`dep_10\` sorts before \`dep_8\` and a customer list would silently reorder itself the first time a counter crossed a power of ten.
+
+A customer's deposit account is **not** a row in \`accounts\`, and \`deposit_accounts\` carries no column pointing into the chart of accounts at all — nor do \`facilities\`. Their money is a value in \`entries.subsidiary_id\` under a [[ledger-vs-subledger|control account]], and one customer's balance is that account's sum with \`AND subsidiary_id = ?\` added. \`slot_accounts\`, keyed by \`(product, slot, asset)\`, is what says which account a given flow posts to — the mapping is a row rather than a name matched in code.
 
 What is *not* a column is the balance — see [[derived-balance]]. What is not a single column is the primary key — see [[book-scoped-id]].`,
   },
@@ -1066,6 +1084,8 @@ FROM entries WHERE book_id = ? AND account_id = ?;   -- the first ? is the norma
 \`\`\`
 
 Hardcoding \`debit\` there would be right for every asset and expense account and would negate every liability, equity and revenue one: a customer's checking account holding 750.00 would report −750.00.
+
+One customer's balance is the same query with \`AND subsidiary_id = ?\` added, because their account is not a line of the chart of accounts but an obligor under a [[ledger-vs-subledger|control account]]. The pooled total is that clause dropped — so the control figure and the detail behind it are one sum asked two ways, never two numbers that could disagree.
 
 A stored balance is a **cache of a derivable fact**, and caches go stale: any bug, crash or concurrent write that updates one of the two without the other leaves a number no one can reconcile. Deriving it means the [[audit-trail|append-only history]] is the single source of truth and the balance cannot disagree with it.
 
@@ -1433,9 +1453,11 @@ Four units of work at three institutions, so the API answers **202 Accepted** wi
     title: "Credit facility",
     body: `A **credit facility** is a bank's extension of credit to a customer, tracked outside the demand-deposit layer: a [[term-loan|term loan]] (a fixed principal, disbursed once and repaid on a fixed schedule) or a [[revolving-line|revolving line]] (a reusable limit the customer draws down and repays repeatedly, billed in cycles).
 
-An [[overdraft|overdraft limit]] extending a deposit account below zero is a THIRD form of credit in this system, but it is deliberately not a facility: it has no PRINCIPAL GL account, no schedule and no commitment — it is priced credit layered onto an existing liability account, not a standalone [[account-type-asset|asset]]. (It does get an accrued-interest receivable of its own, the moment a non-zero rate is set: interest earned is a real asset wherever it was earned.)
+An [[overdraft|overdraft limit]] extending a deposit account below zero is a THIRD form of credit in this system, but it is deliberately not a facility: it has no drawn principal of its own, no schedule and no commitment — it is priced credit layered onto an existing liability position, not a standalone [[account-type-asset|asset]]. (It does get a position under the bank's accrued-interest receivable the moment a non-zero rate is set: interest earned is a real asset wherever it was earned.)
 
-Every facility carries two GL [[account-type-asset|Asset]] accounts: a **principal** account (what is owed on drawn money) and an **interest** account (interest accrued and not yet collected). The **commitment** is the ceiling the customer may draw against. What is **drawn** is DERIVED — the principal account's balance, never a stored field, the same discipline [[derived-balance|a book balance]] follows — and the **accrued interest** is the rounded minor-unit figure of the facility's own exact [[accrued-interest|accrued-interest record]], which the interest account's balance always equals.`,
+A facility is not a line of the chart of accounts either. It is an **obligor** under three of the bank's [[ledger-vs-subledger|control accounts]] — drawn principal and accrued interest receivable, both [[account-type-asset|Asset]], plus the Liability line for interest the bank owes back after a backdated correction — with its own id named on every entry that belongs to it. A bank lending to ten thousand borrowers has three chart-of-accounts rows for its loan book, not thirty thousand.
+
+The **commitment** is the ceiling the customer may draw against, and it is stored: it is a fact about the contract. What is **drawn** is DERIVED — the loan-principal line's balance filtered to this facility, never a stored field, the same discipline [[derived-balance|a book balance]] follows — and the **accrued interest** is the rounded minor-unit figure of the facility's own exact [[accrued-interest|accrued-interest record]], which its position in the receivable always equals.`,
   },
   arrears: {
     title: "Arrears",
@@ -1514,7 +1536,7 @@ The [[overdraft|arranged overdraft]] is credit too, and older than either — bu
   },
   "term-loan": {
     title: "Term loan",
-    body: `A **term loan** is a fixed principal, disbursed once, repaid on an [[amortization|amortization schedule]] generated in full at disbursement — a mortgage or a personal loan. Disbursing debits the loan's Principal [[account-type-asset|Asset]] account and credits wherever the money goes (typically the customer's deposit account); nothing is owed before that posting, and everything scheduled is owed after it.
+    body: `A **term loan** is a fixed principal, disbursed once, repaid on an [[amortization|amortization schedule]] generated in full at disbursement — a mortgage or a personal loan. Disbursing debits the bank's loan-principal [[account-type-asset|Asset]] line under this loan and credits wherever the money goes (typically the customer's deposit position); nothing is owed before that posting, and everything scheduled is owed after it.
 
 Its \`commitment\` — the original principal — never changes once disbursed. Compare the [[revolving-line|revolving line]], whose limit can be drawn against repeatedly rather than spent once.`,
   },
@@ -1565,7 +1587,7 @@ Every day's posting is the CHANGE in that rounded figure, not the day's raw inte
     title: "Capitalization",
     body: `**Capitalizing** interest means charging the [[accrued-interest|accrued, rounded]] figure into principal rather than collecting it separately — the interest charge on a [[revolving-line|revolving line]], or the monthly charge on an [[overdraft-interest|overdraft]]. It is what makes either balance **compound**: next period's [[interest-accrual|accrual]] runs on a principal that already includes this period's interest.
 
-Charging the ROUNDED figure rather than the exact one always leaves a residue of up to half a minor unit, in either direction — round down and the record stays slightly positive, round up and it goes slightly negative. That residue rounds to zero — except at an EXACT half of a minor unit, where it rounds AWAY from zero to ±1 even though the ledger is already at zero. That is why closing an account or facility tests the receivable's own ledger balance rather than the record: the record may legitimately disagree with the ledger by a sub-minor-unit amount, which is the entire reason it is kept at higher precision. Ordinarily the next accrual absorbs the residue as the balance moves again. A term loan is never capitalized this way — its interest is settled through its own scheduled instalments instead, never folded back into principal.`,
+Charging the ROUNDED figure rather than the exact one always leaves a residue of up to half a minor unit, in either direction — round down and the record stays slightly positive, round up and it goes slightly negative. That residue rounds to zero — except at an EXACT half of a minor unit, where it rounds AWAY from zero to ±1 even though the ledger is already at zero. That is why closing an account or facility tests its ledger balance in the receivable rather than the record: the record may legitimately disagree with the ledger by a sub-minor-unit amount, which is the entire reason it is kept at higher precision. Ordinarily the next accrual absorbs the residue as the balance moves again. A term loan is never capitalized this way — its interest is settled through its own scheduled instalments instead, never folded back into principal.`,
   },
   "repayment-allocation": {
     title: "Repayment allocation",

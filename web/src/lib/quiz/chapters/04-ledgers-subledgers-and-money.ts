@@ -258,7 +258,7 @@ export const chapter: Chapter = {
       ],
       answers: [0, 2, 4],
       explanation:
-        "The [[ledger-vs-subledger]] hierarchy requires: (a) reconciliation between subledger totals and GL control accounts is mandatory; (c) the GL summarizes what subledgers detail; (e) individual accounts always live in subledgers. The book's examples show each subledger grouping **related** accounts — Customer Deposits groups Liability accounts, Loans groups Asset accounts — but the hierarchy is purely organizational, making this the practical standard for managing millions of accounts rather than a rigid type rule.",
+        "The [[ledger-vs-subledger]] hierarchy requires: (a) reconciliation between subledger totals and GL control accounts is mandatory; (c) the GL summarizes what subledgers detail; (e) in the conventional arrangement individual customer accounts live in a subledger rather than as lines of the GL itself. The book's examples show each subledger grouping **related** accounts — Customer Deposits groups Liability accounts, Loans groups Asset accounts — but the hierarchy is purely organizational, making this the practical standard for managing millions of accounts rather than a rigid type rule.",
     },
     {
       kind: "multi",
@@ -304,6 +304,24 @@ export const chapter: Chapter = {
       answer: 1,
       explanation:
         "The book extends the same principle: when sub-cent precision is needed, define a smaller integer unit (milli-cents, millionths, etc.) rather than reaching for floating-point. The accounting engine always works in integers — only the denomination of the unit changes.",
+    },
+    {
+      kind: "multi",
+      id: "ch4-q21",
+      difficulty: "challenge",
+      concept: "derived-balance",
+      prompt:
+        "A classic core banking system and this one both call the general ledger's Customer Deposits line a control account. Which statements are true of THIS system's version but not of the classic one? (Select all that apply.)",
+      options: [
+        "The line's total is derived by summing entries, so it is not a second copy of a figure held elsewhere",
+        "A customer's account is not a row in the chart of accounts; whose money an entry moves is a field on the entry",
+        "The line stands for many customers at once rather than for one",
+        "No daily subledger-to-GL reconciliation is needed, because there is no independent figure to compare against",
+        "Per-customer balances cannot be produced at all — only the pooled total is knowable",
+      ],
+      answers: [0, 1, 3],
+      explanation:
+        "A control account is one line standing for many, and *both* designs have that — so option c is not a difference. What differs is whether the total is a second copy of a number. Classically the general ledger stores the control figure while a separate subledger holds one account per customer, and because the same money is written down twice the two can drift, which is what the daily reconciliation exists to catch. Here every entry against the line names its **obligor**, so one customer's balance is the line filtered to them and the pooled total is the same sum unfiltered — [[derived-balance|one number, read two ways]]. The detail is fully recoverable, so option e is wrong; it simply lives in the entries rather than in accounts of its own. See [[ledger-vs-subledger]].",
     },
   ],
 };

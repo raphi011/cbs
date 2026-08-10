@@ -77,6 +77,38 @@ var (
 	// nothing a caller can do at runtime will make "DOGE" resolve.
 	ErrAssetNotFound = errors.New("asset not found")
 
+	// ErrSubsidiaryRequired is returned when an entry against a control
+	// account names no subsidiary. The amount would sit in the pool belonging
+	// to nobody, and no later read could say whose it was — the control
+	// figure would be right and every detail under it wrong.
+	ErrSubsidiaryRequired = errors.New("an entry against a control account must name a subsidiary")
+
+	// ErrSubsidiaryNotAllowed is returned when an entry against a plain
+	// account names a subsidiary. Nothing aggregates a non-control account by
+	// obligor, so the dimension would be written and never read, and the
+	// caller's belief that it had recorded whose money this is would be false.
+	ErrSubsidiaryNotAllowed = errors.New("only a control account takes an entry with a subsidiary")
+
+	// ErrSlotNotMapped is returned when no row says which account a flow posts
+	// to. It is a chart of accounts that has not been configured for this
+	// asset, seen from a posting path — a refusal rather than a fallback,
+	// because the only fallback available would be to guess a line and the
+	// money would land somewhere nobody chose.
+	ErrSlotNotMapped = errors.New("no account is mapped to this slot")
+
+	// ErrSlotAccountMismatch is returned when the account a slot is being
+	// pointed at is not the kind of account the slot requires: wrong asset,
+	// wrong type, or plain where the flow posts obligors. Refused at the WRITE,
+	// because the alternative is a posting that fails weeks later at a moment
+	// nobody connects to the configuration change that caused it.
+	ErrSlotAccountMismatch = errors.New("account does not satisfy the slot")
+
+	// ErrSlotNotProductScoped is returned when a product-specific row is
+	// written for a slot that holds a balance. See Slot.ByProduct: the money
+	// already posted would stay in the old line while every later posting went
+	// to the new one.
+	ErrSlotNotProductScoped = errors.New("this slot takes no product-specific mapping")
+
 	// ErrUnbalancedAsset is returned when the debits and credits of one
 	// asset within a transaction do not net to zero.
 	//

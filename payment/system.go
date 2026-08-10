@@ -335,8 +335,8 @@ func (s *Network) CentralBank() (*ledger.Book, error) { return s.centralBankBook
 // value the store returns.
 func (s *Network) bind(p Bank) *Bank {
 	p.Ledger = ledger.NewBook(s.ledgers, p.BookID, s.clock)
-	p.Deposit = deposit.NewRegister(s.deposits, p.Ledger, p.BookID, s.clock, p.Issuer)
-	p.Lending = lending.NewPortfolio(s.lendings, p.Ledger, p.BookID, s.clock)
+	p.Deposit = deposit.NewRegister(s.deposits, p.Ledger, p.BookID, s.clock, p.Issuer, p.CustomerSubledger)
+	p.Lending = lending.NewPortfolio(s.lendings, p.Ledger, p.BookID, s.clock, p.CustomerSubledger)
 	p.Catalogue = product.NewCatalogue(s.products, p.Ledger, p.BookID, s.clock)
 	return &p
 }
@@ -942,19 +942,31 @@ func (s *Network) FoundBankTx(ctx context.Context, tx Tx, name string, bic iso20
 		if err != nil {
 			return nil, err
 		}
-		// A Liability, because it is money the bank owes somebody it has not yet
-		// identified — the same class as a customer's deposit, and specifically
-		// not an asset of the bank's.
-		unclaimed, err := bank.CreateAccountTx(ctx, tx, interbank.ID, "Unclaimed Balances ("+string(asset)+")", ledger.Liability, asset)
+		// A Liability, because it is money the bank owes somebody — the same
+		// class as a customer's deposit, and specifically not an asset of the
+		// bank's.
+		//
+		// It is the one of this bank's own accounts that pools obligors, so it
+		// is a CONTROL account and every leg against it names whose money it is:
+		// the deposit account that could not take the credit. The claimant is
+		// always known — this bank resolved the payee before it accepted the
+		// payment, and the account is closed rather than absent — so what makes
+		// the balance unclaimed is that nobody has come for it, not that nobody
+		// can be named. Pooled without the dimension, one balance could not say
+		// who was owed what, and a release against it could pay one customer out
+		// of another's money and still balance, a Liability never being caught
+		// by the sufficiency check.
+		unclaimed, err := bank.CreateControlAccountTx(ctx, tx, interbank.ID, "Unclaimed Balances ("+string(asset)+")", ledger.Liability, asset)
 		if err != nil {
 			return nil, err
 		}
 		// An Asset, and the contrast with Unclaimed Balances above is the
-		// point. Unclaimed is money the bank OWES to somebody it has not
-		// identified; this is money OWED TO the bank by somebody it has
-		// identified perfectly well — a biller whose account could not fund a
-		// refund the bank was obliged to honour anyway. Same event, opposite
-		// sides of the balance sheet.
+		// point. Unclaimed is money the bank OWES to a holder it cannot pay;
+		// this is money OWED TO the bank by a biller whose account could not
+		// fund a refund the bank was obliged to honour anyway. Same event,
+		// opposite sides of the balance sheet. Plain rather than control, for
+		// the reason the whole class of a bank's own positions is: what it
+		// records is the bank's claim, and it does not stand in for anybody.
 		returnsReceivable, err := bank.CreateAccountTx(ctx, tx, interbank.ID, "Returns Receivable ("+string(asset)+")", ledger.Asset, asset)
 		if err != nil {
 			return nil, err
@@ -1635,8 +1647,11 @@ func (s *Network) DepositTx(ctx context.Context, tx Tx, participant ParticipantI
 	if err := p.Deposit.CheckCreditTx(ctx, tx, account); err != nil {
 		return err
 	}
-	gl, asset := funded.GLAccount, funded.Asset
-	accts, err := p.AccountsFor(asset)
+	pos, err := p.positionTx(ctx, tx, account)
+	if err != nil {
+		return err
+	}
+	accts, err := p.AccountsFor(funded.Asset)
 	if err != nil {
 		return err
 	}
@@ -1647,7 +1662,7 @@ func (s *Network) DepositTx(ctx context.Context, tx Tx, participant ParticipantI
 		Description: description,
 		Entries: []ledger.Entry{
 			{AccountID: accts.VaultCash, Amount: amount, Direction: ledger.Debit},
-			{AccountID: gl, Amount: amount, Direction: ledger.Credit},
+			{AccountID: pos.Account, Subsidiary: pos.Subsidiary, Amount: amount, Direction: ledger.Credit},
 		},
 	})
 	return err
@@ -2370,7 +2385,7 @@ func (s *Network) SettleCycleTx(ctx context.Context, tx Tx, id CycleID, instruct
 		if leg.net >= 0 {
 			continue
 		}
-		held, err := book.BookBalanceTx(ctx, tx, leg.settlement)
+		held, err := book.BookBalanceTx(ctx, tx, leg.settlement.Total())
 		if err != nil {
 			return Settlement{}, nil, err
 		}
@@ -2407,7 +2422,7 @@ func (s *Network) SettleCycleTx(ctx context.Context, tx Tx, id CycleID, instruct
 		//    reading it before would produce an opening balance labelled CLBD, which
 		//    is the exact error closingBalanceIn refuses on the other side.
 		for _, leg := range legs {
-			closing, err := book.BookBalanceTx(ctx, tx, leg.settlement)
+			closing, err := book.BookBalanceTx(ctx, tx, leg.settlement.Total())
 			if err != nil {
 				return Settlement{}, nil, err
 			}
@@ -2849,20 +2864,24 @@ func (s *Network) SettleAtBankTx(ctx context.Context, tx Tx, id PaymentID) (Paym
 		return Payment{}, err
 	}
 
-	// Not allowed to fail SOFTLY: glAccountTx collapses every error from its read
+	// Not allowed to fail SOFTLY: positionTx collapses every error from its read
 	// into ErrAccountNotInParticipant, so a dropped connection and a genuinely
 	// absent account are one value by the time they arrive, and there is no
 	// failure this caller may route money on. So it fails the cut-off, which is
 	// retriable, rather than diverting — this bank resolved the payee's account
 	// once already when it accepted the payment.
-	glAccount, err := creditor.glAccountTx(ctx, tx, p.Creditor.Account)
+	target, err := creditor.positionTx(ctx, tx, p.Creditor.Account)
 	if err != nil {
 		return Payment{}, err
 	}
 
-	// Where the money goes: the payee's account if it can take it, and the
-	// unclaimed-balances account if it cannot. Both are this bank's own.
-	target, description := glAccount, p.Description
+	// Where the money goes: the payee's own position if the account can take it,
+	// and the bank's unclaimed balances if it cannot. Both are this bank's own,
+	// and both are positions in a control account — the same payee named under
+	// two different lines, which is why the diversion is a change of account and
+	// not of obligor. A closed account still names its owner, and that is what a
+	// later release pays out.
+	description := p.Description
 	if err := creditor.Deposit.CheckCreditTx(ctx, tx, p.Creditor.Account); err != nil {
 		if !errors.Is(err, deposit.ErrAccountClosed) {
 			// ErrAccountClosed is the ONLY refusal CheckCreditTx makes —
@@ -2872,7 +2891,8 @@ func (s *Network) SettleAtBankTx(ctx context.Context, tx Tx, id PaymentID) (Paym
 			// because a connection dropped would be wrong.
 			return Payment{}, err
 		}
-		target, description = accts.Unclaimed, "Unclaimed: "+p.Description
+		target = accts.Unclaimed.For(string(p.Creditor.Account))
+		description = "Unclaimed: " + p.Description
 	}
 
 	posted, err := creditor.Ledger.PostTransactionTx(ctx, tx, ledger.PostTransactionRequest{
@@ -2882,7 +2902,7 @@ func (s *Network) SettleAtBankTx(ctx context.Context, tx Tx, id PaymentID) (Paym
 		Metadata:       paymentMetadata(&p),
 		Entries: []ledger.Entry{
 			{AccountID: accts.Suspense, Amount: p.Amount, Direction: ledger.Debit},
-			{AccountID: target, Amount: p.Amount, Direction: ledger.Credit},
+			{AccountID: target.Account, Subsidiary: target.Subsidiary, Amount: p.Amount, Direction: ledger.Credit},
 		},
 	})
 	if err != nil {
@@ -2892,7 +2912,10 @@ func (s *Network) SettleAtBankTx(ctx context.Context, tx Tx, id PaymentID) (Paym
 	// Recorded in BOTH arms, not only the diverting one. A return has to claw
 	// the money back from where it actually went, and it cannot ask this
 	// question again later: see Payment.CreditorLegAccount and clawbackTx.
-	p.CreditorLegAccount = target
+	//
+	// The ACCOUNT and not the position: the obligor half is the payee, which the
+	// payment already names, and a second copy of it could only disagree.
+	p.CreditorLegAccount = target.Account
 	if err := s.transition(&p, Settled); err != nil {
 		return Payment{}, err
 	}
@@ -3787,8 +3810,8 @@ func (s *Network) creditorSideTx(ctx context.Context, tx Tx, scheme Scheme, p *P
 // submitting bank for a push, the receiving bank for a pull.
 func (s *Network) postDebtorLegTx(ctx context.Context, tx Tx, scheme Scheme, p *Payment) error {
 	// The deposit layer is the authority for the funds/status check (run in
-	// debtorSideTx); the GL posting here references the deposit account's
-	// backing GL account.
+	// debtorSideTx); the GL posting here names the payer's position in their
+	// bank's customer-deposit control account.
 	//
 	// The bank posting is THIS one: whoever runs this is the debtor's bank, so a
 	// network that is not a member's is refused.
@@ -3802,7 +3825,7 @@ func (s *Network) postDebtorLegTx(ctx context.Context, tx Tx, scheme Scheme, p *
 	if err != nil {
 		return err
 	}
-	debtorGL, err := debtor.glAccountTx(ctx, tx, p.Debtor.Account)
+	debtorPos, err := debtor.positionTx(ctx, tx, p.Debtor.Account)
 	if err != nil {
 		return err
 	}
@@ -3825,7 +3848,7 @@ func (s *Network) postDebtorLegTx(ctx context.Context, tx Tx, scheme Scheme, p *
 		ValueDate:      p.ValueDate,
 		Metadata:       paymentMetadata(p),
 		Entries: []ledger.Entry{
-			{AccountID: debtorGL, Amount: p.Amount, Direction: ledger.Debit, ValueDate: now},
+			{AccountID: debtorPos.Account, Subsidiary: debtorPos.Subsidiary, Amount: p.Amount, Direction: ledger.Debit, ValueDate: now},
 			{AccountID: debtorAccts.Suspense, Amount: p.Amount, Direction: ledger.Credit, ValueDate: p.ValueDate},
 		},
 	})
@@ -4148,7 +4171,7 @@ func (s *Network) SettleReturnTx(ctx context.Context, tx Tx, in ReturnInstructio
 		return nil, err
 	}
 
-	held, err := book.BookBalanceTx(ctx, tx, creditorSettlement)
+	held, err := book.BookBalanceTx(ctx, tx, creditorSettlement.Total())
 	if err != nil {
 		return nil, err
 	}
@@ -4201,7 +4224,7 @@ func (s *Network) SettleReturnTx(ctx context.Context, tx Tx, in ReturnInstructio
 		{in.CreditorAgent, creditorSettlement, -in.Amount},
 		{in.DebtorAgent, debtorSettlement, in.Amount},
 	} {
-		closing, err := book.BookBalanceTx(ctx, tx, side.account)
+		closing, err := book.BookBalanceTx(ctx, tx, side.account.Total())
 		if err != nil {
 			return nil, err
 		}
@@ -4275,9 +4298,9 @@ func (s *Network) PostReturnLeg(ctx context.Context, id PaymentID, reason string
 // obligation it took on, not taking money off anybody.
 //
 // The REFUND into a closed account diverts to unclaimed balances instead, and
-// the check runs BEFORE the payer's GL account is resolved so that a store
+// the check runs BEFORE the payer's position is resolved so that a store
 // failure reaches this discrimination rather than being collapsed on the way —
-// glAccountTx turns every failure of its read into ErrAccountNotInParticipant,
+// positionTx turns every failure of its read into ErrAccountNotInParticipant,
 // and money must not be routed on a failure nobody can tell apart. See
 // TestAReturnStoreFailureDoesNotRouteTheRefundToUnclaimedBalances.
 //
@@ -4509,12 +4532,22 @@ func (s *Network) clawbackTx(ctx context.Context, tx Tx, creditor *Bank, accts B
 			return ledger.Transaction{}, err
 		}
 	}
+	// Whose obligation is being released, on the two arms of the three that
+	// reach a control account. It is the payee either way — their own money on
+	// one, the bank's unclaimed pool held for them on the other — and it is
+	// re-derived from the payment rather than stored beside CreditorLegAccount,
+	// which SettleAtBankTx wrote from this same field. Returns Receivable is the
+	// arm that names nobody: what it records is the bank's own claim.
+	position := from.For(string(p.Creditor.Account))
+	if from == accts.ReturnsReceivable {
+		position = from.Total()
+	}
 	return creditor.Ledger.PostTransactionTx(ctx, tx, ledger.PostTransactionRequest{
 		IdempotencyKey: returnLegKey(p.ID, "return-claw", replacing),
 		Description:    description,
 		Metadata:       paymentMetadata(&p),
 		Entries: []ledger.Entry{
-			{AccountID: from, Amount: p.Amount, Direction: ledger.Debit},
+			{AccountID: position.Account, Subsidiary: position.Subsidiary, Amount: p.Amount, Direction: ledger.Debit},
 			{AccountID: accts.Suspense, Amount: p.Amount, Direction: ledger.Credit},
 		},
 	})
@@ -4533,13 +4566,16 @@ func (s *Network) refundTx(ctx context.Context, tx Tx, debtor *Bank, accts BankA
 	p Payment, reason string, replacing ledger.TransactionID,
 ) (ledger.Transaction, error) {
 	description := "Return of payment " + string(p.ID) + ": " + reason
-	to := accts.Unclaimed
+	// The payer names the obligor on both arms, and here that is the DEBTOR's
+	// account rather than the creditor's: this is the payer's own bank, holding
+	// either the payer's money or a refund their closed account would not take.
+	to := accts.Unclaimed.For(string(p.Debtor.Account))
 	err := debtor.Deposit.CheckCreditTx(ctx, tx, p.Debtor.Account)
 	switch {
 	case err == nil:
-		// The payer's own account, resolved only once the register has said it
-		// can take the credit.
-		if to, err = debtor.glAccountTx(ctx, tx, p.Debtor.Account); err != nil {
+		// The payer's own position, resolved only once the register has said the
+		// account can take the credit.
+		if to, err = debtor.positionTx(ctx, tx, p.Debtor.Account); err != nil {
 			return ledger.Transaction{}, err
 		}
 	case errors.Is(err, deposit.ErrAccountClosed):
@@ -4553,7 +4589,7 @@ func (s *Network) refundTx(ctx context.Context, tx Tx, debtor *Bank, accts BankA
 		Metadata:       paymentMetadata(&p),
 		Entries: []ledger.Entry{
 			{AccountID: accts.Suspense, Amount: p.Amount, Direction: ledger.Debit},
-			{AccountID: to, Amount: p.Amount, Direction: ledger.Credit},
+			{AccountID: to.Account, Subsidiary: to.Subsidiary, Amount: p.Amount, Direction: ledger.Credit},
 		},
 	})
 }
@@ -4829,7 +4865,7 @@ func (s *Network) ReserveBalance(ctx context.Context, bic iso20022.BIC, asset le
 		if err != nil {
 			return err
 		}
-		out, err = book.BookBalanceTx(ctx, tx, settlement)
+		out, err = book.BookBalanceTx(ctx, tx, settlement.Total())
 		return err
 	})
 	return out, err
@@ -4997,8 +5033,8 @@ func (s *Network) ResolveIdentifierTx(ctx context.Context, tx Tx, ident deposit.
 
 // checkPartyTx verifies that a deposit account exists in THIS bank's register,
 // returning both the account and the bound bank so callers that need more than
-// existence — the account's Asset or GLAccount, the bank's live Deposit/Ledger
-// handles — do not have to fetch either again. Binding costs nothing beyond the
+// existence — the account's Asset, the bank's live Deposit/Ledger handles — do
+// not have to fetch either again. Binding costs nothing beyond the
 // fetch this function already makes.
 //
 // The bank is this network's own: the half of a payment the submitting or

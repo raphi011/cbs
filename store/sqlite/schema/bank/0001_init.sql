@@ -272,9 +272,69 @@ CREATE TABLE accounts (
     -- subledgers (book_id, ledger_id) broke that same subtest and was removed for
     -- the same reason.
     asset        TEXT NOT NULL,
+    -- Whether this account pools obligors: one chart-of-accounts line standing
+    -- for many customers, with entries.subsidiary_id saying which. Fixed at
+    -- creation, like type and asset, and for a stronger reason than either —
+    -- flipping it would strand every leg already posted on the wrong side of
+    -- both refusals below, and nothing afterwards could tell which pool they
+    -- had belonged to.
+    --
+    -- The two refusals are the substance and neither is expressible here, since
+    -- a control account and a plain one differ only in which entries they will
+    -- ACCEPT. ledger.Book.PostTransactionTx refuses an entry against a control
+    -- account that names no obligor — money in the pool belonging to nobody,
+    -- with the control figure right and every detail under it wrong — and
+    -- refuses one against a plain account that names an obligor, which writes a
+    -- dimension nothing will ever read. Both post cleanly under a CHECK-less
+    -- schema, both keep debits equal to credits, and neither is recoverable
+    -- afterwards.
+    --
+    -- What this column is NOT is a stored control figure. A control account's
+    -- balance is still an aggregation over entries — see entries.subsidiary_id,
+    -- which carries that argument.
+    control      INTEGER NOT NULL DEFAULT 0,
     created_at   TEXT,
     seq          INTEGER NOT NULL,
     PRIMARY KEY (book_id, id)
+) STRICT;
+
+CREATE TABLE slot_accounts (
+    -- Which account a posting flow writes to: the line a customer's money pools
+    -- in, the receivable an accrual debits, the revenue it credits. A slot is
+    -- the ROLE and this table says which account fills it, so the answer is a
+    -- row an operator can read rather than a string literal in two Go packages
+    -- that must not import each other.
+    --
+    -- What is ABSENT is a foreign key to accounts, and a CHECK on any of these
+    -- columns. account_id carries none for the reason given on accounts.asset;
+    -- the constraints that matter here are not expressible in SQL anyway. A slot
+    -- declares the account TYPE it requires and whether that account must pool
+    -- obligors, both of which live in Go (ledger.Slot), and
+    -- ledger.Book.MapSlotTx checks them at the write — which is the point of
+    -- checking there at all. A mapping is configuration, so the alternative to
+    -- refusing a wrong account now is a posting that fails weeks later, at a
+    -- moment nobody connects to the change that caused it.
+    book_id    TEXT NOT NULL REFERENCES books (id) ON DELETE CASCADE,
+    -- The product this row is for, EMPTY on the bank-wide row that every flow
+    -- resolves unless a product overrides it. It is an opaque string here and
+    -- in the ledger both: the general ledger does not know what a product is,
+    -- exactly as it does not know what a customer is (entries.subsidiary_id).
+    --
+    -- A product may only override a slot that carries NO BALANCE — an income or
+    -- expense line. That rule is ledger.Slot.ByProduct and it is not written
+    -- here because it is a property of the slot rather than of the row: a
+    -- product-scoped balance line would leave what a customer has already
+    -- posted in the old account while every later posting went to the new one,
+    -- and the balance anybody read would be the second half only. Moving a
+    -- balance between control accounts is a reclassification journal, which
+    -- this system does not have.
+    product    TEXT NOT NULL DEFAULT '',
+    slot       TEXT NOT NULL,
+    asset      TEXT NOT NULL,
+    account_id TEXT NOT NULL,
+    -- The key is the whole row bar the account, so pointing a slot somewhere
+    -- else is an upsert rather than a second answer to a question that has one.
+    PRIMARY KEY (book_id, product, slot, asset)
 ) STRICT;
 
 CREATE TABLE transactions (
@@ -353,6 +413,24 @@ CREATE TABLE entries (
     position       INTEGER NOT NULL,
     id             TEXT NOT NULL,
     account_id     TEXT NOT NULL,
+    -- The obligor this leg belongs to within a control account: a deposit
+    -- account, a facility. It is '' on an account that pools nothing, and
+    -- accounts.control decides which of the two an account is — an account
+    -- never holds both kinds of leg, which is what lets a reader take the
+    -- absence of this column from a WHERE clause as "the whole pool".
+    --
+    -- It carries no foreign key and there is no table of subsidiaries, for the
+    -- reason account_id carries none: the ledger does not know what a customer
+    -- is, and the layer that does supplies a string.
+    --
+    -- What is ABSENT is the second entries table. The classic arrangement keeps
+    -- the customer detail in a subledger system, writes the control figure into
+    -- the general ledger independently, and reconciles the two nightly because
+    -- they can drift. Here the control figure IS this column dropped from the
+    -- WHERE clause, so Σ(detail) == control is one statement read two ways.
+    -- That is the whole reason a customer account can leave the chart of
+    -- accounts without a stored total taking its place.
+    subsidiary_id  TEXT NOT NULL DEFAULT '',
     amount         INTEGER NOT NULL,
     direction      INTEGER NOT NULL,
     value_date     TEXT,
@@ -364,7 +442,12 @@ CREATE INDEX entries_account_idx ON entries (
     -- The value_date suffix serves the value-dated balance and the per-day
     -- movement series. The (book_id, account_id) prefix is unchanged, so
     -- BookBalance keeps the index it always had.
-    book_id, account_id, value_date
+    --
+    -- subsidiary_id sits BETWEEN account_id and value_date so that prefix
+    -- survives: a control account's own balance reads the whole pool and must
+    -- not pay for a dimension it is not filtering on, while one obligor's
+    -- balance and one obligor's day series both get a full prefix match.
+    book_id, account_id, subsidiary_id, value_date
 );
 
 -- ---------------------------------------------------------------------------
@@ -372,17 +455,31 @@ CREATE INDEX entries_account_idx ON entries (
 -- ---------------------------------------------------------------------------
 
 CREATE TABLE deposit_accounts (
+    -- What is ABSENT here is the column that made a customer a line in the chart
+    -- of accounts. There is no gl_account: a customer's money is the balance of
+    -- the bank's customer-deposit CONTROL account for this row's asset, taken
+    -- with this row's id in the WHERE clause (entries.subsidiary_id). A bank
+    -- with fifty thousand customers therefore has one chart-of-accounts row for
+    -- all of them, per asset, and a hundred thousand rows here.
+    --
+    -- No stored control figure takes the column's place, which is the point: the
+    -- pool's balance is the same sum with the id dropped, so Σ(detail) ==
+    -- control cannot drift and there is nothing to reconcile nightly.
+    --
+    -- Which control account it is follows from the asset below, resolved by
+    -- NAME in deposit.Register: nothing in this table points into the chart of
+    -- accounts, which is what "a customer account is not one of its rows" means
+    -- when it is written as a schema.
     book_id           TEXT NOT NULL REFERENCES books (id) ON DELETE CASCADE,
     id                TEXT NOT NULL,
-    gl_account        TEXT NOT NULL,
     name              TEXT NOT NULL,
     status            INTEGER NOT NULL,
-    -- The asset this deposit account is denominated in, duplicated from its
-    -- backing GL account — the one fact this schema stores twice on purpose,
-    -- because the GL account's asset is fixed at creation so the two cannot
-    -- drift, and deriving it would turn every listing of deposit accounts into a
-    -- join for a value that can never change. store/storetest asserts the two
-    -- always agree. Unconstrained, for the reason given on accounts.asset.
+    -- The asset this deposit account is denominated in, and the whole of what
+    -- decides where its money is pooled. It is the account's own fact rather
+    -- than a copy of anything, and it is fixed for life exactly as a GL
+    -- account's asset is: an account whose asset changed would have its history
+    -- in one control account and its balance in another. Unconstrained, for the
+    -- reason given on accounts.asset.
     asset             TEXT NOT NULL,
     -- Interest earned and not yet charged, in MICRO-MINOR-UNITS: the asset's
     -- minor unit multiplied by 1e6 (interest.AccruedScale). It is not a money
@@ -391,10 +488,11 @@ CREATE TABLE deposit_accounts (
     -- fraction — 50 EUR overdrawn at 15% accrues 2.054794 cents a day, and
     -- rounding that to 2 daily discards 0.054794 cents a day: 20.0 cents a year
     -- against 750 cents of annual interest, a 2.67% error. The general ledger
-    -- holds the rounded figure in the account named by interest_gl; this column
-    -- holds the residue an integer of minor units cannot represent, which is the
-    -- same reason holds live outside the ledger. Recorded here because a scale
-    -- carried in an integer column is invisible in a schema dump.
+    -- holds the rounded figure in the bank's accrued-interest receivable under
+    -- this row's id; this column holds the residue an integer of minor units
+    -- cannot represent, which is the same reason holds live outside the ledger.
+    -- Recorded here because a scale carried in an integer column is invisible in
+    -- a schema dump.
     accrued_interest  INTEGER NOT NULL DEFAULT 0,
     -- What this account has accrued over its WHOLE LIFE, same scale as
     -- accrued_interest. Overdraft interest is recomputed rather than
@@ -411,13 +509,6 @@ CREATE TABLE deposit_accounts (
     -- delta every night and charge the same interest over and over.
     accrued_gross     INTEGER NOT NULL DEFAULT 0,
     last_accrual_date TEXT,
-    -- This account's own accrued-interest-receivable GL account, an Asset. Empty
-    -- until a non-zero rate is first set. It is per deposit account, not one
-    -- shared receivable per bank, because a shared one would be a stored total
-    -- whose detail lives in accrued_interest — a control account, and the
-    -- duplication this schema exists without. There is deliberately NO foreign
-    -- key to accounts, for the reason given on accounts.asset.
-    interest_gl       TEXT NOT NULL DEFAULT '',
     created_at        TEXT,
     seq               INTEGER NOT NULL,
     PRIMARY KEY (book_id, id)
@@ -746,8 +837,20 @@ CREATE INDEX product_versions_product_idx ON product_versions (
 
 CREATE TABLE facilities (
     -- A credit facility: a term loan or a revolving credit line. The mirror of a
-    -- deposit account — it wraps two Asset GL accounts and stores no money
-    -- itself.
+    -- deposit account, and no more a line in the chart of accounts than one:
+    -- what is ABSENT here is principal_gl, interest_gl and refund_gl. A
+    -- facility is an OBLIGOR under three control accounts — drawn principal,
+    -- accrued interest receivable, and interest the bank owes back — and its own
+    -- id is the value in entries.subsidiary_id that says which of them is
+    -- whose. A bank lending to ten thousand borrowers has three
+    -- chart-of-accounts rows for the loan book and ten thousand rows here.
+    --
+    -- The refunds payable is the line that most looks like it should be per
+    -- borrower, and it is the sharpest case for the dimension rather than an
+    -- exception to it: pooled with no obligor, one balance cannot say who is
+    -- owed what, and a refund against it could pay one borrower out of
+    -- another's money and still balance, a Liability never being caught by the
+    -- sufficiency check. What answers both is the obligor on the entry.
     --
     -- There is no row here for an arranged overdraft, and that is the design
     -- rather than an omission. An overdrawn current account's drawn amount IS
@@ -755,45 +858,23 @@ CREATE TABLE facilities (
     -- no independent existence, so a facility row for it would store a number
     -- that already exists. Its terms live in overdraft_terms, and its Asset-side
     -- classification is an aggregation (deposit.Totals). See README.md,
-    -- "A Control Account, or an Aggregation".
+    -- "A Control Account, and Still an Aggregation".
     book_id           TEXT NOT NULL REFERENCES books (id) ON DELETE CASCADE,
     id                TEXT NOT NULL,
     kind              INTEGER NOT NULL,
     name              TEXT NOT NULL,
-    -- The asset this facility is denominated in, duplicated from the GL accounts
-    -- named by principal_gl, interest_gl and refund_gl — every one of which is
-    -- created in it and cannot change asset afterwards, so they cannot drift.
-    -- Duplicated for the same reason deposit_accounts.asset is: deriving it
-    -- would turn every listing of facilities into a join for a value that can
-    -- never change, and store/storetest asserts the copies always agree
-    -- (FacilityAssetMatchesItsGLAccounts). Unconstrained, for the reason given
-    -- on accounts.asset.
+    -- The asset this facility is denominated in, and the whole of what decides
+    -- which three control accounts it posts to — the same role
+    -- deposit_accounts.asset plays. Fixed for life: a facility whose asset
+    -- changed would have its history under one set of lines and its balance
+    -- under another. Unconstrained, for the reason given on accounts.asset.
     asset             TEXT NOT NULL,
-    principal_gl      TEXT NOT NULL,
-    interest_gl       TEXT NOT NULL,
-    -- The Liability account holding interest this bank charged on THIS facility
-    -- and never earned, and so owes the borrower back. Unlike principal_gl and
-    -- interest_gl it is empty on almost every row: the account is created
-    -- lazily, only when a backdated posting cuts accrued interest below what the
-    -- borrower has already settled in cash and neither the receivable nor the
-    -- drawn principal can absorb the whole correction. Empty therefore means no
-    -- correction has ever overshot, and is read as a zero obligation rather than
-    -- as a missing account — which is why the read path checks this column
-    -- before touching the ledger. It is per facility rather than one pooled
-    -- account per asset (which is what interest income is) because the balance
-    -- answers "what does the bank owe THIS borrower": pooled, one balance cannot
-    -- say who is owed what, and a refund against it could pay one borrower out
-    -- of another's money and still balance, since a Liability is never caught by
-    -- the sufficiency check. The Payables subledger's total is the control
-    -- figure over these subsidiary rows. Stored as an ID rather than resolved by
-    -- account name because name is a mutable column on this row and a rename
-    -- would otherwise orphan the obligation.
-    refund_gl         TEXT NOT NULL DEFAULT '',
     -- What the bank has committed: a term loan's original principal, a revolving
     -- line's limit. One column rather than two because it plays the same role in
     -- both — the amount beyond which drawing is refused. The amount actually
-    -- DRAWN is not stored: it is the book balance of principal_gl, derived from
-    -- the entries like every other balance here.
+    -- DRAWN is not stored: it is the balance of the loan-principal control
+    -- account under this row's id, derived from the entries like every other
+    -- balance here.
     commitment        INTEGER NOT NULL,
     method            INTEGER NOT NULL,
     term_months       INTEGER NOT NULL,
@@ -810,7 +891,8 @@ CREATE TABLE facilities (
     -- never sum it alongside one. It is SIGNED and routinely negative: a
     -- capitalization charges the rounded receivable, which can exceed what was
     -- earned, and the residue is absorbed by the next day's accrual. The general
-    -- ledger holds the rounded figure in interest_gl. Recorded here because a
+    -- ledger holds the rounded figure under this row's id in the
+    -- accrued-interest receivable. Recorded here because a
     -- scale carried in an integer column is invisible in a schema dump, and
     -- because a reader who saw the negative values would otherwise read them as
     -- corruption.
@@ -818,7 +900,7 @@ CREATE TABLE facilities (
     -- What this facility has accrued over its WHOLE LIFE, same scale as
     -- accrued_interest. Facility interest is recomputed rather than incremented:
     -- every end-of-day re-derives every day since the facility's opening terms
-    -- row from the VALUE-DATED balance of principal_gl, and accrued_interest
+    -- row from this facility's VALUE-DATED drawn balance, and accrued_interest
     -- moves by the change in this column. That is what makes a backdated
     -- repayment or advance correct itself — the days it takes effect over are
     -- re-derived with it in place, this figure moves, and the next run posts the

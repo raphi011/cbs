@@ -385,24 +385,24 @@ func (b *builder) open(p *payment.Bank, name string) deposit.Account {
 // The account comes back holding its own minted IBAN, which is what makes it
 // resolvable through Register.ResolveIdentifier and what b.ref reads.
 func (b *builder) openOverdraft(p *payment.Bank, name string, limit ledger.Amount) deposit.Account {
-	return must(p.Deposit.OpenAccount(b.ctx, p.CustomerSubledger, name, seedAsset, b.cats[p.ID].basic, limit))
+	return must(p.Deposit.OpenAccount(b.ctx, name, seedAsset, b.cats[p.ID].basic, limit))
 }
 
 // openLoan opens a term loan and disburses it in full into the borrower's own
 // account, so the caller is left with a facility that has begun accruing.
 func (b *builder) openLoan(p *payment.Bank, borrower deposit.Account, name string, principal ledger.Amount, rate interest.Rate, termMonths int, firstDue time.Time, description string) lending.Facility {
-	loan := must(p.Lending.OpenTermLoan(b.ctx, p.CustomerSubledger, name, seedAsset, principal, rate, interest.ACT365, lending.Annuity, termMonths))
-	borrowerGL := must(p.Deposit.GetAccount(b.ctx, borrower.ID)).GLAccount
-	must(p.Lending.Disburse(b.ctx, loan.ID, borrowerGL, firstDue, description))
+	loan := must(p.Lending.OpenTermLoan(b.ctx, name, seedAsset, principal, rate, interest.ACT365, lending.Annuity, termMonths))
+	borrowerPos := must(p.Deposit.Position(b.ctx, borrower.ID))
+	must(p.Lending.Disburse(b.ctx, loan.ID, borrowerPos, firstDue, description))
 	return must(p.Lending.GetFacility(b.ctx, loan.ID))
 }
 
 // openLine opens a revolving line and draws it once into the borrower's own
 // account, so the caller is left with a facility carrying a balance.
 func (b *builder) openLine(p *payment.Bank, borrower deposit.Account, name string, limit ledger.Amount, rate interest.Rate, minPayment interest.Fraction, draw ledger.Amount, description string) lending.Facility {
-	line := must(p.Lending.OpenRevolvingLine(b.ctx, p.CustomerSubledger, name, seedAsset, limit, rate, interest.ACT365, minPayment))
-	borrowerGL := must(p.Deposit.GetAccount(b.ctx, borrower.ID)).GLAccount
-	must(p.Lending.Draw(b.ctx, line.ID, borrowerGL, draw, description))
+	line := must(p.Lending.OpenRevolvingLine(b.ctx, name, seedAsset, limit, rate, interest.ACT365, minPayment))
+	borrowerPos := must(p.Deposit.Position(b.ctx, borrower.ID))
+	must(p.Lending.Draw(b.ctx, line.ID, borrowerPos, draw, description))
 	return must(p.Lending.GetFacility(b.ctx, line.ID))
 }
 
@@ -889,8 +889,8 @@ func (b *builder) build() {
 	captured := must(aurora.Deposit.CreateHold(ctx, deposit.CreateHoldRequest{
 		AccountID: alice.ID, Amount: 15_000, Description: "Card payment at Aurora Merchant",
 	}))
-	merchantGL := must(aurora.Deposit.GetAccount(ctx, merchant.ID)).GLAccount
-	must(aurora.Deposit.CaptureHold(ctx, captured.ID, merchantGL, 0, "Captured: card payment"))
+	merchantPos := must(aurora.Deposit.Position(ctx, merchant.ID))
+	must(aurora.Deposit.CaptureHold(ctx, captured.ID, merchantPos, 0, "Captured: card payment"))
 
 	// --- End-of-day snapshots for Alice across two business days -----------
 	must(aurora.Deposit.TakeEndOfDaySnapshot(ctx, alice.ID, b.clock.now()))
@@ -1011,16 +1011,16 @@ func (b *builder) lendingShowcase(aurora, verde, nord *payment.Bank, alice, brun
 	t1 := b.clock.now()
 	firstDue := t1.AddDate(0, 1, 0)
 	loan := b.openLoan(aurora, alice, "Alice Home Loan", 1_000_000, 60_000, 60, firstDue, "Home loan payout")
-	aliceGL := must(aurora.Deposit.GetAccount(ctx, alice.ID)).GLAccount
+	alicePos := must(aurora.Deposit.Position(ctx, alice.ID))
 
 	b.runDays(aurora, int(firstDue.Sub(t1)/(24*time.Hour)))
 	sched := must(aurora.Lending.Schedule(ctx, loan.ID))
-	must(aurora.Lending.Repay(ctx, loan.ID, aliceGL, sched[0].Total(), b.clock.now(), "Instalment 1"))
+	must(aurora.Lending.Repay(ctx, loan.ID, alicePos, sched[0].Total(), b.clock.now(), "Instalment 1"))
 
 	secondDue := t1.AddDate(0, 2, 0)
 	b.runDays(aurora, int(secondDue.Sub(firstDue)/(24*time.Hour)))
 	sched = must(aurora.Lending.Schedule(ctx, loan.ID))
-	must(aurora.Lending.Repay(ctx, loan.ID, aliceGL, sched[1].Total(), b.clock.now(), "Instalment 2"))
+	must(aurora.Lending.Repay(ctx, loan.ID, alicePos, sched[1].Total(), b.clock.now(), "Instalment 2"))
 
 	b.runDays(aurora, 10) // a fresh accrual builds up; the third instalment is not yet due
 
@@ -1161,11 +1161,11 @@ func (b *builder) glShowcase(p *payment.Bank, customer deposit.Account) {
 	}))
 
 	// Monthly account fee: customer deposit (liability) down, Fee Income (revenue) up.
-	customerGL := must(p.Deposit.GetAccount(ctx, customer.ID)).GLAccount
+	customerPos := must(p.Deposit.Position(ctx, customer.ID))
 	fee := must(p.Ledger.PostTransaction(ctx, ledger.PostTransactionRequest{
 		Description: "Monthly account fee",
 		Entries: []ledger.Entry{
-			{AccountID: customerGL, Amount: 500, Direction: ledger.Debit},
+			{AccountID: customerPos.Account, Subsidiary: customerPos.Subsidiary, Amount: 500, Direction: ledger.Debit},
 			{AccountID: feeIncome.ID, Amount: 500, Direction: ledger.Credit},
 		},
 	}))

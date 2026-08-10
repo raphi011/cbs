@@ -21,7 +21,7 @@ const (
 )
 
 // disbursedLoan is a €10,000 five-year annuity at 6%, paid out on 15 January.
-func disbursedLoan(t *testing.T) (*lending.Portfolio, *ledger.Book, lending.Facility, ledger.AccountID) {
+func disbursedLoan(t *testing.T) (*lending.Portfolio, *ledger.Book, lending.Facility, ledger.Position) {
 	t.Helper()
 	p, book, _, loan, customer := disbursedLoanIn(t)
 	return p, book, loan, customer
@@ -31,12 +31,12 @@ func disbursedLoan(t *testing.T) (*lending.Portfolio, *ledger.Book, lending.Faci
 // postTo has to create its counterparty accounts somewhere, and a fixture that
 // kept the subledger to itself would make every backdating test below build its
 // own loan by hand.
-func disbursedLoanIn(t *testing.T) (*lending.Portfolio, *ledger.Book, ledger.SubledgerID, lending.Facility, ledger.AccountID) {
+func disbursedLoanIn(t *testing.T) (*lending.Portfolio, *ledger.Book, ledger.SubledgerID, lending.Facility, ledger.Position) {
 	t.Helper()
 	ctx := context.Background()
 	p, book, sub, customer := newTestPortfolio(t)
 
-	loan, err := p.OpenTermLoan(ctx, sub, "Alice Home Loan", "EUR", 1_000_000, loanRate, loanDayCount, lending.Annuity, 60)
+	loan, err := p.OpenTermLoan(ctx, "Alice Home Loan", "EUR", 1_000_000, loanRate, loanDayCount, lending.Annuity, 60)
 	if err != nil {
 		t.Fatalf("OpenTermLoan: %v", err)
 	}
@@ -69,7 +69,7 @@ var drawdown = day(2025, time.January, 15)
 // case the recompute exists for. deposit's test package has the same helper for
 // the same reason; the two are not shared because neither package imports the
 // other.
-func postTo(t *testing.T, book *ledger.Book, sub ledger.SubledgerID, account ledger.AccountID, asset ledger.AssetCode, amount ledger.Amount, dir ledger.Direction, value time.Time) {
+func postTo(t *testing.T, book *ledger.Book, sub ledger.SubledgerID, pos ledger.Position, asset ledger.AssetCode, amount ledger.Amount, dir ledger.Direction, value time.Time) {
 	t.Helper()
 	ctx := context.Background()
 	// The contra is picked so that it absorbs the movement rather than being
@@ -79,7 +79,7 @@ func postTo(t *testing.T, book *ledger.Book, sub ledger.SubledgerID, account led
 	if dir == ledger.Credit {
 		contraType, other = ledger.Asset, ledger.Debit
 	}
-	contra, err := book.CreateAccount(ctx, sub, "Counterparty "+string(account), contraType, asset)
+	contra, err := book.CreateAccount(ctx, sub, "Counterparty "+pos.String(), contraType, asset)
 	if err != nil {
 		t.Fatalf("counterparty: %v", err)
 	}
@@ -87,7 +87,7 @@ func postTo(t *testing.T, book *ledger.Book, sub ledger.SubledgerID, account led
 		Description: "test movement",
 		ValueDate:   value,
 		Entries: []ledger.Entry{
-			{AccountID: account, Amount: amount, Direction: dir},
+			{AccountID: pos.Account, Subsidiary: pos.Subsidiary, Amount: amount, Direction: dir},
 			{AccountID: contra.ID, Amount: amount, Direction: other},
 		},
 	}); err != nil {
@@ -119,6 +119,32 @@ func facility(t *testing.T, p *lending.Portfolio, id lending.FacilityID) lending
 // accountNamed finds one of the bank's own accounts by the name the lending
 // layer creates it under, walking the book because those accounts are
 // materialised lazily and no caller is handed their ID.
+// chartSize is how many rows the whole chart of accounts holds. It is what a
+// test asserts on when the claim is that a borrower does not add one.
+func chartSize(t *testing.T, book *ledger.Book) int {
+	t.Helper()
+	ctx := context.Background()
+	ledgers, err := book.ListLedgers(ctx)
+	if err != nil {
+		t.Fatalf("ListLedgers: %v", err)
+	}
+	n := 0
+	for _, l := range ledgers {
+		subs, err := book.ListSubledgers(ctx, l.ID)
+		if err != nil {
+			t.Fatalf("ListSubledgers: %v", err)
+		}
+		for _, sub := range subs {
+			accounts, err := book.ListAccounts(ctx, sub.ID)
+			if err != nil {
+				t.Fatalf("ListAccounts: %v", err)
+			}
+			n += len(accounts)
+		}
+	}
+	return n
+}
+
 func accountNamed(t *testing.T, book *ledger.Book, name string) ledger.AccountID {
 	t.Helper()
 	ctx := context.Background()
@@ -147,9 +173,21 @@ func accountNamed(t *testing.T, book *ledger.Book, name string) ledger.AccountID
 	return ""
 }
 
-func bookBalance(t *testing.T, book *ledger.Book, id ledger.AccountID) ledger.Amount {
+// positions is where a facility's money is — the three control accounts, each
+// under the facility's own id. Resolved through the portfolio rather than
+// rebuilt here, so a test asserts against the same answer the posting used.
+func positions(t *testing.T, p *lending.Portfolio, id lending.FacilityID) lending.FacilityPositions {
 	t.Helper()
-	bal, err := book.BookBalance(context.Background(), id)
+	at, err := p.Positions(context.Background(), id)
+	if err != nil {
+		t.Fatalf("Positions: %v", err)
+	}
+	return at
+}
+
+func bookBalance(t *testing.T, book *ledger.Book, pos ledger.Position) ledger.Amount {
+	t.Helper()
+	bal, err := book.BookBalance(context.Background(), pos)
 	if err != nil {
 		t.Fatalf("BookBalance: %v", err)
 	}
@@ -175,7 +213,7 @@ func TestAccrue_PostsTheDeltaOfTheRoundedValue(t *testing.T) {
 		if got.Accrued != wantAccrued[i-1] {
 			t.Errorf("day %d accrued = %d, want %d", i, got.Accrued, wantAccrued[i-1])
 		}
-		balance, err := book.BookBalance(ctx, got.InterestGL)
+		balance, err := book.BookBalance(ctx, positions(t, p, got.ID).Receivable)
 		if err != nil {
 			t.Fatalf("BookBalance: %v", err)
 		}
@@ -221,10 +259,10 @@ func TestAccrue_IsIdempotentAndOnlyOnDrawnPrincipal(t *testing.T) {
 
 func TestAccrue_UndrawnFacilityAccruesNothing(t *testing.T) {
 	ctx := context.Background()
-	p, _, sub, _ := newTestPortfolio(t)
+	p, _, _, _ := newTestPortfolio(t)
 
 	// An open but undrawn commitment costs the borrower nothing.
-	line, err := p.OpenRevolvingLine(ctx, sub, "Alice Line", "EUR", 250_000, 180_000, interest.ACT365, 20_000)
+	line, err := p.OpenRevolvingLine(ctx, "Alice Line", "EUR", 250_000, 180_000, interest.ACT365, 20_000)
 	if err != nil {
 		t.Fatalf("OpenRevolvingLine: %v", err)
 	}
@@ -242,10 +280,10 @@ func TestAccrue_UndrawnFacilityAccruesNothing(t *testing.T) {
 
 func TestChargeInterest_CapitalizesAndBillsTheCycle(t *testing.T) {
 	ctx := context.Background()
-	p, book, sub, customer := newTestPortfolio(t)
+	p, book, _, customer := newTestPortfolio(t)
 
 	// €1,000 drawn at 18% ACT/365, minimum payment 2% of the balance.
-	line, err := p.OpenRevolvingLine(ctx, sub, "Alice Line", "EUR", 250_000, 180_000, interest.ACT365, 20_000)
+	line, err := p.OpenRevolvingLine(ctx, "Alice Line", "EUR", 250_000, 180_000, interest.ACT365, 20_000)
 	if err != nil {
 		t.Fatalf("OpenRevolvingLine: %v", err)
 	}
@@ -294,7 +332,7 @@ func TestChargeInterest_CapitalizesAndBillsTheCycle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetFacility: %v", err)
 	}
-	receivable, err := book.BookBalance(ctx, after.InterestGL)
+	receivable, err := book.BookBalance(ctx, positions(t, p, after.ID).Receivable)
 	if err != nil {
 		t.Fatalf("BookBalance: %v", err)
 	}
@@ -365,10 +403,10 @@ func TestChargeInterest_CapitalizesAndBillsTheCycle(t *testing.T) {
 // "cleanup" of the residue would only be caught by exercising this branch too.
 func TestChargeInterest_NegativeResidueStaysInStepWithTheLedger(t *testing.T) {
 	ctx := context.Background()
-	p, book, sub, customer := newTestPortfolio(t)
+	p, book, _, customer := newTestPortfolio(t)
 
 	// €1,000 drawn at 20% ACT/365, minimum payment 2% of the balance.
-	line, err := p.OpenRevolvingLine(ctx, sub, "Alice Line", "EUR", 250_000, 200_000, interest.ACT365, 20_000)
+	line, err := p.OpenRevolvingLine(ctx, "Alice Line", "EUR", 250_000, 200_000, interest.ACT365, 20_000)
 	if err != nil {
 		t.Fatalf("OpenRevolvingLine: %v", err)
 	}
@@ -415,7 +453,7 @@ func TestChargeInterest_NegativeResidueStaysInStepWithTheLedger(t *testing.T) {
 	// — 0 — which is the whole point: the invariant holds on both sides of
 	// the rounding threshold, not just the one the capitalization test above
 	// happens to land on.
-	receivable, err := book.BookBalance(ctx, after.InterestGL)
+	receivable, err := book.BookBalance(ctx, positions(t, p, after.ID).Receivable)
 	if err != nil {
 		t.Fatalf("BookBalance: %v", err)
 	}
@@ -455,9 +493,9 @@ func TestChargeInterest_TermLoansDoNotCapitalize(t *testing.T) {
 
 func TestChargeInterest_NothingAccruedBillsNothing(t *testing.T) {
 	ctx := context.Background()
-	p, _, sub, _ := newTestPortfolio(t)
+	p, _, _, _ := newTestPortfolio(t)
 
-	line, err := p.OpenRevolvingLine(ctx, sub, "Alice Line", "EUR", 250_000, 180_000, interest.ACT365, 20_000)
+	line, err := p.OpenRevolvingLine(ctx, "Alice Line", "EUR", 250_000, 180_000, interest.ACT365, 20_000)
 	if err != nil {
 		t.Fatalf("OpenRevolvingLine: %v", err)
 	}
@@ -489,9 +527,9 @@ func TestChargeInterest_NothingAccruedBillsNothing(t *testing.T) {
 // while the schedule below it gained a row.
 func TestChargeInterest_ADrawnLineWithNoInterestStillBillsACycle(t *testing.T) {
 	ctx := context.Background()
-	p, book, sub, customer := newTestPortfolio(t)
+	p, book, _, customer := newTestPortfolio(t)
 
-	line, err := p.OpenRevolvingLine(ctx, sub, "Alice Line", "EUR", 250_000, 180_000, interest.ACT365, 20_000)
+	line, err := p.OpenRevolvingLine(ctx, "Alice Line", "EUR", 250_000, 180_000, interest.ACT365, 20_000)
 	if err != nil {
 		t.Fatalf("OpenRevolvingLine: %v", err)
 	}
@@ -538,7 +576,7 @@ func TestChargeInterest_ADrawnLineWithNoInterestStillBillsACycle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetFacility: %v", err)
 	}
-	receivable, err := book.BookBalance(ctx, after.InterestGL)
+	receivable, err := book.BookBalance(ctx, positions(t, p, after.ID).Receivable)
 	if err != nil {
 		t.Fatalf("BookBalance: %v", err)
 	}
@@ -555,9 +593,9 @@ func TestChargeInterest_ADrawnLineWithNoInterestStillBillsACycle(t *testing.T) {
 // event.
 func TestChargeInterest_RefusesACycleAlreadyBilled(t *testing.T) {
 	ctx := context.Background()
-	p, _, sub, customer := newTestPortfolio(t)
+	p, _, _, customer := newTestPortfolio(t)
 
-	line, err := p.OpenRevolvingLine(ctx, sub, "Alice Line", "EUR", 250_000, 180_000, interest.ACT365, 20_000)
+	line, err := p.OpenRevolvingLine(ctx, "Alice Line", "EUR", 250_000, 180_000, interest.ACT365, 20_000)
 	if err != nil {
 		t.Fatalf("OpenRevolvingLine: %v", err)
 	}
@@ -628,13 +666,13 @@ func TestAccrue_CorrectsABackdatedRepayment(t *testing.T) {
 	if ten.Accrued != 1_643_835_610 {
 		t.Fatalf("accrued over ten drawn days = %d, want 1643835610", ten.Accrued)
 	}
-	if got := bookBalance(t, book, loan.InterestGL); got != 1644 {
+	if got := bookBalance(t, book, positions(t, p, loan.ID).Receivable); got != 1644 {
 		t.Fatalf("receivable after ten days = %d, want 1644", got)
 	}
 
 	// Half the principal was repaid on day 3 and only reaches the ledger now:
 	// from day 3 onward less was owed than the accrual assumed.
-	postTo(t, book, sub, loan.PrincipalGL, loan.Asset, 500_000, ledger.Credit, drawdown.AddDate(0, 0, 3))
+	postTo(t, book, sub, positions(t, p, loan.ID).Principal, loan.Asset, 500_000, ledger.Credit, drawdown.AddDate(0, 0, 3))
 
 	if err := p.Accrue(ctx, loan.ID, drawdown.AddDate(0, 0, 11)); err != nil {
 		t.Fatalf("Accrue: %v", err)
@@ -661,10 +699,10 @@ func TestAccrue_CorrectsABackdatedRepayment(t *testing.T) {
 	}
 	// The correction credited the receivable, which still holds Minor() of the
 	// record — the invariant every caller in this package depends on.
-	if recv := bookBalance(t, book, loan.InterestGL); recv != got.Accrued.Minor() {
+	if recv := bookBalance(t, book, positions(t, p, loan.ID).Receivable); recv != got.Accrued.Minor() {
 		t.Errorf("receivable = %d, accrued = %d; the two must agree", recv, got.Accrued.Minor())
 	}
-	if recv := bookBalance(t, book, loan.InterestGL); recv != 1068 {
+	if recv := bookBalance(t, book, positions(t, p, loan.ID).Receivable); recv != 1068 {
 		t.Errorf("receivable = %d, want 1068", recv)
 	}
 }
@@ -678,7 +716,7 @@ func TestAccrue_IgnoresAForwardValueDatedAdvance(t *testing.T) {
 
 	// A second advance, booked today but value-dated five days out. It has not
 	// taken economic effect, so it is not part of any day being accrued.
-	postTo(t, book, sub, loan.PrincipalGL, loan.Asset, 1_000_000, ledger.Debit, drawdown.AddDate(0, 0, 5))
+	postTo(t, book, sub, positions(t, p, loan.ID).Principal, loan.Asset, 1_000_000, ledger.Debit, drawdown.AddDate(0, 0, 5))
 
 	if err := p.Accrue(ctx, loan.ID, drawdown.AddDate(0, 0, 2)); err != nil {
 		t.Fatalf("Accrue: %v", err)
@@ -708,22 +746,22 @@ func TestAccrue_CorrectionRefundsToPrincipal(t *testing.T) {
 	if _, err := p.Repay(ctx, loan.ID, customer, settled, drawdown.AddDate(0, 0, 30), "Interest"); err != nil {
 		t.Fatalf("Repay: %v", err)
 	}
-	if recv := bookBalance(t, book, loan.InterestGL); recv != 0 {
+	if recv := bookBalance(t, book, positions(t, p, loan.ID).Receivable); recv != 0 {
 		t.Fatalf("receivable after repayment = %d, want 0", recv)
 	}
-	principalBefore := bookBalance(t, book, loan.PrincipalGL)
+	principalBefore := bookBalance(t, book, positions(t, p, loan.ID).Principal)
 
 	// All but €1,000 of the loan was repaid on day one, backdated.
-	postTo(t, book, sub, loan.PrincipalGL, loan.Asset, 900_000, ledger.Credit, drawdown)
+	postTo(t, book, sub, positions(t, p, loan.ID).Principal, loan.Asset, 900_000, ledger.Credit, drawdown)
 	if err := p.Accrue(ctx, loan.ID, drawdown.AddDate(0, 0, 31)); err != nil {
 		t.Fatalf("Accrue: %v", err)
 	}
 
-	recv := bookBalance(t, book, loan.InterestGL)
+	recv := bookBalance(t, book, positions(t, p, loan.ID).Receivable)
 	if recv < 0 {
 		t.Errorf("receivable = %d; the correction must clamp rather than drive an Asset negative", recv)
 	}
-	principalAfter := bookBalance(t, book, loan.PrincipalGL)
+	principalAfter := bookBalance(t, book, positions(t, p, loan.ID).Principal)
 	// 31 days on €1,000 is 509_589_036, against 4_931_506_830 charged on
 	// €10,000 — 4422 cents of it already paid, so 4422 comes back off what is
 	// still owed.
@@ -766,22 +804,22 @@ func TestAccrue_CorrectionClampsToWhatTheFacilityOwes(t *testing.T) {
 	}
 	// The bank has recognised the whole 4932 as income at this point.
 	income := accountNamed(t, book, "Interest Income (EUR)")
-	if got := bookBalance(t, book, income); got != 4_932 {
+	if got := bookBalance(t, book, income.Total()); got != 4_932 {
 		t.Fatalf("interest income before the correction = %d, want 4932", got)
 	}
 
 	// The whole loan was repaid on day one, backdated: no interest was ever
 	// owed, and neither the receivable nor principal has anything left to take
 	// the correction.
-	postTo(t, book, sub, loan.PrincipalGL, loan.Asset, 1_000_000, ledger.Credit, drawdown)
+	postTo(t, book, sub, positions(t, p, loan.ID).Principal, loan.Asset, 1_000_000, ledger.Credit, drawdown)
 	if err := p.Accrue(ctx, loan.ID, drawdown.AddDate(0, 0, 31)); err != nil {
 		t.Fatalf("Accrue: %v", err)
 	}
 
-	if drawn := bookBalance(t, book, loan.PrincipalGL); drawn != 0 {
+	if drawn := bookBalance(t, book, positions(t, p, loan.ID).Principal); drawn != 0 {
 		t.Errorf("principal = %d, want 0; the correction must not drive it negative", drawn)
 	}
-	recv := bookBalance(t, book, loan.InterestGL)
+	recv := bookBalance(t, book, positions(t, p, loan.ID).Receivable)
 	if recv != 0 {
 		t.Errorf("receivable = %d, want 0", recv)
 	}
@@ -791,18 +829,19 @@ func TestAccrue_CorrectionClampsToWhatTheFacilityOwes(t *testing.T) {
 	}
 
 	// The whole 4932 the borrower paid and never owed is now a debt the bank
-	// records against itself, and income is back to nothing earned. The account
-	// is this FACILITY's — a pooled one per asset could not say which borrower
-	// is owed the 4932 — and its ID is on the facility, which is the only handle
-	// anything has on the obligation afterwards.
-	payable := accountNamed(t, book, "Interest Refunds Payable: Alice Home Loan (EUR)")
-	if got := facility(t, p, loan.ID).RefundGL; got != payable {
-		t.Errorf("facility RefundGL = %q, want %q; an unrecorded account is an obligation nothing can find", got, payable)
+	// records against itself, and income is back to nothing earned. It is
+	// recorded UNDER THIS FACILITY on the bank's one refunds-payable line — a
+	// balance pooled with no obligor could not say which borrower is owed the
+	// 4932, and it is the obligor that makes the pool answerable.
+	payable := accountNamed(t, book, "Interest Refunds Payable (EUR)")
+	owed := positions(t, p, loan.ID).Payable
+	if owed.Account != payable {
+		t.Errorf("payable position = %s, want an obligor under %s", owed, payable)
 	}
-	if got := bookBalance(t, book, payable); got != 4_932 {
+	if got := bookBalance(t, book, owed); got != 4_932 {
 		t.Errorf("interest refunds payable = %d, want 4932; the overpayment must be recorded, not kept", got)
 	}
-	if got := bookBalance(t, book, income); got != 0 {
+	if got := bookBalance(t, book, income.Total()); got != 0 {
 		t.Errorf("interest income after the correction = %d, want 0; no interest was ever owed", got)
 	}
 	// And nothing is stranded on the facility: it can be closed.
@@ -827,11 +866,11 @@ func TestAccrue_RefundFeedsTheFollowingDaysBasis(t *testing.T) {
 		t.Fatalf("Repay: %v", err)
 	}
 
-	postTo(t, book, sub, loan.PrincipalGL, loan.Asset, 900_000, ledger.Credit, drawdown)
+	postTo(t, book, sub, positions(t, p, loan.ID).Principal, loan.Asset, 900_000, ledger.Credit, drawdown)
 	if err := p.Accrue(ctx, loan.ID, drawdown.AddDate(0, 0, 31)); err != nil {
 		t.Fatalf("Accrue day 31: %v", err)
 	}
-	drawnAfterCorrection := bookBalance(t, book, loan.PrincipalGL)
+	drawnAfterCorrection := bookBalance(t, book, positions(t, p, loan.ID).Principal)
 	if drawnAfterCorrection >= 100_000 {
 		t.Fatalf("principal after the correction = %d, want less than 100000", drawnAfterCorrection)
 	}

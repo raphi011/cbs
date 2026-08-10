@@ -133,7 +133,7 @@ func TestTheSeedLeavesNoPaymentHalfProcessed(t *testing.T) {
 	}
 	for _, part := range parts {
 		for asset, accts := range part.Assets {
-			bal, err := part.Ledger.BookBalance(ctx, accts.Suspense)
+			bal, err := part.Ledger.BookBalance(ctx, accts.Suspense.Total())
 			if err != nil {
 				t.Fatalf("reading %s's %s clearing suspense: %v", part.Name, asset, err)
 			}

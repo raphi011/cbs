@@ -66,7 +66,7 @@ func TestRepay_AllocatesAgainstAccruedNotTheSchedule(t *testing.T) {
 	if receivable != 0 {
 		t.Errorf("receivable after repayment = %d, want 0", receivable)
 	}
-	glReceivable, err := book.BookBalance(ctx, loan.InterestGL)
+	glReceivable, err := book.BookBalance(ctx, positions(t, p, loan.ID).Receivable)
 	if err != nil {
 		t.Fatalf("BookBalance: %v", err)
 	}
@@ -146,9 +146,9 @@ func TestRepay_Rejects(t *testing.T) {
 
 func TestRepayAndClose_FullSettlement(t *testing.T) {
 	ctx := context.Background()
-	p, book, sub, customer := newTestPortfolio(t)
+	p, book, _, customer := newTestPortfolio(t)
 
-	line, err := p.OpenRevolvingLine(ctx, sub, "Alice Line", "EUR", 250_000, 180_000, interest.ACT365, 20_000)
+	line, err := p.OpenRevolvingLine(ctx, "Alice Line", "EUR", 250_000, 180_000, interest.ACT365, 20_000)
 	if err != nil {
 		t.Fatalf("OpenRevolvingLine: %v", err)
 	}
@@ -261,9 +261,9 @@ func TestClose_RefusesAnUnsettledReceivable(t *testing.T) {
 // the receivable is back to zero.
 func TestClose_SucceedsOnAnExactHalfMinorUnitResidue(t *testing.T) {
 	ctx := context.Background()
-	p, book, sub, customer := newTestPortfolio(t)
+	p, book, _, customer := newTestPortfolio(t)
 
-	loan, err := p.OpenTermLoan(ctx, sub, "Exact Half Loan", "EUR", 1_825, 100_000, interest.ACT365, lending.Annuity, 12)
+	loan, err := p.OpenTermLoan(ctx, "Exact Half Loan", "EUR", 1_825, 100_000, interest.ACT365, lending.Annuity, 12)
 	if err != nil {
 		t.Fatalf("OpenTermLoan: %v", err)
 	}
@@ -308,7 +308,7 @@ func TestClose_SucceedsOnAnExactHalfMinorUnitResidue(t *testing.T) {
 	if drawn != 0 {
 		t.Fatalf("drawn principal = %d, want 0", drawn)
 	}
-	receivable, err := book.BookBalance(ctx, after.InterestGL)
+	receivable, err := book.BookBalance(ctx, positions(t, p, after.ID).Receivable)
 	if err != nil {
 		t.Fatalf("BookBalance: %v", err)
 	}
@@ -327,10 +327,10 @@ func TestClose_SucceedsOnAnExactHalfMinorUnitResidue(t *testing.T) {
 // either reachable.
 func TestDisburseAndDraw_RefuseAClosedFacility(t *testing.T) {
 	ctx := context.Background()
-	p, _, sub, customer := newTestPortfolio(t)
+	p, _, _, customer := newTestPortfolio(t)
 
 	// A term loan, disbursed, repaid in full, and closed.
-	loan, err := p.OpenTermLoan(ctx, sub, "Alice Home Loan", "EUR", 1_000_000, 60_000, interest.ACT365, lending.Annuity, 60)
+	loan, err := p.OpenTermLoan(ctx, "Alice Home Loan", "EUR", 1_000_000, 60_000, interest.ACT365, lending.Annuity, 60)
 	if err != nil {
 		t.Fatalf("OpenTermLoan: %v", err)
 	}
@@ -350,7 +350,7 @@ func TestDisburseAndDraw_RefuseAClosedFacility(t *testing.T) {
 	assertErrorIs(t, err, lending.ErrFacilityClosed)
 
 	// A revolving line, drawn, repaid in full, and closed.
-	line, err := p.OpenRevolvingLine(ctx, sub, "Alice Line", "EUR", 250_000, 180_000, interest.ACT365, 20_000)
+	line, err := p.OpenRevolvingLine(ctx, "Alice Line", "EUR", 250_000, 180_000, interest.ACT365, 20_000)
 	if err != nil {
 		t.Fatalf("OpenRevolvingLine: %v", err)
 	}

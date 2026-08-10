@@ -189,12 +189,14 @@ func TestABankCatchesAReserveMovedWithNoStatementBehindIt(t *testing.T) {
 	// Debit Reserve, Credit Unclaimed: this bank's claim on the central bank
 	// rises by a thousand it was never advised of. The contra is a liability, so
 	// the book balances and no ledger guard fires — which is exactly why a
-	// reconciliation is what finds it.
+	// reconciliation is what finds it. Unclaimed pools obligors, so the leg
+	// names one, and it names an account that does not exist: nothing in the
+	// ledger resolves a subsidiary, and the break here is about the reserve.
 	_, err := b.Ledger.PostTransaction(ctx, ledger.PostTransactionRequest{
 		Description: "a movement nobody advised",
 		Entries: []ledger.Entry{
 			{AccountID: accts.Reserve, Amount: 1000, Direction: ledger.Debit},
-			{AccountID: accts.Unclaimed, Amount: 1000, Direction: ledger.Credit},
+			{AccountID: accts.Unclaimed, Subsidiary: "dep_nobody", Amount: 1000, Direction: ledger.Credit},
 		},
 	})
 	assertNoError(t, err)

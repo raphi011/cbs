@@ -324,11 +324,21 @@ export function useAccountStatement(pid: string, aid: string, type: AccountType 
 
 // --- Ledger: transactions -------------------------------------------------
 
-export function useTransactions(pid: string, account?: string) {
+export function useTransactions(pid: string, account?: string, subsidiary?: string) {
   return useQuery({
-    queryKey: qk.transactions(pid, account),
-    queryFn: () => api.listTransactions(pid, account),
+    queryKey: qk.transactions(pid, account, subsidiary),
+    queryFn: () => api.listTransactions(pid, account, subsidiary),
     enabled: pid !== "",
+  });
+}
+
+// Who a control account is holding money for. Empty for a plain account, and
+// empty is what the page renders as "this line stands in for nobody".
+export function useSubsidiaries(pid: string, aid: string) {
+  return useQuery({
+    queryKey: qk.subsidiaries(pid, aid),
+    queryFn: () => api.listSubsidiaries(pid, aid),
+    enabled: pid !== "" && aid !== "",
   });
 }
 
@@ -432,17 +442,26 @@ export function useDepositBalance(pid: string, did: string) {
 }
 
 // Composes the GL transactions, the deposit balance, and the participant's
-// well-known accounts into a ready-to-render statement. `glAccount` must be a
-// real account id — call this only once the deposit account has loaded.
-export function useStatement(pid: string, did: string, glAccount: string) {
-  const txq = useTransactions(pid, glAccount);
+// well-known accounts into a ready-to-render statement.
+//
+// `controlAccount` must be a real account id — call this only once the deposit
+// account has loaded — and the statement is that account's postings UNDER THIS
+// CUSTOMER. Dropping the customer would render the whole bank's deposits as one
+// customer's statement, which is what a control account without its obligor is.
+export function useStatement(pid: string, did: string, controlAccount: string) {
+  const txq = useTransactions(pid, controlAccount, did);
   const balq = useDepositBalance(pid, did);
   const partq = useParticipant(pid);
 
   const known = useMemo(() => buildKnownAccounts(partq.data), [partq.data]);
   const { rows, finalBalance } = useMemo(
-    () => projectStatement(txq.data ?? [], glAccount, { type: "Liability", knownAccounts: known }),
-    [txq.data, glAccount, known],
+    () =>
+      projectStatement(txq.data ?? [], controlAccount, {
+        type: "Liability",
+        knownAccounts: known,
+        subsidiary: did,
+      }),
+    [txq.data, controlAccount, did, known],
   );
 
   return {

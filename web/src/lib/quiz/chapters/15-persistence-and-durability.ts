@@ -102,12 +102,12 @@ export const chapter: Chapter = {
       difficulty: "core",
       concept: "normal-balance",
       prompt:
-        "An account's `entries` rows are: a debit of 500, a credit of 200, a debit of 150, and a credit of 50 (all in cents). The account is an asset, so its normal balance is debit. What does the derived book balance query return, in cents?",
+        "A control account's `entries` rows are: a debit of 500 and a credit of 200, both with `subsidiary_id = 'fac_1'`; then a debit of 150 and a credit of 50, both with `subsidiary_id = 'fac_2'` (all in cents). The account is an asset, so its normal balance is debit. What does the derived book balance query return for the account as a whole, in cents?",
       answer: 400,
       unit: { asset: "EUR", in: "minor" },
       tolerance: 0,
       explanation:
-        "The [[derived-balance|balance query]] sums debits minus credits for a debit-normal account: 500 − 200 + 150 − 50 = **400**. Nothing is read from an account row; the figure exists only as the result of that aggregate. See [[normal-balance]] for why the sign flips for a liability.",
+        "The [[derived-balance|balance query]] sums debits minus credits for a debit-normal account: 500 − 200 + 150 − 50 = **400**. Nothing is read from an account row; the figure exists only as the result of that aggregate.\n\nAdd `AND subsidiary_id = ?` to the same query and it answers for one obligor instead: 300 for `fac_1`, 100 for `fac_2`. That the two come to 400 is not a reconciliation that could fail — it is the same sum with one clause dropped, which is what a [[ledger-vs-subledger|control account]] is here. See [[normal-balance]] for why the sign flips for a liability.",
     },
     {
       kind: "truefalse",

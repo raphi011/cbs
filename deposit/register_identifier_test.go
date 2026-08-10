@@ -43,9 +43,9 @@ func ibanOf(t *testing.T, a Account) Identifier {
 
 func TestOpenAccountMintsAnAddress(t *testing.T) {
 	ctx := context.Background()
-	reg, _, sub, prd := newTestRegister(t)
+	reg, _, _, prd := newTestRegister(t)
 
-	acct, err := reg.OpenAccount(ctx, sub, "Alice", testAsset, prd, 0)
+	acct, err := reg.OpenAccount(ctx, "Alice", testAsset, prd, 0)
 	if err != nil {
 		t.Fatalf("OpenAccount: %v", err)
 	}
@@ -84,11 +84,11 @@ func TestOpenAccountMintsAnAddress(t *testing.T) {
 // would be a record of unrelated work.
 func TestMintedAddressesAreDenseAndDistinct(t *testing.T) {
 	ctx := context.Background()
-	reg, _, sub, prd := newTestRegister(t)
+	reg, _, _, prd := newTestRegister(t)
 
 	seen := map[string]bool{}
 	for n := range 5 {
-		acct, err := reg.OpenAccount(ctx, sub, "Customer", testAsset, prd, 0)
+		acct, err := reg.OpenAccount(ctx, "Customer", testAsset, prd, 0)
 		if err != nil {
 			t.Fatalf("OpenAccount %d: %v", n, err)
 		}
@@ -114,10 +114,10 @@ func TestMintedAddressesAreDenseAndDistinct(t *testing.T) {
 // cannot issue an address that routes somewhere else.
 func TestOpenAccountRefusesACallerSuppliedIBAN(t *testing.T) {
 	ctx := context.Background()
-	reg, _, sub, prd := newTestRegister(t)
+	reg, _, _, prd := newTestRegister(t)
 	elsewhere := Identifier{Scheme: IdentifierIBAN, Value: "DE89370400440532013000"}
 
-	_, err := reg.OpenAccount(ctx, sub, "Alice", testAsset, prd, 0, elsewhere)
+	_, err := reg.OpenAccount(ctx, "Alice", testAsset, prd, 0, elsewhere)
 	if !errors.Is(err, ErrIBANIsIssued) {
 		t.Fatalf("OpenAccount with a supplied IBAN = %v, want ErrIBANIsIssued", err)
 	}
@@ -128,8 +128,8 @@ func TestOpenAccountRefusesACallerSuppliedIBAN(t *testing.T) {
 
 func TestAddIdentifierRefusesAnIBAN(t *testing.T) {
 	ctx := context.Background()
-	reg, _, sub, prd := newTestRegister(t)
-	acct, err := reg.OpenAccount(ctx, sub, "Alice", testAsset, prd, 0)
+	reg, _, _, prd := newTestRegister(t)
+	acct, err := reg.OpenAccount(ctx, "Alice", testAsset, prd, 0)
 	if err != nil {
 		t.Fatalf("OpenAccount: %v", err)
 	}
@@ -153,9 +153,9 @@ func TestAddIdentifierRefusesAnIBAN(t *testing.T) {
 // stops one inventing a code for itself.
 func TestOpenAccountRefusesARegisterWithNoBankCode(t *testing.T) {
 	ctx := context.Background()
-	reg, _, sub, prd := newTestRegisterIssuedBy(t, iban.Issuer{})
+	reg, _, _, prd := newTestRegisterIssuedBy(t, iban.Issuer{})
 
-	if _, err := reg.OpenAccount(ctx, sub, "Alice", testAsset, prd, 0); !errors.Is(err, ErrNoIssuer) {
+	if _, err := reg.OpenAccount(ctx, "Alice", testAsset, prd, 0); !errors.Is(err, ErrNoIssuer) {
 		t.Fatalf("OpenAccount on a register with no issuer = %v, want ErrNoIssuer", err)
 	}
 }
@@ -166,8 +166,8 @@ func TestOpenAccountRefusesARegisterWithNoBankCode(t *testing.T) {
 
 func TestAddAndRemoveAnIssuedElsewhereIdentifier(t *testing.T) {
 	ctx := context.Background()
-	reg, _, sub, prd := newTestRegister(t)
-	acct, err := reg.OpenAccount(ctx, sub, "Alice", testAsset, prd, 0)
+	reg, _, _, prd := newTestRegister(t)
+	acct, err := reg.OpenAccount(ctx, "Alice", testAsset, prd, 0)
 	if err != nil {
 		t.Fatalf("OpenAccount: %v", err)
 	}
@@ -198,10 +198,10 @@ func TestAddAndRemoveAnIssuedElsewhereIdentifier(t *testing.T) {
 // from a request body verbatim.
 func TestOpenAccountRefusesTheSameIdentifierTwice(t *testing.T) {
 	ctx := context.Background()
-	reg, _, sub, prd := newTestRegister(t)
+	reg, _, _, prd := newTestRegister(t)
 	c := card("4000000000000001")
 
-	_, err := reg.OpenAccount(ctx, sub, "Alice", testAsset, prd, 0, c, c)
+	_, err := reg.OpenAccount(ctx, "Alice", testAsset, prd, 0, c, c)
 	if !errors.Is(err, ErrIdentifierTaken) {
 		t.Fatalf("OpenAccount with a repeated identifier = %v, want ErrIdentifierTaken", err)
 	}
@@ -212,13 +212,13 @@ func TestOpenAccountRefusesTheSameIdentifierTwice(t *testing.T) {
 
 func TestAddIdentifierRefusesADuplicateAtTheSameBank(t *testing.T) {
 	ctx := context.Background()
-	reg, _, sub, prd := newTestRegister(t)
+	reg, _, _, prd := newTestRegister(t)
 	c := card("4000000000000001")
 
-	if _, err := reg.OpenAccount(ctx, sub, "Alice", testAsset, prd, 0, c); err != nil {
+	if _, err := reg.OpenAccount(ctx, "Alice", testAsset, prd, 0, c); err != nil {
 		t.Fatalf("OpenAccount: %v", err)
 	}
-	other, err := reg.OpenAccount(ctx, sub, "Aaron", testAsset, prd, 0)
+	other, err := reg.OpenAccount(ctx, "Aaron", testAsset, prd, 0)
 	if err != nil {
 		t.Fatalf("OpenAccount: %v", err)
 	}
@@ -227,7 +227,7 @@ func TestAddIdentifierRefusesADuplicateAtTheSameBank(t *testing.T) {
 		t.Fatalf("AddIdentifier = %v, want ErrIdentifierTaken", err)
 	}
 	// And the same rule at open, which is a different code path.
-	if _, err := reg.OpenAccount(ctx, sub, "Annie", testAsset, prd, 0, c); !errors.Is(err, ErrIdentifierTaken) {
+	if _, err := reg.OpenAccount(ctx, "Annie", testAsset, prd, 0, c); !errors.Is(err, ErrIdentifierTaken) {
 		t.Fatalf("OpenAccount with a taken identifier = %v, want ErrIdentifierTaken", err)
 	}
 }
@@ -237,9 +237,9 @@ func TestAddIdentifierIsIdempotentForTheSameAccount(t *testing.T) {
 	// somebody else — it is a no-op. Refusing it would make a retried request
 	// fail on its second delivery.
 	ctx := context.Background()
-	reg, _, sub, prd := newTestRegister(t)
+	reg, _, _, prd := newTestRegister(t)
 	c := card("4000000000000001")
-	acct, err := reg.OpenAccount(ctx, sub, "Alice", testAsset, prd, 0, c)
+	acct, err := reg.OpenAccount(ctx, "Alice", testAsset, prd, 0, c)
 	if err != nil {
 		t.Fatalf("OpenAccount: %v", err)
 	}
@@ -257,8 +257,8 @@ func TestAddIdentifierIsIdempotentForTheSameAccount(t *testing.T) {
 
 func TestIdentifierMutationsAreAudited(t *testing.T) {
 	ctx := context.Background()
-	reg, _, sub, prd := newTestRegister(t)
-	acct, err := reg.OpenAccount(ctx, sub, "Alice", testAsset, prd, 0)
+	reg, _, _, prd := newTestRegister(t)
+	acct, err := reg.OpenAccount(ctx, "Alice", testAsset, prd, 0)
 	if err != nil {
 		t.Fatalf("OpenAccount: %v", err)
 	}
@@ -289,13 +289,13 @@ func TestResolveIdentifierIsAmbiguousWhenTwoAccountsHoldIt(t *testing.T) {
 	// concurrent add does, since uniqueness has no constraint behind it. The
 	// answer must be a refusal, not the first hit.
 	ctx := context.Background()
-	reg, _, sub, prd := newTestRegister(t)
-	first, err := reg.OpenAccount(ctx, sub, "Alice", testAsset, prd, 0)
+	reg, _, _, prd := newTestRegister(t)
+	first, err := reg.OpenAccount(ctx, "Alice", testAsset, prd, 0)
 	if err != nil {
 		t.Fatalf("OpenAccount: %v", err)
 	}
 	addr := ibanOf(t, first)
-	second, err := reg.OpenAccount(ctx, sub, "Aaron", testAsset, prd, 0)
+	second, err := reg.OpenAccount(ctx, "Aaron", testAsset, prd, 0)
 	if err != nil {
 		t.Fatalf("OpenAccount: %v", err)
 	}
@@ -332,8 +332,8 @@ func TestResolveIdentifierIsAmbiguousWhenTwoAccountsHoldIt(t *testing.T) {
 
 func TestResolveFindsAnAddressInTheSpellingAPersonTypes(t *testing.T) {
 	ctx := context.Background()
-	reg, _, sub, prd := newTestRegister(t)
-	acct, err := reg.OpenAccount(ctx, sub, "Alice", testAsset, prd, 0)
+	reg, _, _, prd := newTestRegister(t)
+	acct, err := reg.OpenAccount(ctx, "Alice", testAsset, prd, 0)
 	if err != nil {
 		t.Fatalf("OpenAccount: %v", err)
 	}
@@ -360,8 +360,8 @@ func TestResolveFindsAnAddressInTheSpellingAPersonTypes(t *testing.T) {
 // error anywhere to say otherwise.
 func TestRemoveIdentifierWithdrawsTheAddressInEitherSpelling(t *testing.T) {
 	ctx := context.Background()
-	reg, _, sub, prd := newTestRegister(t)
-	acct, err := reg.OpenAccount(ctx, sub, "Alice", testAsset, prd, 0)
+	reg, _, _, prd := newTestRegister(t)
+	acct, err := reg.OpenAccount(ctx, "Alice", testAsset, prd, 0)
 	if err != nil {
 		t.Fatalf("OpenAccount: %v", err)
 	}
@@ -420,9 +420,9 @@ func TestRemoveIdentifierWithdrawsTheAddressInEitherSpelling(t *testing.T) {
 // no address and cannot be paid.
 func TestReissueMintsAndWithdrawsTogether(t *testing.T) {
 	ctx := context.Background()
-	reg, _, sub, prd := newTestRegister(t)
+	reg, _, _, prd := newTestRegister(t)
 	c := card("4000000000000001")
-	acct, err := reg.OpenAccount(ctx, sub, "Alice", testAsset, prd, 0, c)
+	acct, err := reg.OpenAccount(ctx, "Alice", testAsset, prd, 0, c)
 	if err != nil {
 		t.Fatalf("OpenAccount: %v", err)
 	}
