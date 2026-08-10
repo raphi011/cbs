@@ -7,6 +7,7 @@ import (
 
 	"github.com/raphi011/cbs/iso20022"
 	"github.com/raphi011/cbs/ledger"
+	"github.com/raphi011/cbs/mesh/wire"
 	"github.com/raphi011/cbs/payment"
 )
 
@@ -977,7 +978,7 @@ func (c *csm) forwardDecision(to, decidedBy iso20022.BIC, orig payment.OriginalM
 func (c *csm) reject(ctx context.Context, id payment.PaymentID, code iso20022.StatusReason, text string) (payment.Payment, error) {
 	// Everything below is the clearing house's work, and is recorded as the
 	// clearing house's. See withActor.
-	ctx = withActor(ctx, c.bic)
+	ctx = wire.WithActor(ctx, c.bic)
 
 	// Read BEFORE rejecting, because what tell needs is the status this payment
 	// was at when the operator refused it, and RejectAtCSM overwrites exactly
@@ -1051,7 +1052,7 @@ func (c *csm) reject(ctx context.Context, id payment.PaymentID, code iso20022.St
 func (c *csm) closeCycle(ctx context.Context, id payment.CycleID) (payment.ClearingCycle, error) {
 	// Everything below is the clearing house's work, and is recorded as the
 	// clearing house's. See withActor.
-	ctx = withActor(ctx, c.bic)
+	ctx = wire.WithActor(ctx, c.bic)
 
 	closed, err := c.ops.CloseCycle(ctx, id)
 	if err != nil {
@@ -1102,7 +1103,7 @@ func (c *csm) closeCycle(ctx context.Context, id payment.CycleID) (payment.Clear
 func (c *csm) settle(ctx context.Context, id payment.CycleID) (payment.ClearingCycle, error) {
 	// Everything below is the clearing house's work, and is recorded as the
 	// clearing house's. See withActor.
-	ctx = withActor(ctx, c.bic)
+	ctx = wire.WithActor(ctx, c.bic)
 
 	cycle, err := c.ops.GetCycle(ctx, id)
 	if err != nil {

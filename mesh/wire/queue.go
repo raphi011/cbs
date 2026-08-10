@@ -1,4 +1,4 @@
-package mesh
+package wire
 
 import (
 	"sync"
@@ -21,19 +21,20 @@ type item struct {
 // queue is an actor's unbounded inbox.
 //
 // Unbounded, not a buffered channel. A fixed buffer between two actors that
-// message each other is a deadlock, and in this system they do — the CSM sends
-// to a bank while that bank is sending to the CSM. An unbounded queue means a
-// send never blocks, so no cycle can wedge. TestQueueNeverBlocksTheSender and
-// TestMutuallyMessagingActorsDoNotDeadlock are the two halves of that pin.
+// message each other is a deadlock, and in this system they do — the clearing
+// house sends to a bank while that bank is sending to the clearing house. An
+// unbounded queue means a send never blocks, so no cycle can wedge.
+// TestQueueNeverBlocksTheSender and TestMutuallyMessagingActorsDoNotDeadlock
+// are the two halves of that pin.
 //
 // The cost is that nothing applies backpressure: a runaway producer grows the
 // slice until memory runs out. That is the right trade here, where the
 // producers are a fixed set of actors driving a bounded number of payments,
-// and it is recorded in the package doc as a property of this mesh rather than
-// of a real one.
+// and it is recorded in the package doc as a property of this transport rather
+// than of a real one.
 //
 // depth is visible to the package because a queue you can see the length of is
-// a thing a real CSM has and a chan []byte is not.
+// a thing a real clearing house has and a chan []byte is not.
 type queue struct {
 	mu     sync.Mutex
 	items  []item
@@ -52,10 +53,10 @@ func newQueue() *queue {
 // push appends an item and reports whether the queue accepted it. A closed
 // queue accepts nothing.
 //
-// It returns a bool rather than swallowing the refusal because the mesh counts
+// It returns a bool rather than swallowing the refusal because the bus counts
 // a message as in flight BEFORE it pushes: an item silently dropped here would
 // be a message that never arrives and never completes, and a Drain that blocks
-// for ever. See TestQueueRefusesAPushAfterClose and Mesh.send, which undoes its
+// for ever. See TestQueueRefusesAPushAfterClose and Bus.Send, which undoes its
 // own accounting when this returns false.
 func (q *queue) push(it item) bool {
 	q.mu.Lock()

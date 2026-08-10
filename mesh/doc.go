@@ -1,10 +1,17 @@
-// Package mesh is the transport that carries ISO 20022 messages between the
-// institutions of this system.
+// Package mesh is the interbank network: it carries ISO 20022 messages between
+// the institutions of this system, and decides which institution runs which half
+// of each flow.
 //
 // It exists to make the message the interface. Before it, a bank learned the
 // fate of a payment by calling a function that returned it; after it, no actor
 // in this package is TOLD that a payment was accepted except by receiving a
 // pacs.002 saying so. Everything else here follows from taking that seriously.
+//
+// The DELIVERY underneath — inboxes, goroutines, the in-flight counter, Drain
+// and the dead letters — is mesh/wire, which carries bytes and knows nothing
+// about what any of them say. What it guarantees and what it deliberately does
+// not is stated there, once; this doc names it where it bears on a flow and does
+// not restate it.
 //
 // Every institution has a database of its own, so there is no row a bank could
 // read to learn what a counterparty decided, and a handler reaching for one is
@@ -41,14 +48,18 @@
 //
 // # Bytes, not structs
 //
-// send takes an iso20022.Envelope, marshals it, and enqueues the BYTES. Nothing
-// but bytes crosses an actor boundary. If two actors exchanged a *Pacs008 the
-// message format would be decoration on a function call: malformed input would
-// stop being a reachable failure mode, and FF01 — the rejection a receiver
-// sends when it cannot parse what it was given — would be untestable. Because
-// the bytes really are parsed on arrival, it is testable, and the inbox carries
-// the sender beside them so that a message whose header cannot be read can
-// still be answered.
+// Mesh.send takes an iso20022.Envelope, marshals it, and hands the BYTES to the
+// transport, which is the whole of what the transport carries. Nothing but bytes
+// crosses an actor boundary. If two actors exchanged a *Pacs008 the message
+// format would be decoration on a function call: malformed input would stop
+// being a reachable failure mode, and FF01 — the rejection a receiver sends when
+// it cannot parse what it was given — would be untestable. Because the bytes
+// really are parsed on arrival, it is testable, and the inbox carries the sender
+// beside them so that a message whose header cannot be read can still be
+// answered.
+//
+// That split is the seam between the two packages: marshalling is the mesh's
+// last act, and everything past it is delivery.
 //
 // # The credit transfer flow
 //
@@ -361,10 +372,10 @@
 // # "A founded bank can neither pay nor be paid" is a REFUSAL, and this
 // transport is not what makes it
 //
-// Routing here is the ACTOR TABLE, not the roster: m.send looks a BIC up in
-// m.actors, and Admit registers the actor at founding so that the bank can
-// receive its own acknowledgement. So a founded bank is perfectly REACHABLE by
-// this transport, and nothing about m.send says otherwise. What it cost when
+// Routing here is the ACTOR TABLE, not the roster: a send resolves a BIC against
+// the transport's actors, and Admit registers the actor at founding so the bank
+// can receive its own acknowledgement. So a founded bank is perfectly REACHABLE by
+// this transport, and nothing about a send says otherwise. What it cost when
 // nothing else said otherwise either is the argument for every refusal below: a
 // payment addressed to a non-member was relayed, accepted, taken into a cycle
 // and reached Cleared, and failed at the CUT-OFF, wide — csm.settlementLegs
@@ -462,54 +473,23 @@
 // clearing house writes a row from a message it did not originate and is not
 // addressed on. iso20022.Acmt007 records the whole of that framing.
 //
-// # Unbounded queues, and what that costs
+// # No test here waits for a duration, and Drain is why
 //
-// An actor's inbox is an unbounded slice, not a buffered channel. A fixed
-// buffer between two actors that message each other is a deadlock, and in this
-// system they do: the clearing house sends to a bank while that bank is sending
-// to the clearing house. An unbounded queue means a send never blocks, so no
-// cycle can wedge.
-//
-// The cost is that nothing applies backpressure. A runaway producer grows the
-// slice until the process runs out of memory, and there is no point at which
-// this mesh tells a sender to slow down. That is the right trade for a fixed
-// set of actors driving a bounded number of payments, and it is stated here
-// rather than discovered later: a real network has flow control, and this one
-// has an assumption.
-//
-// # Drain
-//
-// No test in this package waits for a DURATION to decide that work has
-// finished, and none should: Drain blocks until no message is in flight and
-// then returns, which is what lets a test say "submit, drain, assert" and mean
-// it. Durations appear as deadlines — the moment at which a wedged handler
-// stops being worth waiting for — and in exactly one place as a negative:
-// TestStopWaitsForARunningHandler gives Stop 50ms to NOT return. That one is
-// one-sided by construction, since a Stop that failed to wait returns in
-// microseconds, so it can only ever pass falsely, never fail falsely. It is
-// the only assertion in the package that is not deterministic, and it is
-// labelled as such where it stands. The counter behind Drain is
-// incremented before a message is enqueued and decremented only after the
-// handler that consumed it has returned, so a message that begets a message
-// never shows a moment of quiet in the middle of a chain.
-//
-// Drain also returns the dead letters, joined. An actor handler has nobody to
-// return an error to; without this, every test that drained would pass over a
-// swallowed failure, and an actor that eats errors is the worst kind of green
-// test suite.
+// A test says "submit, drain, assert" and means it: Drain blocks until no
+// message is in flight and then returns the dead letters, joined. Durations
+// appear only as deadlines — the moment at which a wedged handler stops being
+// worth waiting for. The mechanism, and the one non-deterministic assertion in
+// either package, are wire's.
 //
 // # What this mesh is not
 //
-// Delivery here is exactly-once and in order, because the transport is a queue
-// inside one process. That is a property of THIS mesh and not of a payment
-// network. A real one loses messages, delivers them twice, and delivers them
-// out of order, which is why real receivers deduplicate on BizMsgIdr and why
-// real senders retry. None of that is modelled here, and a reader should not
-// infer from its absence that clearing is reliable by nature.
-//
-// Likewise "the counterparty is down" is not expressible: a send to a live
-// actor always succeeds. RC01 remains reachable, because a BIC can fail to
-// resolve against the routing table, but a timeout does not.
+// Delivery is exactly-once and in order, because the transport is a queue
+// inside one process, and nothing here applies backpressure. Both are
+// properties of THIS system rather than of a payment network, and wire's doc
+// says what a real one does instead. What follows for the flows above is that
+// "the counterparty is down" is not expressible: a send to a live actor always
+// succeeds, so RC01 remains reachable — a BIC can fail to resolve against the
+// actor table — and a timeout does not.
 //
 // Nor is the network a boundary in any other sense. The actors share one process
 // and one clock; there is no serialisation cost, no authentication, no

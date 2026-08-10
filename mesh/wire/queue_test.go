@@ -1,4 +1,4 @@
-package mesh
+package wire
 
 import (
 	"sync"
@@ -6,8 +6,8 @@ import (
 )
 
 // The queue is unbounded on purpose. A fixed buffer between two actors that
-// message each other is a deadlock, and in this system they do: the CSM sends
-// to a bank while that bank is sending to the CSM. This test is the pin.
+// message each other is a deadlock, and in this system they do: the clearing house sends
+// to a bank while that bank is sending to the clearing house. This test is the pin.
 func TestQueueNeverBlocksTheSender(t *testing.T) {
 	q := newQueue()
 	for i := 0; i < 10_000; i++ {
@@ -58,7 +58,7 @@ func TestQueuePopBlocksUntilPushed(t *testing.T) {
 }
 
 // A push a stopped actor can never read must SAY so, rather than accept the
-// message and drop it. The mesh increments its in-flight counter before it
+// message and drop it. The bus increments its in-flight counter before it
 // pushes, so a silently discarded item would be a message that is for ever in
 // flight and a Drain that never returns — the loss the pop-before-close rule
 // exists to prevent, one step earlier.

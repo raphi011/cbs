@@ -330,12 +330,15 @@ func newHarness(t *testing.T, opts harnessOptions) *meshHarness {
 	// where the atomic call this replaces wrote three rows into a store and
 	// needed no transport at all.
 	var err error
-	if h.mesh, err = New(h.nets, h.cfg, slog.New(slog.DiscardHandler)); err != nil {
+	// The observer goes in through the CONFIG, which is the only way in: the
+	// transport takes it at construction and reads it only from actor
+	// goroutines, so there is no moment after this at which writing it would be
+	// safe. See Config.Observe.
+	cfg := h.cfg
+	cfg.Observe = h.record
+	if h.mesh, err = New(h.nets, cfg, slog.New(slog.DiscardHandler)); err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	// Set before Start, which is the only moment at which writing it is safe:
-	// see Mesh.tap.
-	h.mesh.tap = h.record
 	if err := h.mesh.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
 	}

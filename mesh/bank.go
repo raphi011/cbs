@@ -8,6 +8,7 @@ import (
 
 	"github.com/raphi011/cbs/iso20022"
 	"github.com/raphi011/cbs/ledger"
+	"github.com/raphi011/cbs/mesh/wire"
 	"github.com/raphi011/cbs/payment"
 )
 
@@ -183,7 +184,7 @@ func (b *bank) handle(ctx context.Context, from iso20022.BIC, raw []byte) error 
 func (b *bank) submit(ctx context.Context, req payment.InitiatePaymentRequest) (payment.Payment, error) {
 	// Everything below is this bank's work, and is recorded as this bank's. See
 	// withActor.
-	ctx = withActor(ctx, b.bic)
+	ctx = wire.WithActor(ctx, b.bic)
 
 	to := b.m.cfg.ClearingHouseBIC
 	p, env, err := b.ops.SubmitAndInstruct(ctx, req, payment.MessageContext{
@@ -262,7 +263,7 @@ func (b *bank) submit(ctx context.Context, req payment.InitiatePaymentRequest) (
 func (b *bank) returnPayment(ctx context.Context, id payment.PaymentID, reason iso20022.ReturnReason, text string) error {
 	// Everything below is this bank's work, and is recorded as this bank's. See
 	// withActor.
-	ctx = withActor(ctx, b.bic)
+	ctx = wire.WithActor(ctx, b.bic)
 
 	p, err := b.ops.GetPayment(ctx, id)
 	if err != nil {
@@ -883,7 +884,7 @@ func (b *bank) receiveAdmissionRejection(from iso20022.BIC, doc *iso20022.Acmt01
 func (b *bank) lodge(ctx context.Context, asset ledger.AssetCode, amount ledger.Amount) (payment.LodgementInstruction, error) {
 	// Everything below is this bank's work, and is recorded as this bank's. See
 	// withActor.
-	ctx = withActor(ctx, b.bic)
+	ctx = wire.WithActor(ctx, b.bic)
 
 	to := b.m.cfg.CentralBankBIC
 	in, env, err := b.ops.LodgeReserves(ctx, asset, amount, payment.MessageContext{

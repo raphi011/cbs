@@ -3,7 +3,6 @@ package mesh
 import (
 	"context"
 	"errors"
-	"log/slog"
 	"slices"
 	"strings"
 	"testing"
@@ -267,12 +266,7 @@ func TestForgetBanksLeavesTheTwoInstitutionsAndNothingElse(t *testing.T) {
 		t.Fatalf("ForgetBanks: %v", err)
 	}
 
-	m.mu.Lock()
-	left := make([]iso20022.BIC, 0, len(m.actors))
-	for bic := range m.actors {
-		left = append(left, bic)
-	}
-	m.mu.Unlock()
+	left := m.bus.Addresses()
 	slices.Sort(left)
 	want := []iso20022.BIC{testConfig.CentralBankBIC, testConfig.ClearingHouseBIC}
 	slices.Sort(want)
@@ -282,7 +276,7 @@ func TestForgetBanksLeavesTheTwoInstitutionsAndNothingElse(t *testing.T) {
 
 	// And the addresses are free again, which is the whole point: a BIC an
 	// unjoined actor still answered to is one no operator could ever admit.
-	if err := m.addActor("AAAADEFFXXX", "A again", func(context.Context, iso20022.BIC, []byte) error { return nil }); err != nil {
+	if err := m.bus.AddActor("AAAADEFFXXX", "A again", func(context.Context, iso20022.BIC, []byte) error { return nil }); err != nil {
 		t.Errorf("re-registering a forgotten address: %v", err)
 	}
 }
@@ -310,10 +304,7 @@ func TestForgetBanksRemovesAnActorTheBankIndexDoesNotName(t *testing.T) {
 	if err := h.mesh.ForgetBanks(drainCtx(t)); err != nil {
 		t.Fatalf("ForgetBanks: %v", err)
 	}
-	h.mesh.mu.Lock()
-	_, stranded := h.mesh.actors[h.debtorBIC]
-	h.mesh.mu.Unlock()
-	if stranded {
+	if h.mesh.bus.Has(h.debtorBIC) {
 		t.Fatalf("%s still answers after ForgetBanks; an actor its index forgot is unforgettable", h.debtorBIC)
 	}
 	// The address is usable again, which is the failure this closes: it stayed
@@ -395,7 +386,7 @@ func TestJoinRosterRefusesTheWholeRosterWhenOneAddressIsTaken(t *testing.T) {
 	// None of it landed: the OTHER bank in the roster, which did not clash, must
 	// not have been registered either.
 	h.mesh.mu.Lock()
-	_, partial := h.mesh.actors[h.creditorBIC]
+	partial := h.mesh.bus.Has(h.creditorBIC)
 	_, indexed := h.mesh.banks[h.creditorBIC]
 	h.mesh.mu.Unlock()
 	if partial || indexed {
@@ -437,11 +428,12 @@ func TestForgetBanksThatTimesOutLeavesTheActorsForStopToJoin(t *testing.T) {
 	m := newTestMesh(t)
 	entered := make(chan struct{})
 	release := make(chan struct{})
-	m.actors["AAAADEFFXXX"].handle = func(ctx context.Context, from iso20022.BIC, raw []byte) error {
+	a, _ := m.bus.Actor("AAAADEFFXXX")
+	a.SetHandler(func(ctx context.Context, from iso20022.BIC, raw []byte) error {
 		close(entered)
 		<-release
 		return nil
-	}
+	})
 	if err := m.Start(context.Background()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -463,10 +455,7 @@ func TestForgetBanksThatTimesOutLeavesTheActorsForStopToJoin(t *testing.T) {
 		t.Errorf("the timeout error %q does not name the actor holding it up", err)
 	}
 
-	m.mu.Lock()
-	_, joinable := m.actors["AAAADEFFXXX"]
-	m.mu.Unlock()
-	if !joinable {
+	if !m.bus.Has("AAAADEFFXXX") {
 		t.Fatal("the actor was removed from the table before it was joined; Stop can no longer wait for it")
 	}
 
@@ -476,53 +465,10 @@ func TestForgetBanksThatTimesOutLeavesTheActorsForStopToJoin(t *testing.T) {
 	if err := m.ForgetBanks(drainCtx(t)); err != nil {
 		t.Fatalf("retrying ForgetBanks after the handler returned: %v", err)
 	}
-	m.mu.Lock()
-	_, gone := m.actors["AAAADEFFXXX"]
-	m.mu.Unlock()
-	if gone {
+	if m.bus.Has("AAAADEFFXXX") {
 		t.Error("the retry did not forget the actor it was able to join")
 	}
 	if err := m.Stop(drainCtx(t)); err != nil {
 		t.Fatalf("Stop after a timed-out ForgetBanks: %v", err)
-	}
-}
-
-// An actor parked in Config.Observe is named as such, and not as one inside its
-// handler.
-//
-// The distinction is the whole value of the message: an Observe that blocks is
-// being held by whoever installed the hook, and a reader told the actor was "in
-// a handler" would go looking for a bug in the actor's own code — at exactly the
-// moment they are debugging the hook. api's meshGate holds an actor this way in
-// every one of its tests.
-func TestAnActorHeldInObserveIsNamedAsHeldInObserve(t *testing.T) {
-	entered := make(chan struct{})
-	release := make(chan struct{})
-	m, err := New(nil, Config{
-		CentralBankBIC:   testConfig.CentralBankBIC,
-		ClearingHouseBIC: testConfig.ClearingHouseBIC,
-		Observe: func(to, from iso20022.BIC, raw []byte) {
-			close(entered)
-			<-release
-		},
-	}, slog.New(slog.DiscardHandler))
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-	if err := m.addActor("AAAADEFFXXX", "A", func(context.Context, iso20022.BIC, []byte) error { return nil }); err != nil {
-		t.Fatalf("addActor: %v", err)
-	}
-	if err := m.Start(context.Background()); err != nil {
-		t.Fatalf("Start: %v", err)
-	}
-	t.Cleanup(func() { close(release); _ = m.Stop(context.Background()) })
-
-	if err := m.send("CBSEDEFFXXX", "AAAADEFFXXX", testEnvelope("CBSEDEFFXXX", "AAAADEFFXXX", "x")); err != nil {
-		t.Fatalf("send: %v", err)
-	}
-	<-entered
-
-	if got := m.stuck(); !strings.Contains(got, "AAAADEFFXXX in Observe") {
-		t.Errorf("stuck() = %q, want it to say the actor is held in Observe", got)
 	}
 }

@@ -525,7 +525,7 @@ func TestAnAdmissionAlreadyUnderWayIsItsOwnRefusal(t *testing.T) {
 
 	// The reservation goes back, and the address was never anybody else's: the
 	// bank whose admission was in flight can still be admitted on it.
-	h.mesh.releaseAddress(joinerBIC)
+	h.mesh.bus.Release(joinerBIC)
 	joiner, err := h.mesh.Admit(ctx, "Nordhaven Bank", joinerBIC, storetest.FixtureCountry, euroOnly)
 	if err != nil {
 		t.Fatalf("admitting once the reservation is released: %v", err)
@@ -897,11 +897,9 @@ func TestAFoundedBankIsNotAdmittedByARestart(t *testing.T) {
 		t.Fatalf("JoinRoster: %v", err)
 	}
 
-	h.mesh.mu.Lock()
-	_, actor := h.mesh.actors[joinerBIC]
-	_, indexed := h.mesh.banks[joiner.BIC]
-	_, incumbent := h.mesh.actors[h.debtorBIC]
-	h.mesh.mu.Unlock()
+	actor := h.mesh.bus.Has(joinerBIC)
+	_, indexed := h.mesh.bankActor(joiner.BIC)
+	incumbent := h.mesh.bus.Has(h.debtorBIC)
 
 	if actor || indexed {
 		t.Error("a founded, unadmitted bank was given an actor; the roster is what says who is a member")

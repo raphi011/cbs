@@ -24,6 +24,7 @@ import (
 	"github.com/raphi011/cbs/iso20022"
 	"github.com/raphi011/cbs/ledger"
 	"github.com/raphi011/cbs/lending"
+	"github.com/raphi011/cbs/mesh/wire"
 	"github.com/raphi011/cbs/payment"
 	"github.com/raphi011/cbs/product"
 	"github.com/raphi011/cbs/store/sqlite"
@@ -168,7 +169,7 @@ func (n bookNoter) note(book ledger.BookID) { n.store.note(n.actor, book) }
 // noterFor reads the acting institution off the context the unit of work was
 // opened with.
 func (s *recordingStores) noterFor(ctx context.Context) bookNoter {
-	who, _ := actorOf(ctx)
+	who, _ := wire.ActorOf(ctx)
 	return bookNoter{store: s, actor: who}
 }
 
