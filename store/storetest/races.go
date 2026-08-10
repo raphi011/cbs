@@ -207,9 +207,9 @@ func RunSystemRaces(t *testing.T, newStores func(*testing.T) payment.Stores) {
 		// Neither call names an address. A bank issues its customers' addresses
 		// out of its own bank code, so the register mints one and it comes back
 		// on the account — which is where the PartyRefs below read it from.
-		alice, err := debtorBank.Deposit.OpenAccount(ctx, debtorBank.CustomerSubledger, "Alice", "EUR", debtorBank.ProductID, 0)
+		alice, err := debtorBank.Deposit.OpenAccount(ctx, "Alice", "EUR", debtorBank.ProductID, 0)
 		assertNoError(t, err)
-		bruno, err := creditorBank.Deposit.OpenAccount(ctx, creditorBank.CustomerSubledger, "Bruno", "EUR", creditorBank.ProductID, 0)
+		bruno, err := creditorBank.Deposit.OpenAccount(ctx, "Bruno", "EUR", creditorBank.ProductID, 0)
 		assertNoError(t, err)
 
 		const opening ledger.Amount = 1_000_000

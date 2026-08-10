@@ -204,7 +204,7 @@ func TestRepayAndClose_FullSettlement(t *testing.T) {
 
 	// The customer paid for the loan out of their own account, so the two
 	// sides net to nothing: they borrowed 100_000 and repaid 101_479.
-	balance, err := book.BookBalance(ctx, customer.Total())
+	balance, err := book.BookBalance(ctx, customer)
 	if err != nil {
 		t.Fatalf("BookBalance: %v", err)
 	}

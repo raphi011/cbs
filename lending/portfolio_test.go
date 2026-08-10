@@ -27,14 +27,14 @@ func (c *mutableClock) now() time.Time  { return c.at }
 // newTestPortfolio returns a portfolio over a fresh ephemeral store, the book
 // it composes with, a subledger to file facilities in, and a Liability account
 // to disburse into — standing in for a customer's current account.
-func newTestPortfolio(t *testing.T) (*lending.Portfolio, *ledger.Book, ledger.SubledgerID, ledger.AccountID) {
+func newTestPortfolio(t *testing.T) (*lending.Portfolio, *ledger.Book, ledger.SubledgerID, ledger.Position) {
 	t.Helper()
 	return newTestPortfolioOn(t, func() time.Time { return time.Date(2025, time.January, 15, 9, 0, 0, 0, time.UTC) })
 }
 
 // newTestPortfolioOn is newTestPortfolio on a caller-supplied clock, for the
 // tests where WHEN an operation happened is the thing under test.
-func newTestPortfolioOn(t *testing.T, clock func() time.Time) (*lending.Portfolio, *ledger.Book, ledger.SubledgerID, ledger.AccountID) {
+func newTestPortfolioOn(t *testing.T, clock func() time.Time) (*lending.Portfolio, *ledger.Book, ledger.SubledgerID, ledger.Position) {
 	t.Helper()
 	ctx := context.Background()
 
@@ -54,7 +54,7 @@ func newTestPortfolioOn(t *testing.T, clock func() time.Time) (*lending.Portfoli
 	if err != nil {
 		t.Fatalf("CreateAccount: %v", err)
 	}
-	return portfolio, book, sub.ID, customer.ID
+	return portfolio, book, sub.ID, customer.ID.Total()
 }
 
 func TestOpenTermLoan_CreatesTwoAssetAccountsAndNoSchedule(t *testing.T) {
@@ -181,7 +181,7 @@ func TestDisburse_PostsPrincipalAndGeneratesTheSchedule(t *testing.T) {
 	if principal != 1_000_000 {
 		t.Errorf("loan principal = %d, want 1000000", principal)
 	}
-	customerBalance, err := book.BookBalance(ctx, customer.Total())
+	customerBalance, err := book.BookBalance(ctx, customer)
 	if err != nil {
 		t.Fatalf("BookBalance: %v", err)
 	}

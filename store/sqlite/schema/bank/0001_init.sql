@@ -416,17 +416,31 @@ CREATE INDEX entries_account_idx ON entries (
 -- ---------------------------------------------------------------------------
 
 CREATE TABLE deposit_accounts (
+    -- What is ABSENT here is the column that made a customer a line in the chart
+    -- of accounts. There is no gl_account: a customer's money is the balance of
+    -- the bank's customer-deposit CONTROL account for this row's asset, taken
+    -- with this row's id in the WHERE clause (entries.subsidiary_id). A bank
+    -- with fifty thousand customers therefore has one chart-of-accounts row for
+    -- all of them, per asset, and a hundred thousand rows here.
+    --
+    -- No stored control figure takes the column's place, which is the point: the
+    -- pool's balance is the same sum with the id dropped, so Σ(detail) ==
+    -- control cannot drift and there is nothing to reconcile nightly.
+    --
+    -- Which control account it is follows from the asset below, resolved by
+    -- NAME in deposit.Register: nothing in this table points into the chart of
+    -- accounts, which is what "a customer account is not one of its rows" means
+    -- when it is written as a schema.
     book_id           TEXT NOT NULL REFERENCES books (id) ON DELETE CASCADE,
     id                TEXT NOT NULL,
-    gl_account        TEXT NOT NULL,
     name              TEXT NOT NULL,
     status            INTEGER NOT NULL,
-    -- The asset this deposit account is denominated in, duplicated from its
-    -- backing GL account — the one fact this schema stores twice on purpose,
-    -- because the GL account's asset is fixed at creation so the two cannot
-    -- drift, and deriving it would turn every listing of deposit accounts into a
-    -- join for a value that can never change. store/storetest asserts the two
-    -- always agree. Unconstrained, for the reason given on accounts.asset.
+    -- The asset this deposit account is denominated in, and the whole of what
+    -- decides where its money is pooled. It is the account's own fact rather
+    -- than a copy of anything, and it is fixed for life exactly as a GL
+    -- account's asset is: an account whose asset changed would have its history
+    -- in one control account and its balance in another. Unconstrained, for the
+    -- reason given on accounts.asset.
     asset             TEXT NOT NULL,
     -- Interest earned and not yet charged, in MICRO-MINOR-UNITS: the asset's
     -- minor unit multiplied by 1e6 (interest.AccruedScale). It is not a money
@@ -435,10 +449,11 @@ CREATE TABLE deposit_accounts (
     -- fraction — 50 EUR overdrawn at 15% accrues 2.054794 cents a day, and
     -- rounding that to 2 daily discards 0.054794 cents a day: 20.0 cents a year
     -- against 750 cents of annual interest, a 2.67% error. The general ledger
-    -- holds the rounded figure in the account named by interest_gl; this column
-    -- holds the residue an integer of minor units cannot represent, which is the
-    -- same reason holds live outside the ledger. Recorded here because a scale
-    -- carried in an integer column is invisible in a schema dump.
+    -- holds the rounded figure in the bank's accrued-interest receivable under
+    -- this row's id; this column holds the residue an integer of minor units
+    -- cannot represent, which is the same reason holds live outside the ledger.
+    -- Recorded here because a scale carried in an integer column is invisible in
+    -- a schema dump.
     accrued_interest  INTEGER NOT NULL DEFAULT 0,
     -- What this account has accrued over its WHOLE LIFE, same scale as
     -- accrued_interest. Overdraft interest is recomputed rather than
@@ -455,13 +470,6 @@ CREATE TABLE deposit_accounts (
     -- delta every night and charge the same interest over and over.
     accrued_gross     INTEGER NOT NULL DEFAULT 0,
     last_accrual_date TEXT,
-    -- This account's own accrued-interest-receivable GL account, an Asset. Empty
-    -- until a non-zero rate is first set. It is per deposit account, not one
-    -- shared receivable per bank, because a shared one would be a stored total
-    -- whose detail lives in accrued_interest — a control account, and the
-    -- duplication this schema exists without. There is deliberately NO foreign
-    -- key to accounts, for the reason given on accounts.asset.
-    interest_gl       TEXT NOT NULL DEFAULT '',
     created_at        TEXT,
     seq               INTEGER NOT NULL,
     PRIMARY KEY (book_id, id)

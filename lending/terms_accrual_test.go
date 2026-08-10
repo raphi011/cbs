@@ -559,7 +559,7 @@ func accrueControlThroughIdleSpan(t *testing.T, day func(int) time.Time) interes
 
 // repayInFull settles everything a facility owes — the receivable first, then the
 // principal, which is Repay's own allocation — value-dated on the given day.
-func repayInFull(t *testing.T, p *lending.Portfolio, id lending.FacilityID, counterparty ledger.AccountID, date time.Time) {
+func repayInFull(t *testing.T, p *lending.Portfolio, id lending.FacilityID, counterparty ledger.Position, date time.Time) {
 	t.Helper()
 	ctx := context.Background()
 	owed, err := p.Outstanding(ctx, id)

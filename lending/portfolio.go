@@ -286,10 +286,11 @@ func (p *Portfolio) openTx(ctx context.Context, tx Tx, f Facility, rate interest
 //	Dr  Loan principal (Asset)      1_000_000
 //	  Cr counterparty                 1_000_000
 //
-// counterparty is any GL account in the facility's asset — a customer's current
-// account, or the vault for a cash advance. This layer does not know what a
-// deposit account is, so a disbursement that must also respect one's status is
-// orchestrated a layer up, through the same Tx.
+// counterparty is any position in the facility's asset — a customer's current
+// account, which is an obligor under a control account, or the vault for a cash
+// advance, which is a plain account named with Total(). This layer does not know
+// what a deposit account is, so a disbursement that must also respect one's
+// status is orchestrated a layer up, through the same Tx.
 //
 // firstDue is the due date of the first instalment; the rest follow monthly,
 // clamped to the end of the month. Accrual starts from the disbursement date:
@@ -300,7 +301,7 @@ func (p *Portfolio) openTx(ctx context.Context, tx Tx, f Facility, rate interest
 // still outstanding, and any ledger error — notably
 // ledger.ErrUnbalancedTransaction if the counterparty is in a different
 // asset, which is how a cross-asset disbursement is caught.
-func (p *Portfolio) Disburse(ctx context.Context, id FacilityID, counterparty ledger.AccountID, firstDue time.Time, description string) (ledger.Transaction, error) {
+func (p *Portfolio) Disburse(ctx context.Context, id FacilityID, counterparty ledger.Position, firstDue time.Time, description string) (ledger.Transaction, error) {
 	var out ledger.Transaction
 	err := p.store.Update(ctx, func(ctx context.Context, tx Tx) error {
 		var err error
@@ -311,7 +312,7 @@ func (p *Portfolio) Disburse(ctx context.Context, id FacilityID, counterparty le
 }
 
 // DisburseTx is Disburse within a caller-supplied unit of work.
-func (p *Portfolio) DisburseTx(ctx context.Context, tx Tx, id FacilityID, counterparty ledger.AccountID, firstDue time.Time, description string) (ledger.Transaction, error) {
+func (p *Portfolio) DisburseTx(ctx context.Context, tx Tx, id FacilityID, counterparty ledger.Position, firstDue time.Time, description string) (ledger.Transaction, error) {
 	f, err := tx.GetFacility(ctx, p.bookID, id)
 	if err != nil {
 		return ledger.Transaction{}, err
@@ -383,7 +384,7 @@ func (p *Portfolio) DisburseTx(ctx context.Context, tx Tx, id FacilityID, counte
 //
 // Returns ErrFacilityNotFound, ErrFacilityClosed, ErrWrongFacilityKind for a
 // term loan, ErrInvalidAmount, and ErrLimitExceeded.
-func (p *Portfolio) Draw(ctx context.Context, id FacilityID, counterparty ledger.AccountID, amount ledger.Amount, description string) (ledger.Transaction, error) {
+func (p *Portfolio) Draw(ctx context.Context, id FacilityID, counterparty ledger.Position, amount ledger.Amount, description string) (ledger.Transaction, error) {
 	var out ledger.Transaction
 	err := p.store.Update(ctx, func(ctx context.Context, tx Tx) error {
 		var err error
@@ -394,7 +395,7 @@ func (p *Portfolio) Draw(ctx context.Context, id FacilityID, counterparty ledger
 }
 
 // DrawTx is Draw within a caller-supplied unit of work.
-func (p *Portfolio) DrawTx(ctx context.Context, tx Tx, id FacilityID, counterparty ledger.AccountID, amount ledger.Amount, description string) (ledger.Transaction, error) {
+func (p *Portfolio) DrawTx(ctx context.Context, tx Tx, id FacilityID, counterparty ledger.Position, amount ledger.Amount, description string) (ledger.Transaction, error) {
 	f, err := tx.GetFacility(ctx, p.bookID, id)
 	if err != nil {
 		return ledger.Transaction{}, err
@@ -443,7 +444,7 @@ func (p *Portfolio) DrawTx(ctx context.Context, tx Tx, id FacilityID, counterpar
 }
 
 // advanceTx posts money out of the bank and onto a facility's principal.
-func (p *Portfolio) advanceTx(ctx context.Context, tx Tx, f Facility, counterparty ledger.AccountID, amount ledger.Amount, description string) (ledger.Transaction, error) {
+func (p *Portfolio) advanceTx(ctx context.Context, tx Tx, f Facility, counterparty ledger.Position, amount ledger.Amount, description string) (ledger.Transaction, error) {
 	if description == "" {
 		description = "Advance: " + f.Name
 	}
@@ -453,7 +454,7 @@ func (p *Portfolio) advanceTx(ctx context.Context, tx Tx, f Facility, counterpar
 		ValueDate:   p.now(),
 		Entries: []ledger.Entry{
 			{AccountID: f.PrincipalGL, Amount: amount, Direction: ledger.Debit},
-			{AccountID: counterparty, Amount: amount, Direction: ledger.Credit},
+			{AccountID: counterparty.Account, Subsidiary: counterparty.Subsidiary, Amount: amount, Direction: ledger.Credit},
 		},
 	})
 }

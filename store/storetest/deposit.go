@@ -25,21 +25,15 @@ import (
 func RunDeposit(t *testing.T, newStore func(*testing.T, ledger.BookID) deposit.Store) {
 	t.Helper()
 
-	// A deposit account stores its asset even though its backing GL account
-	// already carries it — the one duplicated fact in the schema. Duplication
-	// is only safe while the two agree, so the suite says so out loud.
-	t.Run("DepositAccountAssetMatchesItsGLAccount", func(t *testing.T) {
+	// A deposit account names no account in the chart of accounts, so its asset
+	// is the only thing that says where its money is pooled. A store that
+	// dropped it would leave every balance unaskable.
+	t.Run("DepositAccountAssetSurvivesTheRoundTrip", func(t *testing.T) {
 		s := openDeposit(t, newStore, bookA)
 
 		updateDeposit(t, s, func(ctx context.Context, tx deposit.Tx) error {
-			if err := tx.PutAccount(ctx, bookA, ledger.Account{
-				ID: "200.cust.001", SubledgerID: "cust", Name: "Anna",
-				Type: ledger.Liability, Asset: "BTC",
-			}); err != nil {
-				return err
-			}
 			return tx.PutDepositAccount(ctx, bookA, deposit.Account{
-				ID: "dep_1", GLAccount: "200.cust.001", Name: "Anna", Asset: "BTC",
+				ID: "dep_1", Name: "Anna", Asset: "BTC",
 			})
 		})
 
@@ -48,13 +42,7 @@ func RunDeposit(t *testing.T, newStore func(*testing.T, ledger.BookID) deposit.S
 			if err != nil {
 				return err
 			}
-			gl, err := tx.GetAccount(ctx, bookA, dep.GLAccount)
-			if err != nil {
-				return err
-			}
-			if dep.Asset != gl.Asset {
-				t.Errorf("deposit asset %q != GL asset %q", dep.Asset, gl.Asset)
-			}
+			assertEqual(t, "asset", string(dep.Asset), "BTC")
 			listed, err := tx.ListDepositAccounts(ctx, bookA)
 			if err != nil {
 				return err
@@ -76,13 +64,13 @@ func RunDeposit(t *testing.T, newStore func(*testing.T, ledger.BookID) deposit.S
 		other := openDeposit(t, newStore, bookB)
 		updateDeposit(t, s, func(ctx context.Context, tx deposit.Tx) error {
 			return tx.PutDepositAccount(ctx, bookA, deposit.Account{
-				ID: shared, GLAccount: "200.100.001", Name: "Alice at A",
+				ID: shared, Name: "Alice at A", Asset: "EUR",
 				Status: deposit.Active, CreatedAt: early,
 			})
 		})
 		updateDeposit(t, other, func(ctx context.Context, tx deposit.Tx) error {
 			return tx.PutDepositAccount(ctx, bookB, deposit.Account{
-				ID: shared, GLAccount: "200.100.001", Name: "Bob at B",
+				ID: shared, Name: "Bob at B", Asset: "EUR",
 				Status: deposit.Frozen, CreatedAt: early,
 			})
 		})
@@ -106,7 +94,7 @@ func RunDeposit(t *testing.T, newStore func(*testing.T, ledger.BookID) deposit.S
 		assertEqual(t, "account in book-a", inA.Name, "Alice at A")
 		assertEqual(t, "account in book-b", inB.Name, "Bob at B")
 		// Every field round-trips, not just the name.
-		assertEqual(t, "gl account", string(inA.GLAccount), "200.100.001")
+		assertEqual(t, "asset", string(inA.Asset), "EUR")
 		assertEqual(t, "status", inA.Status.String(), deposit.Active.String())
 		assertEqual(t, "created at", inA.CreatedAt.Equal(early), true)
 		assertEqual(t, "book-b status is its own", inB.Status.String(), deposit.Frozen.String())
@@ -152,7 +140,7 @@ func RunDeposit(t *testing.T, newStore func(*testing.T, ledger.BookID) deposit.S
 
 		updateDeposit(t, s, func(ctx context.Context, tx deposit.Tx) error {
 			return tx.PutDepositAccount(ctx, bookA, deposit.Account{
-				ID: "dep_1", GLAccount: "200.cust.001", Name: "Alice", Asset: "EUR",
+				ID: "dep_1", Name: "Alice", Asset: "EUR",
 				Identifiers: []deposit.Identifier{higher, lower},
 			})
 		})
@@ -1108,11 +1096,10 @@ func RunDeposit(t *testing.T, newStore func(*testing.T, ledger.BookID) deposit.S
 
 		accrual := time.Date(2025, 3, 4, 0, 0, 0, 0, time.UTC)
 		want := deposit.Account{
-			ID: "dep_1", GLAccount: "200.cust.001", Name: "Bruno", Asset: "EUR",
+			ID: "dep_1", Name: "Bruno", Asset: "EUR",
 			Status:  deposit.Active,
 			Accrued: 61_643_835, AccruedGross: 123_287_670,
-			LastAccrualDate: accrual,
-			InterestGL:      "100.accr.001", CreatedAt: early,
+			LastAccrualDate: accrual, CreatedAt: early,
 		}
 		updateDeposit(t, s, func(ctx context.Context, tx deposit.Tx) error {
 			return tx.PutDepositAccount(ctx, bookA, want)
@@ -1125,7 +1112,6 @@ func RunDeposit(t *testing.T, newStore func(*testing.T, ledger.BookID) deposit.S
 			// the account's life as a fresh delta every night and charges the
 			// same interest over and over, which no other subtest would notice.
 			assertEqual(t, label+" accrued gross", got.AccruedGross, want.AccruedGross)
-			assertEqual(t, label+" interest gl", string(got.InterestGL), string(want.InterestGL))
 			if !got.LastAccrualDate.Equal(want.LastAccrualDate) {
 				t.Errorf("%s last accrual date: got %v, want %v", label, got.LastAccrualDate, want.LastAccrualDate)
 			}
@@ -1147,11 +1133,10 @@ func RunDeposit(t *testing.T, newStore func(*testing.T, ledger.BookID) deposit.S
 			return nil
 		})
 
-		// An account that has never accrued keeps zero state and no receivable
-		// account, rather than an empty one nothing will ever post to.
+		// An account that has never accrued keeps zero state.
 		updateDeposit(t, s, func(ctx context.Context, tx deposit.Tx) error {
 			return tx.PutDepositAccount(ctx, bookA, deposit.Account{
-				ID: "dep_2", GLAccount: "200.cust.002", Name: "Bella", Asset: "EUR",
+				ID: "dep_2", Name: "Bella", Asset: "EUR",
 				Status: deposit.Active, CreatedAt: early,
 			})
 		})
@@ -1162,7 +1147,6 @@ func RunDeposit(t *testing.T, newStore func(*testing.T, ledger.BookID) deposit.S
 			}
 			assertEqual(t, "no-facility accrued", plain.Accrued, interest.Accrued(0))
 			assertEqual(t, "no-facility accrued gross", plain.AccruedGross, interest.Accrued(0))
-			assertEqual(t, "no-facility interest gl", string(plain.InterestGL), "")
 			if !plain.LastAccrualDate.IsZero() {
 				t.Errorf("no-facility last accrual date = %v, want zero", plain.LastAccrualDate)
 			}
@@ -1406,8 +1390,8 @@ func day(n int) time.Time { return time.Date(2025, 1, n, 0, 0, 0, 0, time.UTC) }
 func account(id deposit.AccountID, createdAt time.Time) deposit.Account {
 	return deposit.Account{
 		ID:        id,
-		GLAccount: "200.100.001",
 		Name:      string(id),
+		Asset:     "EUR",
 		Status:    deposit.Active,
 		CreatedAt: createdAt,
 	}

@@ -71,8 +71,18 @@ type accountBalanceDTO struct {
 type entryDTO struct {
 	ID        string `json:"id,omitempty"`
 	AccountID string `json:"accountId"`
-	Amount    int64  `json:"amount"`
-	Direction string `json:"direction"`
+	// Subsidiary is the obligor this leg belongs to within a control account —
+	// a deposit account's id, a facility's. Absent means the whole account,
+	// which is what a leg against one of the bank's own positions carries.
+	//
+	// It travels in both directions and it is not optional in the domain sense:
+	// a control account named without one is refused, and a plain account named
+	// with one is too, so a client that drops it on the way in cannot post a
+	// customer's money and a client that ignores it on the way out cannot tell
+	// whose a leg was.
+	Subsidiary string `json:"subsidiary,omitempty"`
+	Amount     int64  `json:"amount"`
+	Direction  string `json:"direction"`
 	// Asset is the entry's account's asset. It is never sent by a client — a
 	// transaction request names accounts, not assets, and the asset a leg
 	// posts in is decided by the account it debits or credits — so this is
@@ -156,11 +166,12 @@ func toTransactionDTO(tx ledger.Transaction, assets map[ledger.AccountID]ledger.
 	entries := make([]entryDTO, len(tx.Entries))
 	for i, e := range tx.Entries {
 		entries[i] = entryDTO{
-			ID:        string(e.ID),
-			AccountID: string(e.AccountID),
-			Amount:    int64(e.Amount),
-			Direction: e.Direction.String(),
-			Asset:     string(assets[e.AccountID]),
+			ID:         string(e.ID),
+			AccountID:  string(e.AccountID),
+			Subsidiary: e.Subsidiary,
+			Amount:     int64(e.Amount),
+			Direction:  e.Direction.String(),
+			Asset:      string(assets[e.AccountID]),
 			// Taken per leg, not from tx.ValueDate: on a payment's debtor
 			// posting the two differ by the settlement delay, and collapsing
 			// them here is exactly the bug this field fixes. A stored entry
@@ -231,9 +242,10 @@ func (req postTransactionRequest) toDomain() (ledger.PostTransactionRequest, err
 			return ledger.PostTransactionRequest{}, err
 		}
 		entries[i] = ledger.Entry{
-			AccountID: ledger.AccountID(e.AccountID),
-			Amount:    ledger.Amount(e.Amount),
-			Direction: dir,
+			AccountID:  ledger.AccountID(e.AccountID),
+			Subsidiary: e.Subsidiary,
+			Amount:     ledger.Amount(e.Amount),
+			Direction:  dir,
 		}
 		if e.ValueDate != nil {
 			entries[i].ValueDate = *e.ValueDate

@@ -110,15 +110,33 @@ func newTestRegisterWithCatalogueIssuedBy(t *testing.T, clock func() time.Time, 
 	ctx := context.Background()
 	store := testenv.New(t, clock)
 	book := ledger.NewBook(store, "bank", clock)
-	reg := NewRegister(store.Deposit(), book, book.ID(), clock, issuer)
 	cat := product.NewCatalogue(store.Product(), book, book.ID(), clock)
 
 	gl, err := book.CreateLedger(ctx, "General Ledger")
 	assertNoError(t, err)
 	deposits, err := book.CreateSubledger(ctx, gl.ID, "Customer Deposits")
 	assertNoError(t, err)
+	reg := NewRegister(store.Deposit(), book, book.ID(), clock, issuer, deposits.ID)
 
 	return reg, cat, book, deposits.ID
+}
+
+// where an account's money is, and where what it owes in interest is. Both are
+// positions under a control account, and both are resolved through the register
+// rather than rebuilt here, so a test asserts against the same answer the
+// posting used.
+func where(t *testing.T, reg *Register, id AccountID) ledger.Position {
+	t.Helper()
+	pos, err := reg.Position(context.Background(), id)
+	assertNoError(t, err)
+	return pos
+}
+
+func owed(t *testing.T, reg *Register, id AccountID) ledger.Position {
+	t.Helper()
+	pos, err := reg.Receivable(context.Background(), id)
+	assertNoError(t, err)
+	return pos
 }
 
 // setTerms is the pre-catalogue SetOverdraftTerms, rebuilt from the two calls
@@ -158,24 +176,31 @@ func newFundedAccount(t *testing.T) (*Register, *ledger.Book, Account) {
 	t.Helper()
 	reg, book, deposits, prd := newTestRegister(t)
 	cash := newCashAccount(t, book, deposits)
-	acct, err := reg.OpenAccount(context.Background(), deposits, "Alice", testAsset, prd, 0)
+	acct, err := reg.OpenAccount(context.Background(), "Alice", testAsset, prd, 0)
 	assertNoError(t, err)
 	fund(t, reg, cash, acct, 1000)
 	return reg, book, acct
 }
 
-// fund credits a deposit account's backing GL account from the cash asset,
-// simulating a customer deposit so the customer has spendable funds.
+// fund credits a deposit account's position from the cash asset, simulating a
+// customer deposit so the customer has spendable funds.
 func fund(t *testing.T, reg *Register, cash ledger.AccountID, acct Account, amount ledger.Amount) {
 	t.Helper()
 	_, err := reg.Book().PostTransaction(context.Background(), ledger.PostTransactionRequest{
 		Description: "Funding",
 		Entries: []ledger.Entry{
 			{AccountID: cash, Amount: amount, Direction: ledger.Debit},
-			{AccountID: acct.GLAccount, Amount: amount, Direction: ledger.Credit},
+			entry(where(t, reg, acct.ID), amount, ledger.Credit),
 		},
 	})
 	assertNoError(t, err)
+}
+
+// entry is one leg against a position, for a test posting straight into the
+// book. Both halves together, always: an entry naming a control account and no
+// obligor is refused, and one naming a plain account and an obligor is too.
+func entry(p ledger.Position, amount ledger.Amount, d ledger.Direction) ledger.Entry {
+	return ledger.Entry{AccountID: p.Account, Subsidiary: p.Subsidiary, Amount: amount, Direction: d}
 }
 
 func assertNoError(t *testing.T, err error) {
@@ -203,40 +228,61 @@ func assertEqual[T comparable](t *testing.T, label string, got, want T) {
 // Account Tests
 // ---------------------------------------------------------------------------
 
-func TestOpenAccount_CreatesBackingGLAccount(t *testing.T) {
+// Opening an account puts nobody in the chart of accounts. The FIRST account in
+// an asset puts the bank's own control line there, and every account after it
+// adds nothing at all — which is the whole observable point of pooling.
+func TestOpenAccountAddsNoRowToTheChartOfAccounts(t *testing.T) {
 	ctx := context.Background()
 	reg, _, deposits, prd := newTestRegister(t)
 
-	acct, err := reg.OpenAccount(ctx, deposits, "Alice", testAsset, prd, 0)
+	alice, err := reg.OpenAccount(ctx, "Alice", testAsset, prd, 0)
 	assertNoError(t, err)
-	assertEqual(t, "status", acct.Status, Active)
+	assertEqual(t, "status", alice.Status, Active)
 
-	// The backing GL account exists and is a Liability.
-	gl, err := reg.Book().GetAccount(ctx, acct.GLAccount)
+	rows, err := reg.Book().ListAccounts(ctx, deposits)
 	assertNoError(t, err)
-	assertEqual(t, "gl type", gl.Type, ledger.Liability)
-	assertEqual(t, "gl name", gl.Name, "Alice")
+	assertEqual(t, "rows in the customer folder", len(rows), 1)
+	assertEqual(t, "and it is the bank's line, not Alice's", rows[0].Name, "Customer Deposits (EUR)")
+	assertEqual(t, "a Liability", rows[0].Type, ledger.Liability)
+	assertEqual(t, "that pools obligors", rows[0].Control, true)
+
+	bruno, err := reg.OpenAccount(ctx, "Bruno", testAsset, prd, 0)
+	assertNoError(t, err)
+	rows, err = reg.Book().ListAccounts(ctx, deposits)
+	assertNoError(t, err)
+	assertEqual(t, "rows after a second account", len(rows), 1)
+
+	// Both customers' money is in that one line, under their own ids.
+	assertEqual(t, "alice", where(t, reg, alice.ID), rows[0].ID.For(string(alice.ID)))
+	assertEqual(t, "bruno", where(t, reg, bruno.ID), rows[0].ID.For(string(bruno.ID)))
 
 	// Retrieval round-trips.
-	got, err := reg.GetAccount(ctx, acct.ID)
+	got, err := reg.GetAccount(ctx, alice.ID)
 	assertNoError(t, err)
-	assertEqual(t, "id", got.ID, acct.ID)
+	assertEqual(t, "id", got.ID, alice.ID)
 }
 
-// A deposit account's asset is a copy of its backing GL account's, so the two
-// can never disagree — and a customer account is not a euro account by
-// default, it is an account in whatever asset it was opened in.
-func TestOpenAccountRecordsAssetMatchingItsGLAccount(t *testing.T) {
+// A deposit account's asset is what picks the control account its money pools
+// in, so an account in bitcoin is nowhere near the euro pool — and a customer
+// account is not a euro account by default, it is an account in whatever asset
+// it was opened in.
+func TestOpenAccountPoolsByAsset(t *testing.T) {
 	ctx := context.Background()
-	reg, _, deposits, prd := newTestRegister(t)
+	reg, _, _, prd := newTestRegister(t)
 
-	acct, err := reg.OpenAccount(ctx, deposits, "Anna BTC", otherAsset, prd, 0)
+	euro, err := reg.OpenAccount(ctx, "Alice", testAsset, prd, 0)
+	assertNoError(t, err)
+	acct, err := reg.OpenAccount(ctx, "Anna BTC", otherAsset, prd, 0)
 	assertNoError(t, err)
 	assertEqual(t, "deposit account asset", acct.Asset, otherAsset)
 
-	gl, err := reg.Book().GetAccount(ctx, acct.GLAccount)
+	pooled := where(t, reg, acct.ID)
+	if pooled.Account == where(t, reg, euro.ID).Account {
+		t.Fatalf("two assets pooled in one control account: %s", pooled.Account)
+	}
+	control, err := reg.Book().GetAccount(ctx, pooled.Account)
 	assertNoError(t, err)
-	assertEqual(t, "GL account asset", gl.Asset, acct.Asset)
+	assertEqual(t, "control account asset", control.Asset, acct.Asset)
 
 	// It survives the store, not just the return value.
 	got, err := reg.GetAccount(ctx, acct.ID)
@@ -246,17 +292,23 @@ func TestOpenAccountRecordsAssetMatchingItsGLAccount(t *testing.T) {
 
 func TestOpenAccountRejectsUnregisteredAsset(t *testing.T) {
 	ctx := context.Background()
-	reg, _, deposits, prd := newTestRegister(t)
+	reg, _, _, prd := newTestRegister(t)
 
-	_, err := reg.OpenAccount(ctx, deposits, "Anna DOGE", "DOGE", prd, 0)
+	_, err := reg.OpenAccount(ctx, "Anna DOGE", "DOGE", prd, 0)
 	assertError(t, err, ledger.ErrAssetNotFound)
 }
 
+// A register filed under a folder the chart of accounts does not have refuses
+// to open an account, rather than opening one whose money has nowhere to pool.
+// The refusal is at the FIRST account in an asset, because that is the one that
+// has a control line to create.
 func TestOpenAccount_SubledgerNotFound(t *testing.T) {
 	ctx := context.Background()
 	reg, _, _, prd := newTestRegister(t)
+	stray := NewRegister(reg.Store(), reg.Book(), reg.Book().ID(),
+		func() time.Time { return fixedTime }, testIssuer, "bad_sub")
 
-	_, err := reg.OpenAccount(ctx, "bad_sub", "Alice", testAsset, prd, 0)
+	_, err := stray.OpenAccount(ctx, "Alice", testAsset, prd, 0)
 	assertError(t, err, ledger.ErrSubledgerNotFound)
 }
 
@@ -276,7 +328,7 @@ func TestHold_ReducesAvailable(t *testing.T) {
 	ctx := context.Background()
 	reg, book, deposits, prd := newTestRegister(t)
 	cash := newCashAccount(t, book, deposits)
-	alice, _ := reg.OpenAccount(ctx, deposits, "Alice", testAsset, prd, 0)
+	alice, _ := reg.OpenAccount(ctx, "Alice", testAsset, prd, 0)
 	fund(t, reg, cash, alice, 10000)
 
 	h, err := reg.CreateHold(ctx, CreateHoldRequest{AccountID: alice.ID, Amount: 3000})
@@ -294,7 +346,7 @@ func TestHold_Release_RestoresAvailable(t *testing.T) {
 	ctx := context.Background()
 	reg, book, deposits, prd := newTestRegister(t)
 	cash := newCashAccount(t, book, deposits)
-	alice, _ := reg.OpenAccount(ctx, deposits, "Alice", testAsset, prd, 0)
+	alice, _ := reg.OpenAccount(ctx, "Alice", testAsset, prd, 0)
 	fund(t, reg, cash, alice, 10000)
 
 	h, _ := reg.CreateHold(ctx, CreateHoldRequest{AccountID: alice.ID, Amount: 3000})
@@ -316,12 +368,12 @@ func TestReleaseHold_NotFound(t *testing.T) {
 
 func TestCreateHold_Validation(t *testing.T) {
 	ctx := context.Background()
-	reg, _, deposits, prd := newTestRegister(t)
+	reg, _, _, prd := newTestRegister(t)
 
 	_, err := reg.CreateHold(ctx, CreateHoldRequest{AccountID: "nonexistent", Amount: 100})
 	assertError(t, err, ErrAccountNotFound)
 
-	alice, _ := reg.OpenAccount(ctx, deposits, "Alice", testAsset, prd, 0)
+	alice, _ := reg.OpenAccount(ctx, "Alice", testAsset, prd, 0)
 	_, err = reg.CreateHold(ctx, CreateHoldRequest{AccountID: alice.ID, Amount: 0})
 	assertError(t, err, ErrInvalidAmount)
 
@@ -334,7 +386,7 @@ func TestHold_Expiration(t *testing.T) {
 	ctx := context.Background()
 	reg, book, deposits, prd := newTestRegister(t)
 	cash := newCashAccount(t, book, deposits)
-	alice, _ := reg.OpenAccount(ctx, deposits, "Alice", testAsset, prd, 0)
+	alice, _ := reg.OpenAccount(ctx, "Alice", testAsset, prd, 0)
 	fund(t, reg, cash, alice, 10000)
 
 	_, err := reg.CreateHold(ctx, CreateHoldRequest{
@@ -355,14 +407,14 @@ func TestHold_Expiration(t *testing.T) {
 
 func TestOverdraft_PermitsWithdrawal(t *testing.T) {
 	ctx := context.Background()
-	reg, _, deposits, prd := newTestRegister(t)
+	reg, _, _, prd := newTestRegister(t)
 
 	// No overdraft: a withdrawal of 5000 on an empty account fails.
-	noLimit, _ := reg.OpenAccount(ctx, deposits, "NoLimit", testAsset, prd, 0)
+	noLimit, _ := reg.OpenAccount(ctx, "NoLimit", testAsset, prd, 0)
 	assertError(t, reg.CheckWithdrawal(ctx, noLimit.ID, 5000), ErrInsufficientAvailable)
 
 	// With a 5000 overdraft limit the same withdrawal is permitted.
-	withLimit, _ := reg.OpenAccount(ctx, deposits, "WithLimit", testAsset, prd, 5000)
+	withLimit, _ := reg.OpenAccount(ctx, "WithLimit", testAsset, prd, 5000)
 	assertNoError(t, reg.CheckWithdrawal(ctx, withLimit.ID, 5000))
 	// But not a penny more.
 	assertError(t, reg.CheckWithdrawal(ctx, withLimit.ID, 5001), ErrInsufficientAvailable)
@@ -386,12 +438,12 @@ func TestCaptureHold_PostsGLTransaction(t *testing.T) {
 	ctx := context.Background()
 	reg, book, deposits, prd := newTestRegister(t)
 	cash := newCashAccount(t, book, deposits)
-	alice, _ := reg.OpenAccount(ctx, deposits, "Alice", testAsset, prd, 0)
+	alice, _ := reg.OpenAccount(ctx, "Alice", testAsset, prd, 0)
 	fund(t, reg, cash, alice, 10000)
 
 	h, _ := reg.CreateHold(ctx, CreateHoldRequest{AccountID: alice.ID, Amount: 3000})
 
-	tx, err := reg.CaptureHold(ctx, h.ID, cash, 2500, "Gas purchase")
+	tx, err := reg.CaptureHold(ctx, h.ID, cash.Total(), 2500, "Gas purchase")
 	assertNoError(t, err)
 	assertEqual(t, "tx status", tx.Status, ledger.Posted)
 	assertEqual(t, "tx legs", len(tx.Entries), 2)
@@ -410,11 +462,11 @@ func TestCaptureHold_DefaultsToHoldAmount(t *testing.T) {
 	ctx := context.Background()
 	reg, book, deposits, prd := newTestRegister(t)
 	cash := newCashAccount(t, book, deposits)
-	alice, _ := reg.OpenAccount(ctx, deposits, "Alice", testAsset, prd, 0)
+	alice, _ := reg.OpenAccount(ctx, "Alice", testAsset, prd, 0)
 	fund(t, reg, cash, alice, 10000)
 
 	h, _ := reg.CreateHold(ctx, CreateHoldRequest{AccountID: alice.ID, Amount: 3000})
-	tx, err := reg.CaptureHold(ctx, h.ID, cash, 0, "Full capture")
+	tx, err := reg.CaptureHold(ctx, h.ID, cash.Total(), 0, "Full capture")
 	assertNoError(t, err)
 	assertEqual(t, "captured amount leg", tx.Entries[0].Amount, ledger.Amount(3000))
 }
@@ -424,13 +476,13 @@ func TestCaptureHold_Errors(t *testing.T) {
 	reg, book, deposits, prd := newTestRegister(t)
 	cash := newCashAccount(t, book, deposits)
 
-	_, err := reg.CaptureHold(ctx, "nonexistent", cash, 100, "")
+	_, err := reg.CaptureHold(ctx, "nonexistent", cash.Total(), 100, "")
 	assertError(t, err, ErrHoldNotFound)
 
-	alice, _ := reg.OpenAccount(ctx, deposits, "Alice", testAsset, prd, 1000)
+	alice, _ := reg.OpenAccount(ctx, "Alice", testAsset, prd, 1000)
 	h, _ := reg.CreateHold(ctx, CreateHoldRequest{AccountID: alice.ID, Amount: 1000})
 	assertNoError(t, reg.ReleaseHold(ctx, h.ID))
-	_, err = reg.CaptureHold(ctx, h.ID, cash, 100, "")
+	_, err = reg.CaptureHold(ctx, h.ID, cash.Total(), 100, "")
 	assertError(t, err, ErrHoldNotActive)
 }
 
@@ -445,7 +497,7 @@ func TestCaptureHoldIsAtomic(t *testing.T) {
 
 	// Capture against a counterparty account that does not exist, so the GL
 	// posting fails after the hold write.
-	_, err = reg.CaptureHold(ctx, h.ID, ledger.AccountID("no.such.account"), 500, "boom")
+	_, err = reg.CaptureHold(ctx, h.ID, ledger.AccountID("no.such.account").Total(), 500, "boom")
 	assertError(t, err, ledger.ErrAccountNotFound)
 
 	got, err := reg.GetHold(ctx, h.ID)
@@ -475,7 +527,7 @@ func TestCaptureHoldRollsBackWithTheCallersUnitOfWork(t *testing.T) {
 	var captured ledger.Transaction
 	err = reg.Store().Update(ctx, func(ctx context.Context, tx Tx) error {
 		var err error
-		captured, err = reg.CaptureHoldTx(ctx, tx, h.ID, acct.GLAccount, 500, "compose")
+		captured, err = reg.CaptureHoldTx(ctx, tx, h.ID, where(t, reg, acct.ID), 500, "compose")
 		if err != nil {
 			return err
 		}
@@ -519,7 +571,7 @@ func TestCaptureHoldRejectsCrossAssetCounterparty(t *testing.T) {
 	reg, book, deposits, prd := newTestRegister(t)
 	cash := newCashAccount(t, book, deposits)
 
-	acct, err := reg.OpenAccount(ctx, deposits, "Anna EUR", testAsset, prd, 0)
+	acct, err := reg.OpenAccount(ctx, "Anna EUR", testAsset, prd, 0)
 	assertNoError(t, err)
 	fund(t, reg, cash, acct, 10_000)
 
@@ -531,7 +583,7 @@ func TestCaptureHoldRejectsCrossAssetCounterparty(t *testing.T) {
 	})
 	assertNoError(t, err)
 
-	_, err = reg.CaptureHold(ctx, hold.ID, btcGL.ID, 500, "capture into a BTC account")
+	_, err = reg.CaptureHold(ctx, hold.ID, btcGL.ID.Total(), 500, "capture into a BTC account")
 	assertError(t, err, ledger.ErrUnbalancedAsset)
 }
 
@@ -543,7 +595,7 @@ func TestFreeze_BlocksHolds(t *testing.T) {
 	ctx := context.Background()
 	reg, book, deposits, prd := newTestRegister(t)
 	cash := newCashAccount(t, book, deposits)
-	alice, _ := reg.OpenAccount(ctx, deposits, "Alice", testAsset, prd, 0)
+	alice, _ := reg.OpenAccount(ctx, "Alice", testAsset, prd, 0)
 	fund(t, reg, cash, alice, 10000)
 
 	assertNoError(t, reg.Freeze(ctx, alice.ID))
@@ -560,8 +612,8 @@ func TestFreeze_BlocksHolds(t *testing.T) {
 
 func TestDormantReactivate(t *testing.T) {
 	ctx := context.Background()
-	reg, _, deposits, prd := newTestRegister(t)
-	alice, _ := reg.OpenAccount(ctx, deposits, "Alice", testAsset, prd, 0)
+	reg, _, _, prd := newTestRegister(t)
+	alice, _ := reg.OpenAccount(ctx, "Alice", testAsset, prd, 0)
 
 	assertNoError(t, reg.MarkDormant(ctx, alice.ID))
 	got, _ := reg.GetAccount(ctx, alice.ID)
@@ -576,7 +628,7 @@ func TestClose_RequiresZeroBalance(t *testing.T) {
 	ctx := context.Background()
 	reg, book, deposits, prd := newTestRegister(t)
 	cash := newCashAccount(t, book, deposits)
-	alice, _ := reg.OpenAccount(ctx, deposits, "Alice", testAsset, prd, 0)
+	alice, _ := reg.OpenAccount(ctx, "Alice", testAsset, prd, 0)
 	fund(t, reg, cash, alice, 10000)
 
 	// Non-zero balance blocks close.
@@ -584,7 +636,7 @@ func TestClose_RequiresZeroBalance(t *testing.T) {
 
 	// Drain the balance, then close succeeds.
 	h, _ := reg.CreateHold(ctx, CreateHoldRequest{AccountID: alice.ID, Amount: 10000})
-	_, err := reg.CaptureHold(ctx, h.ID, cash, 10000, "Final withdrawal")
+	_, err := reg.CaptureHold(ctx, h.ID, cash.Total(), 10000, "Final withdrawal")
 	assertNoError(t, err)
 	assertNoError(t, reg.Close(ctx, alice.ID))
 
@@ -599,8 +651,8 @@ func TestClose_RequiresZeroBalance(t *testing.T) {
 
 func TestIllegalStatusTransitions(t *testing.T) {
 	ctx := context.Background()
-	reg, _, deposits, prd := newTestRegister(t)
-	alice, _ := reg.OpenAccount(ctx, deposits, "Alice", testAsset, prd, 0)
+	reg, _, _, prd := newTestRegister(t)
+	alice, _ := reg.OpenAccount(ctx, "Alice", testAsset, prd, 0)
 
 	// Cannot unfreeze an active account, nor reactivate one.
 	assertError(t, reg.Unfreeze(ctx, alice.ID), ErrInvalidStatusTransition)
@@ -623,7 +675,7 @@ func TestSnapshot_RoundTrip(t *testing.T) {
 	ctx := context.Background()
 	reg, book, deposits, prd := newTestRegister(t)
 	cash := newCashAccount(t, book, deposits)
-	alice, _ := reg.OpenAccount(ctx, deposits, "Alice", testAsset, prd, 0)
+	alice, _ := reg.OpenAccount(ctx, "Alice", testAsset, prd, 0)
 	fund(t, reg, cash, alice, 10000)
 
 	date := time.Date(2025, 1, 15, 0, 0, 0, 0, time.UTC)
@@ -655,9 +707,9 @@ func TestSnapshot_RoundTrip(t *testing.T) {
 // carry both the scope that distinguishes them and the book that owns them.
 func TestAuditEventsAreScopedAndAttributedToTheBook(t *testing.T) {
 	ctx := context.Background()
-	reg, _, deposits, prd := newTestRegister(t)
+	reg, _, _, prd := newTestRegister(t)
 
-	alice, err := reg.OpenAccount(ctx, deposits, "Alice", testAsset, prd, 0)
+	alice, err := reg.OpenAccount(ctx, "Alice", testAsset, prd, 0)
 	assertNoError(t, err)
 
 	events, err := reg.GetAuditLog(ctx)
@@ -698,55 +750,59 @@ func TestStringers(t *testing.T) {
 // Overdraft Terms
 // ---------------------------------------------------------------------------
 
-// The receivable is created by the ACCRUAL, on the first day that actually
-// accrues — not by a setter.
+// One receivable serves every account in an asset, and the detail under it is
+// the entries — which is what makes a shared one duplicate nothing.
 //
-// It moved there with the catalogue, and had to: a floating account's rate
-// lives in the product, so no register call knows it any more. Setting a limit
-// and a price is not evidence that anything will ever accrue, and an account
-// that never accrues should not carry a GL account nothing posts to.
-func TestTheReceivableAppearsOnTheFirstAccruingDay(t *testing.T) {
+// Σ(subsidiary balances) == control balance cannot fail arithmetically, and that
+// is exactly why it is worth computing: it is a control on the pipeline, and it
+// would catch a posting that named the pool without naming whose interest it
+// was.
+func TestOneReceivableServesEveryAccountInAnAsset(t *testing.T) {
 	ctx := context.Background()
 	reg, book, sub, prd := newTestRegister(t)
 
-	acct, err := reg.OpenAccount(ctx, sub, "Bruno", "EUR", prd, 50_000)
+	bruno, err := reg.OpenAccount(ctx, "Bruno", "EUR", prd, 50_000)
 	assertNoError(t, err)
-	if acct.InterestGL != "" {
-		t.Fatalf("a new account already has a receivable: %s", acct.InterestGL)
+	carla, err := reg.OpenAccount(ctx, "Carla", "EUR", prd, 50_000)
+	assertNoError(t, err)
+
+	// One line in the receivable folder, whatever the customer count, and it is
+	// an Asset control account in the accounts' own asset.
+	brunoOwes := owed(t, reg, bruno.ID)
+	carlaOwes := owed(t, reg, carla.ID)
+	assertEqual(t, "one receivable for both", brunoOwes.Account, carlaOwes.Account)
+	assertEqual(t, "under bruno", brunoOwes.Subsidiary, string(bruno.ID))
+	shared, err := book.GetAccount(ctx, brunoOwes.Account)
+	assertNoError(t, err)
+	assertEqual(t, "receivable type", shared.Type.String(), ledger.Asset.String())
+	assertEqual(t, "receivable asset", string(shared.Asset), "EUR")
+	assertEqual(t, "receivable pools obligors", shared.Control, true)
+	rows, err := book.ListAccounts(ctx, shared.SubledgerID)
+	assertNoError(t, err)
+	assertEqual(t, "rows in the receivable folder", len(rows), 1)
+
+	// Two customers overdrawn by different amounts for thirty days.
+	for _, c := range []struct {
+		acct  Account
+		drawn ledger.Amount
+	}{{bruno, 20_000}, {carla, 60_000}} {
+		_, err = setTerms(ctx, reg, c.acct.ID, 50_000, 150_000, 350_000, interest.Thirty360, time.Time{})
+		assertNoError(t, err)
+		overdrawValueDated(t, reg, book, sub, c.acct, c.drawn, fixedTime, fixedTime)
+		assertNoError(t, reg.AccrueOverdraft(ctx, c.acct.ID, fixedTime.AddDate(0, 0, 30)))
 	}
 
-	// Terms alone do not create one, whatever the rate says.
-	_, err = setTerms(ctx, reg, acct.ID, 50_000, 150_000, 350_000, interest.Thirty360, time.Time{})
+	brunoAccrued, err := book.BookBalance(ctx, brunoOwes)
 	assertNoError(t, err)
-	priced, err := reg.GetAccount(ctx, acct.ID)
+	carlaAccrued, err := book.BookBalance(ctx, carlaOwes)
 	assertNoError(t, err)
-	if priced.InterestGL != "" {
-		t.Errorf("setting a rate created a receivable: %s", priced.InterestGL)
+	pool, err := book.BookBalance(ctx, shared.ID.Total())
+	assertNoError(t, err)
+
+	if brunoAccrued <= 0 || carlaAccrued <= brunoAccrued {
+		t.Fatalf("expected two different non-zero accruals, got bruno %d, carla %d", brunoAccrued, carlaAccrued)
 	}
-
-	// Overdrawing and accruing does.
-	overdrawValueDated(t, book, sub, acct, 20_000, fixedTime, fixedTime)
-	assertNoError(t, reg.AccrueOverdraft(ctx, acct.ID, fixedTime.AddDate(0, 0, 30)))
-
-	withRate, err := reg.GetAccount(ctx, acct.ID)
-	assertNoError(t, err)
-	if withRate.InterestGL == "" {
-		t.Fatal("an accruing account created no receivable")
-	}
-
-	// The receivable is an Asset in the account's own asset.
-	gl, err := book.GetAccount(ctx, withRate.InterestGL)
-	assertNoError(t, err)
-	assertEqual(t, "receivable type", gl.Type.String(), ledger.Asset.String())
-	assertEqual(t, "receivable asset", string(gl.Asset), "EUR")
-
-	// A second accrual reuses it rather than opening a second one, including
-	// after the rate goes back to zero: the account already holds accrued
-	// interest, and discarding the receivable would strand it.
-	assertNoError(t, reg.AccrueOverdraft(ctx, acct.ID, fixedTime.AddDate(0, 0, 60)))
-	again, err := reg.GetAccount(ctx, acct.ID)
-	assertNoError(t, err)
-	assertEqual(t, "receivable reused", string(again.InterestGL), string(withRate.InterestGL))
+	assertEqual(t, "the pool is the sum of its obligors", pool, brunoAccrued+carlaAccrued)
 }
 
 // Four writes on one effective DAY — the opening row plus three setter calls —
@@ -755,9 +811,9 @@ func TestTheReceivableAppearsOnTheFirstAccruingDay(t *testing.T) {
 // validation rule.
 func TestSameDayTermsWritesCollapseToOneRow(t *testing.T) {
 	ctx := context.Background()
-	reg, _, sub, prd := newTestRegister(t)
+	reg, _, _, prd := newTestRegister(t)
 
-	acct, err := reg.OpenAccount(ctx, sub, "Bruno", "EUR", prd, 0)
+	acct, err := reg.OpenAccount(ctx, "Bruno", "EUR", prd, 0)
 	assertNoError(t, err)
 
 	_, err = setTerms(ctx, reg, acct.ID, 50_000, 150_000, 350_000, interest.Thirty360, time.Time{})
@@ -783,9 +839,9 @@ func TestSameDayTermsWritesCollapseToOneRow(t *testing.T) {
 
 func TestSetOverdraftTerms_Rejects(t *testing.T) {
 	ctx := context.Background()
-	reg, _, sub, prd := newTestRegister(t)
+	reg, _, _, prd := newTestRegister(t)
 
-	acct, err := reg.OpenAccount(ctx, sub, "Bruno", "EUR", prd, 0)
+	acct, err := reg.OpenAccount(ctx, "Bruno", "EUR", prd, 0)
 	assertNoError(t, err)
 
 	_, err = setTerms(ctx, reg, acct.ID, -1, 0, 0, interest.ACT365, time.Time{})
@@ -802,7 +858,7 @@ func TestSetOverdraftTerms_Rejects(t *testing.T) {
 	assertError(t, err, ErrAccountNotFound)
 
 	// A closed account takes no new terms.
-	closed, err := reg.OpenAccount(ctx, sub, "Gone", "EUR", prd, 0)
+	closed, err := reg.OpenAccount(ctx, "Gone", "EUR", prd, 0)
 	assertNoError(t, err)
 	assertNoError(t, reg.Close(ctx, closed.ID))
 	_, err = setTerms(ctx, reg, closed.ID, 50_000, 150_000, 0, interest.ACT365, time.Time{})
@@ -811,7 +867,7 @@ func TestSetOverdraftTerms_Rejects(t *testing.T) {
 
 // overdrawBy pushes an account to a negative book balance by posting a debit
 // straight to the general ledger, which is how a payment reaches it too.
-func overdrawBy(t *testing.T, book *ledger.Book, sub ledger.SubledgerID, acct Account, amount ledger.Amount) {
+func overdrawBy(t *testing.T, reg *Register, book *ledger.Book, sub ledger.SubledgerID, acct Account, amount ledger.Amount) {
 	t.Helper()
 	ctx := context.Background()
 	counterparty, err := book.CreateAccount(ctx, sub, "Counterparty "+string(acct.ID), ledger.Liability, acct.Asset)
@@ -821,7 +877,7 @@ func overdrawBy(t *testing.T, book *ledger.Book, sub ledger.SubledgerID, acct Ac
 	if _, err := book.PostTransaction(ctx, ledger.PostTransactionRequest{
 		Description: "overdraw",
 		Entries: []ledger.Entry{
-			{AccountID: acct.GLAccount, Amount: amount, Direction: ledger.Debit},
+			entry(where(t, reg, acct.ID), amount, ledger.Debit),
 			{AccountID: counterparty.ID, Amount: amount, Direction: ledger.Credit},
 		},
 	}); err != nil {
@@ -833,7 +889,7 @@ func overdrawBy(t *testing.T, book *ledger.Book, sub ledger.SubledgerID, acct Ac
 // one whose booking date is today and whose value date is a day already accrued
 // through, which is the case every acceptance test below turns on and which
 // overdrawBy — value-dated at the clock — cannot express.
-func overdrawValueDated(t *testing.T, book *ledger.Book, sub ledger.SubledgerID, acct Account, amount ledger.Amount, booking, value time.Time) {
+func overdrawValueDated(t *testing.T, reg *Register, book *ledger.Book, sub ledger.SubledgerID, acct Account, amount ledger.Amount, booking, value time.Time) {
 	t.Helper()
 	ctx := context.Background()
 	counterparty, err := book.CreateAccount(ctx, sub,
@@ -844,7 +900,7 @@ func overdrawValueDated(t *testing.T, book *ledger.Book, sub ledger.SubledgerID,
 		BookingDate: booking,
 		ValueDate:   value,
 		Entries: []ledger.Entry{
-			{AccountID: acct.GLAccount, Amount: amount, Direction: ledger.Debit},
+			entry(where(t, reg, acct.ID), amount, ledger.Debit),
 			{AccountID: counterparty.ID, Amount: amount, Direction: ledger.Credit},
 		},
 	})
@@ -899,7 +955,7 @@ func (t countingTx) ValueDatedSeries(ctx context.Context, book ledger.BookID, po
 // fundBy posts the mirror-image transaction to overdrawBy: it credits the
 // account and debits an Asset counterparty, the shape a customer deposit
 // takes.
-func fundBy(t *testing.T, book *ledger.Book, sub ledger.SubledgerID, acct Account, amount ledger.Amount) {
+func fundBy(t *testing.T, reg *Register, book *ledger.Book, sub ledger.SubledgerID, acct Account, amount ledger.Amount) {
 	t.Helper()
 	ctx := context.Background()
 	counterparty, err := book.CreateAccount(ctx, sub, "Counterparty "+string(acct.ID), ledger.Asset, acct.Asset)
@@ -910,7 +966,7 @@ func fundBy(t *testing.T, book *ledger.Book, sub ledger.SubledgerID, acct Accoun
 		Description: "fund",
 		Entries: []ledger.Entry{
 			{AccountID: counterparty.ID, Amount: amount, Direction: ledger.Debit},
-			{AccountID: acct.GLAccount, Amount: amount, Direction: ledger.Credit},
+			entry(where(t, reg, acct.ID), amount, ledger.Credit),
 		},
 	}); err != nil {
 		t.Fatalf("fund: %v", err)
@@ -921,13 +977,13 @@ func TestAccrueOverdraft_PostsTheDeltaOfTheRoundedValue(t *testing.T) {
 	ctx := context.Background()
 	reg, book, sub, prd := newTestRegister(t)
 
-	acct, err := reg.OpenAccount(ctx, sub, "Bruno", "EUR", prd, 0)
+	acct, err := reg.OpenAccount(ctx, "Bruno", "EUR", prd, 0)
 	assertNoError(t, err)
 	_, err = setTerms(ctx, reg, acct.ID, 50_000, 150_000, 0, interest.ACT365, time.Time{})
 	assertNoError(t, err)
 
 	// €50 overdrawn at 15% ACT/365 accrues 2.054794 cents a day.
-	overdrawBy(t, book, sub, acct, 5_000)
+	overdrawBy(t, reg, book, sub, acct, 5_000)
 
 	day := func(n int) time.Time {
 		return time.Date(2025, time.January, 15+n, 0, 0, 0, 0, time.UTC)
@@ -946,7 +1002,7 @@ func TestAccrueOverdraft_PostsTheDeltaOfTheRoundedValue(t *testing.T) {
 		assertNoError(t, err)
 		assertEqual(t, "accrued on record", got.Accrued, wantAccrued[i-1])
 
-		balance, err := book.BookBalance(ctx, got.InterestGL.Total())
+		balance, err := book.BookBalance(ctx, owed(t, reg, got.ID))
 		assertNoError(t, err)
 		assertEqual(t, "receivable balance", balance, wantGL[i-1])
 		if balance != got.Accrued.Minor() {
@@ -959,11 +1015,11 @@ func TestAccrueOverdraft_IsIdempotentPerDate(t *testing.T) {
 	ctx := context.Background()
 	reg, book, sub, prd := newTestRegister(t)
 
-	acct, err := reg.OpenAccount(ctx, sub, "Bruno", "EUR", prd, 0)
+	acct, err := reg.OpenAccount(ctx, "Bruno", "EUR", prd, 0)
 	assertNoError(t, err)
 	_, err = setTerms(ctx, reg, acct.ID, 50_000, 150_000, 0, interest.ACT365, time.Time{})
 	assertNoError(t, err)
-	overdrawBy(t, book, sub, acct, 5_000)
+	overdrawBy(t, reg, book, sub, acct, 5_000)
 
 	start := time.Date(2025, time.January, 15, 0, 0, 0, 0, time.UTC)
 	assertNoError(t, reg.AccrueOverdraft(ctx, acct.ID, start))
@@ -989,14 +1045,14 @@ func TestAccrueOverdraft_TiersAtTheLimit(t *testing.T) {
 	ctx := context.Background()
 	reg, book, sub, prd := newTestRegister(t)
 
-	acct, err := reg.OpenAccount(ctx, sub, "Bruno", "EUR", prd, 0)
+	acct, err := reg.OpenAccount(ctx, "Bruno", "EUR", prd, 0)
 	assertNoError(t, err)
 	// Arranged 12% up to €100, unarranged 36% beyond it.
 	_, err = setTerms(ctx, reg, acct.ID, 10_000, 120_000, 360_000, interest.ACT360, time.Time{})
 	assertNoError(t, err)
 
 	// €150 drawn: €100 arranged, €50 unarranged.
-	overdrawBy(t, book, sub, acct, 15_000)
+	overdrawBy(t, reg, book, sub, acct, 15_000)
 
 	start := time.Date(2025, time.January, 15, 0, 0, 0, 0, time.UTC)
 	assertNoError(t, reg.AccrueOverdraft(ctx, acct.ID, start))
@@ -1018,14 +1074,14 @@ func TestAccrueOverdraft_ExcessFallsBackToTheArrangedRate(t *testing.T) {
 	ctx := context.Background()
 	reg, book, sub, prd := newTestRegister(t)
 
-	acct, err := reg.OpenAccount(ctx, sub, "Bruno", "EUR", prd, 0)
+	acct, err := reg.OpenAccount(ctx, "Bruno", "EUR", prd, 0)
 	assertNoError(t, err)
 	// Arranged 12% up to €100, and no unarranged rate at all.
 	_, err = setTerms(ctx, reg, acct.ID, 10_000, 120_000, 0, interest.ACT360, time.Time{})
 	assertNoError(t, err)
 
 	// €150 drawn: €100 inside the limit, €50 beyond it.
-	overdrawBy(t, book, sub, acct, 15_000)
+	overdrawBy(t, reg, book, sub, acct, 15_000)
 
 	start := time.Date(2025, time.January, 15, 0, 0, 0, 0, time.UTC)
 	assertNoError(t, reg.AccrueOverdraft(ctx, acct.ID, start))
@@ -1051,14 +1107,14 @@ func TestAccrueOverdraft_IgnoresHoldsAndCredits(t *testing.T) {
 	ctx := context.Background()
 	reg, book, sub, prd := newTestRegister(t)
 
-	acct, err := reg.OpenAccount(ctx, sub, "Alice", "EUR", prd, 0)
+	acct, err := reg.OpenAccount(ctx, "Alice", "EUR", prd, 0)
 	assertNoError(t, err)
 	_, err = setTerms(ctx, reg, acct.ID, 50_000, 150_000, 0, interest.ACT365, time.Time{})
 	assertNoError(t, err)
 
 	// In credit, with a hold that takes available below zero. Interest accrues
 	// on the book balance, because a hold is not borrowed money.
-	fundBy(t, book, sub, acct, 1_000)
+	fundBy(t, reg, book, sub, acct, 1_000)
 	_, err = reg.CreateHold(ctx, CreateHoldRequest{AccountID: acct.ID, Amount: 900, Description: "auth"})
 	assertNoError(t, err)
 
@@ -1075,9 +1131,9 @@ func TestAccrueOverdraft_NoRateAccruesNothing(t *testing.T) {
 	ctx := context.Background()
 	reg, book, sub, prd := newTestRegister(t)
 
-	acct, err := reg.OpenAccount(ctx, sub, "Bruno", "EUR", prd, 50_000)
+	acct, err := reg.OpenAccount(ctx, "Bruno", "EUR", prd, 50_000)
 	assertNoError(t, err)
-	overdrawBy(t, book, sub, acct, 5_000)
+	overdrawBy(t, reg, book, sub, acct, 5_000)
 
 	start := time.Date(2025, time.January, 15, 0, 0, 0, 0, time.UTC)
 	assertNoError(t, reg.AccrueOverdraft(ctx, acct.ID, start))
@@ -1086,18 +1142,20 @@ func TestAccrueOverdraft_NoRateAccruesNothing(t *testing.T) {
 	got, err := reg.GetAccount(ctx, acct.ID)
 	assertNoError(t, err)
 	assertEqual(t, "accrued with no rate", got.Accrued, interest.Accrued(0))
-	assertEqual(t, "receivable still absent", string(got.InterestGL), "")
+	accrued, err := book.BookBalance(ctx, owed(t, reg, acct.ID))
+	assertNoError(t, err)
+	assertEqual(t, "and nothing was posted under it", accrued, ledger.Amount(0))
 }
 
 func TestChargeOverdraftInterest_CapitalizesAndLeavesANegativeResidue(t *testing.T) {
 	ctx := context.Background()
 	reg, book, sub, prd := newTestRegister(t)
 
-	acct, err := reg.OpenAccount(ctx, sub, "Bruno", "EUR", prd, 0)
+	acct, err := reg.OpenAccount(ctx, "Bruno", "EUR", prd, 0)
 	assertNoError(t, err)
 	_, err = setTerms(ctx, reg, acct.ID, 50_000, 150_000, 0, interest.ACT365, time.Time{})
 	assertNoError(t, err)
-	overdrawBy(t, book, sub, acct, 5_000)
+	overdrawBy(t, reg, book, sub, acct, 5_000)
 
 	start := time.Date(2025, time.January, 15, 0, 0, 0, 0, time.UTC)
 	for i := 0; i <= 30; i++ {
@@ -1125,7 +1183,7 @@ func TestChargeOverdraftInterest_CapitalizesAndLeavesANegativeResidue(t *testing
 	assertEqual(t, "residue after charging", after.Accrued, interest.Accrued(-356_180))
 	assertEqual(t, "residue rounds to zero", after.Accrued.Minor(), ledger.Amount(0))
 
-	receivable, err := book.BookBalance(ctx, after.InterestGL.Total())
+	receivable, err := book.BookBalance(ctx, owed(t, reg, after.ID))
 	assertNoError(t, err)
 	assertEqual(t, "receivable cleared", receivable, ledger.Amount(0))
 
@@ -1141,7 +1199,7 @@ func TestChargeOverdraftInterest_CapitalizesAndLeavesANegativeResidue(t *testing
 		assertNoError(t, reg.AccrueOverdraft(ctx, acct.ID, start.AddDate(0, 0, i)))
 		got, err := reg.GetAccount(ctx, acct.ID)
 		assertNoError(t, err)
-		gl, err := book.BookBalance(ctx, got.InterestGL.Total())
+		gl, err := book.BookBalance(ctx, owed(t, reg, got.ID))
 		assertNoError(t, err)
 		if gl != got.Accrued.Minor() {
 			t.Fatalf("day %d after charging: GL %d != Minor(accrued) %d", i, gl, got.Accrued.Minor())
@@ -1151,9 +1209,9 @@ func TestChargeOverdraftInterest_CapitalizesAndLeavesANegativeResidue(t *testing
 
 func TestChargeOverdraftInterest_NothingAccruedPostsNothing(t *testing.T) {
 	ctx := context.Background()
-	reg, _, sub, prd := newTestRegister(t)
+	reg, _, _, prd := newTestRegister(t)
 
-	acct, err := reg.OpenAccount(ctx, sub, "Alice", "EUR", prd, 0)
+	acct, err := reg.OpenAccount(ctx, "Alice", "EUR", prd, 0)
 	assertNoError(t, err)
 	_, err = setTerms(ctx, reg, acct.ID, 50_000, 150_000, 0, interest.ACT365, time.Time{})
 	assertNoError(t, err)
@@ -1174,11 +1232,11 @@ func TestChargeOverdraftInterest_RefusesClosedAccount(t *testing.T) {
 	ctx := context.Background()
 	reg, book, sub, prd := newTestRegister(t)
 
-	acct, err := reg.OpenAccount(ctx, sub, "Carla", "EUR", prd, 0)
+	acct, err := reg.OpenAccount(ctx, "Carla", "EUR", prd, 0)
 	assertNoError(t, err)
 	_, err = setTerms(ctx, reg, acct.ID, 50_000, 150_000, 0, interest.ACT365, time.Time{})
 	assertNoError(t, err)
-	overdrawBy(t, book, sub, acct, 5_000)
+	overdrawBy(t, reg, book, sub, acct, 5_000)
 
 	start := time.Date(2025, time.January, 15, 0, 0, 0, 0, time.UTC)
 	for i := 0; i <= 5; i++ {
@@ -1197,7 +1255,7 @@ func TestChargeOverdraftInterest_RefusesClosedAccount(t *testing.T) {
 	if _, err := reg.ChargeOverdraftInterest(ctx, acct.ID, start.AddDate(0, 0, 5)); err != nil {
 		t.Fatalf("ChargeOverdraftInterest: %v", err)
 	}
-	fundBy(t, book, sub, acct, 5_010)
+	fundBy(t, reg, book, sub, acct, 5_010)
 	assertNoError(t, reg.Close(ctx, acct.ID))
 
 	_, err = reg.ChargeOverdraftInterest(ctx, acct.ID, start.AddDate(0, 0, 6))
@@ -1214,11 +1272,11 @@ func TestClose_RefusesAStrandedReceivable(t *testing.T) {
 	ctx := context.Background()
 	reg, book, sub, prd := newTestRegister(t)
 
-	acct, err := reg.OpenAccount(ctx, sub, "Carla", "EUR", prd, 0)
+	acct, err := reg.OpenAccount(ctx, "Carla", "EUR", prd, 0)
 	assertNoError(t, err)
 	_, err = setTerms(ctx, reg, acct.ID, 50_000, 150_000, 0, interest.ACT365, time.Time{})
 	assertNoError(t, err)
-	overdrawBy(t, book, sub, acct, 5_000)
+	overdrawBy(t, reg, book, sub, acct, 5_000)
 
 	start := time.Date(2025, time.January, 15, 0, 0, 0, 0, time.UTC)
 	for i := 0; i <= 5; i++ {
@@ -1226,7 +1284,7 @@ func TestClose_RefusesAStrandedReceivable(t *testing.T) {
 	}
 
 	// The customer account's own balance is back to zero.
-	fundBy(t, book, sub, acct, 5_000)
+	fundBy(t, reg, book, sub, acct, 5_000)
 	balance, err := reg.GetBalance(ctx, acct.ID)
 	assertNoError(t, err)
 	assertEqual(t, "book balance before closing", balance.Book, ledger.Amount(0))
@@ -1241,7 +1299,7 @@ func TestClose_RefusesAStrandedReceivable(t *testing.T) {
 	if _, err := reg.ChargeOverdraftInterest(ctx, acct.ID, start.AddDate(0, 0, 5)); err != nil {
 		t.Fatalf("ChargeOverdraftInterest: %v", err)
 	}
-	fundBy(t, book, sub, acct, 10)
+	fundBy(t, reg, book, sub, acct, 10)
 
 	// The residue a capitalization leaves — here 10.27397 earned against 10
 	// charged — is not collectable and is not in the ledger, so it must not
@@ -1274,11 +1332,11 @@ func TestClose_SucceedsOnAnExactHalfMinorUnitResidue(t *testing.T) {
 	ctx := context.Background()
 	reg, book, sub, prd := newTestRegister(t)
 
-	acct, err := reg.OpenAccount(ctx, sub, "Dana", "EUR", prd, 0)
+	acct, err := reg.OpenAccount(ctx, "Dana", "EUR", prd, 0)
 	assertNoError(t, err)
 	_, err = setTerms(ctx, reg, acct.ID, 2_000, 100_000, 0, interest.ACT365, time.Time{})
 	assertNoError(t, err)
-	overdrawBy(t, book, sub, acct, 1_825)
+	overdrawBy(t, reg, book, sub, acct, 1_825)
 
 	start := time.Date(2025, time.January, 15, 0, 0, 0, 0, time.UTC)
 	assertNoError(t, reg.AccrueOverdraft(ctx, acct.ID, start))
@@ -1299,12 +1357,12 @@ func TestClose_SucceedsOnAnExactHalfMinorUnitResidue(t *testing.T) {
 	assertEqual(t, "residue at exactly minus half a minor unit", after.Accrued, interest.Accrued(-500_000))
 	assertEqual(t, "residue rounds AWAY from zero, not to it", after.Accrued.Minor(), ledger.Amount(-1))
 
-	receivable, err := book.BookBalance(ctx, after.InterestGL.Total())
+	receivable, err := book.BookBalance(ctx, owed(t, reg, after.ID))
 	assertNoError(t, err)
 	assertEqual(t, "receivable is fully cleared despite the nonzero residue", receivable, ledger.Amount(0))
 
 	// Repay the 1,825 principal plus the capitalized cent: 1,826 in total.
-	fundBy(t, book, sub, acct, 1_826)
+	fundBy(t, reg, book, sub, acct, 1_826)
 	balance, err := reg.GetBalance(ctx, acct.ID)
 	assertNoError(t, err)
 	assertEqual(t, "book balance before closing", balance.Book, ledger.Amount(0))
@@ -1318,21 +1376,21 @@ func TestRunEndOfDay_AccruesEveryOverdrawnAccount(t *testing.T) {
 	ctx := context.Background()
 	reg, book, sub, prd := newTestRegister(t)
 
-	overdrawn, err := reg.OpenAccount(ctx, sub, "Bruno", "EUR", prd, 0)
+	overdrawn, err := reg.OpenAccount(ctx, "Bruno", "EUR", prd, 0)
 	assertNoError(t, err)
 	_, err = setTerms(ctx, reg, overdrawn.ID, 50_000, 150_000, 0, interest.ACT365, time.Time{})
 	assertNoError(t, err)
-	overdrawBy(t, book, sub, overdrawn, 5_000)
+	overdrawBy(t, reg, book, sub, overdrawn, 5_000)
 
-	inCredit, err := reg.OpenAccount(ctx, sub, "Alice", "EUR", prd, 0)
+	inCredit, err := reg.OpenAccount(ctx, "Alice", "EUR", prd, 0)
 	assertNoError(t, err)
 	_, err = setTerms(ctx, reg, inCredit.ID, 50_000, 150_000, 0, interest.ACT365, time.Time{})
 	assertNoError(t, err)
-	fundBy(t, book, sub, inCredit, 20_000)
+	fundBy(t, reg, book, sub, inCredit, 20_000)
 
-	unpriced, err := reg.OpenAccount(ctx, sub, "Bella", "EUR", prd, 50_000)
+	unpriced, err := reg.OpenAccount(ctx, "Bella", "EUR", prd, 50_000)
 	assertNoError(t, err)
-	overdrawBy(t, book, sub, unpriced, 5_000)
+	overdrawBy(t, reg, book, sub, unpriced, 5_000)
 
 	start := time.Date(2025, time.January, 15, 0, 0, 0, 0, time.UTC)
 	assertNoError(t, reg.RunEndOfDay(ctx, start))
@@ -1366,16 +1424,16 @@ func TestTotals_OverdraftsAreDerivedAndNothingIsPosted(t *testing.T) {
 	ctx := context.Background()
 	reg, book, sub, prd := newTestRegister(t)
 
-	bruno, err := reg.OpenAccount(ctx, sub, "Bruno", "EUR", prd, 50_000)
+	bruno, err := reg.OpenAccount(ctx, "Bruno", "EUR", prd, 50_000)
 	assertNoError(t, err)
-	alice, err := reg.OpenAccount(ctx, sub, "Alice", "EUR", prd, 0)
+	alice, err := reg.OpenAccount(ctx, "Alice", "EUR", prd, 0)
 	assertNoError(t, err)
-	satoshi, err := reg.OpenAccount(ctx, sub, "Satoshi", "BTC", prd, 0)
+	satoshi, err := reg.OpenAccount(ctx, "Satoshi", "BTC", prd, 0)
 	assertNoError(t, err)
 
-	fundBy(t, book, sub, alice, 20_000)
-	fundBy(t, book, sub, satoshi, 500_000)
-	overdrawBy(t, book, sub, bruno, 5_000)
+	fundBy(t, reg, book, sub, alice, 20_000)
+	fundBy(t, reg, book, sub, satoshi, 500_000)
+	overdrawBy(t, reg, book, sub, bruno, 5_000)
 
 	// Run end-of-day before asserting anything. RunEndOfDayTx already loops
 	// every deposit account nightly, which is exactly where a future author
@@ -1392,7 +1450,7 @@ func TestTotals_OverdraftsAreDerivedAndNothingIsPosted(t *testing.T) {
 	// both of its legs are Liability: the debit to Bruno, the credit to the
 	// counterparty. No Asset account was touched, and no second transaction
 	// reclassified anything.
-	txs, err := book.ListTransactionsForPosition(ctx, bruno.GLAccount.Total())
+	txs, err := book.ListTransactionsForPosition(ctx, where(t, reg, bruno.ID))
 	assertNoError(t, err)
 	assertEqual(t, "transactions against an overdrawn account", len(txs), 1)
 	for _, e := range txs[0].Entries {
@@ -1441,13 +1499,13 @@ func TestTotals_OverdraftsAreDerivedAndNothingIsPosted(t *testing.T) {
 // day to be a business date.
 var accrualStart = time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 
-// postTo moves amount against acct's backing GL account at the given value
+// postTo moves amount against acct's position at the given value
 // date, with a fresh counterparty as the contra leg — overdrawBy and fundBy
 // with the direction and the value date spelled out, which is what a backdated
 // posting needs. The contra is typed so the book keeps its classification: a
 // debit to the customer is funded by another Liability, a credit to them by an
 // Asset, exactly as those two helpers already do.
-func postTo(t *testing.T, book *ledger.Book, sub ledger.SubledgerID, acct Account, amount ledger.Amount, dir ledger.Direction, value time.Time) {
+func postTo(t *testing.T, reg *Register, book *ledger.Book, sub ledger.SubledgerID, acct Account, amount ledger.Amount, dir ledger.Direction, value time.Time) {
 	t.Helper()
 	ctx := context.Background()
 	contraType, other := ledger.Liability, ledger.Credit
@@ -1462,7 +1520,7 @@ func postTo(t *testing.T, book *ledger.Book, sub ledger.SubledgerID, acct Accoun
 		Description: "test movement",
 		ValueDate:   value,
 		Entries: []ledger.Entry{
-			{AccountID: acct.GLAccount, Amount: amount, Direction: dir},
+			entry(where(t, reg, acct.ID), amount, dir),
 			{AccountID: contra.ID, Amount: amount, Direction: other},
 		},
 	}); err != nil {
@@ -1479,7 +1537,7 @@ func newOverdraftAccount(t *testing.T) (*Register, *ledger.Book, ledger.Subledge
 	clock.set(accrualStart)
 	reg, book, sub, prd := newTestRegisterOn(t, clock.now)
 
-	acct, err := reg.OpenAccount(ctx, sub, "Bruno", testAsset, prd, 0)
+	acct, err := reg.OpenAccount(ctx, "Bruno", testAsset, prd, 0)
 	assertNoError(t, err)
 	_, err = setTerms(ctx, reg, acct.ID, 50_000, 150_000, 0, interest.ACT365, time.Time{})
 	assertNoError(t, err)
@@ -1491,7 +1549,7 @@ func TestOverdraftAccrualCorrectsABackdatedCredit(t *testing.T) {
 	reg, book, sub, acct, _ := newOverdraftAccount(t)
 
 	// Overdrawn by EUR 200 on day 1, then accrue ten days.
-	postTo(t, book, sub, acct, 20_000, ledger.Debit, accrualStart)
+	postTo(t, reg, book, sub, acct, 20_000, ledger.Debit, accrualStart)
 	for i := 1; i <= 10; i++ {
 		assertNoError(t, reg.AccrueOverdraft(ctx, acct.ID, accrualStart.AddDate(0, 0, i)))
 	}
@@ -1504,7 +1562,7 @@ func TestOverdraftAccrualCorrectsABackdatedCredit(t *testing.T) {
 
 	// A salary credit arrives on day 11, backdated to day 3: from day 3 the
 	// account was never overdrawn, so most of that interest was never owed.
-	postTo(t, book, sub, acct, 20_000, ledger.Credit, accrualStart.AddDate(0, 0, 3))
+	postTo(t, reg, book, sub, acct, 20_000, ledger.Credit, accrualStart.AddDate(0, 0, 3))
 
 	assertNoError(t, reg.AccrueOverdraft(ctx, acct.ID, accrualStart.AddDate(0, 0, 11)))
 	got, err := reg.GetAccount(ctx, acct.ID)
@@ -1515,7 +1573,7 @@ func TestOverdraftAccrualCorrectsABackdatedCredit(t *testing.T) {
 	}
 
 	// And the receivable's ledger balance agrees with the record.
-	recv, err := book.BookBalance(ctx, got.InterestGL.Total())
+	recv, err := book.BookBalance(ctx, owed(t, reg, got.ID))
 	assertNoError(t, err)
 	if recv != corrected {
 		t.Errorf("receivable = %d, accrued = %d; the two must agree", recv, corrected)
@@ -1526,7 +1584,7 @@ func TestOverdraftAccrualCorrectsABackdatedDebit(t *testing.T) {
 	ctx := context.Background()
 	reg, book, sub, acct, _ := newOverdraftAccount(t)
 
-	postTo(t, book, sub, acct, 20_000, ledger.Debit, accrualStart)
+	postTo(t, reg, book, sub, acct, 20_000, ledger.Debit, accrualStart)
 	for i := 1; i <= 10; i++ {
 		assertNoError(t, reg.AccrueOverdraft(ctx, acct.ID, accrualStart.AddDate(0, 0, i)))
 	}
@@ -1536,7 +1594,7 @@ func TestOverdraftAccrualCorrectsABackdatedDebit(t *testing.T) {
 
 	// A card settlement lands late, backdated to day 3: he was more overdrawn
 	// than the ledger knew.
-	postTo(t, book, sub, acct, 20_000, ledger.Debit, accrualStart.AddDate(0, 0, 3))
+	postTo(t, reg, book, sub, acct, 20_000, ledger.Debit, accrualStart.AddDate(0, 0, 3))
 
 	assertNoError(t, reg.AccrueOverdraft(ctx, acct.ID, accrualStart.AddDate(0, 0, 11)))
 	got, err := reg.GetAccount(ctx, acct.ID)
@@ -1561,7 +1619,7 @@ func TestOverdraftAccrualCorrectsABackdatedDebit(t *testing.T) {
 	// And the receivable really holds it: the ledger balance, not Accrued.Minor()
 	// restated. Reading the GL account is what proves the recompute's delta was
 	// posted rather than only recorded on the account row.
-	receivable, err := book.BookBalance(ctx, got.InterestGL.Total())
+	receivable, err := book.BookBalance(ctx, owed(t, reg, got.ID))
 	assertNoError(t, err)
 	assertEqual(t, "receivable after backdated debit", receivable, ledger.Amount(164))
 }
@@ -1571,7 +1629,7 @@ func TestOverdraftAccrualIgnoresAForwardValueDatedDebit(t *testing.T) {
 	reg, book, sub, acct, _ := newOverdraftAccount(t)
 
 	// Booked today, value-dated five days out. It has not taken effect yet.
-	postTo(t, book, sub, acct, 20_000, ledger.Debit, accrualStart.AddDate(0, 0, 5))
+	postTo(t, reg, book, sub, acct, 20_000, ledger.Debit, accrualStart.AddDate(0, 0, 5))
 
 	assertNoError(t, reg.AccrueOverdraft(ctx, acct.ID, accrualStart.AddDate(0, 0, 1)))
 	got, err := reg.GetAccount(ctx, acct.ID)
@@ -1594,7 +1652,7 @@ func TestSettingOverdraftTermsAccruesAndResetsNothing(t *testing.T) {
 	ctx := context.Background()
 	reg, book, sub, acct, clock := newOverdraftAccount(t)
 
-	postTo(t, book, sub, acct, 20_000, ledger.Debit, accrualStart)
+	postTo(t, reg, book, sub, acct, 20_000, ledger.Debit, accrualStart)
 	for i := 1; i <= 10; i++ {
 		assertNoError(t, reg.AccrueOverdraft(ctx, acct.ID, accrualStart.AddDate(0, 0, i)))
 	}
@@ -1625,7 +1683,7 @@ func TestOverdraftCorrectionRefundsWhatTheReceivableCannotAbsorb(t *testing.T) {
 	ctx := context.Background()
 	reg, book, sub, acct, _ := newOverdraftAccount(t)
 
-	postTo(t, book, sub, acct, 20_000, ledger.Debit, accrualStart)
+	postTo(t, reg, book, sub, acct, 20_000, ledger.Debit, accrualStart)
 	for i := 1; i <= 30; i++ {
 		assertNoError(t, reg.AccrueOverdraft(ctx, acct.ID, accrualStart.AddDate(0, 0, i)))
 	}
@@ -1634,24 +1692,24 @@ func TestOverdraftCorrectionRefundsWhatTheReceivableCannotAbsorb(t *testing.T) {
 	assertNoError(t, err)
 	charged, err := reg.GetAccount(ctx, acct.ID)
 	assertNoError(t, err)
-	recvAfterCharge, err := book.BookBalance(ctx, charged.InterestGL.Total())
+	recvAfterCharge, err := book.BookBalance(ctx, owed(t, reg, charged.ID))
 	assertNoError(t, err)
 	if recvAfterCharge != 0 {
 		t.Fatalf("receivable after capitalisation = %d, want 0", recvAfterCharge)
 	}
-	balBefore, err := book.BookBalance(ctx, acct.GLAccount.Total())
+	balBefore, err := book.BookBalance(ctx, where(t, reg, acct.ID))
 	assertNoError(t, err)
 
 	// Now say he was never overdrawn at all: a credit backdated to day 1.
-	postTo(t, book, sub, acct, 20_000, ledger.Credit, accrualStart)
+	postTo(t, reg, book, sub, acct, 20_000, ledger.Credit, accrualStart)
 	assertNoError(t, reg.AccrueOverdraft(ctx, acct.ID, accrualStart.AddDate(0, 0, 31)))
 
-	recv, err := book.BookBalance(ctx, charged.InterestGL.Total())
+	recv, err := book.BookBalance(ctx, owed(t, reg, charged.ID))
 	assertNoError(t, err)
 	if recv < 0 {
 		t.Errorf("receivable = %d; the correction must clamp rather than drive an asset negative", recv)
 	}
-	balAfter, err := book.BookBalance(ctx, acct.GLAccount.Total())
+	balAfter, err := book.BookBalance(ctx, where(t, reg, acct.ID))
 	assertNoError(t, err)
 	if balAfter <= balBefore {
 		t.Errorf("customer balance %d -> %d; the unabsorbed correction must be refunded to them", balBefore, balAfter)
@@ -1676,11 +1734,11 @@ func TestOverdraftCorrectionRefundsWhatTheReceivableCannotAbsorb(t *testing.T) {
 	// values, so the posting still lands, but the record it is supposed to
 	// mirror is 247 cents adrift and stays that way. api/dto_deposit.go
 	// reports that record straight through.
-	postTo(t, book, sub, acct, 20_000, ledger.Debit, accrualStart.AddDate(0, 0, 32))
+	postTo(t, reg, book, sub, acct, 20_000, ledger.Debit, accrualStart.AddDate(0, 0, 32))
 	assertNoError(t, reg.AccrueOverdraft(ctx, acct.ID, accrualStart.AddDate(0, 0, 33)))
 	next, err := reg.GetAccount(ctx, acct.ID)
 	assertNoError(t, err)
-	nextRecv, err := book.BookBalance(ctx, next.InterestGL.Total())
+	nextRecv, err := book.BookBalance(ctx, owed(t, reg, next.ID))
 	assertNoError(t, err)
 	if nextRecv <= 0 {
 		t.Errorf("receivable = %d after two freshly overdrawn days, want it to have moved", nextRecv)
@@ -1711,7 +1769,7 @@ func TestARepricingPricesItsOwnEffectiveDay(t *testing.T) {
 	ctx := context.Background()
 	reg, book, sub, acct, clock := newOverdraftAccount(t)
 
-	postTo(t, book, sub, acct, 20_000, ledger.Debit, accrualStart)
+	postTo(t, reg, book, sub, acct, 20_000, ledger.Debit, accrualStart)
 	for i := 1; i <= 9; i++ {
 		assertNoError(t, reg.AccrueOverdraft(ctx, acct.ID, accrualStart.AddDate(0, 0, i)))
 	}
@@ -1746,7 +1804,7 @@ func TestARepricingPricesItsOwnEffectiveDay(t *testing.T) {
 	assertNoError(t, err)
 	assertEqual(t, "accrued after repricing", got.Accrued, interest.Accrued(98_630_136))
 
-	receivable, err := book.BookBalance(ctx, got.InterestGL.Total())
+	receivable, err := book.BookBalance(ctx, owed(t, reg, got.ID))
 	assertNoError(t, err)
 	assertEqual(t, "receivable after repricing", receivable, ledger.Amount(99))
 	if receivable != got.Accrued.Minor() {
@@ -1783,7 +1841,7 @@ func TestOverdraftRepricingDoesNotRewindTheAccrualWindow(t *testing.T) {
 	ctx := context.Background()
 	reg, book, sub, acct, clock := newOverdraftAccount(t)
 
-	postTo(t, book, sub, acct, 20_000, ledger.Debit, accrualStart)
+	postTo(t, reg, book, sub, acct, 20_000, ledger.Debit, accrualStart)
 
 	// An end-of-day run for day 100, while the clock still reads day 0. One
 	// hundred days at 15% on €200: 100 × 8_219_178 = 821_917_800 -> 821 cents.
@@ -1832,7 +1890,7 @@ func TestOverdraftRepricingDoesNotRewindTheAccrualWindow(t *testing.T) {
 	assertNoError(t, err)
 	assertEqual(t, "accrued a day past the repricing", after.Accrued, interest.Accrued(863_013_690))
 
-	receivable, err := book.BookBalance(ctx, after.InterestGL.Total())
+	receivable, err := book.BookBalance(ctx, owed(t, reg, after.ID))
 	assertNoError(t, err)
 	// 863_013_690 sub-minor units rounds to 863 cents.
 	assertEqual(t, "receivable after the repricing", receivable, ledger.Amount(863))
@@ -1850,11 +1908,11 @@ func TestOverdraftAccrualUnderThirty360SkipsThe31st(t *testing.T) {
 	clock.set(start)
 	reg, book, sub, prd := newTestRegisterOn(t, clock.now)
 
-	acct, err := reg.OpenAccount(ctx, sub, "Bruno", testAsset, prd, 0)
+	acct, err := reg.OpenAccount(ctx, "Bruno", testAsset, prd, 0)
 	assertNoError(t, err)
 	_, err = setTerms(ctx, reg, acct.ID, 50_000, 150_000, 0, interest.Thirty360, time.Time{})
 	assertNoError(t, err)
-	postTo(t, book, sub, acct, 10_000, ledger.Debit, start)
+	postTo(t, reg, book, sub, acct, 10_000, ledger.Debit, start)
 
 	// €100 at 15% over a 360-day year: 10_000 × 150_000 / 360 = 4_166_666.67,
 	// truncated to 4_166_666 a day.
@@ -1895,20 +1953,20 @@ func TestOverdraftAccrualUnderThirty360SkipsThe31st(t *testing.T) {
 // owed to the customer keeps arriving while they cannot take any out.
 func TestCheckCredit_RefusesOnlyAClosedAccount(t *testing.T) {
 	ctx := context.Background()
-	reg, _, deposits, prd := newTestRegister(t)
+	reg, _, _, prd := newTestRegister(t)
 
-	active, _ := reg.OpenAccount(ctx, deposits, "Active", testAsset, prd, 0)
+	active, _ := reg.OpenAccount(ctx, "Active", testAsset, prd, 0)
 	assertNoError(t, reg.CheckCredit(ctx, active.ID))
 
-	dormant, _ := reg.OpenAccount(ctx, deposits, "Dormant", testAsset, prd, 0)
+	dormant, _ := reg.OpenAccount(ctx, "Dormant", testAsset, prd, 0)
 	assertNoError(t, reg.MarkDormant(ctx, dormant.ID))
 	assertNoError(t, reg.CheckCredit(ctx, dormant.ID))
 
-	frozen, _ := reg.OpenAccount(ctx, deposits, "Frozen", testAsset, prd, 0)
+	frozen, _ := reg.OpenAccount(ctx, "Frozen", testAsset, prd, 0)
 	assertNoError(t, reg.Freeze(ctx, frozen.ID))
 	assertNoError(t, reg.CheckCredit(ctx, frozen.ID))
 
-	closed, _ := reg.OpenAccount(ctx, deposits, "Closed", testAsset, prd, 0)
+	closed, _ := reg.OpenAccount(ctx, "Closed", testAsset, prd, 0)
 	assertNoError(t, reg.Close(ctx, closed.ID))
 	assertError(t, reg.CheckCredit(ctx, closed.ID), ErrAccountClosed)
 
@@ -1924,7 +1982,7 @@ func TestCheckWithdrawal_NamesDormancy(t *testing.T) {
 	ctx := context.Background()
 	reg, book, deposits, prd := newTestRegister(t)
 	cash := newCashAccount(t, book, deposits)
-	alice, _ := reg.OpenAccount(ctx, deposits, "Alice", testAsset, prd, 0)
+	alice, _ := reg.OpenAccount(ctx, "Alice", testAsset, prd, 0)
 	fund(t, reg, cash, alice, 10000)
 
 	assertNoError(t, reg.MarkDormant(ctx, alice.ID))
@@ -1965,12 +2023,12 @@ func TestPublishingAVersionRepricesEveryFloatingAccount(t *testing.T) {
 	assertNoError(t, err)
 
 	const drawn ledger.Amount = 100_000
-	one, err := reg.OpenAccount(ctx, sub, "Bruno", testAsset, basic.ID, 500_000)
+	one, err := reg.OpenAccount(ctx, "Bruno", testAsset, basic.ID, 500_000)
 	assertNoError(t, err)
-	two, err := reg.OpenAccount(ctx, sub, "Bella", testAsset, basic.ID, 500_000)
+	two, err := reg.OpenAccount(ctx, "Bella", testAsset, basic.ID, 500_000)
 	assertNoError(t, err)
-	overdrawValueDated(t, book, sub, one, drawn, day(0), day(0))
-	overdrawValueDated(t, book, sub, two, drawn, day(0), day(0))
+	overdrawValueDated(t, reg, book, sub, one, drawn, day(0), day(0))
+	overdrawValueDated(t, reg, book, sub, two, drawn, day(0), day(0))
 
 	// Repriced from day 30, published on day 10 — forward-dated, which is the
 	// only direction the catalogue allows.
@@ -2026,9 +2084,9 @@ func TestAnOverlayOutranksTheProductAndClearsBackToIt(t *testing.T) {
 	}
 
 	const drawn ledger.Amount = 100_000
-	acct, err := reg.OpenAccount(ctx, sub, "Bruno", testAsset, basic.ID, 500_000)
+	acct, err := reg.OpenAccount(ctx, "Bruno", testAsset, basic.ID, 500_000)
 	assertNoError(t, err)
-	overdrawValueDated(t, book, sub, acct, drawn, day(0), day(0))
+	overdrawValueDated(t, reg, book, sub, acct, drawn, day(0), day(0))
 
 	// Negotiated 9% from day 10, cleared from day 40.
 	_, err = reg.SetOverdraftPricingOverlay(ctx, acct.ID,
@@ -2065,7 +2123,7 @@ func TestPublishingAVersionCannotMoveTheAvailableBalance(t *testing.T) {
 	day := func(n int) time.Time { return origin.AddDate(0, 0, n) }
 
 	clock := &mutableClock{at: day(0)}
-	reg, cat, _, sub := newTestRegisterWithCatalogue(t, clock.now)
+	reg, cat, _, _ := newTestRegisterWithCatalogue(t, clock.now)
 
 	basic, err := cat.CreateProduct(ctx, "Basic", product.CurrentAccount)
 	assertNoError(t, err)
@@ -2074,7 +2132,7 @@ func TestPublishingAVersionCannotMoveTheAvailableBalance(t *testing.T) {
 	_, err = cat.PublishVersion(ctx, basic.ID, day(0))
 	assertNoError(t, err)
 
-	acct, err := reg.OpenAccount(ctx, sub, "Bruno", testAsset, basic.ID, 500_000)
+	acct, err := reg.OpenAccount(ctx, "Bruno", testAsset, basic.ID, 500_000)
 	assertNoError(t, err)
 	before, err := reg.GetBalance(ctx, acct.ID)
 	assertNoError(t, err)
@@ -2116,9 +2174,9 @@ func TestATamperedVersionStopsTheAccrual(t *testing.T) {
 	published, err := cat.PublishVersion(ctx, basic.ID, day(0))
 	assertNoError(t, err)
 
-	acct, err := reg.OpenAccount(ctx, sub, "Bruno", testAsset, basic.ID, 500_000)
+	acct, err := reg.OpenAccount(ctx, "Bruno", testAsset, basic.ID, 500_000)
 	assertNoError(t, err)
-	overdrawValueDated(t, book, sub, acct, 100_000, day(0), day(0))
+	overdrawValueDated(t, reg, book, sub, acct, 100_000, day(0), day(0))
 
 	// Straight through the store, as a manual UPDATE would: the pricing moves
 	// and the hash is left behind.
@@ -2144,9 +2202,9 @@ func TestOpenAccountRefusesABadProduct(t *testing.T) {
 	day := func(n int) time.Time { return origin.AddDate(0, 0, n) }
 
 	clock := &mutableClock{at: day(0)}
-	reg, cat, _, sub := newTestRegisterWithCatalogue(t, clock.now)
+	reg, cat, _, _ := newTestRegisterWithCatalogue(t, clock.now)
 
-	if _, err := reg.OpenAccount(ctx, sub, "Bruno", testAsset, "prd_nope", 0); !errors.Is(err, product.ErrProductNotFound) {
+	if _, err := reg.OpenAccount(ctx, "Bruno", testAsset, "prd_nope", 0); !errors.Is(err, product.ErrProductNotFound) {
 		t.Errorf("unknown product: %v, want ErrProductNotFound", err)
 	}
 
@@ -2155,7 +2213,7 @@ func TestOpenAccountRefusesABadProduct(t *testing.T) {
 	// turning into an accrual failure weeks later.
 	unpriced, err := cat.CreateProduct(ctx, "Unpriced", product.CurrentAccount)
 	assertNoError(t, err)
-	if _, err := reg.OpenAccount(ctx, sub, "Bruno", testAsset, unpriced.ID, 0); !errors.Is(err, product.ErrVersionNotFound) {
+	if _, err := reg.OpenAccount(ctx, "Bruno", testAsset, unpriced.ID, 0); !errors.Is(err, product.ErrVersionNotFound) {
 		t.Errorf("unpriced product: %v, want ErrVersionNotFound", err)
 	}
 
@@ -2167,12 +2225,12 @@ func TestOpenAccountRefusesABadProduct(t *testing.T) {
 	assertNoError(t, err)
 	_, err = cat.PublishVersion(ctx, basic.ID, day(0))
 	assertNoError(t, err)
-	acct, err := reg.OpenAccount(ctx, sub, "Bruno", testAsset, basic.ID, 0)
+	acct, err := reg.OpenAccount(ctx, "Bruno", testAsset, basic.ID, 0)
 	assertNoError(t, err)
 	_, err = cat.RetireProduct(ctx, basic.ID)
 	assertNoError(t, err)
 
-	if _, err := reg.OpenAccount(ctx, sub, "Bella", testAsset, basic.ID, 0); !errors.Is(err, product.ErrProductRetired) {
+	if _, err := reg.OpenAccount(ctx, "Bella", testAsset, basic.ID, 0); !errors.Is(err, product.ErrProductRetired) {
 		t.Errorf("retired product: %v, want ErrProductRetired", err)
 	}
 	if _, err := reg.GetAccountWithTerms(ctx, acct.ID); err != nil {
@@ -2205,9 +2263,9 @@ func TestChangeProductPricesEachDayFromTheProductInForceOnIt(t *testing.T) {
 	}
 
 	const drawn ledger.Amount = 100_000
-	acct, err := reg.OpenAccount(ctx, sub, "Bruno", testAsset, basic.ID, 500_000)
+	acct, err := reg.OpenAccount(ctx, "Bruno", testAsset, basic.ID, 500_000)
 	assertNoError(t, err)
-	overdrawValueDated(t, book, sub, acct, drawn, day(0), day(0))
+	overdrawValueDated(t, reg, book, sub, acct, drawn, day(0), day(0))
 
 	_, err = reg.ChangeProduct(ctx, acct.ID, premium.ID, day(20))
 	assertNoError(t, err)
@@ -2237,7 +2295,7 @@ func TestALimitChangeKeepsTheOverlayAndTheProduct(t *testing.T) {
 	day := func(n int) time.Time { return origin.AddDate(0, 0, n) }
 
 	clock := &mutableClock{at: day(0)}
-	reg, cat, _, sub := newTestRegisterWithCatalogue(t, clock.now)
+	reg, cat, _, _ := newTestRegisterWithCatalogue(t, clock.now)
 
 	basic, err := cat.CreateProduct(ctx, "Basic", product.CurrentAccount)
 	assertNoError(t, err)
@@ -2246,7 +2304,7 @@ func TestALimitChangeKeepsTheOverlayAndTheProduct(t *testing.T) {
 	_, err = cat.PublishVersion(ctx, basic.ID, day(0))
 	assertNoError(t, err)
 
-	acct, err := reg.OpenAccount(ctx, sub, "Bruno", testAsset, basic.ID, 500_000)
+	acct, err := reg.OpenAccount(ctx, "Bruno", testAsset, basic.ID, 500_000)
 	assertNoError(t, err)
 	_, err = reg.SetOverdraftPricingOverlay(ctx, acct.ID,
 		&product.OverdraftPricing{Rate: 90_000, DayCount: interest.ACT365}, day(5))

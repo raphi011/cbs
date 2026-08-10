@@ -350,6 +350,20 @@ func (s *Book) createAccountTx(ctx context.Context, tx Tx, subledgerID Subledger
 // share one. Nothing enforces that for subledgers created directly; Ensure
 // simply takes the first match, in listing order.
 func (s *Book) EnsureSubledgerTx(ctx context.Context, tx Tx, ledgerID LedgerID, name string) (Subledger, error) {
+	found, err := s.FindSubledgerTx(ctx, tx, ledgerID, name)
+	if err == nil {
+		return found, nil
+	}
+	if !errors.Is(err, ErrSubledgerNotFound) {
+		return Subledger{}, err
+	}
+	return s.CreateSubledgerTx(ctx, tx, ledgerID, name)
+}
+
+// FindSubledgerTx resolves the subledger with this name under this ledger, and
+// returns ErrSubledgerNotFound rather than creating one. It is EnsureSubledgerTx
+// for a read path; see FindAccountTx for why the two are separate.
+func (s *Book) FindSubledgerTx(ctx context.Context, tx Tx, ledgerID LedgerID, name string) (Subledger, error) {
 	if err := ValidateText("name", name); err != nil {
 		return Subledger{}, err
 	}
@@ -362,7 +376,7 @@ func (s *Book) EnsureSubledgerTx(ctx context.Context, tx Tx, ledgerID LedgerID, 
 			return sl, nil
 		}
 	}
-	return s.CreateSubledgerTx(ctx, tx, ledgerID, name)
+	return Subledger{}, fmt.Errorf("%w: %s under ledger %s", ErrSubledgerNotFound, name, ledgerID)
 }
 
 // EnsureAccountTx returns the plain account with this name, type and asset in
@@ -390,6 +404,37 @@ func (s *Book) EnsureControlAccountTx(ctx context.Context, tx Tx, subledgerID Su
 }
 
 func (s *Book) ensureAccountTx(ctx context.Context, tx Tx, subledgerID SubledgerID, name string, accountType AccountType, asset AssetCode, control bool) (Account, error) {
+	found, err := s.findAccountTx(ctx, tx, subledgerID, name, accountType, asset, control)
+	if err == nil {
+		return found, nil
+	}
+	if !errors.Is(err, ErrAccountNotFound) {
+		return Account{}, err
+	}
+	return s.createAccountTx(ctx, tx, subledgerID, name, accountType, asset, control)
+}
+
+// FindAccountTx resolves the plain account with this name, type and asset in
+// this subledger, and returns ErrAccountNotFound rather than creating one.
+//
+// It is what a READ path resolves a well-known account with. Ensure would serve
+// on any path that has already opened one — the account is there by then — but a
+// resolution that may write is one new caller away from a Create inside a View,
+// and the store would refuse that at a depth where the domain has nothing to say
+// about it.
+//
+// The match is EnsureAccountTx's, which is where the argument for matching on
+// all four is written.
+func (s *Book) FindAccountTx(ctx context.Context, tx Tx, subledgerID SubledgerID, name string, accountType AccountType, asset AssetCode) (Account, error) {
+	return s.findAccountTx(ctx, tx, subledgerID, name, accountType, asset, false)
+}
+
+// FindControlAccountTx is FindAccountTx for an account that pools obligors.
+func (s *Book) FindControlAccountTx(ctx context.Context, tx Tx, subledgerID SubledgerID, name string, accountType AccountType, asset AssetCode) (Account, error) {
+	return s.findAccountTx(ctx, tx, subledgerID, name, accountType, asset, true)
+}
+
+func (s *Book) findAccountTx(ctx context.Context, tx Tx, subledgerID SubledgerID, name string, accountType AccountType, asset AssetCode, control bool) (Account, error) {
 	if err := ValidateText("name", name); err != nil {
 		return Account{}, err
 	}
@@ -402,7 +447,7 @@ func (s *Book) ensureAccountTx(ctx context.Context, tx Tx, subledgerID Subledger
 			return a, nil
 		}
 	}
-	return s.createAccountTx(ctx, tx, subledgerID, name, accountType, asset, control)
+	return Account{}, fmt.Errorf("%w: %s in subledger %s", ErrAccountNotFound, name, subledgerID)
 }
 
 // GetAccount retrieves an account by its ID.

@@ -21,7 +21,7 @@ const (
 )
 
 // disbursedLoan is a €10,000 five-year annuity at 6%, paid out on 15 January.
-func disbursedLoan(t *testing.T) (*lending.Portfolio, *ledger.Book, lending.Facility, ledger.AccountID) {
+func disbursedLoan(t *testing.T) (*lending.Portfolio, *ledger.Book, lending.Facility, ledger.Position) {
 	t.Helper()
 	p, book, _, loan, customer := disbursedLoanIn(t)
 	return p, book, loan, customer
@@ -31,7 +31,7 @@ func disbursedLoan(t *testing.T) (*lending.Portfolio, *ledger.Book, lending.Faci
 // postTo has to create its counterparty accounts somewhere, and a fixture that
 // kept the subledger to itself would make every backdating test below build its
 // own loan by hand.
-func disbursedLoanIn(t *testing.T) (*lending.Portfolio, *ledger.Book, ledger.SubledgerID, lending.Facility, ledger.AccountID) {
+func disbursedLoanIn(t *testing.T) (*lending.Portfolio, *ledger.Book, ledger.SubledgerID, lending.Facility, ledger.Position) {
 	t.Helper()
 	ctx := context.Background()
 	p, book, sub, customer := newTestPortfolio(t)

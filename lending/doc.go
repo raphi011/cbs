@@ -30,9 +30,10 @@
 // one, not a Loans product.
 //
 // It is also what keeps this package from importing deposit. Money moves
-// against a generic ledger.AccountID counterparty, the way deposit.CaptureHold
-// already works, so a disbursement into a customer's current account and one
-// into the vault are the same call. A repayment that must also respect a
+// against a generic ledger.Position counterparty, the way deposit.CaptureHold
+// already works, so a disbursement into a customer's current account — an
+// obligor under that bank's deposit control account — and one into the vault are
+// the same call. A repayment that must also respect a
 // deposit account's status is orchestrated one layer up, through the same Tx.
 //
 // # Units of work

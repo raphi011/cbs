@@ -200,7 +200,7 @@ func (s *Server) handleDisburse(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	fid := lending.FacilityID(r.PathValue("fid"))
-	tx, err := p.Lending.Disburse(r.Context(), fid, ledger.AccountID(req.Counterparty), firstDue, req.Description)
+	tx, err := p.Lending.Disburse(r.Context(), fid, ledger.AccountID(req.Counterparty).For(req.Subsidiary), firstDue, req.Description)
 	if err != nil {
 		writeError(w, err)
 		return
@@ -224,7 +224,7 @@ func (s *Server) handleDraw(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	fid := lending.FacilityID(r.PathValue("fid"))
-	tx, err := p.Lending.Draw(r.Context(), fid, ledger.AccountID(req.Counterparty), ledger.Amount(req.Amount), req.Description)
+	tx, err := p.Lending.Draw(r.Context(), fid, ledger.AccountID(req.Counterparty).For(req.Subsidiary), ledger.Amount(req.Amount), req.Description)
 	if err != nil {
 		writeError(w, err)
 		return
@@ -275,7 +275,11 @@ func (s *Server) handleRepay(w http.ResponseWriter, r *http.Request) {
 		if !ok {
 			return fmt.Errorf("api: store transaction does not span the lending layer")
 		}
-		out, err = p.Lending.RepayTx(ctx, lendingTx, fid, acct.GLAccount,
+		from, err := p.Deposit.PositionTx(ctx, tx, acct.ID)
+		if err != nil {
+			return err
+		}
+		out, err = p.Lending.RepayTx(ctx, lendingTx, fid, from,
 			ledger.Amount(req.Amount), date, req.Description)
 		return err
 	})
@@ -363,7 +367,7 @@ func (s *Server) handleRefundInterest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	fid := lending.FacilityID(r.PathValue("fid"))
-	tx, err := p.Lending.RefundInterest(r.Context(), fid, ledger.AccountID(req.Counterparty),
+	tx, err := p.Lending.RefundInterest(r.Context(), fid, ledger.AccountID(req.Counterparty).For(req.Subsidiary),
 		ledger.Amount(req.Amount), date, req.Description)
 	if err != nil {
 		writeError(w, err)

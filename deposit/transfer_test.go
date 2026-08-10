@@ -30,9 +30,9 @@ func twoCustomers(t *testing.T, limit ledger.Amount) (*Register, Account, Accoun
 	reg, book, deposits, prd := newTestRegister(t)
 	cash := newCashAccount(t, book, deposits)
 
-	payer, err := reg.OpenAccount(ctx, deposits, "Alice", testAsset, prd, limit)
+	payer, err := reg.OpenAccount(ctx, "Alice", testAsset, prd, limit)
 	assertNoError(t, err)
-	payee, err := reg.OpenAccount(ctx, deposits, "Bob", testAsset, prd, 0)
+	payee, err := reg.OpenAccount(ctx, "Bob", testAsset, prd, 0)
 	assertNoError(t, err)
 	fund(t, reg, cash, payer, 1000)
 	return reg, payer, payee
@@ -64,19 +64,25 @@ func TestATransferMovesMoneyBetweenTwoAccountsInOneBook(t *testing.T) {
 	assertBooks(t, reg, payer, payee, 750, 250)
 
 	// ONE transaction with both legs on it, which is what makes the movement
-	// atomic rather than two postings that could disagree.
+	// atomic rather than two postings that could disagree — and both legs name
+	// ONE account, so the bank's customer-deposit total does not move.
 	if len(glTx.Entries) != 2 {
 		t.Fatalf("the transfer posted %d entries, want 2", len(glTx.Entries))
 	}
+	control := where(t, reg, payer.ID).Account
 	for _, e := range glTx.Entries {
 		switch {
-		case e.AccountID == payer.GLAccount && e.Direction == ledger.Debit:
-		case e.AccountID == payee.GLAccount && e.Direction == ledger.Credit:
+		case e.AccountID == control && e.Subsidiary == string(payer.ID) && e.Direction == ledger.Debit:
+		case e.AccountID == control && e.Subsidiary == string(payee.ID) && e.Direction == ledger.Credit:
 		default:
-			t.Errorf("unexpected leg: %s %v %d", e.AccountID, e.Direction, e.Amount)
+			t.Errorf("unexpected leg: %s/%s %v %d", e.AccountID, e.Subsidiary, e.Direction, e.Amount)
 		}
 		assertEqual(t, "leg amount", e.Amount, 250)
 	}
+
+	pooled, err := reg.Book().BookBalance(ctx, control.Total())
+	assertNoError(t, err)
+	assertEqual(t, "the pool is unmoved by a transfer within it", pooled, ledger.Amount(1000))
 }
 
 func TestATransferIsOneAuditEventKeyedByThePayer(t *testing.T) {
@@ -214,9 +220,9 @@ func TestATransferBetweenTwoAssetsIsRefusedByName(t *testing.T) {
 	reg, book, deposits, prd := newTestRegister(t)
 	cash := newCashAccount(t, book, deposits)
 
-	payer, err := reg.OpenAccount(ctx, deposits, "Alice", testAsset, prd, 0)
+	payer, err := reg.OpenAccount(ctx, "Alice", testAsset, prd, 0)
 	assertNoError(t, err)
-	payee, err := reg.OpenAccount(ctx, deposits, "Bob", otherAsset, prd, 0)
+	payee, err := reg.OpenAccount(ctx, "Bob", otherAsset, prd, 0)
 	assertNoError(t, err)
 	fund(t, reg, cash, payer, 1000)
 
@@ -270,11 +276,11 @@ func TestTwoTransfersOutOfOneAccountCannotBothSpendTheSameMoney(t *testing.T) {
 	reg, book, deposits, prd := newTestRegisterOnFile(t)
 	cash := newCashAccount(t, book, deposits)
 
-	payer, err := reg.OpenAccount(ctx, deposits, "Alice", testAsset, prd, 0)
+	payer, err := reg.OpenAccount(ctx, "Alice", testAsset, prd, 0)
 	assertNoError(t, err)
-	first, err := reg.OpenAccount(ctx, deposits, "Bob", testAsset, prd, 0)
+	first, err := reg.OpenAccount(ctx, "Bob", testAsset, prd, 0)
 	assertNoError(t, err)
-	second, err := reg.OpenAccount(ctx, deposits, "Carol", testAsset, prd, 0)
+	second, err := reg.OpenAccount(ctx, "Carol", testAsset, prd, 0)
 	assertNoError(t, err)
 	fund(t, reg, cash, payer, 1000)
 
@@ -320,13 +326,13 @@ func newTestRegisterOnFile(t *testing.T) (*Register, *ledger.Book, ledger.Subled
 	assertNoError(t, err)
 	t.Cleanup(func() { assertNoError(t, store.Close()) })
 	book := ledger.NewBook(store, testenv.BankBook, clock)
-	reg := NewRegister(store.Deposit(), book, book.ID(), clock, testIssuer)
 	cat := product.NewCatalogue(store.Product(), book, book.ID(), clock)
 
 	gl, err := book.CreateLedger(ctx, "General Ledger")
 	assertNoError(t, err)
 	deposits, err := book.CreateSubledger(ctx, gl.ID, "Customer Deposits")
 	assertNoError(t, err)
+	reg := NewRegister(store.Deposit(), book, book.ID(), clock, testIssuer, deposits.ID)
 
 	free, err := cat.CreateProduct(ctx, "Basic Current Account", product.CurrentAccount)
 	assertNoError(t, err)

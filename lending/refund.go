@@ -141,7 +141,7 @@ func (p *Portfolio) ListRefundsPayableTx(ctx context.Context, tx Tx) ([]RefundPa
 // It is the mirror of Repay, and every difference between the two follows from
 // the money running the other way.
 //
-// counterparty is any GL account in the facility's asset — the borrower's
+// counterparty is any position in the facility's asset — the borrower's
 // current account, or the vault for a cash refund. This layer does not know what
 // a deposit account is, so a refund that must also respect one's status is
 // orchestrated a layer up, the same way Disburse's payout is.
@@ -181,7 +181,7 @@ func (p *Portfolio) ListRefundsPayableTx(ctx context.Context, tx Tx) ([]RefundPa
 // Returns ErrFacilityNotFound, ErrNoRefundOutstanding when the bank owes this
 // facility nothing, and ErrInvalidAmount for an amount that is not positive or
 // that exceeds what is owed.
-func (p *Portfolio) RefundInterest(ctx context.Context, id FacilityID, counterparty ledger.AccountID, amount ledger.Amount, date time.Time, description string) (ledger.Transaction, error) {
+func (p *Portfolio) RefundInterest(ctx context.Context, id FacilityID, counterparty ledger.Position, amount ledger.Amount, date time.Time, description string) (ledger.Transaction, error) {
 	var out ledger.Transaction
 	err := p.store.Update(ctx, func(ctx context.Context, tx Tx) error {
 		var err error
@@ -192,7 +192,7 @@ func (p *Portfolio) RefundInterest(ctx context.Context, id FacilityID, counterpa
 }
 
 // RefundInterestTx is RefundInterest within a caller-supplied unit of work.
-func (p *Portfolio) RefundInterestTx(ctx context.Context, tx Tx, id FacilityID, counterparty ledger.AccountID, amount ledger.Amount, date time.Time, description string) (ledger.Transaction, error) {
+func (p *Portfolio) RefundInterestTx(ctx context.Context, tx Tx, id FacilityID, counterparty ledger.Position, amount ledger.Amount, date time.Time, description string) (ledger.Transaction, error) {
 	f, err := tx.GetFacility(ctx, p.bookID, id)
 	if err != nil {
 		return ledger.Transaction{}, err
@@ -225,7 +225,7 @@ func (p *Portfolio) RefundInterestTx(ctx context.Context, tx Tx, id FacilityID, 
 		ValueDate:   date,
 		Entries: []ledger.Entry{
 			{AccountID: f.RefundGL, Amount: amount, Direction: ledger.Debit},
-			{AccountID: counterparty, Amount: amount, Direction: ledger.Credit},
+			{AccountID: counterparty.Account, Subsidiary: counterparty.Subsidiary, Amount: amount, Direction: ledger.Credit},
 		},
 	})
 	if err != nil {
@@ -241,7 +241,7 @@ func (p *Portfolio) RefundInterestTx(ctx context.Context, tx Tx, id FacilityID, 
 		"amount":         amount,
 		"remaining":      owed - amount,
 		"account":        string(f.RefundGL),
-		"counterparty":   string(counterparty),
+		"counterparty":   counterparty.String(),
 		"transaction_id": string(glTx.ID),
 	}); err != nil {
 		return ledger.Transaction{}, err

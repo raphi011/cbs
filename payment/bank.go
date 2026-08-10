@@ -397,9 +397,9 @@ func (b *Bank) AccountsFor(asset ledger.AssetCode) (BankAccounts, error) {
 // denominated in asset.
 //
 // Customer deposits are demand-deposit accounts managed by the bank's deposit
-// layer; each is backed by a Liability GL account, since the money belongs to
-// the customer and the bank owes it to them. The account is opened with no
-// overdraft.
+// layer; their money pools in one Liability control account per asset, since it
+// belongs to the customers and the bank owes it to them. The account is opened
+// with no overdraft.
 //
 // The account is opened from the bank's configured ProductID, and is FLOATING:
 // its price is the product's, so a later published version reprices it with no
@@ -410,7 +410,7 @@ func (b *Bank) AccountsFor(asset ledger.AssetCode) (BankAccounts, error) {
 // which is also how to open an account with an overdraft limit, or from a
 // product other than the bank's default.
 func (b *Bank) OpenCustomerAccount(ctx context.Context, name string, asset ledger.AssetCode) (deposit.Account, error) {
-	return b.Deposit.OpenAccount(ctx, b.CustomerSubledger, name, asset, b.ProductID, 0)
+	return b.Deposit.OpenAccount(ctx, name, asset, b.ProductID, 0)
 }
 
 // RunEndOfDay runs this bank's end-of-day batches for one business date: the
@@ -438,13 +438,16 @@ func (b *Bank) RunEndOfDay(ctx context.Context, date time.Time) error {
 	})
 }
 
-// glAccountTx resolves a customer deposit account ID to the backing GL account
-// ID used for ledger postings, within a caller-supplied unit of work. It returns
-// ErrAccountNotInParticipant if the deposit account does not exist at this bank.
-func (b *Bank) glAccountTx(ctx context.Context, tx Tx, id deposit.AccountID) (ledger.AccountID, error) {
-	acct, err := tx.GetDepositAccount(ctx, b.BookID, id)
+// positionTx resolves a customer deposit account ID to the position its money
+// occupies in this bank's ledger — the customer-deposit control account for its
+// asset, under the account's own id — within a caller-supplied unit of work. It
+// returns ErrAccountNotInParticipant if the deposit account does not exist at
+// this bank, and if the bank holds no control line for its asset, which is a
+// chart of accounts this bank cannot post the account's money into either way.
+func (b *Bank) positionTx(ctx context.Context, tx Tx, id deposit.AccountID) (ledger.Position, error) {
+	pos, err := b.Deposit.PositionTx(ctx, tx, id)
 	if err != nil {
-		return "", ErrAccountNotInParticipant
+		return ledger.Position{}, ErrAccountNotInParticipant
 	}
-	return acct.GLAccount, nil
+	return pos, nil
 }

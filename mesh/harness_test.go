@@ -677,7 +677,7 @@ func (h *meshHarness) openCustomer(t *testing.T, p *payment.Bank, name string,
 	asset ledger.AssetCode, overdraft ledger.Amount) deposit.Account {
 
 	t.Helper()
-	acct, err := p.Deposit.OpenAccount(context.Background(), p.CustomerSubledger, name, asset, p.ProductID, overdraft)
+	acct, err := p.Deposit.OpenAccount(context.Background(), name, asset, p.ProductID, overdraft)
 	if err != nil {
 		t.Fatalf("OpenAccount %s (%s): %v", name, asset, err)
 	}

@@ -1594,7 +1594,7 @@ func TestControlCharactersAreRefusedNotStored(t *testing.T) {
 	pid := admitMember(t, h, `{"bic":"BNKADEFFXXX","name":"Bank A","country":"DE"}`, http.StatusAccepted)["id"].(string)
 	did := doJSON(t, bank(h, pid), "POST", "/deposit-accounts", `{"name":"Alice","asset":"EUR","productId":"`+prdOf(t, h, pid)+`"}`, http.StatusCreated)["id"].(string)
 	doJSON(t, bank(h, pid), "POST", "/deposits", `{"account":"`+did+`","amount":100000,"description":"opening"}`, http.StatusOK)
-	gl := doJSON(t, bank(h, pid), "GET", "/deposit-accounts/"+did, "", http.StatusOK)["glAccount"].(string)
+	gl := doJSON(t, bank(h, pid), "GET", "/deposit-accounts/"+did, "", http.StatusOK)["controlAccount"].(string)
 
 	// nul and esc are JSON escapes — six characters in this source file, one
 	// control character by the time encoding/json is done with them. That is
@@ -1607,7 +1607,7 @@ func TestControlCharactersAreRefusedNotStored(t *testing.T) {
 
 	entries := func(first string) string {
 		return `"entries":[{"accountId":"` + first + `","amount":100,"direction":"Debit"},` +
-			`{"accountId":"` + gl + `","amount":100,"direction":"Credit"}]`
+			`{"accountId":"` + gl + `","subsidiary":"` + did + `","amount":100,"direction":"Credit"}]`
 	}
 
 	for _, tc := range []struct{ what, method, path, body string }{
@@ -2314,13 +2314,13 @@ func TestDisburseTermLoanGeneratesSixtyRowSchedule(t *testing.T) {
 	h := newServer(t, nil)
 	pid := admitMember(t, h, `{"bic":"BNKADEFFXXX","name":"Bank A","country":"DE"}`, http.StatusAccepted)["id"].(string)
 	did := doJSON(t, bank(h, pid), "POST", "/deposit-accounts", `{"name":"Alice","asset":"EUR","productId":"`+prdOf(t, h, pid)+`"}`, http.StatusCreated)["id"].(string)
-	gl := doJSON(t, bank(h, pid), "GET", "/deposit-accounts/"+did, "", http.StatusOK)["glAccount"].(string)
+	gl := doJSON(t, bank(h, pid), "GET", "/deposit-accounts/"+did, "", http.StatusOK)["controlAccount"].(string)
 
 	loan := openTermLoan(t, h, pid, 60)
 	fid := loan["id"].(string)
 
 	tx := doJSON(t, bank(h, pid), "POST", "/facilities/"+fid+"/disbursement", `{
-		"counterparty":"`+gl+`","firstDue":"2025-02-15","description":"payout"
+		"counterparty":"`+gl+`","subsidiary":"`+did+`","firstDue":"2025-02-15","description":"payout"
 	}`, http.StatusCreated)
 	if tx["id"] == nil || tx["id"].(string) == "" {
 		t.Fatalf("disbursement did not return a transaction: %v", tx)
@@ -2338,7 +2338,7 @@ func TestDisburseTermLoanGeneratesSixtyRowSchedule(t *testing.T) {
 	assertEqual(t, "status after disbursement", got["status"].(string), "Active")
 
 	assertStatus(t, bank(h, pid), "POST", "/facilities/"+fid+"/disbursement", `{
-		"counterparty":"`+gl+`","firstDue":"2025-02-15","description":"again"
+		"counterparty":"`+gl+`","subsidiary":"`+did+`","firstDue":"2025-02-15","description":"again"
 	}`, http.StatusUnprocessableEntity)
 }
 
@@ -2350,22 +2350,22 @@ func TestDrawPastCommitmentReturns422(t *testing.T) {
 	h := newServer(t, nil)
 	pid := admitMember(t, h, `{"bic":"BNKADEFFXXX","name":"Bank A","country":"DE"}`, http.StatusAccepted)["id"].(string)
 	did := doJSON(t, bank(h, pid), "POST", "/deposit-accounts", `{"name":"Alice","asset":"EUR","productId":"`+prdOf(t, h, pid)+`"}`, http.StatusCreated)["id"].(string)
-	gl := doJSON(t, bank(h, pid), "GET", "/deposit-accounts/"+did, "", http.StatusOK)["glAccount"].(string)
+	gl := doJSON(t, bank(h, pid), "GET", "/deposit-accounts/"+did, "", http.StatusOK)["controlAccount"].(string)
 
 	line := openRevolvingLine(t, h, pid, 100000)
 	fid := line["id"].(string)
 
 	assertStatus(t, bank(h, pid), "POST", "/facilities/"+fid+"/draws", `{
-		"counterparty":"`+gl+`","amount":60000,"description":"draw 1"
+		"counterparty":"`+gl+`","subsidiary":"`+did+`","amount":60000,"description":"draw 1"
 	}`, http.StatusCreated)
 
 	loan := openTermLoan(t, h, pid, 12)
 	assertStatus(t, bank(h, pid), "POST", "/facilities/"+loan["id"].(string)+"/draws", `{
-		"counterparty":"`+gl+`","amount":1000,"description":"nope"
+		"counterparty":"`+gl+`","subsidiary":"`+did+`","amount":1000,"description":"nope"
 	}`, http.StatusUnprocessableEntity)
 
 	assertStatus(t, bank(h, pid), "POST", "/facilities/"+fid+"/draws", `{
-		"counterparty":"`+gl+`","amount":60000,"description":"draw 2"
+		"counterparty":"`+gl+`","subsidiary":"`+did+`","amount":60000,"description":"draw 2"
 	}`, http.StatusUnprocessableEntity)
 
 	got := doJSON(t, bank(h, pid), "GET", "/facilities/"+fid, "", http.StatusOK)
@@ -2379,12 +2379,12 @@ func TestRepayFromDepositAccount(t *testing.T) {
 	h := newServer(t, nil)
 	pid := admitMember(t, h, `{"bic":"BNKADEFFXXX","name":"Bank A","country":"DE"}`, http.StatusAccepted)["id"].(string)
 	did := doJSON(t, bank(h, pid), "POST", "/deposit-accounts", `{"name":"Alice","asset":"EUR","productId":"`+prdOf(t, h, pid)+`"}`, http.StatusCreated)["id"].(string)
-	gl := doJSON(t, bank(h, pid), "GET", "/deposit-accounts/"+did, "", http.StatusOK)["glAccount"].(string)
+	gl := doJSON(t, bank(h, pid), "GET", "/deposit-accounts/"+did, "", http.StatusOK)["controlAccount"].(string)
 
 	loan := openTermLoan(t, h, pid, 12)
 	fid := loan["id"].(string)
 	doJSON(t, bank(h, pid), "POST", "/facilities/"+fid+"/disbursement", `{
-		"counterparty":"`+gl+`","firstDue":"2025-02-15","description":"payout"
+		"counterparty":"`+gl+`","subsidiary":"`+did+`","firstDue":"2025-02-15","description":"payout"
 	}`, http.StatusCreated)
 
 	tx := doJSON(t, bank(h, pid), "POST", "/facilities/"+fid+"/repayments", `{
@@ -2409,12 +2409,12 @@ func TestRepayExceedingAvailableBalanceReturns422(t *testing.T) {
 	h := newServer(t, nil)
 	pid := admitMember(t, h, `{"bic":"BNKADEFFXXX","name":"Bank A","country":"DE"}`, http.StatusAccepted)["id"].(string)
 	did := doJSON(t, bank(h, pid), "POST", "/deposit-accounts", `{"name":"Alice","asset":"EUR","productId":"`+prdOf(t, h, pid)+`"}`, http.StatusCreated)["id"].(string)
-	gl := doJSON(t, bank(h, pid), "GET", "/deposit-accounts/"+did, "", http.StatusOK)["glAccount"].(string)
+	gl := doJSON(t, bank(h, pid), "GET", "/deposit-accounts/"+did, "", http.StatusOK)["controlAccount"].(string)
 
 	loan := openTermLoan(t, h, pid, 12)
 	fid := loan["id"].(string)
 	doJSON(t, bank(h, pid), "POST", "/facilities/"+fid+"/disbursement", `{
-		"counterparty":"`+gl+`","firstDue":"2025-02-15","description":"payout"
+		"counterparty":"`+gl+`","subsidiary":"`+did+`","firstDue":"2025-02-15","description":"payout"
 	}`, http.StatusCreated)
 
 	// Alice's account holds exactly the disbursed €10,000 and no overdraft —
@@ -2437,12 +2437,12 @@ func TestChargeInterestOnRevolvingLine(t *testing.T) {
 	h := newServer(t, nil)
 	pid := admitMember(t, h, `{"bic":"BNKADEFFXXX","name":"Bank A","country":"DE"}`, http.StatusAccepted)["id"].(string)
 	did := doJSON(t, bank(h, pid), "POST", "/deposit-accounts", `{"name":"Alice","asset":"EUR","productId":"`+prdOf(t, h, pid)+`"}`, http.StatusCreated)["id"].(string)
-	gl := doJSON(t, bank(h, pid), "GET", "/deposit-accounts/"+did, "", http.StatusOK)["glAccount"].(string)
+	gl := doJSON(t, bank(h, pid), "GET", "/deposit-accounts/"+did, "", http.StatusOK)["controlAccount"].(string)
 
 	line := openRevolvingLine(t, h, pid, 500000)
 	fid := line["id"].(string)
 	doJSON(t, bank(h, pid), "POST", "/facilities/"+fid+"/draws", `{
-		"counterparty":"`+gl+`","amount":200000,"description":"draw"
+		"counterparty":"`+gl+`","subsidiary":"`+did+`","amount":200000,"description":"draw"
 	}`, http.StatusCreated)
 
 	// Accrue over a month, then bill the cycle. The response carries BOTH
@@ -2491,12 +2491,12 @@ func TestChargeInterestBillsACycleWithNothingToPost(t *testing.T) {
 	h := newServer(t, nil)
 	pid := admitMember(t, h, `{"bic":"BNKADEFFXXX","name":"Bank A","country":"DE"}`, http.StatusAccepted)["id"].(string)
 	did := doJSON(t, bank(h, pid), "POST", "/deposit-accounts", `{"name":"Alice","asset":"EUR","productId":"`+prdOf(t, h, pid)+`"}`, http.StatusCreated)["id"].(string)
-	gl := doJSON(t, bank(h, pid), "GET", "/deposit-accounts/"+did, "", http.StatusOK)["glAccount"].(string)
+	gl := doJSON(t, bank(h, pid), "GET", "/deposit-accounts/"+did, "", http.StatusOK)["controlAccount"].(string)
 
 	line := openRevolvingLine(t, h, pid, 500000)
 	fid := line["id"].(string)
 	doJSON(t, bank(h, pid), "POST", "/facilities/"+fid+"/draws", `{
-		"counterparty":"`+gl+`","amount":200000,"description":"draw"
+		"counterparty":"`+gl+`","subsidiary":"`+did+`","amount":200000,"description":"draw"
 	}`, http.StatusCreated)
 
 	// No end-of-day has run, so nothing has accrued.
@@ -2536,7 +2536,7 @@ func TestChargeOverdraftInterestEndpoint(t *testing.T) {
 	h := newServer(t, nil)
 	pid := admitMember(t, h, `{"bic":"BNKADEFFXXX","name":"Bank A","country":"DE"}`, http.StatusAccepted)["id"].(string)
 	did := doJSON(t, bank(h, pid), "POST", "/deposit-accounts", `{"name":"Alice","asset":"EUR","productId":"`+prdOf(t, h, pid)+`"}`, http.StatusCreated)["id"].(string)
-	gl := doJSON(t, bank(h, pid), "GET", "/deposit-accounts/"+did, "", http.StatusOK)["glAccount"].(string)
+	gl := doJSON(t, bank(h, pid), "GET", "/deposit-accounts/"+did, "", http.StatusOK)["controlAccount"].(string)
 
 	// Nothing has accrued yet — an account that has never been overdrawn.
 	assertStatus(t, bank(h, pid), "POST", "/deposit-accounts/"+did+"/interest-charge", `{"date":"2025-01-31"}`, http.StatusNoContent)
@@ -2556,7 +2556,7 @@ func TestChargeOverdraftInterestEndpoint(t *testing.T) {
 	// deposit.overdraftAccrual's own doc describes.
 	doJSON(t, bank(h, pid), "POST", "/transactions", `{
 		"entries":[
-			{"accountId":"`+gl+`","amount":50000,"direction":"Debit"},
+			{"accountId":"`+gl+`","subsidiary":"`+did+`","amount":50000,"direction":"Debit"},
 			{"accountId":"`+equity+`","amount":50000,"direction":"Credit"}
 		]
 	}`, http.StatusCreated)
@@ -2688,7 +2688,7 @@ func TestEndOfDayAccruesBothFacilityAndOverdraftInterest(t *testing.T) {
 	h := newServer(t, nil)
 	pid := admitMember(t, h, `{"bic":"BNKADEFFXXX","name":"Bank A","country":"DE"}`, http.StatusAccepted)["id"].(string)
 	did := doJSON(t, bank(h, pid), "POST", "/deposit-accounts", `{"name":"Alice","asset":"EUR","productId":"`+prdOf(t, h, pid)+`"}`, http.StatusCreated)["id"].(string)
-	gl := doJSON(t, bank(h, pid), "GET", "/deposit-accounts/"+did, "", http.StatusOK)["glAccount"].(string)
+	gl := doJSON(t, bank(h, pid), "GET", "/deposit-accounts/"+did, "", http.StatusOK)["controlAccount"].(string)
 
 	doJSON(t, bank(h, pid), "POST", "/deposit-accounts/"+did+"/overdraft-limit", `{
 		"limit":100000
@@ -2706,7 +2706,7 @@ func TestEndOfDayAccruesBothFacilityAndOverdraftInterest(t *testing.T) {
 	// CheckWithdrawal is not the only way an account ends up overdrawn.
 	doJSON(t, bank(h, pid), "POST", "/transactions", `{
 		"entries":[
-			{"accountId":"`+gl+`","amount":50000,"direction":"Debit"},
+			{"accountId":"`+gl+`","subsidiary":"`+did+`","amount":50000,"direction":"Debit"},
 			{"accountId":"`+equity+`","amount":50000,"direction":"Credit"}
 		]
 	}`, http.StatusCreated)
@@ -2741,7 +2741,7 @@ func TestTotalsReportsDerivedOverdraft(t *testing.T) {
 
 	alice := doJSON(t, bank(h, pid), "POST", "/deposit-accounts", `{"name":"Alice","asset":"EUR","overdraftLimit":100000,"productId":"`+prdOf(t, h, pid)+`"}`, http.StatusCreated)["id"].(string)
 	bob := doJSON(t, bank(h, pid), "POST", "/deposit-accounts", `{"name":"Bob","asset":"EUR","productId":"`+prdOf(t, h, pid)+`"}`, http.StatusCreated)["id"].(string)
-	aliceGL := doJSON(t, bank(h, pid), "GET", "/deposit-accounts/"+alice, "", http.StatusOK)["glAccount"].(string)
+	aliceGL := doJSON(t, bank(h, pid), "GET", "/deposit-accounts/"+alice, "", http.StatusOK)["controlAccount"].(string)
 
 	doJSON(t, bank(h, pid), "POST", "/deposits", `{"account":"`+bob+`","amount":100000,"description":"opening"}`, http.StatusOK)
 
@@ -2750,7 +2750,7 @@ func TestTotalsReportsDerivedOverdraft(t *testing.T) {
 	equity := doJSON(t, bank(h, pid), "POST", "/subledgers/"+sub+"/accounts", `{"name":"Equity","type":"Equity","asset":"EUR"}`, http.StatusCreated)["id"].(string)
 	doJSON(t, bank(h, pid), "POST", "/transactions", `{
 		"entries":[
-			{"accountId":"`+aliceGL+`","amount":30000,"direction":"Debit"},
+			{"accountId":"`+aliceGL+`","subsidiary":"`+alice+`","amount":30000,"direction":"Debit"},
 			{"accountId":"`+equity+`","amount":30000,"direction":"Credit"}
 		]
 	}`, http.StatusCreated)
@@ -2891,7 +2891,7 @@ func TestSEPADebtorLegsValueDateApart(t *testing.T) {
 	// Find the debtor posting: the one that debits Alice's GL account. The
 	// opening deposit touches it too, so match on having a leg that is NOT
 	// value-dated with the rest.
-	payerGL := alice["glAccount"].(string)
+	payerGL := alice["controlAccount"].(string)
 	var found bool
 	for _, tx := range listed {
 		var payerDate, suspenseDate time.Time
@@ -2945,7 +2945,7 @@ func overpaidFacilityViaAPI(t *testing.T, h *Server) (pid, fid, did string, owed
 	pid = admitMember(t, h, `{"bic":"BNKADEFFXXX","name":"Bank A","country":"DE"}`, http.StatusAccepted)["id"].(string)
 	acct := doJSON(t, bank(h, pid), "POST", "/deposit-accounts", `{"name":"Alice","asset":"EUR","productId":"`+prdOf(t, h, pid)+`"}`, http.StatusCreated)
 	did = acct["id"].(string)
-	aliceGL := acct["glAccount"].(string)
+	aliceGL := acct["controlAccount"].(string)
 	doJSON(t, bank(h, pid), "POST", "/deposits", `{"account":"`+did+`","amount":100000,"description":"opening"}`, http.StatusOK)
 
 	loan := doJSON(t, bank(h, pid), "POST", "/facilities", `{
@@ -2954,7 +2954,7 @@ func overpaidFacilityViaAPI(t *testing.T, h *Server) (pid, fid, did string, owed
 		"method":"Annuity","termMonths":60
 	}`, http.StatusCreated)
 	fid = loan["id"].(string)
-	doJSON(t, bank(h, pid), "POST", "/facilities/"+fid+"/disbursement", `{"counterparty":"`+aliceGL+`","firstDue":"2025-02-15","description":"advance"}`, http.StatusCreated)
+	doJSON(t, bank(h, pid), "POST", "/facilities/"+fid+"/disbursement", `{"counterparty":"`+aliceGL+`","subsidiary":"`+did+`","firstDue":"2025-02-15","description":"advance"}`, http.StatusCreated)
 
 	// Ten days of interest, then the borrower pays exactly that in cash — so the
 	// receivable is empty and the money has left the record.
@@ -2979,9 +2979,9 @@ func overpaidFacilityViaAPI(t *testing.T, h *Server) (pid, fid, did string, owed
 		"valueDate":%q,
 		"entries":[
 			{"accountId":%q,"amount":1000000,"direction":"Credit"},
-			{"accountId":%q,"amount":1000000,"direction":"Debit"}
+			{"accountId":%q,"subsidiary":%q,"amount":1000000,"direction":"Debit"}
 		]
-	}`, drawdown.Format(time.RFC3339), facility.PrincipalGL, aliceGL), http.StatusCreated)
+	}`, drawdown.Format(time.RFC3339), facility.PrincipalGL, aliceGL, did), http.StatusCreated)
 	assertStatus(t, bank(h, pid), "POST", "/end-of-day", `{"date":"`+drawdown.AddDate(0, 0, 11).Format("2006-01-02")+`"}`, http.StatusNoContent)
 
 	getJSON(t, bank(h, pid), "/facilities/"+fid, &facility)
@@ -3004,7 +3004,7 @@ func overpaidFacilityViaAPI(t *testing.T, h *Server) (pid, fid, did string, owed
 func TestInterestRefundIsListedAndDischargeable(t *testing.T) {
 	h := newServer(t, nil)
 	pid, fid, did, owed := overpaidFacilityViaAPI(t, h)
-	aliceGL := doJSON(t, bank(h, pid), "GET", "/deposit-accounts/"+did, "", http.StatusOK)["glAccount"].(string)
+	aliceGL := doJSON(t, bank(h, pid), "GET", "/deposit-accounts/"+did, "", http.StatusOK)["controlAccount"].(string)
 
 	var list []refundPayableDTO
 	getJSON(t, bank(h, pid), "/interest-refunds-payable", &list)
@@ -3023,7 +3023,7 @@ func TestInterestRefundIsListedAndDischargeable(t *testing.T) {
 
 	// Paying out more than is owed is a 400, and leaves the obligation intact.
 	assertStatus(t, bank(h, pid), "POST", "/facilities/"+fid+"/interest-refunds", fmt.Sprintf(
-		`{"counterparty":%q,"amount":%d,"date":"2025-02-01"}`, aliceGL, owed+1), http.StatusBadRequest)
+		`{"counterparty":%q,"subsidiary":%q,"amount":%d,"date":"2025-02-01"}`, aliceGL, did, owed+1), http.StatusBadRequest)
 	var facility facilityDTO
 	getJSON(t, bank(h, pid), "/facilities/"+fid, &facility)
 	if facility.RefundPayable != owed {
@@ -3032,7 +3032,7 @@ func TestInterestRefundIsListedAndDischargeable(t *testing.T) {
 
 	// Pay it, and the obligation is gone from both the facility and the listing.
 	tx := doJSON(t, bank(h, pid), "POST", "/facilities/"+fid+"/interest-refunds", fmt.Sprintf(
-		`{"counterparty":%q,"amount":%d,"date":"2025-02-01","description":"overcharged interest"}`, aliceGL, owed), http.StatusCreated)
+		`{"counterparty":%q,"subsidiary":%q,"amount":%d,"date":"2025-02-01","description":"overcharged interest"}`, aliceGL, did, owed), http.StatusCreated)
 	if len(tx["entries"].([]any)) != 2 {
 		t.Errorf("refund posting has %d entries, want 2", len(tx["entries"].([]any)))
 	}
@@ -3280,7 +3280,7 @@ func TestDirectoryResolvesItsOwnCustomer(t *testing.T) {
 			return err
 		}
 		pid = p.ID
-		acct, err := p.Deposit.OpenAccount(ctx, p.CustomerSubledger, "Alice", "EUR", p.ProductID, 0)
+		acct, err := p.Deposit.OpenAccount(ctx, "Alice", "EUR", p.ProductID, 0)
 		aliceAddress = acct.Identifiers[0].Value
 		return err
 	})
@@ -3329,7 +3329,7 @@ func TestDirectoryDoesNotAnswerForAnotherBanksCustomer(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		alice, err := holder.Deposit.OpenAccount(ctx, holder.CustomerSubledger, "Alice", "EUR", holder.ProductID, 0)
+		alice, err := holder.Deposit.OpenAccount(ctx, "Alice", "EUR", holder.ProductID, 0)
 		if err != nil {
 			return err
 		}

@@ -43,12 +43,12 @@ func TestBackValueAcrossARepricingTruesUp(t *testing.T) {
 		extra   ledger.Amount = 100_000 // a second EUR 1,000, value-dated day 10
 	)
 
-	acct, err := reg.OpenAccount(ctx, sub, "Bruno", testAsset, prd, 0)
+	acct, err := reg.OpenAccount(ctx, "Bruno", testAsset, prd, 0)
 	assertNoError(t, err)
 	_, err = setTerms(ctx, reg, acct.ID, 500_000, r1, 0, interest.ACT365, day(0))
 	assertNoError(t, err)
 
-	overdrawValueDated(t, book, sub, acct, opening, day(0), day(0))
+	overdrawValueDated(t, reg, book, sub, acct, opening, day(0), day(0))
 
 	// Thirty days at R1 on the opening draw, run as one end-of-day.
 	clock.set(day(30))
@@ -63,7 +63,7 @@ func TestBackValueAcrossARepricingTruesUp(t *testing.T) {
 
 	// The back-dated posting: it reaches the ledger on day 45 and takes
 	// economic effect on day 10, which is twenty days BEHIND the repricing.
-	overdrawValueDated(t, book, sub, acct, extra, day(45), day(10))
+	overdrawValueDated(t, reg, book, sub, acct, extra, day(45), day(10))
 
 	clock.set(day(46))
 	assertNoError(t, reg.AccrueOverdraft(ctx, acct.ID, day(46)))
@@ -101,7 +101,7 @@ func TestBackValueAcrossARepricingTruesUp(t *testing.T) {
 	// The receivable holds Minor() of the record, which is the invariant every
 	// caller in this package maintains — and the true-up was POSTED, not just
 	// recorded on the row.
-	receivable, err := book.BookBalance(ctx, got.InterestGL.Total())
+	receivable, err := book.BookBalance(ctx, owed(t, reg, acct.ID))
 	assertNoError(t, err)
 	assertEqual(t, "receivable after the true-up", receivable, want.Minor())
 }
@@ -127,13 +127,13 @@ func TestWholeLifeAccrualEqualsTheSumOfItsPeriods(t *testing.T) {
 	build := func(clock *mutableClock) (*Register, *ledger.Book, Account) {
 		t.Helper()
 		reg, book, sub, prd := newTestRegisterOn(t, clock.now)
-		acct, err := reg.OpenAccount(ctx, sub, "Bruno", testAsset, prd, 0)
+		acct, err := reg.OpenAccount(ctx, "Bruno", testAsset, prd, 0)
 		assertNoError(t, err)
 		_, err = setTerms(ctx, reg, acct.ID, 500_000, r1, 0, interest.ACT365, day(0))
 		assertNoError(t, err)
 		_, err = setTerms(ctx, reg, acct.ID, 500_000, r2, 0, interest.ACT365, day(30))
 		assertNoError(t, err)
-		overdrawValueDated(t, book, sub, acct, drawn, day(0), day(0))
+		overdrawValueDated(t, reg, book, sub, acct, drawn, day(0), day(0))
 		return reg, book, acct
 	}
 
@@ -166,10 +166,10 @@ func TestWholeLifeAccrualEqualsTheSumOfItsPeriods(t *testing.T) {
 	assertEqual(t, "one run over sixty days", inOneRun.Accrued, want)
 	assertEqual(t, "two runs over the same sixty days", inTwoRuns.Accrued, want)
 
-	oneRecv, err := oneBook.BookBalance(ctx, inOneRun.InterestGL.Total())
+	oneRecv, err := oneBook.BookBalance(ctx, owed(t, oneReg, one.ID))
 	assertNoError(t, err)
 	assertEqual(t, "receivable after one run", oneRecv, want.Minor())
-	twoRecv, err := twoBook.BookBalance(ctx, inTwoRuns.InterestGL.Total())
+	twoRecv, err := twoBook.BookBalance(ctx, owed(t, twoReg, two.ID))
 	assertNoError(t, err)
 	assertEqual(t, "receivable after two runs", twoRecv, want.Minor())
 }
@@ -195,11 +195,11 @@ func TestABackdatedTermsRowPostsADeltaAndRewritesNothing(t *testing.T) {
 		drawn ledger.Amount = 100_000
 	)
 
-	acct, err := reg.OpenAccount(ctx, sub, "Bruno", testAsset, prd, 0)
+	acct, err := reg.OpenAccount(ctx, "Bruno", testAsset, prd, 0)
 	assertNoError(t, err)
 	_, err = setTerms(ctx, reg, acct.ID, 500_000, r1, 0, interest.ACT365, day(0))
 	assertNoError(t, err)
-	overdrawValueDated(t, book, sub, acct, drawn, day(0), day(0))
+	overdrawValueDated(t, reg, book, sub, acct, drawn, day(0), day(0))
 
 	clock.set(day(45))
 	assertNoError(t, reg.AccrueOverdraft(ctx, acct.ID, day(45)))
@@ -231,7 +231,7 @@ func TestABackdatedTermsRowPostsADeltaAndRewritesNothing(t *testing.T) {
 	got, err := reg.GetAccount(ctx, acct.ID)
 	assertNoError(t, err)
 	assertEqual(t, "accrued after a retroactive repricing", got.Accrued, want)
-	receivable, err := book.BookBalance(ctx, got.InterestGL.Total())
+	receivable, err := book.BookBalance(ctx, owed(t, reg, acct.ID))
 	assertNoError(t, err)
 	assertEqual(t, "receivable after a retroactive repricing", receivable, want.Minor())
 
@@ -280,11 +280,11 @@ func TestAFutureDatedTermsRowIsInertUntilItsDate(t *testing.T) {
 		drawn ledger.Amount = 100_000
 	)
 
-	acct, err := reg.OpenAccount(ctx, sub, "Bruno", testAsset, prd, 0)
+	acct, err := reg.OpenAccount(ctx, "Bruno", testAsset, prd, 0)
 	assertNoError(t, err)
 	_, err = setTerms(ctx, reg, acct.ID, 500_000, r1, 0, interest.ACT365, day(0))
 	assertNoError(t, err)
-	overdrawValueDated(t, book, sub, acct, drawn, day(0), day(0))
+	overdrawValueDated(t, reg, book, sub, acct, drawn, day(0), day(0))
 
 	// Agreed on day 10, effective day 30.
 	clock.set(day(10))
@@ -317,7 +317,7 @@ func TestAFutureDatedTermsRowIsInertUntilItsDate(t *testing.T) {
 	forty, err := reg.GetAccount(ctx, acct.ID)
 	assertNoError(t, err)
 	assertEqual(t, "accrued through day 40, priced across the switch", forty.Accrued, want)
-	receivable, err := book.BookBalance(ctx, forty.InterestGL.Total())
+	receivable, err := book.BookBalance(ctx, owed(t, reg, acct.ID))
 	assertNoError(t, err)
 	assertEqual(t, "receivable", receivable, want.Minor())
 }
@@ -342,9 +342,9 @@ func TestAnAccountUnpricedThenPricedAccruesOnlyAfterwards(t *testing.T) {
 	)
 
 	// A facility with no price: the only row is the opening one, at a zero rate.
-	acct, err := reg.OpenAccount(ctx, sub, "Bruno", testAsset, prd, 500_000)
+	acct, err := reg.OpenAccount(ctx, "Bruno", testAsset, prd, 500_000)
 	assertNoError(t, err)
-	overdrawValueDated(t, book, sub, acct, drawn, day(0), day(0))
+	overdrawValueDated(t, reg, book, sub, acct, drawn, day(0), day(0))
 
 	clock.set(day(365))
 	assertNoError(t, reg.AccrueOverdraft(ctx, acct.ID, day(365)))
@@ -352,7 +352,9 @@ func TestAnAccountUnpricedThenPricedAccruesOnlyAfterwards(t *testing.T) {
 	free, err := reg.GetAccount(ctx, acct.ID)
 	assertNoError(t, err)
 	assertEqual(t, "a year of a free facility, used", free.Accrued, interest.Accrued(0))
-	assertEqual(t, "and no receivable was opened for it", string(free.InterestGL), "")
+	recv, err := book.BookBalance(ctx, owed(t, reg, acct.ID))
+	assertNoError(t, err)
+	assertEqual(t, "and nothing was posted to the receivable for it", recv, ledger.Amount(0))
 
 	// Priced from day 365.
 	_, err = setTerms(ctx, reg, acct.ID, 500_000, r1, 0, interest.ACT365, day(365))
@@ -383,7 +385,7 @@ func TestAnAccountUnpricedThenPricedAccruesOnlyAfterwards(t *testing.T) {
 	got, err := reg.GetAccount(ctx, acct.ID)
 	assertNoError(t, err)
 	assertEqual(t, "accrued only from the day it was priced", got.Accrued, want)
-	receivable, err := book.BookBalance(ctx, got.InterestGL.Total())
+	receivable, err := book.BookBalance(ctx, owed(t, reg, acct.ID))
 	assertNoError(t, err)
 	assertEqual(t, "receivable", receivable, want.Minor())
 }
@@ -400,18 +402,18 @@ func TestRerunningEndOfDayForTheSameDatePostsNothing(t *testing.T) {
 	clock := &mutableClock{at: day(0)}
 	reg, book, sub, prd := newTestRegisterOn(t, clock.now)
 
-	acct, err := reg.OpenAccount(ctx, sub, "Bruno", testAsset, prd, 0)
+	acct, err := reg.OpenAccount(ctx, "Bruno", testAsset, prd, 0)
 	assertNoError(t, err)
 	_, err = setTerms(ctx, reg, acct.ID, 500_000, 120_000, 0, interest.ACT365, day(0))
 	assertNoError(t, err)
-	overdrawValueDated(t, book, sub, acct, 100_000, day(0), day(0))
+	overdrawValueDated(t, reg, book, sub, acct, 100_000, day(0), day(0))
 
 	clock.set(day(30))
 	assertNoError(t, reg.AccrueOverdraft(ctx, acct.ID, day(30)))
 
 	before, err := reg.GetAccount(ctx, acct.ID)
 	assertNoError(t, err)
-	beforeRecv, err := book.BookBalance(ctx, before.InterestGL.Total())
+	beforeRecv, err := book.BookBalance(ctx, owed(t, reg, acct.ID))
 	assertNoError(t, err)
 
 	want := expectedFromTimeline(day(0), 30, interest.ACT365,
@@ -425,7 +427,7 @@ func TestRerunningEndOfDayForTheSameDatePostsNothing(t *testing.T) {
 
 	after, err := reg.GetAccount(ctx, acct.ID)
 	assertNoError(t, err)
-	afterRecv, err := book.BookBalance(ctx, after.InterestGL.Total())
+	afterRecv, err := book.BookBalance(ctx, owed(t, reg, acct.ID))
 	assertNoError(t, err)
 	assertEqual(t, "accrued after three re-runs", after.Accrued, before.Accrued)
 	assertEqual(t, "receivable after three re-runs", afterRecv, beforeRecv)
@@ -444,9 +446,9 @@ func TestANeverPricedAccountReadsNoSeries(t *testing.T) {
 	clock := &mutableClock{at: day(0)}
 	reg, book, sub, prd := newTestRegisterOn(t, clock.now)
 
-	acct, err := reg.OpenAccount(ctx, sub, "Bella", testAsset, prd, 500_000)
+	acct, err := reg.OpenAccount(ctx, "Bella", testAsset, prd, 500_000)
 	assertNoError(t, err)
-	overdrawValueDated(t, book, sub, acct, 100_000, day(0), day(0))
+	overdrawValueDated(t, reg, book, sub, acct, 100_000, day(0), day(0))
 
 	clock.set(day(30))
 	var reads int
@@ -473,11 +475,11 @@ func TestAnUnadvancedWindowIsRefusedBeforeReadingASeries(t *testing.T) {
 	clock := &mutableClock{at: day(0)}
 	reg, book, sub, prd := newTestRegisterOn(t, clock.now)
 
-	acct, err := reg.OpenAccount(ctx, sub, "Bruno", testAsset, prd, 0)
+	acct, err := reg.OpenAccount(ctx, "Bruno", testAsset, prd, 0)
 	assertNoError(t, err)
 	_, err = setTerms(ctx, reg, acct.ID, 500_000, 120_000, 0, interest.ACT365, day(0))
 	assertNoError(t, err)
-	overdrawValueDated(t, book, sub, acct, 100_000, day(0), day(0))
+	overdrawValueDated(t, reg, book, sub, acct, 100_000, day(0), day(0))
 
 	clock.set(day(30))
 	assertNoError(t, reg.AccrueOverdraft(ctx, acct.ID, day(30)))
@@ -495,7 +497,7 @@ func TestAnUnadvancedWindowIsRefusedBeforeReadingASeries(t *testing.T) {
 	after, err := reg.GetAccount(ctx, acct.ID)
 	assertNoError(t, err)
 	assertEqual(t, "accrued after an unadvanced re-run", after.Accrued, before.Accrued)
-	receivable, err := book.BookBalance(ctx, after.InterestGL.Total())
+	receivable, err := book.BookBalance(ctx, owed(t, reg, acct.ID))
 	assertNoError(t, err)
 	assertEqual(t, "receivable after an unadvanced re-run", receivable, before.Accrued.Minor())
 }
@@ -541,11 +543,11 @@ func TestTheAdvancementGuardResolvesItsDayCountOnTheAccrualDate(t *testing.T) {
 		t.Helper()
 		clock := &mutableClock{at: jan1}
 		reg, book, sub, prd := newTestRegisterOn(t, clock.now)
-		acct, err := reg.OpenAccount(ctx, sub, "Bruno", testAsset, prd, 0)
+		acct, err := reg.OpenAccount(ctx, "Bruno", testAsset, prd, 0)
 		assertNoError(t, err)
 		_, err = setTerms(ctx, reg, acct.ID, 500_000, rate, 0, dc, jan1)
 		assertNoError(t, err)
-		overdrawValueDated(t, book, sub, acct, drawn, jan1, jan1)
+		overdrawValueDated(t, reg, book, sub, acct, drawn, jan1, jan1)
 		return reg, acct, clock
 	}
 
@@ -617,11 +619,11 @@ func TestUnderThirty360ATermsRowEffectiveOnA31stFirstChargesOnThe1st(t *testing.
 	clock := &mutableClock{at: time.Date(2025, time.January, 1, 0, 0, 0, 0, time.UTC)}
 	reg, book, sub, prd := newTestRegisterOn(t, clock.now)
 
-	acct, err := reg.OpenAccount(ctx, sub, "Bruno", testAsset, prd, 0)
+	acct, err := reg.OpenAccount(ctx, "Bruno", testAsset, prd, 0)
 	assertNoError(t, err)
 	_, err = setTerms(ctx, reg, acct.ID, 500_000, 120_000, 0, interest.Thirty360, clock.now())
 	assertNoError(t, err)
-	overdrawValueDated(t, book, sub, acct, 100_000, clock.now(), clock.now())
+	overdrawValueDated(t, reg, book, sub, acct, 100_000, clock.now(), clock.now())
 
 	the30th := time.Date(2025, time.January, 30, 0, 0, 0, 0, time.UTC)
 	the31st := time.Date(2025, time.January, 31, 0, 0, 0, 0, time.UTC)
@@ -655,7 +657,7 @@ func TestUnderThirty360ATermsRowEffectiveOnA31stFirstChargesOnThe1st(t *testing.
 	assertEqual(t, "one 30/360 day, charged at the new rate",
 		throughFeb1.Accrued-through30.Accrued, want)
 
-	receivable, err := book.BookBalance(ctx, throughFeb1.InterestGL.Total())
+	receivable, err := book.BookBalance(ctx, owed(t, reg, acct.ID))
 	assertNoError(t, err)
 	assertEqual(t, "receivable", receivable, throughFeb1.Accrued.Minor())
 }
@@ -682,11 +684,11 @@ func TestARetroactiveRateCutRefundsWithoutDrivingTheReceivableNegative(t *testin
 		drawn ledger.Amount = 100_000
 	)
 
-	acct, err := reg.OpenAccount(ctx, sub, "Bruno", testAsset, prd, 0)
+	acct, err := reg.OpenAccount(ctx, "Bruno", testAsset, prd, 0)
 	assertNoError(t, err)
 	_, err = setTerms(ctx, reg, acct.ID, 500_000, dear, 0, interest.ACT365, day(0))
 	assertNoError(t, err)
-	overdrawValueDated(t, book, sub, acct, drawn, day(0), day(0))
+	overdrawValueDated(t, reg, book, sub, acct, drawn, day(0), day(0))
 
 	clock.set(day(365))
 	assertNoError(t, reg.AccrueOverdraft(ctx, acct.ID, day(365)))
@@ -706,10 +708,10 @@ func TestARetroactiveRateCutRefundsWithoutDrivingTheReceivableNegative(t *testin
 	charge := atDear.Minor()
 	_, err = reg.ChargeOverdraftInterest(ctx, acct.ID, day(365))
 	assertNoError(t, err)
-	emptied, err := book.BookBalance(ctx, year.InterestGL.Total())
+	emptied, err := book.BookBalance(ctx, owed(t, reg, acct.ID))
 	assertNoError(t, err)
 	assertEqual(t, "receivable after capitalisation", emptied, ledger.Amount(0))
-	customerAfterCharge, err := book.BookBalance(ctx, acct.GLAccount.Total())
+	customerAfterCharge, err := book.BookBalance(ctx, where(t, reg, acct.ID))
 	assertNoError(t, err)
 	assertEqual(t, "customer owes principal plus the capitalised interest",
 		customerAfterCharge, -(drawn + charge))
@@ -756,14 +758,14 @@ func TestARetroactiveRateCutRefundsWithoutDrivingTheReceivableNegative(t *testin
 
 	// The invariant at risk is that the record and the ledger agree, so both
 	// are read rather than one restated from the other.
-	receivable, err := book.BookBalance(ctx, got.InterestGL.Total())
+	receivable, err := book.BookBalance(ctx, owed(t, reg, acct.ID))
 	assertNoError(t, err)
 	if receivable < 0 {
 		t.Errorf("receivable = %d; the correction must clamp rather than drive an Asset negative", receivable)
 	}
 	assertEqual(t, "receivable equals Minor() of the record", receivable, got.Accrued.Minor())
 
-	customer, err := book.BookBalance(ctx, acct.GLAccount.Total())
+	customer, err := book.BookBalance(ctx, where(t, reg, acct.ID))
 	assertNoError(t, err)
 	assertEqual(t, "the customer was credited what the receivable could not absorb",
 		customer, customerAfterCharge+refund)

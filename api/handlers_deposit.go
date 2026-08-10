@@ -122,7 +122,7 @@ func (s *Server) handleOpenDepositAccount(w http.ResponseWriter, r *http.Request
 	for i, ident := range req.Identifiers {
 		idents[i] = deposit.Identifier{Scheme: deposit.IdentifierScheme(ident.Scheme), Value: ident.Value}
 	}
-	acct, err := p.Deposit.OpenAccount(r.Context(), p.CustomerSubledger, req.Name,
+	acct, err := p.Deposit.OpenAccount(r.Context(), req.Name,
 		ledger.AssetCode(req.Asset), product.ID(req.ProductID), ledger.Amount(req.OverdraftLimit), idents...)
 	if err != nil {
 		writeError(w, err)
@@ -137,7 +137,12 @@ func (s *Server) handleOpenDepositAccount(w http.ResponseWriter, r *http.Request
 		writeError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusCreated, toDepositAccountDTO(withTerms.Account, withTerms.Terms))
+	control, err := p.Deposit.ControlAccount(r.Context(), withTerms.Account.Asset)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, toDepositAccountDTO(withTerms.Account, withTerms.Terms, control))
 }
 
 func (s *Server) handleListDepositAccounts(w http.ResponseWriter, r *http.Request) {
@@ -150,9 +155,23 @@ func (s *Server) handleListDepositAccounts(w http.ResponseWriter, r *http.Reques
 		writeError(w, err)
 		return
 	}
+	// One resolution per ASSET rather than per account: the line is the same
+	// for every customer holding that currency, and a listing that asked the
+	// chart of accounts once per row would put the customer base back into a
+	// question that is about the institution.
+	controls := map[ledger.AssetCode]ledger.AccountID{}
 	out := make([]depositAccountDTO, len(accts))
 	for i, a := range accts {
-		out[i] = toDepositAccountDTO(a.Account, a.Terms)
+		control, ok := controls[a.Account.Asset]
+		if !ok {
+			control, err = p.Deposit.ControlAccount(r.Context(), a.Account.Asset)
+			if err != nil {
+				writeError(w, err)
+				return
+			}
+			controls[a.Account.Asset] = control
+		}
+		out[i] = toDepositAccountDTO(a.Account, a.Terms, control)
 	}
 	writeJSON(w, http.StatusOK, out)
 }
@@ -167,7 +186,7 @@ func (s *Server) handleGetDepositAccount(w http.ResponseWriter, r *http.Request)
 		writeError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, toDepositAccountDTO(acct.Account, acct.Terms))
+	writeAccountDTO(w, r, p, acct)
 }
 
 func (s *Server) handleDepositBalance(w http.ResponseWriter, r *http.Request) {
@@ -226,7 +245,7 @@ func (s *Server) handleDepositStatus(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, toDepositAccountDTO(acct.Account, acct.Terms))
+	writeAccountDTO(w, r, p, acct)
 }
 
 func (s *Server) handleCloseDepositAccount(w http.ResponseWriter, r *http.Request) {
@@ -344,7 +363,19 @@ func writeAccountWithTerms(w http.ResponseWriter, r *http.Request, p *payment.Ba
 		writeError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, toDepositAccountDTO(acct.Account, acct.Terms))
+	writeAccountDTO(w, r, p, acct)
+}
+
+// writeAccountDTO renders one account, resolving the control line its money is
+// pooled in. Every single-account response goes through here so that none of
+// them can answer with the pair half-formed.
+func writeAccountDTO(w http.ResponseWriter, r *http.Request, p *payment.Bank, acct deposit.AccountWithTerms) {
+	control, err := p.Deposit.ControlAccount(r.Context(), acct.Account.Asset)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, toDepositAccountDTO(acct.Account, acct.Terms, control))
 }
 
 // handleListOverdraftTerms returns an account's whole effective-dated terms
@@ -491,7 +522,7 @@ func (s *Server) handleCaptureHold(w http.ResponseWriter, r *http.Request) {
 	tx, err := p.Deposit.CaptureHold(
 		r.Context(),
 		deposit.HoldID(r.PathValue("hid")),
-		ledger.AccountID(req.Counterparty),
+		ledger.AccountID(req.Counterparty).For(req.Subsidiary),
 		ledger.Amount(req.Amount),
 		req.Description,
 	)

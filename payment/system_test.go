@@ -360,7 +360,7 @@ const (
 // address; the caller does not choose one and cannot.
 func openCustomer(t *testing.T, ctx context.Context, p *Bank, name string) deposit.Account {
 	t.Helper()
-	acct, err := p.Deposit.OpenAccount(ctx, p.CustomerSubledger, name, testAsset, p.ProductID, 0)
+	acct, err := p.Deposit.OpenAccount(ctx, name, testAsset, p.ProductID, 0)
 	assertNoError(t, err)
 	return acct
 }
@@ -1108,9 +1108,8 @@ func TestInitiateValueDatesTheCustomerLegToTheDebit(t *testing.T) {
 	assertNoError(t, err)
 	assertEqual(t, "transaction value date is the settlement date", posted.ValueDate, atA.ValueDate)
 
-	debtorAcct, err := a.Deposit.GetAccount(ctx, alice)
+	debtorPos, err := a.Deposit.Position(ctx, alice)
 	assertNoError(t, err)
-	debtorGL := debtorAcct.GLAccount
 
 	// The two-way split below only names the legs correctly if there are
 	// exactly two of them: with a third, "not the debtor's account" would
@@ -1120,7 +1119,7 @@ func TestInitiateValueDatesTheCustomerLegToTheDebit(t *testing.T) {
 	}
 	var customer, suspense ledger.Entry
 	for _, e := range posted.Entries {
-		if e.AccountID == debtorGL {
+		if e.AccountID == debtorPos.Account && e.Subsidiary == debtorPos.Subsidiary {
 			customer = e
 		} else {
 			suspense = e
@@ -1477,7 +1476,7 @@ func newClosedCycleWithUnderfundedMember(t *testing.T) (*testSystem, CycleID) {
 	// Carol is opened here rather than through openCustomer because she needs an
 	// overdraft: the fixture wants a customer who can afford a payment her bank
 	// cannot settle.
-	carol, err := c.Deposit.OpenAccount(ctx, c.CustomerSubledger, "Carol", testAsset, c.ProductID, 100000)
+	carol, err := c.Deposit.OpenAccount(ctx, "Carol", testAsset, c.ProductID, 100000)
 	assertNoError(t, err)
 
 	fundAccount(t, ctx, sys, a, alice, 100000)
@@ -3075,21 +3074,21 @@ func TestParticipantRunEndOfDay_DrivesBothLayers(t *testing.T) {
 	// And a drawn revolving line.
 	line, err := bank.Lending.OpenRevolvingLine(ctx, bank.CustomerSubledger, "Bruno Line", testAsset, 250_000, 180_000, interest.ACT365, 20_000)
 	assertNoError(t, err)
-	brunoGL, err := bank.Deposit.GetAccount(ctx, bruno.ID)
+	brunoPos, err := bank.Deposit.Position(ctx, bruno.ID)
 	assertNoError(t, err)
-	_, err = bank.Lending.Draw(ctx, line.ID, brunoGL.GLAccount, 100_000, "Draw")
+	_, err = bank.Lending.Draw(ctx, line.ID, brunoPos, 100_000, "Draw")
 	assertNoError(t, err)
 
 	// Spend the account into overdraft.
 	merchant, err := bank.OpenCustomerAccount(ctx, "Merchant", testAsset)
 	assertNoError(t, err)
-	merchantGL, err := bank.Deposit.GetAccount(ctx, merchant.ID)
+	merchantPos, err := bank.Deposit.Position(ctx, merchant.ID)
 	assertNoError(t, err)
 	_, err = bank.Ledger.PostTransaction(ctx, ledger.PostTransactionRequest{
 		Description: "Card payment",
 		Entries: []ledger.Entry{
-			{AccountID: brunoGL.GLAccount, Amount: 110_000, Direction: ledger.Debit},
-			{AccountID: merchantGL.GLAccount, Amount: 110_000, Direction: ledger.Credit},
+			{AccountID: brunoPos.Account, Subsidiary: brunoPos.Subsidiary, Amount: 110_000, Direction: ledger.Debit},
+			{AccountID: merchantPos.Account, Subsidiary: merchantPos.Subsidiary, Amount: 110_000, Direction: ledger.Credit},
 		},
 	})
 	assertNoError(t, err)
@@ -3926,7 +3925,7 @@ func TestTheClearingHouseWillNotClearForANonMember(t *testing.T) {
 		// a deposit, because DepositTx refuses a bank the settlement agent holds
 		// no account for — and an overdraft is exactly how such a customer came to
 		// have spendable money in the measurement this test descends from.
-		foundedAcct, err := founded.Deposit.OpenAccount(ctx, founded.CustomerSubledger, "Nora", testAsset,
+		foundedAcct, err := founded.Deposit.OpenAccount(ctx, "Nora", testAsset,
 			founded.ProductID, 100000)
 		assertNoError(t, err)
 		memberAcct := openCustomer(t, ctx, member, "Alice")
@@ -4069,10 +4068,10 @@ func TestTheClearingHouseWillNotClearInAnAssetAMemberWasNotAdmittedIn(t *testing
 	// Opened through the register rather than through OpenCustomerAccount because
 	// the asset is the scheme's and not the bank's default. Each comes out
 	// addressed by its own bank, which is all this fixture needs of an address.
-	payerAcct, err := payer.Deposit.OpenAccount(ctx, payer.CustomerSubledger, "Alice", "USD", payer.ProductID, 0)
+	payerAcct, err := payer.Deposit.OpenAccount(ctx, "Alice", "USD", payer.ProductID, 0)
 	assertNoError(t, err)
 	fundAccount(t, ctx, sys, payer, payerAcct, 100000)
-	payeeAcct, err := half.Deposit.OpenAccount(ctx, half.CustomerSubledger, "Nora", "USD", half.ProductID, 0)
+	payeeAcct, err := half.Deposit.OpenAccount(ctx, "Nora", "USD", half.ProductID, 0)
 	assertNoError(t, err)
 	openCycle(t, ctx, sys, dollarPush{}.ID())
 

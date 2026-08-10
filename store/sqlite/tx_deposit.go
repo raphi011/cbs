@@ -61,22 +61,20 @@ func (t *tx) PutDepositAccount(ctx context.Context, book ledger.BookID, a deposi
 	}
 	_, err := t.tx.ExecContext(ctx, `
 		INSERT INTO deposit_accounts (
-			book_id, id, gl_account, name, asset, status, accrued_interest,
-			accrued_gross, last_accrual_date, interest_gl, created_at, seq)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, `+nextRowSeq("deposit_accounts")+`)
+			book_id, id, name, asset, status, accrued_interest,
+			accrued_gross, last_accrual_date, created_at, seq)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, `+nextRowSeq("deposit_accounts")+`)
 		ON CONFLICT (book_id, id) DO UPDATE SET
-			gl_account        = EXCLUDED.gl_account,
 			name              = EXCLUDED.name,
 			asset             = EXCLUDED.asset,
 			status            = EXCLUDED.status,
 			accrued_interest  = EXCLUDED.accrued_interest,
 			accrued_gross     = EXCLUDED.accrued_gross,
 			last_accrual_date = EXCLUDED.last_accrual_date,
-			interest_gl       = EXCLUDED.interest_gl,
 			created_at        = EXCLUDED.created_at`,
-		string(book), string(a.ID), string(a.GLAccount), a.Name, string(a.Asset),
+		string(book), string(a.ID), a.Name, string(a.Asset),
 		int64(a.Status), int64(a.Accrued), int64(a.AccruedGross),
-		nullTime{a.LastAccrualDate}, string(a.InterestGL), nullTime{a.CreatedAt})
+		nullTime{a.LastAccrualDate}, nullTime{a.CreatedAt})
 	if err != nil {
 		return fmt.Errorf("sqlite: put deposit account %s: %w", a.ID, err)
 	}
@@ -105,8 +103,8 @@ func (t *tx) PutDepositAccount(ctx context.Context, book ledger.BookID, a deposi
 // place is what stops GetDepositAccount and ListDepositAccounts from scanning
 // different column sets, which is a whole class of "it round-trips one way".
 const depositAccountColumns = `
-	id, gl_account, name, asset, status, accrued_interest,
-	accrued_gross, last_accrual_date, interest_gl, created_at`
+	id, name, asset, status, accrued_interest,
+	accrued_gross, last_accrual_date, created_at`
 
 // scanDepositAccount reads one row of depositAccountColumns. Both *sql.Row
 // (QueryRow) and *sql.Rows (Query) implement Scan(...any) error, so one function
@@ -118,8 +116,8 @@ func scanDepositAccount(row interface{ Scan(...any) error }) (deposit.Account, e
 		accrued, gross         int64
 		lastAccrual, createdAt nullTime
 	)
-	if err := row.Scan(&a.ID, &a.GLAccount, &a.Name, &a.Asset, &status,
-		&accrued, &gross, &lastAccrual, &a.InterestGL, &createdAt); err != nil {
+	if err := row.Scan(&a.ID, &a.Name, &a.Asset, &status,
+		&accrued, &gross, &lastAccrual, &createdAt); err != nil {
 		return deposit.Account{}, err
 	}
 	a.Status = deposit.AccountStatus(status)

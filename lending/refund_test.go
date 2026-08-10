@@ -22,7 +22,7 @@ import (
 // the whole 4932 lands in the payable. It is
 // TestAccrue_CorrectionClampsToWhatTheFacilityOwes' setup, kept here so this
 // file's tests start from the state they are about.
-func overpaidLoan(t *testing.T) (*lending.Portfolio, *ledger.Book, ledger.SubledgerID, lending.Facility, ledger.AccountID) {
+func overpaidLoan(t *testing.T) (*lending.Portfolio, *ledger.Book, ledger.SubledgerID, lending.Facility, ledger.Position) {
 	t.Helper()
 	ctx := context.Background()
 	p, book, sub, loan, customer := disbursedLoanIn(t)
@@ -101,7 +101,7 @@ func TestRefundInterest_DischargesThePayable(t *testing.T) {
 	ctx := context.Background()
 	p, book, _, loan, customer := overpaidLoan(t)
 
-	before := bookBalance(t, book, customer)
+	before := bookBalance(t, book, customer.Account)
 	tx, err := p.RefundInterest(ctx, loan.ID, customer, 4_932, refundDate, "")
 	if err != nil {
 		t.Fatalf("RefundInterest: %v", err)
@@ -110,7 +110,7 @@ func TestRefundInterest_DischargesThePayable(t *testing.T) {
 	if got := bookBalance(t, book, loan.RefundGL); got != 0 {
 		t.Errorf("refund payable = %d, want 0; the obligation must be discharged", got)
 	}
-	if got := bookBalance(t, book, customer) - before; got != 4_932 {
+	if got := bookBalance(t, book, customer.Account) - before; got != 4_932 {
 		t.Errorf("customer credited %d, want 4932", got)
 	}
 	if len(tx.Entries) != 2 {

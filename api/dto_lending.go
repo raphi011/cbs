@@ -246,15 +246,20 @@ type openFacilityRequest struct {
 }
 
 type disburseFacilityRequest struct {
-	// Counterparty is any GL account in the facility's asset — a customer's
-	// current account, or the vault for a cash advance.
+	// Counterparty is any account in the facility's asset — the control account
+	// a customer's current account is pooled in, or the vault for a cash
+	// advance — and Subsidiary is the obligor within it, a deposit account's id
+	// on the first and empty on the second. The two travel together everywhere
+	// money moves; see captureHoldRequest, where the same pair is documented.
 	Counterparty string `json:"counterparty"`
+	Subsidiary   string `json:"subsidiary,omitempty"`
 	FirstDue     string `json:"firstDue"`
 	Description  string `json:"description"`
 }
 
 type drawFacilityRequest struct {
 	Counterparty string `json:"counterparty"`
+	Subsidiary   string `json:"subsidiary,omitempty"`
 	Amount       int64  `json:"amount"`
 	Description  string `json:"description"`
 }
@@ -314,6 +319,7 @@ func toRefundPayableDTO(r lending.RefundPayable) refundPayableDTO {
 // did not state is an amount the caller did not check.
 type refundFacilityInterestRequest struct {
 	Counterparty string `json:"counterparty"`
+	Subsidiary   string `json:"subsidiary,omitempty"`
 	Amount       int64  `json:"amount"`
 	Date         string `json:"date"`
 	Description  string `json:"description"`

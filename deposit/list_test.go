@@ -12,9 +12,9 @@ func TestListAccountsHoldsSnapshots(t *testing.T) {
 	reg, book, deposits, prd := newTestRegister(t)
 	cash := newCashAccount(t, book, deposits)
 
-	alice, err := reg.OpenAccount(ctx, deposits, "Alice", testAsset, prd, 0)
+	alice, err := reg.OpenAccount(ctx, "Alice", testAsset, prd, 0)
 	assertNoError(t, err)
-	_, err = reg.OpenAccount(ctx, deposits, "Bob", testAsset, prd, 0)
+	_, err = reg.OpenAccount(ctx, "Bob", testAsset, prd, 0)
 	assertNoError(t, err)
 
 	accts, err := reg.ListAccounts(ctx)

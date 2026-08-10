@@ -25,11 +25,15 @@ import (
 // all. GET /participants/{pid}/deposit-accounts/{did}/overdraft-terms is what
 // shows the whole timeline.
 type depositAccountDTO struct {
-	ID        string `json:"id"`
-	GLAccount string `json:"glAccount"`
-	Name      string `json:"name"`
-	Asset     string `json:"asset"`
-	Status    string `json:"status"`
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	// ControlAccount is the chart-of-accounts line this account's money is
+	// pooled in. There is no second field for the obligor within it: that is
+	// this account's own ID, above. A client naming a customer's money in a
+	// posting sends the two together — see entryDTO.Subsidiary.
+	ControlAccount string `json:"controlAccount"`
+	Asset          string `json:"asset"`
+	Status         string `json:"status"`
 	// Identifiers are the account's external addresses. Empty is normal.
 	Identifiers []identifierDTO `json:"identifiers"`
 	// ProductID is the catalogue entry pricing this account today. It varies
@@ -50,10 +54,6 @@ type depositAccountDTO struct {
 	// question a negotiated rate generates.
 	PricingSource   string `json:"pricingSource"`
 	AccruedInterest int64  `json:"accruedInterest"`
-	// InterestGLAccount is empty until the account first accrues — the
-	// receivable is created by the accrual, not by a register call, because a
-	// floating account's rate lives in the catalogue.
-	InterestGLAccount string `json:"interestGlAccount,omitempty"`
 
 	CreatedAt time.Time `json:"createdAt"`
 }
@@ -65,28 +65,27 @@ const (
 	pricingSourceNegotiated = "negotiated"
 )
 
-func toDepositAccountDTO(a deposit.Account, t deposit.EffectiveTerms) depositAccountDTO {
+func toDepositAccountDTO(a deposit.Account, t deposit.EffectiveTerms, control ledger.AccountID) depositAccountDTO {
 	source := pricingSourceProduct
 	if t.Negotiated {
 		source = pricingSourceNegotiated
 	}
 	return depositAccountDTO{
 		ID:             string(a.ID),
-		GLAccount:      string(a.GLAccount),
 		Name:           a.Name,
+		ControlAccount: string(control),
 		Asset:          string(a.Asset),
 		Status:         a.Status.String(),
 		Identifiers:    toIdentifierDTOs(a.Identifiers),
 		ProductID:      string(t.ProductID),
 		OverdraftLimit: int64(t.Limit),
 
-		OverdraftRate:     int64(t.Pricing.Rate),
-		UnarrangedRate:    int64(t.Pricing.UnarrangedRate),
-		RateScale:         interest.RateScale,
-		DayCount:          t.Pricing.DayCount.String(),
-		PricingSource:     source,
-		AccruedInterest:   int64(a.Accrued.Minor()),
-		InterestGLAccount: string(a.InterestGL),
+		OverdraftRate:   int64(t.Pricing.Rate),
+		UnarrangedRate:  int64(t.Pricing.UnarrangedRate),
+		RateScale:       interest.RateScale,
+		DayCount:        t.Pricing.DayCount.String(),
+		PricingSource:   source,
+		AccruedInterest: int64(a.Accrued.Minor()),
 
 		CreatedAt: a.CreatedAt,
 	}
@@ -194,8 +193,8 @@ func toSnapshotDTO(s deposit.Snapshot, asset ledger.AssetCode) snapshotDTO {
 }
 
 // openDepositAccountRequest carries a required asset, for the same reason
-// createAccountRequest does: the deposit account's asset is its backing GL
-// account's, and neither may be guessed on the caller's behalf.
+// createAccountRequest does: the asset is what decides which control account the
+// money pools in, and it may not be guessed on the caller's behalf.
 // productId is required for the same reason: every deposit account is opened
 // FROM a product, because a floating terms row with no product would have
 // nothing to float to.
@@ -224,8 +223,14 @@ type createHoldRequest struct {
 
 type captureHoldRequest struct {
 	Counterparty string `json:"counterparty"`
-	Amount       int64  `json:"amount"`
-	Description  string `json:"description"`
+	// Subsidiary names the obligor when Counterparty is a control account: a
+	// deposit account's id when the money is going to another customer of this
+	// bank, and empty for one of the bank's own accounts. A control account
+	// named without one is refused by the ledger, and so is a plain one named
+	// with one.
+	Subsidiary  string `json:"subsidiary,omitempty"`
+	Amount      int64  `json:"amount"`
+	Description string `json:"description"`
 }
 
 type snapshotRequest struct {

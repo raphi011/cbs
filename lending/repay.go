@@ -44,14 +44,14 @@ import (
 // next end-of-day. Recomputing is cheap and total — see ArrearsFor — which is
 // what makes doing it at both moments consistent rather than duplicated.
 //
-// counterparty is any GL account in the facility's asset. This layer does not
+// counterparty is any position in the facility's asset. This layer does not
 // know what a deposit account is, so a repayment that must also respect one's
 // status and available balance is orchestrated a layer up, calling
 // deposit.CheckWithdrawalTx and RepayTx through the same Tx.
 //
 // Returns ErrFacilityNotFound, ErrFacilityClosed, ErrInvalidAmount for a
 // non-positive amount or one exceeding what is owed, and ErrNothingOutstanding.
-func (p *Portfolio) Repay(ctx context.Context, id FacilityID, counterparty ledger.AccountID, amount ledger.Amount, date time.Time, description string) (ledger.Transaction, error) {
+func (p *Portfolio) Repay(ctx context.Context, id FacilityID, counterparty ledger.Position, amount ledger.Amount, date time.Time, description string) (ledger.Transaction, error) {
 	var out ledger.Transaction
 	err := p.store.Update(ctx, func(ctx context.Context, tx Tx) error {
 		var err error
@@ -62,7 +62,7 @@ func (p *Portfolio) Repay(ctx context.Context, id FacilityID, counterparty ledge
 }
 
 // RepayTx is Repay within a caller-supplied unit of work.
-func (p *Portfolio) RepayTx(ctx context.Context, tx Tx, id FacilityID, counterparty ledger.AccountID, amount ledger.Amount, date time.Time, description string) (ledger.Transaction, error) {
+func (p *Portfolio) RepayTx(ctx context.Context, tx Tx, id FacilityID, counterparty ledger.Position, amount ledger.Amount, date time.Time, description string) (ledger.Transaction, error) {
 	f, err := tx.GetFacility(ctx, p.bookID, id)
 	if err != nil {
 		return ledger.Transaction{}, err
@@ -99,7 +99,7 @@ func (p *Portfolio) RepayTx(ctx context.Context, tx Tx, id FacilityID, counterpa
 	}
 	toPrincipal := amount - toInterest
 
-	entries := []ledger.Entry{{AccountID: counterparty, Amount: amount, Direction: ledger.Debit}}
+	entries := []ledger.Entry{{AccountID: counterparty.Account, Subsidiary: counterparty.Subsidiary, Amount: amount, Direction: ledger.Debit}}
 	if toInterest > 0 {
 		entries = append(entries, ledger.Entry{AccountID: f.InterestGL, Amount: toInterest, Direction: ledger.Credit})
 	}
