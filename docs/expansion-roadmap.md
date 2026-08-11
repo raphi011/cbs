@@ -3,8 +3,8 @@
 What is left to build, in the order it should be built.
 
 This file is forward-looking. What each shipped sub-project decided, reversed and
-learned is in its spec under `superpowers/specs/` and in `git log`; the index at
-the bottom is only enough to resolve a cross-reference by number.
+learned is in its spec under `specs/` and in `git log`; the index at the bottom is
+only enough to resolve a cross-reference by number.
 
 **Status legend:** `todo` · `spec` (design agreed, spec written) · `plan`
 (implementation plan written) · `wip`
@@ -58,7 +58,7 @@ Four groups, and only the first two are sequenced against each other.
 
 1. **Defects** — small, verified against the current tree, and each one is a
    thing the system gets wrong rather than a thing it does not have.
-2. **The build sequence** — the payments and settlement arc, §1 through §6,
+2. **The build sequence** — the payments and settlement arc, §1 through §7,
    where each item genuinely wants the one before it.
 3. **Domain gaps worth building** — a standing catalogue, ranked by value per
    unit of effort. Take from the top; nothing here blocks anything there.
@@ -114,12 +114,16 @@ about what a 500 may disclose.
 
 ## The build sequence
 
-1. **7c, the message log.** The last piece of sub-project 7, and it makes every
-   flow already shipped visible.
-2. **Instant payments.** The one place the settlement orchestrator has to grow.
-3. **Card transactions.** Additive on top of holds and the existing net path.
-4. **Reserve adequacy.** Wanted by both 2 and 3, and worth little before either.
-5. **Crypto**, then **FX** — the two undecided-scope domains, largest last.
+1. **21, EBICS and the business day.** First, because it replaces the transport
+   every item below is built on, and because the business date it brings is a
+   prerequisite the other four have each been paying for separately.
+2. **7c, the message log.** The last piece of sub-project 7, and it makes every
+   flow already shipped visible. Cheaper after 21, which gives it files to show
+   rather than one message per payment.
+3. **Instant payments.** The one place the settlement orchestrator has to grow.
+4. **Card transactions.** Additive on top of holds and the existing net path.
+5. **Reserve adequacy.** Wanted by both 3 and 4, and worth little before either.
+6. **Crypto**, then **FX** — the two undecided-scope domains, largest last.
 
 ### The on-us book transfer — `done`
 
@@ -140,7 +144,49 @@ submitted, and `PostReturnLegTx` decides which leg is last by position in a
 conversation one institution does not have. Both are closed and both are still
 proved through the store rather than through a path a caller can reach.
 
-### 1. 7c, the message log — `todo`
+### 1. EBICS batches, the institutions in `cmd/server`, and the business day — `wip`
+
+Sub-project 21.
+[`2026-08-11-ebics-and-the-business-day-design.md`](../specs/2026-08-11-ebics-and-the-business-day-design.md).
+Nine tasks, and the largest since 8. It deletes `mesh`, which 7b built, the way §9
+deleted the two store backends §8 built.
+
+`docs/sepa-real-world.md` is in this tree and contradicts the mesh on every
+mechanical claim it makes: bulk clearing is *"store-and-forward file transfer against
+a cutoff clock"* and *"EBICS has no push at all — the bank polls for its downloads"*.
+7b built the opposite — N+2 actors with inboxes, one message per payment, delivery
+that always succeeds. 21 keeps what 7b was for, the message being the interface, and
+replaces everything underneath it.
+
+Three deliveries. **The top level becomes library and `cmd/server` becomes glue** —
+`mesh` is three things wearing one name and `api` is a composition root pretending to
+be a request handler; each institution gets a struct with its own routes and its own
+EBICS side. **The transport becomes EBICS** — uploads, per-subscriber download queues,
+order types and order ids; `mesh` and `mesh/wire` are deleted, and so is the actor
+table, because enrolment is what creates a queue and there is nothing left to keep in
+step with the roster. **The deployment owns a clock, and advancing it runs a business
+day** — cutoff, clearing, settlement, advice and end-of-day in one explicit list, on a
+TARGET calendar.
+
+The third is what makes the first two cheap, and it was not asked for. With an
+operator-driven day the system has **no background goroutines at all**, so `Drain` —
+the thing that makes every test in this repository able to say "submit, drain, assert"
+— needs no replacement rather than a test-only substitute. `AdvanceDay` returns when
+the day is done.
+
+Claims two items filed elsewhere. *A business date*, below, asks for exactly this roll
+event and names the case it gets wrong today: a transfer submitted after cut-off
+before a holiday weekend. And the deferred note that batched bulks and a cutoff timer
+are *reachable for the first time but unclaimed* — task 7 claims both, and
+`pacs.002`'s `GrpSts: PART` stops being built and unused. `pacs.028`, listed beside
+them, stays unclaimed.
+
+It does **not** claim the threading half of *A business date* — assigning the date at
+command acceptance and carrying it — which is the `BusinessDate` type under
+*Structural work*, and is a compiler-guided rename across four packages that has no
+business being inside a transport swap.
+
+### 2. 7c, the message log — `todo`
 
 The last of sub-project 7, and the only reason §7 is not `done`. Envelopes
 persisted so a payment screen can show the XML that actually moved, carried
@@ -150,7 +196,7 @@ Cheap relative to what it exposes: every flow already shipped becomes something 
 reader can watch rather than infer. It is also the natural home for anything that
 wants to explain a `pacs.002` reason code at the point it was returned.
 
-### 2. Instant payments — `todo`
+### 3. Instant payments — `todo`
 
 Real-time **gross** settlement, 24/7. Each payment settles individually and
 immediately instead of being batched into a clearing cycle. (*Instant* and
@@ -176,7 +222,7 @@ the right shape for instant rails, and adopting it for a `Gross` scheme while
 keeping the current shape for `Net` is a real fork in the payment layer, not a
 detail. The earmark primitive already exists: it is a `deposit` hold.
 
-### 3. Card transactions — `todo`
+### 4. Card transactions — `todo`
 
 An **authorise → capture → clear → settle** flow. The authorisation is a
 `deposit` hold (`CreateHold`) reserving the cardholder's available balance;
@@ -191,7 +237,7 @@ front-end work, recorded as out of scope by 6b and unclaimed since.
 Wants the **hold expiry sweep** below first, or ships a hold state machine that
 is less honest than it looks.
 
-### 4. Reserve adequacy — `todo`
+### 5. Reserve adequacy — `todo`
 
 Check a bank's reserves before its net settlement is allowed to post. Motivated
 by both of the two items above and worth little before either: today every
@@ -203,7 +249,7 @@ the `camt.051` that would pull liquidity back the other way. **This system lodge
 cash and never withdraws it**, which is the current reason `camt.051` is refused
 by name in `iso20022/doc.go`.
 
-### 5. Crypto — `todo`
+### 6. Crypto — `todo`
 
 Scope deliberately undecided. Ranges from custody balances denominated in
 non-fiat units — nearly free today, BTC is a known asset at scale 8 and works —
@@ -228,7 +274,7 @@ child table keyed `(participant_id, asset)`; and `interest` is asset-agnostic, s
 a crypto-denominated facility needs no new arithmetic — only an asset inside the
 cap.
 
-### 6. FX / exchange — `todo`
+### 7. FX / exchange — `todo`
 
 Trades against two assets, rate handling, spread recognized as revenue, position
 and exposure accounts, settlement conventions.
@@ -379,6 +425,12 @@ schedule generator will silently disagree with any calendar.
 Pairs with the `BusinessDate` type under *Structural work* — same problem
 approached from the code side, and doing either alone leaves the other's cost
 in place.
+
+**The roll half is §21's**, which gives the deployment a clock, a TARGET calendar and
+an explicit advance that runs a business day. What stays here is the threading: the
+date assigned at command acceptance and carried, so nothing downstream calls
+`today()`. §21 does not do it, and makes it worth doing — a rule about what nothing
+downstream may call needs a roll event to be a rule about.
 
 ### Blocks as rows, not a status field
 
@@ -561,7 +613,7 @@ known to be the wrong place for it.
 **Do not act on this before instant payments.** `SettlementModel()` had no
 consumer at all when this was written and now has exactly one, a DTO field —
 nothing branches on it. A third scheme with a genuinely different settlement
-model is what would let the seam earn itself, and §2 of the sequence is that
+model is what would let the seam earn itself, and §3 of the sequence is that
 scheme. Re-ask afterwards.
 
 ---
@@ -701,9 +753,9 @@ recalls and reversals, runtime XSD validation, and message signing. Two are
 refused *specifically* rather than by family, in `iso20022/doc.go`: `camt.054`,
 because a notification carries no balance and therefore cannot detect a wrong
 posting, and `camt.051`, because this system lodges cash and never withdraws it.
-Reachable for the first time but unclaimed: batched bulks — which is what would
-exercise `pacs.002`'s `GrpSts: PART`, built and unused — a `pacs.028` status
-request, and a cutoff timer.
+Reachable for the first time but unclaimed: a `pacs.028` status request. Batched
+bulks — which is what would exercise `pacs.002`'s `GrpSts: PART`, built and unused —
+and a cutoff timer were listed here too, and are now §21's task 7.
 
 **A party model.** No party, customer or account-holder entity; a
 `deposit.Account` has a `Name string` and one person's accounts are not linked.
@@ -739,20 +791,21 @@ One line apiece, for resolving a reference by number. The spec is the record.
 
 | # | | Spec |
 |---|---|---|
-| 1 | Multi-asset ledger core | [`2026-07-27-multi-asset-ledger-design.md`](superpowers/specs/2026-07-27-multi-asset-ledger-design.md) |
-| 2 | Lending — `interest`, `lending`, three products | [`2026-07-27-lending-design.md`](superpowers/specs/2026-07-27-lending-design.md) |
+| 1 | Multi-asset ledger core | [`2026-07-27-multi-asset-ledger-design.md`](../specs/2026-07-27-multi-asset-ledger-design.md) |
+| 2 | Lending — `interest`, `lending`, three products | [`2026-07-27-lending-design.md`](../specs/2026-07-27-lending-design.md) |
 | 3 | Crypto | *above* |
 | 4 | FX / exchange | *above* |
-| 5 | Account addressing — `(scheme, value)` identifiers | [`2026-07-31-account-addressing-design.md`](superpowers/specs/2026-07-31-account-addressing-design.md) |
-| 6a | Operator-split API — one listener per institution | [`2026-07-31-operator-split-api-design.md`](superpowers/specs/2026-07-31-operator-split-api-design.md) |
-| 6b | Role-scoped web UI — four personas | [`2026-07-31-role-scoped-web-ui-design.md`](superpowers/specs/2026-07-31-role-scoped-web-ui-design.md) |
-| 7a | The `iso20022` package | [`2026-07-31-iso20022-messages-design.md`](superpowers/specs/2026-07-31-iso20022-messages-design.md) |
-| 7b | The mesh and its N+2 actors | [`2026-08-01-iso20022-mesh-design.md`](superpowers/specs/2026-08-01-iso20022-mesh-design.md) |
+| 5 | Account addressing — `(scheme, value)` identifiers | [`2026-07-31-account-addressing-design.md`](../specs/2026-07-31-account-addressing-design.md) |
+| 6a | Operator-split API — one listener per institution | [`2026-07-31-operator-split-api-design.md`](../specs/2026-07-31-operator-split-api-design.md) |
+| 6b | Role-scoped web UI — four personas | [`2026-07-31-role-scoped-web-ui-design.md`](../specs/2026-07-31-role-scoped-web-ui-design.md) |
+| 7a | The `iso20022` package | [`2026-07-31-iso20022-messages-design.md`](../specs/2026-07-31-iso20022-messages-design.md) |
+| 7b | The mesh and its N+2 actors | [`2026-08-01-iso20022-mesh-design.md`](../specs/2026-08-01-iso20022-mesh-design.md) |
 | 7c | The message log | *above* |
-| 8 | Per-entity stores — N+2 databases, three shapes | [`2026-08-02-db-per-entity-design.md`](superpowers/specs/2026-08-02-db-per-entity-design.md) |
-| 9 | One store, and it is SQLite | [`2026-08-03-sqlite-only-store-design.md`](superpowers/specs/2026-08-03-sqlite-only-store-design.md) |
-| 19 | Reconciliation a bank can do for itself | [`2026-08-09-bank-reconciliation-design.md`](superpowers/specs/2026-08-09-bank-reconciliation-design.md) |
-| 20 | The subsidiary ledger — customer accounts leave the chart of accounts, and the trial balance that measures it | [`2026-08-10-subsidiary-ledger-design.md`](superpowers/specs/2026-08-10-subsidiary-ledger-design.md) |
+| 8 | Per-entity stores — N+2 databases, three shapes | [`2026-08-02-db-per-entity-design.md`](../specs/2026-08-02-db-per-entity-design.md) |
+| 9 | One store, and it is SQLite | [`2026-08-03-sqlite-only-store-design.md`](../specs/2026-08-03-sqlite-only-store-design.md) |
+| 19 | Reconciliation a bank can do for itself | [`2026-08-09-bank-reconciliation-design.md`](../specs/2026-08-09-bank-reconciliation-design.md) |
+| 20 | The subsidiary ledger — customer accounts leave the chart of accounts, and the trial balance that measures it | [`2026-08-10-subsidiary-ledger-design.md`](../specs/2026-08-10-subsidiary-ledger-design.md) |
+| 21 | EBICS batches, the institutions in `cmd/server`, and the business day | [`2026-08-11-ebics-and-the-business-day-design.md`](../specs/2026-08-11-ebics-and-the-business-day-design.md) |
 
 Sub-project 20 shipped the trial balance with it: the report is the acceptance
 test for the third task, and a row count bounded by the institution rather than
