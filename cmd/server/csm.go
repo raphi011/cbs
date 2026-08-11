@@ -314,29 +314,34 @@ func (c *ClearingHouse) answerUnreadable(from iso20022.BIC, cause error) error {
 // bank that holds the payee, because a push travels towards the money's
 // destination — and records this institution's own copy of it.
 //
-// Only the FILE's own shape is judged before the record. A bulk file names
-// several counterparty agents and therefore several destinations, which is a
-// refusal of the file rather than of a payment and needs nothing looked up; see
-// refuseBulk. Everything after it goes through relayRecorded, which is where the
-// order of the record and the relay is argued.
+// # One file in, M files out, and that fan-out is what a clearing house is for
+//
+// A submitting bank's file carries whatever its customers handed in that
+// morning, addressed to every bank in the scheme. This institution sorts it by
+// creditor agent and hands each receiving bank the transactions that are for it
+// and no others — which is the one act in the whole system that no bank could
+// perform for itself, and it is invisible in a network where every message
+// carries one payment.
+//
+// Everything after the sort goes through relayRecorded, which is where the order
+// of the record and the relay is argued.
 func (c *ClearingHouse) relayCreditTransfer(ctx context.Context, from iso20022.BIC, env iso20022.Envelope, doc *iso20022.Pacs008) error {
 	body := doc.FIToFICstmrCdtTrf
-	ref := body.CdtTrfTxInf[0].PmtId
 	orig := payment.OriginalMessage{
 		MsgID:     body.GrpHdr.MsgId,
 		MsgDefIdr: env.AppHdr.MsgDefIdr,
 		CreDtTm:   body.GrpHdr.CreDtTm.Time,
 	}
-	if n := len(body.CdtTrfTxInf); n != 1 {
-		return c.refuseBulk(from, orig, "CdtTrfTxInf", n)
-	}
 	ps, err := c.ops.RecordRelayedCreditTransfer(ctx, doc)
 	if err != nil {
-		return fmt.Errorf("server: %s cannot carry %s: %w", c.bic, ref.TxId, err)
+		return fmt.Errorf("server: %s cannot carry the file %s uploaded: %w", c.bic, from, err)
 	}
-	// One transaction, refused above if it were not, so one recorded payment and
-	// one destination.
-	return c.relayRecorded(ctx, from, env, doc, orig, ref, body.CdtTrfTxInf[0].CdtrAgt.FinInstnId.BICFI, ps[0])
+	groups := groupedBy(body.CdtTrfTxInf, func(tx iso20022.CreditTransferTransaction) iso20022.BIC {
+		return tx.CdtrAgt.FinInstnId.BICFI
+	})
+	return c.relayRecorded(ctx, from, env, orig, ps, groups, func(idx []int) iso20022.Document {
+		return creditTransferPart(doc, idx)
+	})
 }
 
 // relayDirectDebit hands a collection on to the DEBTOR's agent: the bank that
@@ -349,25 +354,59 @@ func (c *ClearingHouse) relayCreditTransfer(ctx context.Context, from iso20022.B
 // parties resolve by address whoever is asking.
 func (c *ClearingHouse) relayDirectDebit(ctx context.Context, from iso20022.BIC, env iso20022.Envelope, doc *iso20022.Pacs003) error {
 	body := doc.FIToFICstmrDrctDbt
-	ref := body.DrctDbtTxInf[0].PmtId
 	orig := payment.OriginalMessage{
 		MsgID:     body.GrpHdr.MsgId,
 		MsgDefIdr: env.AppHdr.MsgDefIdr,
 		CreDtTm:   body.GrpHdr.CreDtTm.Time,
 	}
-	if n := len(body.DrctDbtTxInf); n != 1 {
-		return c.refuseBulk(from, orig, "DrctDbtTxInf", n)
-	}
 	ps, err := c.ops.RecordRelayedDirectDebit(ctx, doc)
 	if err != nil {
-		return fmt.Errorf("server: %s cannot carry %s: %w", c.bic, ref.TxId, err)
+		return fmt.Errorf("server: %s cannot carry the file %s uploaded: %w", c.bic, from, err)
 	}
-	// One transaction, for relayCreditTransfer's reason.
-	return c.relayRecorded(ctx, from, env, doc, orig, ref, body.DrctDbtTxInf[0].DbtrAgt.FinInstnId.BICFI, ps[0])
+	groups := groupedBy(body.DrctDbtTxInf, func(tx iso20022.DirectDebitTransactionInformation) iso20022.BIC {
+		return tx.DbtrAgt.FinInstnId.BICFI
+	})
+	return c.relayRecorded(ctx, from, env, orig, ps, groups, func(idx []int) iso20022.Document {
+		return directDebitPart(doc, idx)
+	})
 }
 
-// relayRecorded is the second half of carrying an instruction: queue it for the
-// bank it names, and keep this institution's own copy agreeing with what it
+// A destination is one receiving bank and the transactions of an uploaded file
+// that are addressed to it, by their position in that file.
+//
+// Positions and not copies, because two things are indexed by them — the
+// document's own transaction list and the payments this institution recorded —
+// and an index is what keeps the two in step without either being rebuilt.
+type destination struct {
+	to  iso20022.BIC
+	idx []int
+}
+
+// groupedBy sorts a file's transactions by the agent each names, keeping the
+// destinations in the order the sender first named them.
+//
+// The order is a property of the FILE, so two runs over the same file produce
+// the same output files in the same sequence — which is what a test asserting on
+// a fan-out needs, and what a deployment with one goroutine can offer instead of
+// N institutions running concurrently.
+func groupedBy[T any](txs []T, agent func(T) iso20022.BIC) []destination {
+	var out []destination
+	at := map[iso20022.BIC]int{}
+	for i, tx := range txs {
+		to := agent(tx)
+		j, ok := at[to]
+		if !ok {
+			j = len(out)
+			at[to] = j
+			out = append(out, destination{to: to})
+		}
+		out[j].idx = append(out[j].idx, i)
+	}
+	return out
+}
+
+// relayRecorded is the second half of carrying a file: one output file per
+// receiving bank, and this institution's own copies agreeing with what it
 // queued.
 //
 // # The record comes BEFORE the routing, and the order is decided rather than
@@ -381,32 +420,66 @@ func (c *ClearingHouse) relayDirectDebit(ctx context.Context, from iso20022.BIC,
 // cannot tell the difference and says so). A real CSM checks for a duplicate at
 // ingestion, before it validates or forwards anything, and this is that check.
 //
+// It is recorded for the WHOLE file in one unit of work and routed per
+// destination, which is the asymmetry worth naming: the file is one instruction
+// as far as the submitting bank is concerned, and M as far as the network is.
+//
 // An RC01 leaves a row, and the row is REJECTED in the same breath, so this
 // institution's copy says what its message said: a record that it refused to
 // carry this payment, which is the fact an operator asking "what happened to it"
-// needs.
+// needs. One unroutable destination refuses only the transactions addressed to
+// it; the rest of the file goes on to the banks that can be reached.
 //
 // The seam moves rather than closing. A record that succeeded and a relay that
-// could not be QUEUED leaves a row for a file in nobody's queue. The error is
-// returned rather than swallowed either way, so it lands in the day's report
-// against the order it arrived under.
+// could not be QUEUED leaves a row for a file in nobody's queue. Every failure
+// is joined rather than returned, for the reason a day carries on past one: a
+// destination this institution could not reach must not stop the others being
+// handed their share.
 func (c *ClearingHouse) relayRecorded(ctx context.Context, from iso20022.BIC, env iso20022.Envelope,
-	doc iso20022.Document, orig payment.OriginalMessage, ref iso20022.PaymentIdentification,
-	to iso20022.BIC, p payment.Payment) error {
+	orig payment.OriginalMessage, ps []payment.Payment, groups []destination,
+	part func(idx []int) iso20022.Document) error {
 
-	routed, err := c.relay(env, doc, orig, ref, from, to)
-	if err != nil || routed {
-		return err
+	var errs []error
+	for _, g := range groups {
+		routed, err := c.relay(env, part(g.idx), orig, refsOf(ps, g.idx), from, g.to)
+		if err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		if routed {
+			continue
+		}
+		// The RC01 is already in the sender's queue and this institution said it.
+		// Its own copies have to say the same thing, or it is a clearing house
+		// holding Initiated payments it has told the submitting bank it will not
+		// carry — and that bank, acting on the message, will have reversed its
+		// customers' debits.
+		for _, i := range g.idx {
+			if _, err := c.ops.RejectAtCSM(ctx, ps[i].ID, iso20022.StatusReasonBankIdentifierIncorrect,
+				fmt.Sprintf("no route to %s", g.to)); err != nil {
+				errs = append(errs, fmt.Errorf("server: %s answered RC01 for %s and could not record it: %w", c.bic, ps[i].ID, err))
+			}
+		}
 	}
-	// The RC01 is already in the sender's queue and this institution said it. Its
-	// own copy has to say the same thing, or it is a clearing house holding an
-	// Initiated payment it has told the submitting bank it will not carry — and
-	// that bank, acting on the message, will have reversed its customer's debit.
-	if _, err := c.ops.RejectAtCSM(ctx, p.ID, iso20022.StatusReasonBankIdentifierIncorrect,
-		fmt.Sprintf("no route to %s", to)); err != nil {
-		return fmt.Errorf("server: %s answered RC01 for %s and could not record it: %w", c.bic, p.ID, err)
+	return errors.Join(errs...)
+}
+
+// refsOf is how a group of transactions is referred back to, read off the
+// payments this institution recorded rather than off the document.
+//
+// Off the RECORD because a status has to quote both references and only the
+// record carries the EPC's convention for a payment whose payer supplied none —
+// see endToEndOf. The two agree by construction: the row was written from the
+// message a moment earlier.
+func refsOf(ps []payment.Payment, idx []int) []iso20022.PaymentIdentification {
+	out := make([]iso20022.PaymentIdentification, 0, len(idx))
+	for _, i := range idx {
+		out = append(out, iso20022.PaymentIdentification{
+			EndToEndId: endToEndOf(ps[i]),
+			TxId:       string(ps[i].ID),
+		})
 	}
-	return nil
+	return out
 }
 
 // relay forwards an instruction to the agent the message named, whichever
@@ -423,22 +496,26 @@ func (c *ClearingHouse) relayRecorded(ctx context.Context, from iso20022.BIC, en
 // connection rather than into a queue. Its SECOND hop does read an element and
 // does not come through here — see releaseReturn.
 //
-// The DOCUMENT travels unchanged and only the header is replaced. The header
-// says who is handing this to whom and is this hop's; the document is what the
-// submitting bank said and is not the clearing house's to rewrite. Its
-// GrpHdr/MsgId therefore stays that bank's, which is what the receiving bank
+// The DOCUMENT is the submitting bank's own, carrying the transactions this
+// destination is to be handed and nothing else. What the split rewrites is
+// NbOfTxs, because that element is a claim about the file it sits in and a file
+// sorted by creditor agent is a different file. The transactions themselves
+// travel unchanged, and so does GrpHdr/MsgId — which is what the receiving bank
 // quotes back as OrgnlMsgId and what lets the answer be matched to the original
-// all the way home.
+// all the way home. See creditTransferPart.
+//
+// The header is replaced outright: it says who is handing this to whom, and that
+// is this hop's rather than the submitting bank's.
 //
 // # It says whether it routed
 //
 // The RC01 arm answers the sender and returns no error, because a refusal the
 // sender was told about is completed work (Bank.answer's rule). Without the
 // boolean its two instruction callers cannot tell a file that was queued from
-// one that came back as a rejection, and would RECORD a payment the clearing
+// one that came back as a rejection, and would RECORD payments the clearing
 // house had just told a bank it would not carry.
 func (c *ClearingHouse) relay(env iso20022.Envelope, doc iso20022.Document,
-	orig payment.OriginalMessage, ref iso20022.PaymentIdentification, from, to iso20022.BIC) (bool, error) {
+	orig payment.OriginalMessage, refs []iso20022.PaymentIdentification, from, to iso20022.BIC) (bool, error) {
 
 	relayed := iso20022.Envelope{
 		AppHdr: iso20022.AppHdr{
@@ -454,7 +531,9 @@ func (c *ClearingHouse) relay(env iso20022.Envelope, doc iso20022.Document,
 	if notEnrolled(err) {
 		// RC01, and it is this institution that says it because it is the only one
 		// holding the queues.
-		return false, c.answer(from, orig, ref, iso20022.StatusReasonBankIdentifierIncorrect, err.Error())
+		// One status covers the whole group: they were all addressed to the same
+		// unreachable bank, so they all get the same answer.
+		return false, c.answer(from, orig, refs, iso20022.StatusReasonBankIdentifierIncorrect, err.Error())
 	}
 	return err == nil, err
 }
@@ -571,34 +650,6 @@ func (c *ClearingHouse) releaseReturn(held heldReturn, id payment.PaymentID) err
 			CreDt:     iso20022.ISODateTime{Time: c.d.now()},
 		},
 		Document: held.doc,
-	})
-}
-
-// refuseBulk is this system's one-payment-per-file limit, stated to the sender.
-//
-// A bulk file names several counterparty agents and therefore several
-// destinations, and this clearing house has one routing decision per file to
-// make. Refused rather than split: queueing the first of five would drop four.
-//
-// # It names the FILE and no transaction in it
-//
-// The file was refused WHOLE, so nothing in it was decided and no transaction id
-// in it means anything. Quoting the first transaction's PmtId would make the
-// answer a status about A PAYMENT, and a receiving bank reads it as one: it
-// looks the id up in its own register and acts on the decision. Against a
-// doctored file the id names a payment that is live in a cycle, and the payer's
-// bank reverses a debit that is funding a settlement.
-//
-// What the sender matches on is OrgnlMsgId, which every pacs.002 carries and
-// which names the file it uploaded; the group status says RJCT and the text says
-// which element carried how many. A bank skips a status naming no transaction —
-// Bank.receiveStatus already documents that arm.
-func (c *ClearingHouse) refuseBulk(from iso20022.BIC, orig payment.OriginalMessage, element string, n int) error {
-	return c.forward(from, orig, payment.TransactionStatusReport{
-		EndToEndID: notProvided,
-		Status:     iso20022.TransactionStatusRejected,
-		Code:       iso20022.StatusReasonNotSpecifiedAgentGenerated,
-		Text:       fmt.Sprintf("this clearing house routes one payment per message; %s carries %d", element, n),
 	})
 }
 
@@ -812,7 +863,7 @@ func (c *ClearingHouse) clear(ctx context.Context, id payment.PaymentID, r payme
 // bank's pacs.008 or pacs.003, which is what every hop is about and the only
 // thing that bank can match on.
 func (c *ClearingHouse) forward(to iso20022.BIC, orig payment.OriginalMessage, r payment.TransactionStatusReport) error {
-	return c.forwardDecision(to, "", orig, r)
+	return c.forwardDecision(to, "", orig, []payment.TransactionStatusReport{r})
 }
 
 // forwardDecision is forward for a status this institution is CARRYING rather
@@ -824,10 +875,10 @@ func (c *ClearingHouse) forward(to iso20022.BIC, orig payment.OriginalMessage, r
 // point rather than a bool. receiveReturnStatus's own doc says this institution
 // decides nothing there, and iso20022.StatusReasonInformation says Orgtr exists
 // so that a receiver does not blame the relay for the refusal.
-func (c *ClearingHouse) forwardDecision(to, decidedBy iso20022.BIC, orig payment.OriginalMessage, r payment.TransactionStatusReport) error {
+func (c *ClearingHouse) forwardDecision(to, decidedBy iso20022.BIC, orig payment.OriginalMessage, rs []payment.TransactionStatusReport) error {
 	mc := c.d.messageContext(c.bic, to)
 	mc.DecidedBy = decidedBy
-	env, err := payment.StatusMessage(orig, []payment.TransactionStatusReport{r}, mc)
+	env, err := payment.StatusMessage(orig, rs, mc)
 	if err != nil {
 		return fmt.Errorf("server: %s could not build its pacs.002 for %s: %w", c.bic, to, err)
 	}
@@ -1310,7 +1361,7 @@ func (c *ClearingHouse) receiveReturnStatus(ctx context.Context, from iso20022.B
 		// The SETTLEMENT AGENT decided this, not the clearing house, and the message
 		// says so. It is the one hop in this system where the sender and the
 		// originator are different institutions; see forwardDecision.
-		errs := []error{c.forwardDecision(returner, from, orig, r)}
+		errs := []error{c.forwardDecision(returner, from, orig, []payment.TransactionStatusReport{r})}
 
 		held, holding := c.held[id]
 		delete(c.held, id)
@@ -1352,16 +1403,27 @@ func endToEndOf(p payment.Payment) string {
 	return p.EndToEndID
 }
 
-// answer rejects a file the clearing house could not carry out, back to whoever
-// uploaded it. No payment changes state: these are refusals of the FILE — a bulk
-// file, an agent this deployment holds no queue for — decided before any payment
-// was looked up.
-func (c *ClearingHouse) answer(to iso20022.BIC, orig payment.OriginalMessage, ref iso20022.PaymentIdentification, code iso20022.StatusReason, text string) error {
-	return c.forward(to, orig, payment.TransactionStatusReport{
-		EndToEndID: ref.EndToEndId,
-		TxID:       ref.TxId,
-		Status:     iso20022.TransactionStatusRejected,
-		Code:       code,
-		Text:       text,
-	})
+// answer rejects the part of a file the clearing house could not carry, back to
+// whoever uploaded it: one status report per transaction, in one message.
+//
+// One message and not one per transaction, because the sender uploaded a file
+// and a bulk network answers a file with a file. What varies inside it is the
+// transaction reference; the code and the text are the group's, because the only
+// refusal that reaches here is about a DESTINATION — an agent this deployment
+// holds no queue for — and every transaction addressed to it shares one. No
+// payment changes state: this is decided before any of them is looked up.
+func (c *ClearingHouse) answer(to iso20022.BIC, orig payment.OriginalMessage,
+	refs []iso20022.PaymentIdentification, code iso20022.StatusReason, text string) error {
+
+	rs := make([]payment.TransactionStatusReport, 0, len(refs))
+	for _, ref := range refs {
+		rs = append(rs, payment.TransactionStatusReport{
+			EndToEndID: ref.EndToEndId,
+			TxID:       ref.TxId,
+			Status:     iso20022.TransactionStatusRejected,
+			Code:       code,
+			Text:       text,
+		})
+	}
+	return c.forwardDecision(to, "", orig, rs)
 }

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -95,6 +96,21 @@ type Problem struct {
 	Institution iso20022.BIC
 	OrderID     ebics.OrderID
 	Detail      string
+}
+
+// joinProblemDetails renders a set of problems as one error, for the two doors
+// that reach a phase of the day out of turn and have a caller to tell.
+//
+// A day PUTS problems in its report because there is nobody to return them to; a
+// request has somebody, so the same values become the answer to it. The
+// institution is not repeated in the text — the caller is standing on that
+// institution's own port.
+func joinProblemDetails(ps []Problem) error {
+	var errs []error
+	for _, p := range ps {
+		errs = append(errs, errors.New(p.Detail))
+	}
+	return errors.Join(errs...)
 }
 
 // journal accumulates what this deployment has done since the last advance.
@@ -306,8 +322,8 @@ func (d *Deployment) AdvanceDay(ctx context.Context) (DayReport, error) {
 	}, err
 }
 
-// clear is the clearing half of a business day: the nine phases that only run
-// on a day the scheme settles on.
+// clear is the clearing half of a business day: the phases that only run on a
+// day the scheme settles on.
 //
 // # Which banks each phase visits
 //
@@ -316,7 +332,9 @@ func (d *Deployment) AdvanceDay(ctx context.Context) (DayReport, error) {
 // without one is not a slow bank: nothing can be addressed to it, so every
 // clearing phase would answer it EBICS_INVALID_USER_OR_USER_STATE, which is
 // true, is not news, and would appear in every day's report for the life of the
-// deployment.
+// deployment. Its own hub therefore accumulates and is never cut off, which is
+// the honest outcome — a bank the scheme has not admitted has nowhere to upload
+// to.
 //
 // The directory refresh is the exception and visits every bank, because it
 // touches no queue at all: it is the scheme's vendor delivering a file, and a
@@ -334,36 +352,49 @@ func (d *Deployment) clear(ctx context.Context) {
 		}
 	}
 
-	// 1. The clearing house works through the instructions and returns its
+	// 1. Every member reaches its own cut-off: the morning's instructions leave
+	// each bank's hub as one file per scheme, uploaded to the clearing house.
+	// Before the clearing house works, because a file uploaded after it had
+	// worked would wait a whole day for the next one — and this is where the
+	// day's payments come from, so it is the first thing that carries anything.
+	for _, b := range d.subscribers() {
+		_, problems := b.cutoff(ctx)
+		d.journal.problem(problems...)
+	}
+
+	// 2. The clearing house works through the instructions and returns its
 	// members uploaded: each is recorded, and routed to the agent it names.
 	d.journal.problem(d.csm.work(ctx, ebics.CCT, ebics.CDD, ebics.CRT)...)
 
-	// 2. Each receiving bank collects what was routed to it and answers per
+	// 3. Each receiving bank collects what was routed to it and answers per
 	// transaction — ACCP or RJCT — in a status report it uploads.
 	for _, b := range d.subscribers() {
 		d.journal.problem(b.collect(ctx, csm, b.csm, ebics.BTD)...)
 	}
 
-	// 3. The clearing house works through those answers, taking each accepted
+	// 4. The clearing house works through those answers, taking each accepted
 	// payment into the open cycle for its scheme.
 	d.journal.problem(d.csm.work(ctx, ebics.CST)...)
 
-	// 4. The cut-off: every open cycle is netted and its positions uploaded to
-	// the settlement agent. A cycle the operator closed by hand is already
-	// closed and is settled by this day's phase 5 rather than by this one.
+	// 5. The clearing house's own cut-off: every open cycle is netted and its
+	// positions uploaded to the settlement agent. Two different cut-offs share
+	// the word and they are a phase apart — a bank's turns instructions into a
+	// file, and this one turns a batch of accepted payments into net positions. A
+	// cycle the operator closed by hand is already closed and is settled by this
+	// day's phase 6 rather than by this one.
 	d.journal.problem(d.csm.closeOpenCycles(ctx)...)
 
-	// 5. The settlement agent works through everything uploaded to it: cut-offs
+	// 6. The settlement agent works through everything uploaded to it: cut-offs
 	// discharged, returns executed, lodgements credited. This is the only phase
 	// in which central-bank reserves move.
 	d.journal.problem(d.cb.work(ctx)...)
 
-	// 6. The clearing house collects the answers and turns each settled CYCLE
+	// 7. The clearing house collects the answers and turns each settled CYCLE
 	// into per-payment news, and each settled RETURN into the pacs.004 the other
 	// bank has been waiting for.
 	d.journal.problem(d.csm.collect(ctx)...)
 
-	// 7. Each member collects, THE SETTLEMENT AGENT FIRST. The order is
+	// 8. Each member collects, THE SETTLEMENT AGENT FIRST. The order is
 	// load-bearing and is the only thing that guarantees the mirror leg is
 	// booked before the creditor legs draw on it — see CentralBank.advise, which
 	// argues it where the guarantee used to live.

@@ -77,8 +77,8 @@ func TestABankAdmittedAfterTheLastRefreshCannotBePaidUntilTheNextOne(t *testing.
 		t.Fatalf("paying a member admitted since the last refresh = %v, want ErrBankCodeUnknown", err)
 	}
 	// Nothing left Aurora, and nothing moved. A refusal that had already debited
-	// the payer would be the failure SubmitAndInstruct exists to prevent, arriving
-	// through a new door.
+	// the payer would be the failure payment.TakeInstruction exists to prevent,
+	// arriving through a new door.
 	if n := len(h.messagesFrom(mark)); n != 0 {
 		t.Errorf("a refused submission put %d messages on the wire, want 0", n)
 	}

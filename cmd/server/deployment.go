@@ -399,24 +399,30 @@ func (d *Deployment) messageContext(from, to iso20022.BIC) payment.MessageContex
 // AdvanceDay. Nothing below is a file. A customer instructs their bank, an
 // operator reaches a cut-off or rejects a payment, a bank moves cash onto
 // reserve — each is an instruction from outside the day, so each runs the
-// instructing institution's own half SYNCHRONOUSLY, on the caller's goroutine,
-// and only then uploads.
+// instructing institution's own half SYNCHRONOUSLY, on the caller's goroutine.
 //
 // Two properties are shared by every one of them. The synchronous half is what
 // lets a caller be told "no" — a customer whose instruction fails their own
 // bank's checks hears it then and there, which is why api can answer 422 rather
-// than 202 followed by a rejection nobody can be told about. And THE UPLOAD IS
-// OUTSIDE THE UNIT OF WORK: uploading while holding a transaction would put a
-// file on a connection against uncommitted state, or against state a rollback
-// removed.
+// than 202 followed by a rejection nobody can be told about. And WHERE A FILE
+// FOLLOWS, IT IS SENT OUTSIDE THE UNIT OF WORK: uploading while holding a
+// transaction would put a file on a connection against uncommitted state, or
+// against state a rollback removed.
+//
+// Submit is the door with NO file at all. A customer's instruction joins its
+// bank's hub and travels at that bank's next cut-off, which is what makes this a
+// bulk network; see Bank.submit.
 //
 // What none of them answers is what the far side thinks. That arrives on a later
 // download, when a business day runs.
 
-// Submit runs the submitting bank's half synchronously and then uploads.
+// Submit runs the submitting bank's half synchronously and hands the instruction
+// to that bank's hub.
 //
 // It returns an Initiated payment and nothing more, which is why api answers 202
-// rather than 201.
+// rather than 201 — and the 202 now says something narrower than it used to: not
+// "sent and unanswered" but "taken and not yet sent". GET /payments/pending is
+// the difference.
 //
 // # Which bank is handed the instruction
 //

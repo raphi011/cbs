@@ -236,10 +236,10 @@ func getPayment(t *testing.T, s *server, id string) api.PaymentDTO {
 // response is written.
 func TestSubmitAnswers202AndThePaymentIsNotYetAccepted(t *testing.T) {
 	srv := newAPIHarness(t)
-	// Nothing holds the clearing house still, and nothing needs to: the file is
-	// in its order log and no goroutine exists that could work through it. The
-	// payment is Initiated because the only thing that would change that is the
-	// call this test has not made yet.
+	// Nothing holds the clearing house still, and nothing needs to: no file has
+	// been built, because the instruction is in the payer's bank's hub and a hub
+	// empties at a cut-off. The payment is Initiated because the only thing that
+	// would change that is the call this test has not made yet.
 	rec := postJSON(t, payerRoutes(t, srv), "/payments", validSubmission(t, srv))
 	if rec.Code != http.StatusAccepted {
 		t.Fatalf("status = %d, want 202", rec.Code)
@@ -248,7 +248,7 @@ func TestSubmitAnswers202AndThePaymentIsNotYetAccepted(t *testing.T) {
 
 	// Read on the PAYER'S BANK's surface, because until the file is carried that
 	// bank is the only institution with a row for this payment at all — the
-	// instruction has not been routed, so the clearing house has not been told it
+	// instruction has not been sent, so the clearing house has not been told it
 	// exists and answers 404 rather than "Initiated". Which is the same claim in
 	// a stronger form: the response was written before any other institution had
 	// heard of the payment.
@@ -267,7 +267,46 @@ func TestSubmitAnswers202AndThePaymentIsNotYetAccepted(t *testing.T) {
 	}
 }
 
-// A reset throws the queues away with the rows, and the file a submission left
+// The two routes the hub added, over HTTP, on the bank's own port: what is
+// waiting, and the act that sends it.
+//
+// It is the API half of what bulk_test.go measures inside the deployment, and
+// the assertion that matters here is the ORDER ID: a cut-off answers with a
+// receipt from the transport and not with an outcome, because what the clearing
+// house makes of the file comes back on a later download.
+func TestPendingAndCutoffOnABanksOwnPort(t *testing.T) {
+	srv := newAPIHarness(t)
+	payer := payerRoutes(t, srv)
+
+	id := decodePaymentID(t, postJSON(t, payer, "/payments", validSubmission(t, srv)))
+	pending := doJSONArray(t, payer, "GET", "/payments/pending", "", http.StatusOK)
+	if len(pending) != 1 {
+		t.Fatalf("the hub is holding %d instructions after one submission, want 1", len(pending))
+	}
+	if got := pending[0].(map[string]any)["id"]; got != id {
+		t.Errorf("the hub is holding %v, want the payment the 202 named (%s)", got, id)
+	}
+
+	out := doJSON(t, payer, "POST", "/payments/cutoff", "", http.StatusAccepted)
+	orders, _ := out["orderIds"].([]any)
+	if len(orders) != 1 {
+		t.Fatalf("the cut-off answered with %v, want one order id", out["orderIds"])
+	}
+	if s, _ := orders[0].(string); s == "" {
+		t.Errorf("the cut-off answered with an empty order id; an upload is acknowledged by one")
+	}
+	// Emptied, and a second cut-off is not an error — it is a bank with nothing
+	// to send, which is the ordinary answer on a quiet morning.
+	if got := doJSONArray(t, payer, "GET", "/payments/pending", "", http.StatusOK); len(got) != 0 {
+		t.Errorf("the hub still holds %d instructions after its cut-off", len(got))
+	}
+	again := doJSON(t, payer, "POST", "/payments/cutoff", "", http.StatusAccepted)
+	if orders, _ := again["orderIds"].([]any); len(orders) != 0 {
+		t.Errorf("an empty hub uploaded %v; there was nothing to put in a file", again["orderIds"])
+	}
+}
+
+// A reset throws the queues away with the rows, and the file a cut-off left
 // behind is one of them.
 //
 // There is nothing to drain: no goroutine is carrying anything, so the only way
@@ -275,11 +314,17 @@ func TestSubmitAnswers202AndThePaymentIsNotYetAccepted(t *testing.T) {
 // about a payment no institution now holds a row for would be worked through on
 // the first day after it, against tables the reset has emptied. Both hosts are
 // therefore rebuilt, which is what this measures.
+//
+// The cut-off is what puts a file there at all. A submission on its own leaves
+// the instruction in the payer's bank's hub and nothing on any connection, so a
+// version of this test without one would measure a reset over an empty host.
 func TestResetThrowsTheQueuesAwayWithTheRows(t *testing.T) {
 	srv := newAPIHarness(t)
-	postJSON(t, payerRoutes(t, srv), "/payments", validSubmission(t, srv))
+	payer := payerRoutes(t, srv)
+	postJSON(t, payer, "/payments", validSubmission(t, srv))
+	doJSON(t, payer, "POST", "/payments/cutoff", "", http.StatusAccepted)
 	if pending := len(srv.dep.ClearingHouse().host.Pending()); pending == 0 {
-		t.Fatal("the submission left no file at the clearing house, so this test would pass on nothing")
+		t.Fatal("the cut-off left no file at the clearing house, so this test would pass on nothing")
 	}
 	rec := post(t, srv.CentralBankRoutes(), "/admin/reset")
 	if rec.Code != http.StatusOK {

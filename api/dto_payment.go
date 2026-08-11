@@ -416,6 +416,22 @@ type SubmittedPaymentDTO struct {
 	PaymentID string `json:"paymentId"`
 }
 
+// CutoffDTO is what a bank answers a cut-off with: the order id of every file it
+// uploaded, and nothing about what is in them.
+//
+// Order ids and not payments, because that is the whole of what a cut-off
+// returns. An upload is answered TECHNICALLY — the file arrived and parsed — and
+// what the clearing house makes of the payments inside it comes back on a later
+// download. An operator holding an order id can ask the host what became of that
+// order, which is the question a cut-off leaves open.
+//
+// Several ids, because a bank operating two schemes uploads two files. The list
+// is empty when the hub was empty, which is the ordinary answer on a quiet day
+// and is [] rather than null so a client does not have to tell the two apart.
+type CutoffDTO struct {
+	OrderIDs []string `json:"orderIds"`
+}
+
 type CreateMandateRequest struct {
 	Debtor    PartyRefDTO `json:"debtor"`
 	Creditor  PartyRefDTO `json:"creditor"`

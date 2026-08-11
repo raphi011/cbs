@@ -1650,7 +1650,7 @@ func (s *Network) DepositTx(ctx context.Context, tx Tx, participant ParticipantI
 // book, from the camt.050 this returns — see ReceiveLodgementTx. Two books, two
 // units of work, one message each way.
 //
-// # It posts and instructs together, for SubmitAndInstruct's reason
+// # It posts and instructs together, and one act is not two
 //
 // One act and not two. Building the instruction can fail — a bank that cannot
 // name its own settlement account — and a refusal reported after the leg was
@@ -2938,9 +2938,9 @@ type InitiatePaymentRequest struct {
 // SubmitPayment is SubmitPaymentTx in its own unit of work.
 //
 // It runs the bank's half and nothing else, which is why it is NOT what a bank
-// actor calls: a submission that commits and then cannot be turned into a
-// message leaves the payer debited against an instruction nobody will ever
-// answer. SubmitAndInstruct is the pair that cannot do that.
+// actor calls: a submission that commits and then turns out to be unsendable
+// leaves the payer debited against an instruction that will never travel.
+// TakeInstruction is the pair that cannot do that.
 func (s *Network) SubmitPayment(ctx context.Context, req InitiatePaymentRequest) (Payment, error) {
 	var out Payment
 	err := s.store.Update(ctx, func(ctx context.Context, tx Tx) error {
@@ -2951,72 +2951,37 @@ func (s *Network) SubmitPayment(ctx context.Context, req InitiatePaymentRequest)
 	return out, err
 }
 
-// SubmitAndInstruct is the submitting bank's half AND the interbank message it
-// travels on, in ONE unit of work.
+// TakeInstruction is the submitting bank's half AND the proof that what it took
+// can be sent, in ONE unit of work. It is what a bank actor calls.
 //
 // # Why they cannot be two
 //
-// Building the message can FAIL — a payee whose address the instruction never
-// quoted is ErrUnaddressableAccount — and a committed debtor leg behind a
-// refused request debits a payer against an instruction nobody will answer.
-// Everything the instruction needs is therefore resolved while the transaction
-// is still open, so a counterparty this bank cannot address rolls the debit back
-// with it. Nothing is DUPLICATED: there is one address check and it is the
-// message builder's.
+// Nothing goes on a connection here: the instruction joins that bank's hub and
+// travels at the next cut-off, hours later, in a file with everything else
+// waiting. So the moment the file is built is far too late to discover that this
+// payment cannot go in one — the payer has been debited, the API answered 202,
+// and the money is in a clearing suspense against an instruction no file will
+// carry. Everything the message needs is therefore proved while the transaction
+// is still open, and a payee this bank cannot address rolls the debit back with
+// it. See instructableTx, which is the proof, and note that nothing is
+// DUPLICATED: it is the message builder's own check, run early.
 //
-// # The send is still outside
-//
-// This returns the envelope rather than sending it, because sending inside a
-// unit of work is the other half of the same mistake: a message the clearing
-// house could act on against a submission the store then rolled back. The
-// caller sends after this returns. TestARolledBackSubmitSendsNothing is the pin
-// on that half, and cmd/server's bank.submit is the caller.
-func (s *Network) SubmitAndInstruct(ctx context.Context, req InitiatePaymentRequest, mc MessageContext) (Payment, iso20022.Envelope, error) {
+// It answers no envelope, which is the difference from a network that sent one
+// message per payment. A file belongs to a cut-off and has a group header of its
+// own; what a submission produces is an instruction waiting for one.
+func (s *Network) TakeInstruction(ctx context.Context, req InitiatePaymentRequest) (Payment, error) {
 	var p Payment
-	var env iso20022.Envelope
 	err := s.store.Update(ctx, func(ctx context.Context, tx Tx) error {
 		var err error
 		if p, err = s.SubmitPaymentTx(ctx, tx, req); err != nil {
 			return err
 		}
-		env, err = s.InstructionTx(ctx, tx, p, mc)
-		return err
+		return s.instructableTx(ctx, tx, p)
 	})
 	if err != nil {
-		return Payment{}, iso20022.Envelope{}, err
+		return Payment{}, err
 	}
-	return p, env, nil
-}
-
-// InstructionTx builds the interbank message a submission travels on: a pacs.008
-// for a push, a pacs.003 for a pull.
-//
-// One submission is a file of one. The builders take files because that is what
-// a bank sends after a cut-off, and a single instruction going out on its own is
-// the smallest of them rather than a different message.
-//
-// They are two message definitions and not one with a flag because they say
-// different things. A pacs.008 accompanies money that has already left the
-// payer; a pacs.003 asks for money that has not moved, which is why it must
-// carry the MANDATE — the debtor's standing authority for this creditor to
-// collect, and the only element that distinguishes a collection from a demand.
-//
-// The mandate is loaded here rather than carried on the payment because a
-// payment holds its MandateID and nothing else of it; the message needs the
-// document's own terms.
-func (s *Network) InstructionTx(ctx context.Context, tx Tx, p Payment, mc MessageContext) (iso20022.Envelope, error) {
-	scheme, ok := s.scheme(p.Scheme)
-	if !ok {
-		return iso20022.Envelope{}, fmt.Errorf("%w: %s", ErrSchemeNotFound, p.Scheme)
-	}
-	if scheme.Direction() != Pull {
-		return s.CreditTransferMessage([]Payment{p}, mc)
-	}
-	mandate, err := tx.GetMandate(ctx, p.MandateID)
-	if err != nil {
-		return iso20022.Envelope{}, err
-	}
-	return s.DirectDebitMessage([]Collection{{Payment: p, Mandate: mandate}}, mc)
+	return p, nil
 }
 
 // newPayment is the row an institution writes when a payment first exists in its
@@ -3213,9 +3178,9 @@ func (s *Network) SubmitPaymentTx(ctx context.Context, tx Tx, req InitiatePaymen
 	// their remedies.
 	//
 	// It happens BEFORE the debtor leg is posted, for the reason the name check
-	// does: a payment refused after the payer has been debited is the money bug
-	// SubmitAndInstruct exists to prevent, and an address that will not route
-	// cannot be turned into a message at all.
+	// does: a payment refused after the payer has been debited is a payer short of
+	// money against an instruction nobody will ever answer, and an address that
+	// will not route cannot be turned into a message at all.
 	agent, err := s.routeTx(ctx, tx, counterpartyRef.Identifier, counterparty.Agent)
 	if err != nil {
 		return Payment{}, err
@@ -3230,8 +3195,8 @@ func (s *Network) SubmitPaymentTx(ctx context.Context, tx Tx, req InitiatePaymen
 	// AcceptInboundTx, where the bank executing them is the RECEIVING bank for
 	// that direction, not the submitting one. Filling the details there would
 	// overwrite the counterparty's asserted name with the receiving bank's own
-	// record, after that name has already gone out on the wire in the message
-	// SubmitAndInstruct built from it. Only SubmitPaymentTx knows unambiguously
+	// record, after that name has already gone out on the wire in the file this
+	// bank's next cut-off builds from it. Only SubmitPaymentTx knows unambiguously
 	// which side is its own.
 	if push {
 		account, part, err := s.debtorSideTx(ctx, tx, scheme, &p, sc)
@@ -4907,7 +4872,7 @@ func (s *Network) ReserveBalance(ctx context.Context, bic iso20022.BIC, asset le
 // authenticated message on a closed network, and reconciliation against the
 // cycle reports afterwards. The clearing house's side of the same fact is that
 // it must never send an RJCT about a payment it has not rejected, which is a
-// property of csm.relayed and csm.refuseBulk rather than of this table.
+// property of the clearing house's own relay rather than of this table.
 func (s *Network) transition(p *Payment, to PaymentStatus) error {
 	allowed := map[PaymentStatus][]PaymentStatus{
 		Initiated: {Accepted, Rejected},

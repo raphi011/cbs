@@ -875,6 +875,110 @@ func (h *harness) submitCreditTransferInUSD(t *testing.T) payment.Payment {
 	return p
 }
 
+// aThirdBank admits one more member with a euro customer, and has every member
+// pull the directory again so the new bank can be addressed.
+//
+// It exists for the FAN-OUT, which is the one claim a two-bank fixture cannot
+// make: with two banks every file a submitting bank uploads has one destination,
+// so "the clearing house sorts by creditor agent" and "the clearing house
+// forwards the file" are indistinguishable. A third bank is the smallest network
+// in which they are not.
+//
+// It comes back with the account as well as the bank, because the address a
+// payment quotes is minted by the register and cannot be written down in
+// advance.
+func (h *harness) aThirdBank(t *testing.T) (*payment.Bank, deposit.Account) {
+	t.Helper()
+	p := h.provision(t, "Banco Tercero", "TERCESMMXXX", euroOnly)
+	// Everybody re-subscribes, this one included: a member admitted since the last
+	// refresh is in the roster and in nobody's copy of it, which is a state with a
+	// test of its own and not the one being set up here.
+	h.subscribeAll(t)
+	return p, h.openCustomer(t, p, "Carla", "EUR", 0)
+}
+
+// creditTransferToAccount is an instruction to a payee at any bank, addressed by
+// the account the register actually holds.
+//
+// creditTransferRequestTo varies the ADDRESS over one fixed account, which is
+// what an unroutable payee needs; this varies both, which is what a payee at a
+// third bank needs.
+func (h *harness) creditTransferToAccount(t *testing.T, acct deposit.Account, reference string) payment.InitiatePaymentRequest {
+	t.Helper()
+	req := h.creditTransferRequestTo(t, addressOf(t, acct))
+	req.Creditor.Account = acct.ID
+	req.CreditorDetails = payment.PartyDetails{Name: acct.Name}
+	req.Description = reference
+	return req
+}
+
+// submit hands one instruction to whichever bank the scheme says submits it, and
+// fails the test if that bank refuses.
+func (h *harness) submit(t *testing.T, req payment.InitiatePaymentRequest) payment.Payment {
+	t.Helper()
+	p, err := h.dep.Submit(context.Background(), req)
+	if err != nil {
+		t.Fatalf("Submit %q: %v", req.Description, err)
+	}
+	return p
+}
+
+// cutOff has one bank empty its hub into files and upload them, and fails the
+// test if it could not.
+func (h *harness) cutOff(t *testing.T, bic iso20022.BIC) []ebics.OrderID {
+	t.Helper()
+	b, err := h.dep.member(bic)
+	if err != nil {
+		t.Fatalf("member %s: %v", bic, err)
+	}
+	orders, err := b.Cutoff(context.Background())
+	if err != nil {
+		t.Fatalf("%s reaching its cut-off: %v", bic, err)
+	}
+	return orders
+}
+
+// pending is what one bank's hub is holding, through the same call its own
+// GET /payments/pending answers with.
+func (h *harness) pending(t *testing.T, bic iso20022.BIC) []payment.Payment {
+	t.Helper()
+	b, err := h.dep.member(bic)
+	if err != nil {
+		t.Fatalf("member %s: %v", bic, err)
+	}
+	ps, err := b.Pending(context.Background())
+	if err != nil {
+		t.Fatalf("%s reading its hub: %v", bic, err)
+	}
+	return ps
+}
+
+// filesOfTypeTo is every message of one definition handed to one institution, in
+// arrival order, parsed.
+//
+// A bulk test asserts on how many files crossed and what is inside each, which
+// is exactly what lastMessageOfTypeTo cannot say: the whole question is whether
+// one file became two.
+func (h *harness) filesOfTypeTo(t *testing.T, to iso20022.BIC, msgDef string) []iso20022.Envelope {
+	t.Helper()
+	h.mu.Lock()
+	seen := append([]tappedMessage(nil), h.seen...)
+	h.mu.Unlock()
+
+	var out []iso20022.Envelope
+	for _, m := range seen {
+		if m.to != to {
+			continue
+		}
+		env, err := iso20022.Unmarshal(m.raw)
+		if err != nil || env.AppHdr.MsgDefIdr != msgDef {
+			continue
+		}
+		out = append(out, env)
+	}
+	return out
+}
+
 // ---------------------------------------------------------------------------
 // The business day, and the piece of it a test can stand inside
 // ---------------------------------------------------------------------------
@@ -884,26 +988,37 @@ func (h *harness) submitCreditTransferInUSD(t *testing.T) payment.Payment {
 // duration and none ever needs to.
 
 // workThrough runs every institution through everything queued for it, in the
-// day's own order, WITHOUT reaching a cut-off and without moving the clock.
+// day's own order, WITHOUT reaching the clearing house's cut-off and without
+// moving the clock.
 //
-// It is AdvanceDay's phases 1, 2, 3, 5, 6 and 7 — everything that carries a file
-// — and it leaves out the three that are the day's own acts: the directory
-// refresh, the cut-off, and the advance. That is what makes it the piece a test
-// can stand inside. A payment is ACCEPTED when this returns and SETTLED when it
-// is run again after a cut-off, and the two moments are a day apart in a
-// deployment where one cycle closes per day.
+// It is every phase of AdvanceDay that carries a file, and it leaves out the
+// three that are the day's own acts: the directory refresh, the CYCLE cut-off,
+// and the advance. That is what makes it the piece a test can stand inside. A
+// payment is ACCEPTED when this returns and SETTLED when it is run again after a
+// cut-off, and the two moments are a day apart in a deployment where one cycle
+// closes per day.
+//
+// The BANKS' cut-off is in, because it is where a file comes from: a hub that
+// was never emptied uploads nothing and every flow test would measure a network
+// carrying no payments. The two cut-offs share a word and are different acts —
+// see Deployment.clear.
 //
 // Leaving the refresh out is load-bearing rather than tidy: a fixture asserting
-// what a stale routing directory costs needs it not to run. Leaving the cut-off
-// out is what lets a test see a payment sitting in an open cycle at all.
+// what a stale routing directory costs needs it not to run. Leaving the cycle
+// cut-off out is what lets a test see a payment sitting in an open cycle at all.
 //
 // Members collect from the SETTLEMENT AGENT first, which is the ordering
-// AdvanceDay's phase 7 exists for and the only thing that now guarantees a
+// AdvanceDay's last phase exists for and the only thing that now guarantees a
 // mirror leg is booked before the creditor legs draw on it.
 func workThrough(d *Deployment) []Problem {
 	ctx := context.Background()
 
-	ps := d.csm.work(ctx, ebics.CCT, ebics.CDD, ebics.CRT)
+	var ps []Problem
+	for _, b := range d.subscribers() {
+		_, problems := b.cutoff(ctx)
+		ps = append(ps, problems...)
+	}
+	ps = append(ps, d.csm.work(ctx, ebics.CCT, ebics.CDD, ebics.CRT)...)
 	for _, b := range d.subscribers() {
 		ps = append(ps, b.collect(ctx, d.cfg.ClearingHouseBIC, b.csm, ebics.BTD)...)
 	}

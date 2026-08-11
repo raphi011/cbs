@@ -112,15 +112,6 @@ func (s *surface) handleInitiatePayment(r *http.Request, req api.InitiatePayment
 	}
 	p, err := s.inst.Submit(r.Context(), dom)
 	if err != nil {
-		// A submission that committed and could not be SENT hands the payment
-		// back beside the error: Initiated, its debtor leg posted on a push, and
-		// no counterparty aware it exists. Refusals reach here with no payment
-		// at all and log nothing, which is the distinction worth keeping — a
-		// refused instruction moved nothing.
-		if p.ID != "" {
-			s.inst.Log().Error("api: a submission committed and its instruction did not go out",
-				"payment", p.ID, "status", p.Status, "error", err)
-		}
 		return api.PaymentDTO{}, err
 	}
 	return api.ToPaymentDTO(p, s.network().ListSchemes()), nil

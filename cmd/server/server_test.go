@@ -3373,7 +3373,7 @@ func mistype(address string) string {
 // so a request the API reported as refused moved 1000 out of Alice's account,
 // into a clearing suspense, against a payment nobody would ever answer. No
 // message had been sent, so there was not even a dead letter; a client that
-// retried the refusal drained the account. payment.SubmitAndInstruct is the fix,
+// retried the refusal drained the account. payment.TakeInstruction is the fix,
 // and these assertions are what would have seen it: the status codes alone were
 // all green throughout.
 //
@@ -3486,8 +3486,8 @@ func TestPaymentAddressingRefusalsAre422(t *testing.T) {
 	// AcceptInboundTx (payment/system.go:1400) skips the write when nothing
 	// changed. The two cases above that quote no creditor address prove a push
 	// of that shape is refused synchronously at the door — Deployment.Submit ->
-	// bank.submit (bank.go) -> payment.SubmitAndInstruct, where the
-	// message is now built in the same unit of work as the leg — so there is no
+	// bank.submit (bank.go) -> payment.TakeInstruction, where the transaction is
+	// rendered in the same unit of work as the leg — so there is no
 	// path through this route on which a creditor back-fill is ever attempted,
 	// let alone reachable. There is no api-level test for that back-fill, and
 	// this is not one either. No drain is needed before the GET below: nothing
@@ -3591,7 +3591,7 @@ func TestPaymentAddressingRefusalsAre422(t *testing.T) {
 //     the derivation returns nothing, the message cannot be rendered without a
 //     BIC, and the failure lands after the payer's leg would have posted — which
 //     is exactly why the refusal is at submission and not at message-building.
-//     See SubmitAndInstruct.
+//     See payment.TakeInstruction.
 //   - "an address no directory here covers" flips the same way, one branch
 //     earlier.
 //   - "an address that resolves — the control" is unaffected, as a control should

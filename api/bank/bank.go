@@ -20,6 +20,7 @@ import (
 	"context"
 	"log/slog"
 
+	"github.com/raphi011/cbs/ebics"
 	"github.com/raphi011/cbs/iso20022"
 	"github.com/raphi011/cbs/ledger"
 	"github.com/raphi011/cbs/payment"
@@ -53,10 +54,20 @@ type Institution interface {
 	// disagree, and participant below converts rather than asking twice.
 	BIC() iso20022.BIC
 
-	// Submit runs this bank's own half of a customer's instruction and uploads it.
-	// Synchronous up to the upload, which is what lets POST /payments answer 422
-	// rather than 202 followed by a rejection nobody can be told about.
+	// Submit runs this bank's own half of a customer's instruction and puts it in
+	// this bank's hub. Synchronous, which is what lets POST /payments answer 422
+	// rather than 202 followed by a rejection nobody can be told about — and it
+	// sends nothing, because a bulk network accumulates until a cut-off.
 	Submit(ctx context.Context, req payment.InitiatePaymentRequest) (payment.Payment, error)
+
+	// Pending is what the hub is holding: the instructions taken and not yet put
+	// in a file, oldest first. It is what a 202 now means, made visible.
+	Pending(ctx context.Context) ([]payment.Payment, error)
+
+	// Cutoff empties the hub into one file per scheme and uploads them, answering
+	// with the order id each arrived under. It names no bank for the reason
+	// nothing here does: reaching a cut-off is this bank's own act.
+	Cutoff(ctx context.Context) ([]ebics.OrderID, error)
 
 	// Lodge moves this bank's own vault cash onto its reserve at the central
 	// bank. It names no bank for the reason above, and it DOES name an asset,

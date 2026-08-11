@@ -904,6 +904,91 @@ func groupSettlementDate(out []outbound, mc MessageContext) (iso20022.ISODate, e
 	return settled, nil
 }
 
+// InstructionMessage renders one cut-off file: the pacs.008 or pacs.003 a bank
+// hands the clearing house when it reaches its cut-off.
+//
+// One file, one SCHEME, because a scheme decides both the message definition and
+// the asset every amount in the file is denominated in. A bank operating two
+// schemes reaches one cut-off and uploads two files, which is the shape a real
+// hub has: a SEPA credit transfer bulk and a SEPA direct debit bulk are two
+// submissions to the same clearing house on the same morning.
+//
+// It is the only builder that reads a store, and only on a pull: a pacs.003
+// carries each debtor's own mandate and a payment holds nothing of one but its
+// id. The read is a View over the submitting bank's own database — a mandate is
+// held by the CREDITOR's bank in SEPA, which is the bank reaching this cut-off.
+func (s *Network) InstructionMessage(ctx context.Context, ps []Payment, mc MessageContext) (iso20022.Envelope, error) {
+	if len(ps) == 0 {
+		return iso20022.Envelope{}, fmt.Errorf("payment: a file with no transactions is not a message")
+	}
+	scheme, ok := s.scheme(ps[0].Scheme)
+	if !ok {
+		return iso20022.Envelope{}, fmt.Errorf("%w: %s", ErrSchemeNotFound, ps[0].Scheme)
+	}
+	for _, p := range ps[1:] {
+		if p.Scheme != ps[0].Scheme {
+			return iso20022.Envelope{}, fmt.Errorf("payment: one file cannot carry both %s and %s", ps[0].Scheme, p.Scheme)
+		}
+	}
+	if scheme.Direction() != Pull {
+		return s.CreditTransferMessage(ps, mc)
+	}
+	var cs []Collection
+	err := s.store.View(ctx, func(ctx context.Context, tx Tx) error {
+		cs = make([]Collection, 0, len(ps))
+		for _, p := range ps {
+			m, err := tx.GetMandate(ctx, p.MandateID)
+			if err != nil {
+				return err
+			}
+			cs = append(cs, Collection{Payment: p, Mandate: m})
+		}
+		return nil
+	})
+	if err != nil {
+		return iso20022.Envelope{}, err
+	}
+	return s.DirectDebitMessage(cs, mc)
+}
+
+// instructableTx proves that a payment can be put in a file, by building the
+// transaction it would travel as and keeping nothing.
+//
+// Building it is the only honest way to know it can be built. The alternative is
+// a second list of the elements a message needs — both accounts addressable,
+// both parties named, the amount representable in the standard's decimal — and
+// two lists of one rule are two things that drift.
+//
+// It runs at SUBMISSION, inside the unit of work that posts the debtor leg, and
+// that placement is the whole point. The file itself is not built until the
+// cut-off, hours later; a payer debited now against an instruction that turns out
+// to be unsendable then would be short of money against a payment nobody could
+// ever answer. So the refusal happens while the debit can still roll back with
+// it, and the API answers 422.
+//
+// What it costs is one rendering per payment that is thrown away, and the
+// transaction it renders is rendered again at the cut-off. That is the price of
+// the check being the real thing rather than a summary of it.
+func (s *Network) instructableTx(ctx context.Context, tx Tx, p Payment) error {
+	scheme, ok := s.scheme(p.Scheme)
+	if !ok {
+		return fmt.Errorf("%w: %s", ErrSchemeNotFound, p.Scheme)
+	}
+	o, err := s.outboundOf(p)
+	if err != nil {
+		return err
+	}
+	if scheme.Direction() != Pull {
+		_, err = creditTransferTx(o)
+		return err
+	}
+	if o.mandate, err = tx.GetMandate(ctx, p.MandateID); err != nil {
+		return err
+	}
+	_, err = directDebitTx(o)
+	return err
+}
+
 // Collection is a direct debit and the mandate that authorises it.
 //
 // They travel together because a pacs.003 carries the mandate's own terms and a
@@ -925,7 +1010,7 @@ type Collection struct {
 // It takes neither a context nor a Tx, for the same reason CreditTransferMessage
 // does not: partiesOf reads nothing, and the mandate — the one piece of I/O this
 // message ever needed — arrives already resolved on the Collection, loaded by
-// InstructionTx's tx.GetMandate before this is called.
+// InstructionMessage before this is called.
 func (s *Network) DirectDebitMessage(cs []Collection, mc MessageContext) (iso20022.Envelope, error) {
 	out := make([]outbound, 0, len(cs))
 	for _, c := range cs {
@@ -1356,7 +1441,7 @@ func (s *Network) CreditTransferRequest(ctx context.Context, doc *iso20022.Pacs0
 	// creditor as the ADDRESS the message quoted, which is exactly what this
 	// resolution consumes.
 	for i := range txs {
-		if txs[i].Request.Creditor, err = s.localPartyIn(ctx, txs[i].Request.Creditor.Identifier); err != nil {
+		if err := s.localSideIn(ctx, &txs[i], &txs[i].Request.Creditor); err != nil {
 			return nil, err
 		}
 	}
@@ -1364,15 +1449,57 @@ func (s *Network) CreditTransferRequest(ctx context.Context, doc *iso20022.Pacs0
 }
 
 // InboundTransaction is one transaction read out of a file: what it instructs,
-// and the id the SUBMITTING bank minted for it.
+// the id the SUBMITTING bank minted for it, and — where this bank has already
+// decided it cannot act on this one — why.
 //
 // The id travels beside the request rather than inside it because it is the one
 // thing on the message that is not part of an instruction. Every institution
 // keys its own row by it, and nothing on this path allocates one — see
 // SubmitPaymentTx, the only place in the system that does.
+//
+// # Refusal is what makes a file's answers per transaction
+//
+// A file is READ whole or not at all, and a transaction that cannot be parsed
+// therefore takes the file with it. Resolution is a different question: whether
+// THIS bank holds the address one line quotes says nothing about the next line,
+// and a file of a thousand refused because the seventh names a closed account
+// would tell nine hundred and ninety-nine payers their payees' IBANs were wrong.
+//
+// So an addressing refusal lands here rather than on the return value, and the
+// caller answers that transaction and carries on with the rest. A Refusal is
+// always something this bank can SAY — see localSideIn for what does not
+// qualify.
 type InboundTransaction struct {
 	ID      PaymentID
 	Request InitiatePaymentRequest
+	Refusal error
+}
+
+// localSideIn resolves one transaction's own side, and decides whether a failure
+// belongs to that transaction or to the whole file.
+//
+// Two refusals are about the ADDRESS and about nothing else — this bank holds no
+// such account (AC01), and this bank holds two (MS03) — so each is an answer to
+// the transaction that quoted it and the rest of the file is unaffected.
+//
+// Everything else fails the file, and the distinction is the same one
+// addressedPartyTx draws one level down: a dropped connection or a cancelled
+// context is not news about a payee's IBAN. Reported as a file-level failure it
+// becomes a problem in the day's report and the file is answered by nobody,
+// which is truthful; reported per transaction it would tell a thousand payers
+// their payees' accounts were bad.
+func (s *Network) localSideIn(ctx context.Context, tx *InboundTransaction, side *PartyRef) error {
+	ref, err := s.localPartyIn(ctx, side.Identifier)
+	switch {
+	case err == nil:
+		*side = ref
+		return nil
+	case errors.Is(err, ErrAccountNotInParticipant), errors.Is(err, deposit.ErrIdentifierAmbiguous):
+		tx.Refusal = err
+		return nil
+	default:
+		return err
+	}
 }
 
 // creditTransferIn is everything a pacs.008 SAYS, resolving nobody.
@@ -1465,7 +1592,7 @@ func (s *Network) DirectDebitRequest(ctx context.Context, doc *iso20022.Pacs003)
 	// sending bank's and is recorded, not resolved. See creditTransferIn's
 	// mirror note on what directDebitIn left behind for this line to consume.
 	for i := range txs {
-		if txs[i].Request.Debtor, err = s.localPartyIn(ctx, txs[i].Request.Debtor.Identifier); err != nil {
+		if err := s.localSideIn(ctx, &txs[i], &txs[i].Request.Debtor); err != nil {
 			return nil, err
 		}
 	}

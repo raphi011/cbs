@@ -271,8 +271,8 @@ func TestABankRefusesAStatusAboutAnotherBanksPayment(t *testing.T) {
 // closed network — and with reconciliation against the cycle reports afterwards.
 // What this system CAN do it does one hop earlier, at the institution that would
 // have to be lying: the clearing house never sends an RJCT about a payment it has
-// not rejected. See csm.relayRecorded and csm.refuseBulk, and the two tests that
-// hold them to it.
+// not rejected. See csm.relayRecorded, which rejects its own copy in the same
+// breath as the RC01 it answers with.
 func TestABankRefusesToReverseAPaymentThatIsNotRejected(t *testing.T) {
 	h := newHarness(t)
 	p := h.settledPayment(t)
@@ -446,133 +446,6 @@ func TestARedeliveredCreditTransferIsReportedAtThePayeesBank(t *testing.T) {
 	}
 	if got := h.payment(t, p.ID); got.Status != payment.Accepted {
 		t.Errorf("the redelivery moved the payment to %v; it was already Accepted", got.Status)
-	}
-}
-
-// TestABulkCreditTransferIsRefusedByTheClearingHouse and its collection twin are
-// the tests refuseBulk did not have.
-//
-// It had none from either side: its whole body could be replaced with `return
-// nil` and the package stayed green. As a no-op it silently DROPS a bulk
-// pacs.008 — nothing relayed, nothing answered, and a submitting bank waiting
-// for ever on an instruction nobody ever refused.
-//
-// The message is a doctored copy of a real one, with its single transaction
-// duplicated and GrpHdr/NbOfTxs raised to match, because that is the only way to
-// have one: nothing in this system builds a bulk file, so the limit is a rule
-// about files an institution could COLLECT rather than about ones it sends.
-//
-// What is asserted is that the sender was told, and told WHICH element carried
-// how many. The count is what a sender has to see to fix its file, and the
-// element is what says whether it was a push or a pull that was refused.
-func TestABulkCreditTransferIsRefusedByTheClearingHouse(t *testing.T) {
-	h := newHarness(t)
-	p := h.submitCreditTransfer(t)
-	h.work(t)
-
-	env, err := h.net.CreditTransferMessage([]payment.Payment{p},
-		payment.MessageContext{From: h.debtorBIC, To: h.cfg.ClearingHouseBIC, MsgID: "ct-bulk", Now: testTime})
-	if err != nil {
-		t.Fatalf("CreditTransferMessage: %v", err)
-	}
-	body := &env.Document.(*iso20022.Pacs008).FIToFICstmrCdtTrf
-	body.CdtTrfTxInf = append(body.CdtTrfTxInf, body.CdtTrfTxInf[0])
-	body.GrpHdr.NbOfTxs = "2"
-
-	relayedBefore := h.messagesSentTo(h.creditorBIC, "pacs.008.001.08")
-	h.upload(t, h.debtorBIC, h.cfg.ClearingHouseBIC, env)
-	h.work(t)
-
-	// Answered, not dropped, and the answer says why.
-	status := h.lastStatusTo(t, h.debtorBIC)
-	_, reports := payment.ReadStatus(status)
-	if len(reports) != 1 {
-		t.Fatalf("the answer carries %d reports, want 1", len(reports))
-	}
-	if reports[0].Status != iso20022.TransactionStatusRejected {
-		t.Fatalf("the bulk file was answered %v, want RJCT", reports[0].Status)
-	}
-	if !strings.Contains(reports[0].Text, "CdtTrfTxInf carries 2") {
-		t.Fatalf("the refusal reads %q, and does not name the element and the count", reports[0].Text)
-	}
-	// And it names NO TRANSACTION, which is the whole difference between
-	// refusing a file and rejecting a payment.
-	//
-	// The doctored file is the real instruction with its one transaction
-	// duplicated, so quoting that transaction's id — which is what this did —
-	// puts a payment that is Accepted and on its way to settlement into an RJCT.
-	// The payer's bank acts on a status naming a payment it holds, and there is
-	// no state it could be in that would let it tell this message from a
-	// rejection the clearing house really made: it would reverse a live debit
-	// and the payee would be paid out of nothing at the cut-off. See
-	// csm.refuseBulk, and payment.RejectAtBankTx on why the bank cannot be the
-	// one to catch this.
-	//
-	// So the drain above is CLEAN, and that is the assertion: nothing came back
-	// from the payer's bank, because a status naming no transaction is a status
-	// it has nothing to do about.
-	if reports[0].TxID != "" {
-		t.Errorf("the refusal of the file names transaction %q; a file refused whole decides no payment", reports[0].TxID)
-	}
-	if bal := h.suspense(t, h.debtorPID); bal != harnessAmount {
-		t.Errorf("payer's clearing suspense = %d, want %d — the accepted payment's debit was reversed", bal, harnessAmount)
-	}
-	// And nothing was relayed. Refusing the file but forwarding the first
-	// transaction would drop the rest silently, which is the outcome refuseBulk
-	// exists to prevent.
-	if got := h.messagesSentTo(h.creditorBIC, "pacs.008.001.08"); got != relayedBefore {
-		t.Fatalf("the payee's bank was sent %d pacs.008s, want the original %d", got, relayedBefore)
-	}
-}
-
-// The pull's half of the same rule. It is a separate test rather than a table
-// because the ELEMENT differs and the element is the assertion: a clearing
-// house that named CdtTrfTxInf in a collection's refusal would be telling the
-// sender to look at a field its message does not have.
-func TestABulkCollectionIsRefusedByTheClearingHouse(t *testing.T) {
-	h := newHarness(t)
-	p := h.submitDirectDebit(t)
-	h.work(t)
-
-	mandate, err := h.bank(h.creditor.BIC).GetMandate(context.Background(), p.MandateID)
-	if err != nil {
-		t.Fatalf("GetMandate: %v", err)
-	}
-	env, err := h.net.DirectDebitMessage([]payment.Collection{{Payment: p, Mandate: mandate}},
-		payment.MessageContext{From: h.creditorBIC, To: h.cfg.ClearingHouseBIC, MsgID: "dd-bulk", Now: testTime})
-	if err != nil {
-		t.Fatalf("DirectDebitMessage: %v", err)
-	}
-	body := &env.Document.(*iso20022.Pacs003).FIToFICstmrDrctDbt
-	body.DrctDbtTxInf = append(body.DrctDbtTxInf, body.DrctDbtTxInf[0])
-	body.GrpHdr.NbOfTxs = "2"
-
-	relayedBefore := h.messagesSentTo(h.debtorBIC, "pacs.003.001.08")
-	h.upload(t, h.creditorBIC, h.cfg.ClearingHouseBIC, env)
-	h.work(t)
-
-	status := h.lastStatusTo(t, h.creditorBIC)
-	_, reports := payment.ReadStatus(status)
-	if len(reports) != 1 {
-		t.Fatalf("the answer carries %d reports, want 1", len(reports))
-	}
-	if reports[0].Status != iso20022.TransactionStatusRejected {
-		t.Fatalf("the bulk collection was answered %v, want RJCT", reports[0].Status)
-	}
-	if !strings.Contains(reports[0].Text, "DrctDbtTxInf carries 2") {
-		t.Fatalf("the refusal reads %q, and does not name the element and the count", reports[0].Text)
-	}
-	// And no transaction, for the push twin's reason — which on a pull is money
-	// at the OTHER bank: the payer's bank posted the debtor leg when it accepted
-	// this collection, and it is the bank that would act on an RJCT naming it.
-	if reports[0].TxID != "" {
-		t.Errorf("the refusal of the file names transaction %q; a file refused whole decides no payment", reports[0].TxID)
-	}
-	if bal := h.suspense(t, h.debtorPID); bal != harnessAmount {
-		t.Errorf("payer's clearing suspense = %d, want %d — the accepted collection's debit was reversed", bal, harnessAmount)
-	}
-	if got := h.messagesSentTo(h.debtorBIC, "pacs.003.001.08"); got != relayedBefore {
-		t.Fatalf("the payer's bank was sent %d pacs.003s, want the original %d", got, relayedBefore)
 	}
 }
 

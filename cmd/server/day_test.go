@@ -4,7 +4,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/raphi011/cbs/ebics"
 	"github.com/raphi011/cbs/iso20022"
 	"github.com/raphi011/cbs/payment"
 )
@@ -120,11 +119,12 @@ func TestNothingClearsOnADayTheSchemeIsShut(t *testing.T) {
 	if got := h.bankPayment(t, h.debtorBIC, p.ID); got.Status != payment.Initiated {
 		t.Errorf("the payer's bank records %v after a day the scheme was shut, want Initiated", got.Status)
 	}
-	// The submission's own upload is the ONLY file the report carries: the
-	// customer instructed their bank on a Saturday and the bank uploaded it, and
-	// nothing was routed, answered or settled after that.
-	if len(report.Files) != 1 || report.Files[0].OrderType != ebics.CCT {
-		t.Errorf("a shut day moved %v; the only file it may carry is the submission that provoked it", report.Files)
+	// NO file moved at all. The customer instructed their bank on a Saturday and
+	// the bank took the instruction into its hub, where it waits: a bank reaches
+	// its cut-off as a phase of a CLEARING day, so a day the scheme is shut is a
+	// day nothing is even uploaded.
+	if len(report.Files) != 0 {
+		t.Errorf("a shut day moved %v; no file may cross on one", report.Files)
 	}
 	if len(report.Outcomes) != 0 {
 		t.Errorf("a shut day decided %v; no institution may decide anything about a payment on one", report.Outcomes)

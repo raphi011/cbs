@@ -45,6 +45,17 @@ func readOne(txs []InboundTransaction, err error) (InitiatePaymentRequest, error
 	return txs[0].Request, nil
 }
 
+// readOneTx is readOne for the tests that are about the REFUSAL rather than the
+// instruction: an address the receiving bank cannot resolve is that
+// transaction's own answer and not the file's error, so it is on the
+// InboundTransaction and readOne throws it away.
+func readOneTx(txs []InboundTransaction, err error) (InboundTransaction, error) {
+	if err != nil || len(txs) == 0 {
+		return InboundTransaction{}, err
+	}
+	return txs[0], nil
+}
+
 // messageNow is the instant the message tests build their headers at.
 //
 // It is deliberately NOT the network's clock (fixedTime, 2025-01-15): a
@@ -968,8 +979,13 @@ func TestCreditTransferRequestRefusesAnUnknownIBAN(t *testing.T) {
 	unknown := iso20022.IBAN(mintAt(t, verde, 999_999).Value)
 	doc.FIToFICstmrCdtTrf.CdtTrfTxInf[0].CdtrAcct.Id.IBAN = &unknown
 
-	_, err = n.bank(p.CreditorDetails.Agent).CreditTransferRequest(ctx, doc)
-	if err == nil {
+	// The refusal is the TRANSACTION's and not the file's, which is what lets a
+	// bulk file of a thousand be answered per payee. See InboundTransaction.
+	tx, err := readOneTx(n.bank(p.CreditorDetails.Agent).CreditTransferRequest(ctx, doc))
+	if err != nil {
+		t.Fatalf("CreditTransferRequest refused the whole file: %v", err)
+	}
+	if tx.Refusal == nil {
 		t.Fatal("resolved an IBAN no account holds")
 	}
 	// ErrAccountNotInParticipant is what becomes AC01 "incorrect account
@@ -979,9 +995,9 @@ func TestCreditTransferRequestRefusesAnUnknownIBAN(t *testing.T) {
 	// reasonTable, which is unexported, and networkWithOnePayment needs testenv,
 	// and no one package can reach both. The chain is covered across the two
 	// files rather than in one — and end to end, on the wire, by
-	// mesh's TestCreditTransferToAnUnknownAccountComesBackAsAC01.
-	if !errors.Is(err, ErrAccountNotInParticipant) {
-		t.Errorf("CreditTransferRequest on an unknown IBAN = %v, want ErrAccountNotInParticipant", err)
+	// cmd/server's TestCreditTransferToAnUnknownAccountComesBackAsAC01.
+	if !errors.Is(tx.Refusal, ErrAccountNotInParticipant) {
+		t.Errorf("CreditTransferRequest on an unknown IBAN = %v, want ErrAccountNotInParticipant", tx.Refusal)
 	}
 }
 
@@ -1060,11 +1076,14 @@ func TestCreditTransferRequestRefusesAnAddressTwoOfItsOwnAccountsClaim(t *testin
 		return tx.PutDepositAccount(ctx, verde.BookID, a)
 	}))
 
-	_, err = n.bank(p.CreditorDetails.Agent).CreditTransferRequest(ctx, env.Document.(*iso20022.Pacs008))
-	if !errors.Is(err, deposit.ErrIdentifierAmbiguous) {
-		t.Fatalf("CreditTransferRequest on a contested address = %v, want ErrIdentifierAmbiguous", err)
+	tx, err := readOneTx(n.bank(p.CreditorDetails.Agent).CreditTransferRequest(ctx, env.Document.(*iso20022.Pacs008)))
+	if err != nil {
+		t.Fatalf("CreditTransferRequest refused the whole file: %v", err)
 	}
-	if errors.Is(err, ErrAccountNotInParticipant) {
+	if !errors.Is(tx.Refusal, deposit.ErrIdentifierAmbiguous) {
+		t.Fatalf("CreditTransferRequest on a contested address = %v, want ErrIdentifierAmbiguous", tx.Refusal)
+	}
+	if errors.Is(tx.Refusal, ErrAccountNotInParticipant) {
 		t.Error("a contested address surfaced as ErrAccountNotInParticipant, which reaches the sender as AC01 \"incorrect account number\" — the number is not the problem")
 	}
 }

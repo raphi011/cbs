@@ -660,10 +660,10 @@ var (
 	// resolves to nothing in it, is ErrBankCodeUnknown. Different remedies: supply
 	// a BIC, versus refresh or give up.
 	//
-	// Refused at SUBMISSION rather than at message-building, even though the
-	// missing element is the message's, because a submission that committed the
-	// payer's debit and then failed to render an instruction is the money bug
-	// SubmitAndInstruct exists to prevent — see its doc for the shape.
+	// Refused at SUBMISSION rather than at the cut-off, even though the missing
+	// element is the message's, because a submission that committed the payer's
+	// debit and then failed to render an instruction hours later is a payer short
+	// of money against a file that was never built — see instructableTx.
 	//
 	// What this refusal does NOT claim is that a supplied BIC is right. Nothing
 	// here can check one: this bank cannot read the counterparty's register, so a

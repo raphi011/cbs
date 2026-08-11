@@ -4338,8 +4338,8 @@ func TestSubmitRefusesItsOwnPartyAtNoSuchBank(t *testing.T) {
 // RECEIVING bank for that direction — the creditor's on a push, the debtor's on
 // a pull — not the submitting one. Filling PartyDetails from the register
 // there would silently overwrite what the submitting bank already stored (and
-// already sent, in the message SubmitAndInstruct built in the same unit of
-// work) with the receiving bank's own record of the same account, which need
+// already gone out in the file that bank's cut-off built) with the receiving
+// bank's own record of the same account, which need
 // not agree with what the payer typed. Checked on both directions, because the
 // two arms fail differently if this regresses: a pull always posts its debtor
 // leg in AcceptInboundTx, so its overwrite would be unconditional, while a

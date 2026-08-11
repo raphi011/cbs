@@ -73,12 +73,25 @@
 // # The business day
 //
 // There are NO GOROUTINES under this process but the listeners' own. HTTP
-// requests queue work — a customer's instruction becomes a file uploaded to the
-// clearing house, an operator's cut-off becomes a settlement instruction
-// uploaded to the settlement agent — and Deployment.AdvanceDay drains all of it
-// synchronously, in the order a business day runs in. Bulk clearing is
-// store-and-forward against a cut-off clock, so this is more faithful than a set
-// of actors AND simpler, which is not usually the same direction.
+// requests queue work — a customer's instruction joins their bank's hub, an
+// operator's cut-off becomes a settlement instruction uploaded to the settlement
+// agent — and Deployment.AdvanceDay drains all of it synchronously, in the order
+// a business day runs in. Bulk clearing is store-and-forward against a cut-off
+// clock, so this is more faithful than a set of actors AND simpler, which is not
+// usually the same direction.
+//
+// # Files, not payments
+//
+// A member bank does not hand the clearing house a payment. It ACCUMULATES its
+// customers' instructions in a hub and, at its cut-off, uploads one file per
+// scheme carrying all of them; the clearing house sorts that file by creditor
+// agent and hands each receiving bank one file of its own; that bank answers
+// with ONE pacs.002 carrying a decision per transaction, whose group status is
+// PART when they did not all go the same way.
+//
+// So the counts along a chain are 1 in, M out, M back, 1 home, and none of the
+// four institutions sees the same file. That fan-out is what a clearing house is
+// FOR, and it is invisible in a network where every message carries one payment.
 //
 // day.go's schedule is the four flows below in one list. Two things it
 // deliberately does not do: it does not run a cycle on a day TARGET is shut, and
@@ -110,24 +123,29 @@
 //
 // Reading that clockwise:
 //
-//   - The PAYER'S BANK submits. Deployment.Submit runs that half synchronously,
-//     so a customer whose instruction fails their own bank's checks is told then
-//     and there — and then uploads, after the unit of work has committed. What
-//     the upload answers is TECHNICAL: an order id means the file arrived. What
-//     the far side thinks arrives on a later download.
-//   - The CLEARING HOUSE routes the instruction on, by the creditor agent named
-//     in it, into that bank's download queue. It reads no store to do that: a
-//     clearing house that had to look a payment up to decide where to send it
-//     could not route a file about a payment it does not hold, which in a real
-//     network is every file.
-//   - The PAYEE'S BANK resolves the message by ADDRESS — that is what produces
-//     AC01 for an account number nobody holds — checks its own half, and answers
-//     ACCP or RJCT.
-//   - The CLEARING HOUSE clears the answer: an acceptance goes into the open
+//   - The PAYER'S BANK takes the instruction. Deployment.Submit runs that half
+//     synchronously, so a customer whose instruction fails their own bank's
+//     checks is told then and there — and then the instruction WAITS, in that
+//     bank's hub, until the cut-off. Nothing has been sent when the API answers
+//     202.
+//   - The PAYER'S BANK reaches its CUT-OFF, as the first phase of a clearing
+//     day, and uploads one file per scheme. What the upload answers is
+//     TECHNICAL: an order id means the file arrived. What the far side thinks
+//     arrives on a later download.
+//   - The CLEARING HOUSE sorts the file by the creditor agent each transaction
+//     names, and puts each receiving bank's share in that bank's download queue.
+//     It reads no store to do that: a clearing house that had to look a payment
+//     up to decide where to send it could not route a file about a payment it
+//     does not hold, which in a real network is every file.
+//   - The PAYEE'S BANK resolves each transaction by ADDRESS — that is what
+//     produces AC01 for an account number nobody holds — checks its own half,
+//     and answers ACCP or RJCT per transaction, in one status file.
+//   - The CLEARING HOUSE clears each answer: an acceptance goes into the open
 //     cycle for its scheme, and a payment with no window open is refused with
-//     TM01, because the cut-off is the clearing house's and no bank refuses its
-//     own customer's instruction on account of it. Then it queues the answer for
-//     the payer's bank.
+//     TM01, because the CYCLE's cut-off is the clearing house's and no bank
+//     refuses its own customer's instruction on account of it. Then it queues
+//     the answer for the bank that submitted — which, a file having been sorted,
+//     is a group-by rather than a forward.
 //   - The PAYER'S BANK, on a rejection, gives the payer their money back.
 //
 // Which institution runs which half is decided entirely by which queue the file
@@ -230,11 +248,13 @@
 // the other decision would post creditor legs against a suspense whose mirror
 // leg had not yet moved.
 //
-// A cut-off does not arrive in a queue. It comes in from outside a business day
-// the way a customer's instruction does, so ClearingHouse.CloseCycle runs the
-// clearing house's half synchronously and then uploads, exactly as
-// Deployment.Submit does for a bank's. The day engine reaches the same cut-off
-// on every settlement day; the route is the operator asking out of turn.
+// Two cut-offs share the word and are a phase apart. A BANK's turns its hub into
+// files (Bank.Cutoff); the CLEARING HOUSE's turns a batch of accepted payments
+// into net positions. Neither arrives in a queue: each comes in from outside a
+// business day the way a customer's instruction does, so ClearingHouse.CloseCycle
+// runs the clearing house's half synchronously and then uploads. The day engine
+// reaches both on every settlement day; the two routes are the operator asking
+// out of turn.
 //
 // The CLEARING HOUSE nets the batch. That moves nothing at all — CloseCycleTx
 // posts nowhere, it marks each payment Cleared and writes the positions onto the

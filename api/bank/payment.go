@@ -55,6 +55,59 @@ func (s *surface) handleGetBankPayment(r *http.Request) (api.PaymentDTO, error) 
 	return api.ToPaymentDTO(p, s.network().ListSchemes()), nil
 }
 
+// handleListPendingPayments answers what this bank's hub is holding: the
+// instructions it has taken and will put in its next file.
+//
+// It is what makes a 202 legible. Every payment here is Initiated and so is
+// every payment that has been uploaded and not yet answered, and the two are
+// indistinguishable on a payment's own row — the difference is whether a file
+// carrying it has left the building, which is a fact about the hub and about
+// nothing in the store.
+func (s *surface) handleListPendingPayments(r *http.Request) ([]api.PaymentDTO, error) {
+	pending, err := s.inst.Pending(r.Context())
+	if err != nil {
+		return nil, err
+	}
+	schemes := s.network().ListSchemes()
+	out := make([]api.PaymentDTO, 0, len(pending))
+	for _, p := range pending {
+		out = append(out, api.ToPaymentDTO(p, schemes))
+	}
+	return out, nil
+}
+
+// handleCutoff is the operator reaching this bank's cut-off out of turn.
+//
+// A business day reaches the same one on every settlement day, which is where a
+// cut-off belongs — it is an event on a calendar. This route is what a bank does
+// when it wants its morning's instructions to go now, and it is the same
+// relationship POST /cycles/{cid}/close has with the clearing house's own
+// cut-off.
+//
+// The answer is 202: the files are uploaded and the clearing house has not
+// looked at them, so what comes back is a receipt and not an outcome.
+func (s *surface) handleCutoff(r *http.Request) (api.CutoffDTO, error) {
+	orders, err := s.inst.Cutoff(r.Context())
+	if err != nil {
+		// A cut-off HALF-HAPPENS when a bank operates two schemes and one file
+		// went out: the order ids come back beside the error, and a 5xx has no
+		// room for them. What the instructions behind the failed file did is
+		// safe — they are back in the hub and the next cut-off tries again — so
+		// what is lost is only the operator's receipt, which is logged here
+		// because this is the last frame that holds both.
+		if len(orders) > 0 {
+			s.inst.Log().Error("api: part of a cut-off went out and part did not",
+				"orders", orders, "error", err)
+		}
+		return api.CutoffDTO{}, err
+	}
+	out := api.CutoffDTO{OrderIDs: make([]string, 0, len(orders))}
+	for _, id := range orders {
+		out.OrderIDs = append(out.OrderIDs, string(id))
+	}
+	return out, nil
+}
+
 // handleSubmitPayment accepts a payment instruction from this bank's own
 // customer.
 //
@@ -77,9 +130,15 @@ func (s *surface) handleGetBankPayment(r *http.Request) (api.PaymentDTO, error) 
 // What cannot come back is anything the far side decides. The payee's bank
 // refusing the credit, the clearing house having no window open, the settlement
 // agent short of reserves — each of those is another institution answering a
-// message, long after this response was written, and each lands on the payment's
-// own row instead. A failure that reached nobody at all is a line in the day's report,
-// which is the point of Drain returning them.
+// file, long after this response was written, and each lands on the payment's
+// own row instead. A failure that reached nobody at all is a line in the day's
+// report.
+//
+// # What the 202 says, and what it does not
+//
+// The instruction is in this bank's hub. It has not left the building and will
+// not until a cut-off, so the counterparty has not merely failed to answer yet —
+// it has not been told. GET /payments/pending is what distinguishes the two.
 func (s *surface) handleSubmitPayment(r *http.Request, req api.InitiatePaymentRequest) (api.SubmittedPaymentDTO, error) {
 	dom := req.ToDomain()
 	// A bank submits on behalf of its own customer and nobody else's, and this
@@ -117,19 +176,12 @@ func (s *surface) handleSubmitPayment(r *http.Request, req api.InitiatePaymentRe
 	} else {
 		dom.DebtorDetails.Agent = s.boundBIC()
 	}
-	// The submitting bank's half, and then the upload. Deployment.Submit runs it on this
-	// goroutine and marks it as this bank's work, so the books it touches are
-	// attributed to the bank and not to whoever called in; the pacs.008 or
-	// pacs.003 goes out after the unit of work has committed, never inside it.
+	// The submitting bank's half, and then the hub. Deployment.Submit runs it on
+	// this goroutine and marks it as this bank's work, so the books it touches are
+	// attributed to the bank and not to whoever called in; the file the
+	// instruction travels in is built at the next cut-off, never here.
 	p, err := s.inst.Submit(r.Context(), dom)
 	if err != nil {
-		// See handleInitiatePayment: the payment comes back beside the error
-		// when the submission committed and the message did not go out, and a
-		// 5xx carries no room for it.
-		if p.ID != "" {
-			s.inst.Log().Error("api: a submission committed and its instruction did not go out",
-				"payment", p.ID, "status", p.Status, "error", err)
-		}
 		return api.SubmittedPaymentDTO{}, err
 	}
 	return api.SubmittedPaymentDTO{PaymentID: string(p.ID)}, nil

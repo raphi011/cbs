@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
+	"sync"
 	"time"
 
 	"github.com/raphi011/cbs/ebics"
@@ -93,17 +95,67 @@ type Bank struct {
 	// customers are never told the fate of anything.
 	csm *ebics.Client
 	cb  *ebics.Client
+
+	// hub is the instructions this bank has taken and not yet put in a file, in
+	// the order its customers handed them in. It is the payment hub, and it is
+	// what makes this network BULK: a submission does not travel, it waits, and
+	// the cut-off is what turns a morning's worth of them into one file per
+	// scheme.
+	//
+	// Payment IDS and not payments. A file is built out of the rows as they
+	// stand at the cut-off, so what this holds is a list of what to look up
+	// rather than a second copy of what the store already has.
+	//
+	// # In memory, and what a restart costs
+	//
+	// Exactly what ClearingHouse.held costs, and the same shape of answer: an
+	// instruction taken and not yet cut off is gone, so the payer's money sits in
+	// this bank's clearing suspense against a payment no file will ever carry. It
+	// stays Initiated for ever, no counterparty has seen it, and there is no
+	// remedy from inside the flow — payment/recon is what makes it visible. A
+	// real hub is a database table for exactly this reason.
+	//
+	// The mutex is real work: submissions arrive on whichever HTTP goroutine took
+	// them, and a cut-off runs either on a business day's goroutine or on an
+	// operator's request.
+	hubMu sync.Mutex
+	hub   []payment.PaymentID
 }
 
 func (b *Bank) Network() *payment.Network { return b.net }
 func (b *Bank) BIC() iso20022.BIC         { return b.bic }
 func (b *Bank) Log() *slog.Logger         { return b.d.log }
 
-// Submit runs this bank's own half of a customer's instruction and uploads the
-// file. Which bank's half that is belongs to the deployment, because on a
-// collection it is not this one; see Deployment.Submit.
+// Submit runs this bank's own half of a customer's instruction and puts it in
+// this bank's hub. Which bank's half that is belongs to the deployment, because
+// on a collection it is not this one; see Deployment.Submit.
 func (b *Bank) Submit(ctx context.Context, req payment.InitiatePaymentRequest) (payment.Payment, error) {
 	return b.d.Submit(ctx, req)
+}
+
+// Pending is what this bank's hub is holding: the instructions it has taken and
+// will put in its next file, oldest first.
+//
+// It is the customer-visible half of accumulation. Without it a payer whose
+// submission was answered 202 has no way to tell an instruction waiting for a
+// cut-off from one the clearing house has lost, and both look like a payment
+// that is Initiated and going nowhere.
+func (b *Bank) Pending(ctx context.Context) ([]payment.Payment, error) {
+	b.hubMu.Lock()
+	ids := slices.Clone(b.hub)
+	b.hubMu.Unlock()
+	return b.pending(ctx, ids)
+}
+
+// Cutoff is this bank reaching its cut-off: everything waiting becomes one file
+// per scheme, uploaded to the clearing house, and the order ids come back.
+//
+// The day engine reaches the same cut-off on every settlement day (see
+// Deployment.clear); this is the operator asking for one out of turn, which is
+// the same relationship POST /cycles/{cid}/close has with the clearing house's.
+func (b *Bank) Cutoff(ctx context.Context) ([]ebics.OrderID, error) {
+	ids, problems := b.cutoff(ctx)
+	return ids, joinProblemDetails(problems)
 }
 
 // Lodge moves this bank's own vault cash onto its reserve at the central bank.
@@ -170,25 +222,24 @@ func (b *Bank) runEndOfDay(ctx context.Context, date time.Time) error {
 // A failure means the file did NOT arrive and this bank still holds it. The
 // upload has never been inside anybody's unit of work, so the posting that
 // preceded it stands and the caller is told which half happened.
-func (b *Bank) upload(ctx context.Context, to iso20022.BIC, c *ebics.Client, env iso20022.Envelope) error {
+func (b *Bank) upload(ctx context.Context, to iso20022.BIC, c *ebics.Client, env iso20022.Envelope) (ebics.OrderID, error) {
 	t, err := orderTypeOf(env.Document)
 	if err != nil {
-		return err
+		return "", err
 	}
 	raw, err := iso20022.Marshal(env)
 	if err != nil {
-		return fmt.Errorf("server: %s marshalling for %s: %w", b.bic, to, err)
+		return "", fmt.Errorf("server: %s marshalling for %s: %w", b.bic, to, err)
 	}
 	id, err := c.Upload(ctx, t, raw)
 	if err != nil {
-		return fmt.Errorf("server: %s could not upload a %s to %s: %w", b.bic, t, to, err)
+		return "", fmt.Errorf("server: %s could not upload a %s to %s: %w", b.bic, t, to, err)
 	}
 	b.d.journal.file(FileMoved{From: b.bic, To: to, OrderType: t, OrderID: id})
-	return nil
+	return id, nil
 }
 
-// submit is a bank taking its own customer's instruction: the submitting half,
-// then the file that hands it to the clearing house.
+// submit is a bank taking its own customer's instruction into its hub.
 //
 // WHICH customer depends on the scheme. For a push it is the payer instructing
 // their bank, and this half moves their money into the bank's clearing suspense.
@@ -196,26 +247,174 @@ func (b *Bank) upload(ctx context.Context, to iso20022.BIC, c *ebics.Client, env
 // all — the account the money will come out of belongs to another bank's
 // customer, and this bank has never seen it.
 //
-// Two steps and two failure modes, and they are not the same. A refused
-// instruction moved nothing and is the caller's answer — and "moved nothing" is
-// a property of the ONE unit of work SubmitAndInstruct runs, which builds the
-// message as well as posting the leg. A file that could not be UPLOADED still
-// leaves a payment Initiated that nobody will ever answer, so it is returned as
-// an error with the payment beside it rather than swallowed.
+// # Nothing is sent, and that is what a bulk network is
+//
+// The instruction joins the queue and waits for a cut-off. It is the one door in
+// this package that ends without a file on a connection, and the reason is the
+// one this whole transport is for: a member bank does not talk to a clearing
+// house a payment at a time, it accumulates and uploads.
+//
+// So there is ONE failure mode where there were two. A refused instruction moved
+// nothing — payment.TakeInstruction posts the debtor leg and proves the payment
+// can be put in a file in one unit of work, so an instruction this bank could
+// never send is refused before its payer is debited. The half-happened outcome
+// that used to live here, a committed leg behind a file that would not go out,
+// has moved to the cut-off, which is where the file now is.
 func (b *Bank) submit(ctx context.Context, req payment.InitiatePaymentRequest) (payment.Payment, error) {
 	// Everything below is this bank's work, and is recorded as this bank's. See
 	// withActor.
 	ctx = withActor(ctx, b.bic)
 
-	to := b.d.cfg.ClearingHouseBIC
-	p, env, err := b.ops.SubmitAndInstruct(ctx, req, b.d.messageContext(b.bic, to))
+	p, err := b.ops.TakeInstruction(ctx, req)
 	if err != nil {
 		return payment.Payment{}, err
 	}
-	if err := b.upload(ctx, to, b.csm, env); err != nil {
-		return p, fmt.Errorf("server: %s submitted %s and could not upload it: %w", b.bic, p.ID, err)
-	}
+	b.hubMu.Lock()
+	b.hub = append(b.hub, p.ID)
+	b.hubMu.Unlock()
 	return p, nil
+}
+
+// queued is what the hub is holding, EMPTIED: the ids come out and the hub is
+// left ready for the next batch.
+//
+// Emptying under the lock is what stops one cut-off and a submission arriving
+// together from putting the same instruction in two files. A group that could
+// not be uploaded goes back in — see cutoff.
+func (b *Bank) queued() []payment.PaymentID {
+	b.hubMu.Lock()
+	defer b.hubMu.Unlock()
+	ids := b.hub
+	b.hub = nil
+	return ids
+}
+
+// requeue puts instructions back at the FRONT of the hub, so a file that could
+// not be uploaded is retried at the next cut-off ahead of whatever arrived while
+// it was being tried. A hub is a queue, and a retry does not go to the back of
+// one.
+func (b *Bank) requeue(ids []payment.PaymentID) {
+	b.hubMu.Lock()
+	defer b.hubMu.Unlock()
+	b.hub = append(ids, b.hub...)
+}
+
+// pending reads the rows behind a list of queued ids, in the order they were
+// taken.
+func (b *Bank) pending(ctx context.Context, ids []payment.PaymentID) ([]payment.Payment, error) {
+	ctx = withActor(ctx, b.bic)
+
+	out := make([]payment.Payment, 0, len(ids))
+	for _, id := range ids {
+		p, err := b.ops.GetPayment(ctx, id)
+		if err != nil {
+			return nil, fmt.Errorf("server: %s cannot read %s out of its own hub: %w", b.bic, id, err)
+		}
+		out = append(out, p)
+	}
+	return out, nil
+}
+
+// cutoff is this bank reaching its cut-off: the hub is emptied into one file per
+// batch, and each file is uploaded to the clearing house.
+//
+// # What a batch is
+//
+// One SCHEME and one SETTLEMENT DATE, because both are elements of the file's
+// own group header and a file asserts one of each. The scheme decides the
+// message definition and the asset; IntrBkSttlmDt is the day the whole file
+// settles on, and payment's groupSettlementDate refuses a file that would assert
+// two. Instructions taken on a Friday and on the Saturday behind it have
+// different value dates and are therefore different files, cut off together on
+// the Monday — which is what a weekend does to a bulk hub and is worth being
+// able to see.
+//
+// # A file that will not go out is KEPT
+//
+// The instructions go back in the hub and the next cut-off tries again. That is
+// the property this transport made reachable for the first time: an upload can
+// genuinely fail, and the uploading institution still holds its file. Nothing
+// was posted here to unwind — the debtor legs committed at submission and are
+// exactly as valid a moment later — so retrying is the whole remedy.
+//
+// A file that will not BUILD is kept too, and it is a defect rather than an
+// outcome: every instruction in the hub was proved renderable at submission, so
+// reaching this means a row changed underneath the hub. It is reported against
+// this bank in the day's report, every day, until an operator acts. The
+// instructions are not rejected wholesale, because the builder refuses the FILE
+// and this bank cannot tell which of the instructions in it it refused.
+func (b *Bank) cutoff(ctx context.Context) ([]ebics.OrderID, []Problem) {
+	ctx = withActor(ctx, b.bic)
+
+	ids := b.queued()
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	ps, err := b.pending(ctx, ids)
+	if err != nil {
+		b.requeue(ids)
+		return nil, []Problem{{Institution: b.bic, Detail: err.Error()}}
+	}
+
+	to := b.d.cfg.ClearingHouseBIC
+	var orders []ebics.OrderID
+	var problems []Problem
+	for _, batch := range batched(ps) {
+		env, err := b.ops.InstructionMessage(ctx, batch, b.d.messageContext(b.bic, to))
+		if err != nil {
+			b.requeue(idsOf(batch))
+			problems = append(problems, Problem{
+				Institution: b.bic,
+				Detail:      fmt.Sprintf("building the cut-off file for %s: %v", batch[0].Scheme, err),
+			})
+			continue
+		}
+		id, err := b.upload(ctx, to, b.csm, env)
+		if err != nil {
+			b.requeue(idsOf(batch))
+			problems = append(problems, Problem{Institution: b.bic, Detail: err.Error()})
+			continue
+		}
+		orders = append(orders, id)
+	}
+	return orders, problems
+}
+
+// batched groups a hub's instructions into the files they will travel in: one
+// per scheme and settlement date, in the order the instructions were taken. See
+// cutoff for why those two.
+//
+// The date is keyed by its INSTANT rather than by the time.Time, because a
+// time.Time carries a location and a monotonic reading that a map key would
+// compare and payment's groupSettlementDate would not — so two payments that
+// agree about the moment they settle would land in two files.
+func batched(ps []payment.Payment) [][]payment.Payment {
+	type key struct {
+		scheme payment.SchemeID
+		value  int64
+	}
+	var order []key
+	files := map[key][]payment.Payment{}
+	for _, p := range ps {
+		k := key{scheme: p.Scheme, value: p.ValueDate.UnixNano()}
+		if _, ok := files[k]; !ok {
+			order = append(order, k)
+		}
+		files[k] = append(files[k], p)
+	}
+	out := make([][]payment.Payment, 0, len(order))
+	for _, k := range order {
+		out = append(out, files[k])
+	}
+	return out
+}
+
+func idsOf(ps []payment.Payment) []payment.PaymentID {
+	out := make([]payment.PaymentID, 0, len(ps))
+	for _, p := range ps {
+		out = append(out, p.ID)
+	}
+	return out
 }
 
 // returnPayment is a bank sending a settled payment back: the R-transaction's
@@ -297,7 +496,7 @@ func (b *Bank) returnPayment(ctx context.Context, id payment.PaymentID, reason i
 	if _, err := b.ops.PostReturnLeg(ctx, p.ID, returnReasonOf(env)); err != nil {
 		return fmt.Errorf("server: %s cannot fund its own leg of the return of %s: %w", b.bic, p.ID, err)
 	}
-	if err := b.upload(ctx, to, b.csm, env); err != nil {
+	if _, err := b.upload(ctx, to, b.csm, env); err != nil {
 		return fmt.Errorf("server: %s posted its leg of the return of %s and could not upload it: %w", b.bic, p.ID, err)
 	}
 	return nil
@@ -364,7 +563,7 @@ func (b *Bank) lodge(ctx context.Context, asset ledger.AssetCode, amount ledger.
 	if err != nil {
 		return payment.LodgementInstruction{}, err
 	}
-	if err := b.upload(ctx, to, b.cb, env); err != nil {
+	if _, err := b.upload(ctx, to, b.cb, env); err != nil {
 		return in, fmt.Errorf("server: %s posted its lodgement %s and could not upload it: %w", b.bic, in.Ref, err)
 	}
 	return in, nil
@@ -469,7 +668,8 @@ func (b *Bank) answerUnreadable(ctx context.Context, host iso20022.BIC, cause er
 	if err != nil {
 		return errors.Join(fmt.Errorf("server: %s could not build the FF01 for %s: %w", b.bic, host, err), cause)
 	}
-	return b.upload(ctx, host, b.csm, env)
+	_, err = b.upload(ctx, host, b.csm, env)
+	return err
 }
 
 // receiveCreditTransfer is the PAYEE's bank answering a credit transfer.
@@ -509,23 +709,32 @@ func (b *Bank) receiveCreditTransfer(ctx context.Context, from iso20022.BIC, hdr
 		MsgDefIdr: hdr.MsgDefIdr,
 		CreDtTm:   body.GrpHdr.CreDtTm.Time,
 	}
-	// Unmarshal refuses a pacs.008 with no transactions (iso20022's
-	// FIToFICustomerCreditTransfer.validate), so there is always a first one to
-	// refer back by when the FILE is what is being refused.
-	ref := body.CdtTrfTxInf[0].PmtId
-
 	txs, err := b.ops.CreditTransferRequest(ctx, doc)
 	if err != nil {
-		return b.answer(ctx, from, orig, ref, err)
+		return b.answer(ctx, from, orig, refused(refsIn(body.CdtTrfTxInf, func(tx iso20022.CreditTransferTransaction) iso20022.PaymentIdentification {
+			return tx.PmtId
+		}), err))
 	}
-	// One request per transaction, in the file's own order, so the reference each
+	// One decision per transaction, in the file's own order, so the reference each
 	// is answered under is the transaction's own rather than the file's.
+	reports := make([]payment.TransactionStatusReport, 0, len(txs))
+	var errs []error
 	for i, in := range txs {
-		if err := b.accept(ctx, from, orig, body.CdtTrfTxInf[i].PmtId, in.Request); err != nil {
-			return err
+		ref := body.CdtTrfTxInf[i].PmtId
+		// An address this bank could not resolve is this transaction's own
+		// refusal and no other's; see payment.InboundTransaction.
+		if in.Refusal != nil {
+			reports = append(reports, decision(ref, in.Refusal))
+			continue
 		}
+		r, err := b.accept(ctx, ref, in.Request)
+		if err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		reports = append(reports, r)
 	}
-	return nil
+	return errors.Join(b.answer(ctx, from, orig, reports), errors.Join(errs...))
 }
 
 // receiveDirectDebit is the PAYER's bank answering a collection, and it is the
@@ -557,32 +766,42 @@ func (b *Bank) receiveDirectDebit(ctx context.Context, from iso20022.BIC, hdr is
 		MsgDefIdr: hdr.MsgDefIdr,
 		CreDtTm:   body.GrpHdr.CreDtTm.Time,
 	}
-	// Unmarshal refuses a pacs.003 with no transactions (iso20022's
-	// FIToFICustomerDirectDebit.validate), so there is always a first one to
-	// refer back by when the FILE is what is being refused.
-	ref := body.DrctDbtTxInf[0].PmtId
-
 	txs, err := b.ops.DirectDebitRequest(ctx, doc)
 	if err != nil {
-		return b.answer(ctx, from, orig, ref, err)
+		return b.answer(ctx, from, orig, refused(refsIn(body.DrctDbtTxInf, func(tx iso20022.DirectDebitTransactionInformation) iso20022.PaymentIdentification {
+			return tx.PmtId
+		}), err))
 	}
 	// Per transaction, for receiveCreditTransfer's reason.
+	reports := make([]payment.TransactionStatusReport, 0, len(txs))
+	var errs []error
 	for i, in := range txs {
-		if err := b.accept(ctx, from, orig, body.DrctDbtTxInf[i].PmtId, in.Request); err != nil {
-			return err
+		ref := body.DrctDbtTxInf[i].PmtId
+		// An address this bank could not resolve is this transaction's own
+		// refusal and no other's; see payment.InboundTransaction.
+		if in.Refusal != nil {
+			reports = append(reports, decision(ref, in.Refusal))
+			continue
 		}
+		r, err := b.accept(ctx, ref, in.Request)
+		if err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		reports = append(reports, r)
 	}
-	return nil
+	return errors.Join(b.answer(ctx, from, orig, reports), errors.Join(errs...))
 }
 
-// accept runs the receiving bank's own half for ONE transaction and answers with
-// the result. It is the second of the two questions both receive handlers ask,
-// and it is shared because the direction changes what the half DOES and not what
-// this bank does about it.
+// accept runs the receiving bank's own half for ONE transaction and says what
+// this bank decided about it. It is the second of the two questions both receive
+// handlers ask, and it is shared because the direction changes what the half
+// DOES and not what this bank does about it.
 //
 // One transaction at a time, because the answer is about a transaction: a file
 // where the second collection overdraws its payer and the first does not has two
-// different outcomes to report, and there is no single answer to a file.
+// different outcomes to report, and there is no single answer to a file. What
+// there IS one of is the pacs.002 carrying them — see answer.
 //
 // The REQUEST goes through it: this bank has no row for the payment, so what the
 // resolution produced IS the payment, written here under the id the message
@@ -592,69 +811,123 @@ func (b *Bank) receiveDirectDebit(ctx context.Context, from iso20022.BIC, hdr is
 // which is worth one line: a request describes an instruction and carries no id,
 // because the act that MINTS one is the submitting bank's and there is exactly
 // one of those in the system (payment.SubmitPaymentTx).
-func (b *Bank) accept(ctx context.Context, from iso20022.BIC, orig payment.OriginalMessage,
-	ref iso20022.PaymentIdentification, req payment.InitiatePaymentRequest) error {
+//
+// # The one outcome that is not a report
+//
+// An error comes back instead, and the transaction drops out of the file's
+// answer. See below for why that particular refusal must not go on the wire; the
+// rest of the file is still answered, because a redelivered transaction is no
+// reason for the other payers in the batch to hear nothing.
+func (b *Bank) accept(ctx context.Context, ref iso20022.PaymentIdentification,
+	req payment.InitiatePaymentRequest) (payment.TransactionStatusReport, error) {
 
-	if err := b.ops.AcceptInbound(ctx, payment.PaymentID(ref.TxId), req); err != nil {
-		// Already answered. A file can be collected twice only if it was queued
-		// twice, and the second time the payment is no longer Initiated, which is
-		// what this sentinel says. It must NOT become a rejection: payment's
-		// reasonTable classifies it with the empty code precisely because it
-		// describes a defect in this system rather than a judgement about the
-		// sender's instruction, and ReasonFor would turn it into MS03 and reject,
-		// on the wire, a payment this bank in fact accepted. The day's report is
-		// the right channel: nobody to answer, and visible to an operator.
-		//
-		// A redelivery that arrives while the payment is STILL Initiated does not
-		// reach here at all: AcceptInboundTx's pull arm returns nil on a payment
-		// that already has a debtor leg, so the collection is answered a second
-		// time with the same yes rather than with the ledger's idempotency
-		// refusal — which has no entry in reasonTable and would come back MS03.
-		if errors.Is(err, payment.ErrInvalidStateTransition) {
-			return fmt.Errorf("server: %s was sent %s again and it is no longer Initiated: %w", b.bic, ref.TxId, err)
-		}
-		return b.answer(ctx, from, orig, ref, err)
+	err := b.ops.AcceptInbound(ctx, payment.PaymentID(ref.TxId), req)
+	// Already answered. A file can be collected twice only if it was queued
+	// twice, and the second time the payment is no longer Initiated, which is
+	// what this sentinel says. It must NOT become a rejection: payment's
+	// reasonTable classifies it with the empty code precisely because it
+	// describes a defect in this system rather than a judgement about the
+	// sender's instruction, and ReasonFor would turn it into MS03 and reject,
+	// on the wire, a payment this bank in fact accepted. The day's report is
+	// the right channel: nobody to answer, and visible to an operator.
+	//
+	// A redelivery that arrives while the payment is STILL Initiated does not
+	// reach here at all: AcceptInboundTx's pull arm returns nil on a payment
+	// that already has a debtor leg, so the collection is answered a second
+	// time with the same yes rather than with the ledger's idempotency
+	// refusal — which has no entry in reasonTable and would come back MS03.
+	if errors.Is(err, payment.ErrInvalidStateTransition) {
+		return payment.TransactionStatusReport{},
+			fmt.Errorf("server: %s was sent %s again and it is no longer Initiated: %w", b.bic, ref.TxId, err)
 	}
-	return b.answer(ctx, from, orig, ref, nil)
+	return decision(ref, err), nil
 }
 
-// answer uploads the pacs.002 to the clearing house: accepted if cause is nil,
-// rejected with the code cause maps to if not.
-//
-// To the CLEARING HOUSE and not to the bank that submitted, because those are
-// different parties and this bank was never given the submitter's address to
-// answer at. Under this transport it could not reach it if it had: a member bank
-// dials the clearing house and the settlement agent and nobody else.
-func (b *Bank) answer(ctx context.Context, to iso20022.BIC, orig payment.OriginalMessage,
-	ref iso20022.PaymentIdentification, cause error) error {
-
-	report := payment.TransactionStatusReport{
+// decision is one transaction's outcome as a status report: accepted if cause is
+// nil, rejected with the code cause maps to if not.
+func decision(ref iso20022.PaymentIdentification, cause error) payment.TransactionStatusReport {
+	r := payment.TransactionStatusReport{
 		EndToEndID: ref.EndToEndId,
 		TxID:       ref.TxId,
 		Status:     iso20022.TransactionStatusAccepted,
 	}
 	if cause != nil {
-		report.Status = iso20022.TransactionStatusRejected
-		report.Code = payment.ReasonFor(cause)
-		report.Text = cause.Error()
+		r.Status = iso20022.TransactionStatusRejected
+		r.Code = payment.ReasonFor(cause)
+		r.Text = cause.Error()
 	}
-	b.d.journal.outcome(TransactionOutcome{
-		DecidedBy: b.bic,
-		Payment:   payment.PaymentID(report.TxID),
-		Status:    report.Status,
-		Code:      report.Code,
-		Text:      report.Text,
-	})
-	env, err := payment.StatusMessage(orig, []payment.TransactionStatusReport{report}, b.d.messageContext(b.bic, to))
+	return r
+}
+
+// refused is every transaction in a file rejected for one reason: what a bank
+// answers when the FILE, rather than any payment in it, is what it could not
+// deal with.
+//
+// Per transaction and not once for the file, because a pacs.002's group status
+// is DERIVED from the transactions inside it (payment's groupStatusOf) and a
+// sender matches an answer to an instruction by the transaction reference. A
+// single report naming no transaction says only that something went wrong with
+// something.
+func refused(refs []iso20022.PaymentIdentification, cause error) []payment.TransactionStatusReport {
+	out := make([]payment.TransactionStatusReport, 0, len(refs))
+	for _, ref := range refs {
+		out = append(out, decision(ref, cause))
+	}
+	return out
+}
+
+// refsIn is a file's transaction references, in the file's own order.
+func refsIn[T any](txs []T, of func(T) iso20022.PaymentIdentification) []iso20022.PaymentIdentification {
+	out := make([]iso20022.PaymentIdentification, 0, len(txs))
+	for _, tx := range txs {
+		out = append(out, of(tx))
+	}
+	return out
+}
+
+// answer uploads ONE pacs.002 to the clearing house carrying this bank's
+// decision about every transaction in the file it collected.
+//
+// One file in, one status file out, which is the shape a receiving bank actually
+// has: it is handed a batch and it reports on a batch. That is also what makes
+// GrpSts: PART reachable — payment's groupStatusOf says PART when a file's
+// transactions did not all go the same way, and until a file could carry more
+// than one there was nothing for it to describe.
+//
+// To the CLEARING HOUSE and not to the banks that submitted, because those are
+// several different parties and this bank was never given any of their addresses
+// to answer at. Under this transport it could not reach them if it had: a member
+// bank dials the clearing house and the settlement agent and nobody else.
+//
+// An EMPTY set of reports uploads nothing. A pacs.002 with no transaction is not
+// a message this codec will build, and there is nothing to say: every
+// transaction in the file was one this bank had already answered.
+func (b *Bank) answer(ctx context.Context, to iso20022.BIC, orig payment.OriginalMessage,
+	reports []payment.TransactionStatusReport) error {
+
+	if len(reports) == 0 {
+		return nil
+	}
+	for _, r := range reports {
+		b.d.journal.outcome(TransactionOutcome{
+			DecidedBy: b.bic,
+			Payment:   payment.PaymentID(r.TxID),
+			Status:    r.Status,
+			Code:      r.Code,
+			Text:      r.Text,
+		})
+	}
+	env, err := payment.StatusMessage(orig, reports, b.d.messageContext(b.bic, to))
 	if err != nil {
-		return errors.Join(fmt.Errorf("server: %s could not build its pacs.002 for %s: %w", b.bic, to, err), cause)
+		return fmt.Errorf("server: %s could not build its pacs.002 for %s: %w", b.bic, to, err)
 	}
-	// The cause is NOT returned once it has been answered. A rejection that
-	// reached the counterparty is completed work, not a failure: the sender
-	// knows, the code says why, and the flow carries on. Returning it as well
-	// would make every AC01 a problem in the day's report — which is the channel
-	// for what nobody could be told.
-	return b.upload(ctx, to, b.csm, env)
+	// A rejection is NOT also returned as an error once it has been answered. A
+	// refusal that reached the counterparty is completed work, not a failure: the
+	// sender knows, the code says why, and the flow carries on. Returning it as
+	// well would make every AC01 a problem in the day's report — which is the
+	// channel for what nobody could be told.
+	_, err = b.upload(ctx, to, b.csm, env)
+	return err
 }
 
 // receiveStatus is a bank learning what became of a payment it is party to.

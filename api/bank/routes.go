@@ -69,6 +69,11 @@ func Routes(inst Institution) *api.Router {
 	// route below and wins it, because a literal segment beats a wildcard in
 	// the mux's own precedence rules. See handleBankPaymentAudit.
 	mux.HandleFunc("GET /payments/audit", handle(s, http.StatusOK, s.handleBankPaymentAudit))
+	// The hub: what this bank has taken and not yet sent, and the act that sends
+	// it. Both are literal segments and beat the wildcard above them, by the same
+	// precedence rule /payments/audit relies on.
+	mux.HandleFunc("GET /payments/pending", api.Handle(http.StatusOK, s.handleListPendingPayments))
+	mux.HandleFunc("POST /payments/cutoff", api.Handle(http.StatusAccepted, s.handleCutoff))
 	mux.HandleFunc("GET /payments/{payid}", api.Handle(http.StatusOK, s.handleGetBankPayment))
 	// Where a customer's instruction lands. Never the clearing house: a
 	// retail client has no CSM connection in the real thing either.

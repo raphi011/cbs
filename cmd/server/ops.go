@@ -60,21 +60,27 @@ import (
 // payment.ErrStatementNotForThisBank, a payment this bank is no party to is
 // payment.ErrNotThisBanksPayment.
 type bankOps interface {
-	// The submitting bank's half, and the message it then sends. See
-	// Deployment.Submit for why the upload is not inside the unit of work.
+	// The submitting bank's half. It sends NOTHING: the instruction joins this
+	// bank's hub and travels at the next cut-off, which is what a bulk network
+	// is. See Bank.submit.
 	//
-	// ONE method and not two: building a message can fail — a payee the
-	// instruction quoted no address for — and a refusal reported after the
-	// debtor leg committed leaves the payer debited by a request the API
-	// answered 422. Posting the leg and rendering the instruction commit or
-	// roll back together; the send still happens after, which is the property
-	// TestARolledBackSubmitSendsNothing pins.
+	// It still refuses an instruction this bank could never put in a file, and
+	// that refusal is inside the same unit of work as the debtor leg — a payee
+	// the instruction quoted no address for, an amount the standard cannot
+	// represent. A refusal reported at the cut-off instead would leave the payer
+	// debited by a request the API answered 202 hours earlier. See
+	// payment.TakeInstruction.
+	TakeInstruction(ctx context.Context, req payment.InitiatePaymentRequest) (payment.Payment, error)
+
+	// The file that cut-off then builds: one scheme's batch as the pacs.008 or
+	// pacs.003 that carries it to the clearing house.
 	//
 	// Which message it produces is the scheme's direction, and payment is what
-	// decides: a pacs.008 pushes money at the payee's bank, a pacs.003 asks the
-	// payer's bank for it and carries the mandate that makes the ask
-	// authorised. See payment.InstructionTx.
-	SubmitAndInstruct(ctx context.Context, req payment.InitiatePaymentRequest, mc payment.MessageContext) (payment.Payment, iso20022.Envelope, error)
+	// decides: a pacs.008 pushes money at the payees' banks, a pacs.003 asks the
+	// payers' banks for it and carries each debtor's mandate, which is what makes
+	// the ask authorised. The send happens after this returns, outside any unit
+	// of work, which is the property TestARolledBackSubmitSendsNothing pins.
+	InstructionMessage(ctx context.Context, ps []payment.Payment, mc payment.MessageContext) (iso20022.Envelope, error)
 
 	// The receiving bank's half. CreditTransferRequest and DirectDebitRequest
 	// resolve the message by ADDRESS, which is the check that answers AC01;
@@ -108,10 +114,11 @@ type bankOps interface {
 	ResolveIdentifier(ctx context.Context, ident deposit.Identifier) (payment.PartyRef, error)
 
 	// This bank's own copy of a payment, which is the only one it has and the
-	// only one it may read. One handler asks for it — bank.returnPayment, which
+	// only one it may read. Two callers ask for it — bank.returnPayment, which
 	// has to establish there is a SETTLED payment to return before it builds a
-	// pacs.004 — and no other: a handler acting on what it was told hands the id
-	// to the act and lets the act read.
+	// pacs.004, and the hub, which holds ids and reads the rows behind them at
+	// the cut-off. No handler acting on a file asks: one acting on what it was
+	// told hands the id to the act and lets the act read.
 	//
 	// There is no roster read here. A bank sent a decision about a payment it is
 	// no party to holds no row for it, so the STORE refuses before any BIC is
@@ -219,7 +226,7 @@ type bankOps interface {
 	// LodgeReserves swaps vault cash for a claim on the central bank: it posts
 	// Debit Reserve at Central Bank / Credit Vault Cash in THIS bank's book and
 	// renders the camt.050 that asks the central bank to make the matching entry
-	// in its own. Both halves in one method for SubmitAndInstruct's reason — a
+	// in its own. Both halves in one method for TakeInstruction's reason — a
 	// message that will not build must take the leg down with it — and the send
 	// still happens after, outside the unit of work.
 	//

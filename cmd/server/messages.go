@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"strconv"
 
 	"github.com/raphi011/cbs/ebics"
 	"github.com/raphi011/cbs/iso20022"
@@ -45,6 +46,58 @@ func orderTypeOf(doc iso20022.Document) (ebics.OrderType, error) {
 	default:
 		return "", fmt.Errorf("server: no order type carries a %T", doc)
 	}
+}
+
+// creditTransferPart and directDebitPart are one destination's share of an
+// uploaded file: the transactions at the given positions, under the sender's own
+// group header.
+//
+// # What is copied, and the one element that is not
+//
+// The transactions travel byte for byte, because they are what the submitting
+// bank said and are not the clearing house's to rewrite. So does GrpHdr/MsgId,
+// which every answer refers back to all the way home. NbOfTxs is recomputed,
+// because it is a claim about THIS file and this file is a share of the one that
+// arrived — a receiving bank holds a sender to its own count
+// (payment's checkNbOfTxs), and the sender of an output file is the clearing
+// house.
+//
+// What that costs is stated rather than left to be discovered: NbOfTxs no longer
+// spans the whole chain, so a clearing house that dropped a transaction while
+// sorting would assert a count that matched what it sent. The check still catches
+// a submitting bank's truncated upload, which is the hop the element exists for
+// and the only one where sender and receiver are different institutions with
+// nothing else in common.
+//
+// A file with ONE destination is returned unchanged, which is the ordinary case
+// and is worth the branch: the common file then really is the submitter's own
+// bytes, and only a fan-out rewrites anything.
+func creditTransferPart(doc *iso20022.Pacs008, idx []int) iso20022.Document {
+	if len(idx) == len(doc.FIToFICstmrCdtTrf.CdtTrfTxInf) {
+		return doc
+	}
+	out := *doc
+	out.FIToFICstmrCdtTrf.CdtTrfTxInf = pick(doc.FIToFICstmrCdtTrf.CdtTrfTxInf, idx)
+	out.FIToFICstmrCdtTrf.GrpHdr.NbOfTxs = strconv.Itoa(len(idx))
+	return &out
+}
+
+func directDebitPart(doc *iso20022.Pacs003, idx []int) iso20022.Document {
+	if len(idx) == len(doc.FIToFICstmrDrctDbt.DrctDbtTxInf) {
+		return doc
+	}
+	out := *doc
+	out.FIToFICstmrDrctDbt.DrctDbtTxInf = pick(doc.FIToFICstmrDrctDbt.DrctDbtTxInf, idx)
+	out.FIToFICstmrDrctDbt.GrpHdr.NbOfTxs = strconv.Itoa(len(idx))
+	return &out
+}
+
+func pick[T any](all []T, idx []int) []T {
+	out := make([]T, 0, len(idx))
+	for _, i := range idx {
+		out = append(out, all[i])
+	}
+	return out
 }
 
 // submitterOf is the party whose bank hands a payment to the clearing house.
