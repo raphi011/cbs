@@ -8,7 +8,8 @@ import {
   score,
   type Response,
 } from "./session";
-import type { Question } from "./types";
+import type { Difficulty, Question } from "./types";
+import type { HintKey } from "@/components/hint-content";
 
 const mc: Question = {
   kind: "mc",
@@ -69,7 +70,66 @@ describe("buildSession", () => {
   });
 
   it("respects the limit", () => {
-    expect(buildSession([mc, tf, multi, num], 1, 2)).toHaveLength(2);
+    expect(buildSession([mc, tf, multi, num], 1, { limit: 2 })).toHaveLength(2);
+  });
+
+  it("asks intro before core before challenge", () => {
+    const tier = (id: string, difficulty: Difficulty): Question => ({
+      ...mc,
+      id,
+      difficulty,
+    });
+    const pool = [
+      tier("c1", "challenge"),
+      tier("i1", "intro"),
+      tier("k1", "core"),
+      tier("c2", "challenge"),
+      tier("i2", "intro"),
+      tier("k2", "core"),
+    ];
+    // Every seed, because the ramp must not depend on which shuffle came out.
+    for (const seed of [1, 2, 3, 42, 1000]) {
+      const got = buildSession(pool, seed).map((i) => i.question.id[0]);
+      expect(got).toEqual(["i", "i", "k", "k", "c", "c"]);
+    }
+  });
+
+  it("treats a question with no difficulty as core", () => {
+    const plain: Question = { ...mc, id: "plain" };
+    const intro: Question = { ...mc, id: "intro", difficulty: "intro" };
+    const hard: Question = { ...mc, id: "hard", difficulty: "challenge" };
+    const got = buildSession([hard, plain, intro], 7).map((i) => i.question.id);
+    expect(got).toEqual(["intro", "plain", "hard"]);
+  });
+
+  it("samples before ordering, so a capped session still spans the tiers", () => {
+    const many: Question[] = [
+      ...Array.from({ length: 10 }, (_, i) => ({ ...mc, id: `i${i}`, difficulty: "intro" as const })),
+      ...Array.from({ length: 10 }, (_, i) => ({ ...mc, id: `c${i}`, difficulty: "challenge" as const })),
+    ];
+    const tiers = new Set(buildSession(many, 3, { limit: 10 }).map((i) => i.question.difficulty));
+    expect(tiers).toEqual(new Set(["intro", "challenge"]));
+  });
+
+  it("draws favoured concepts first, up to half the session", () => {
+    const on = (id: string, concept: HintKey): Question => ({ ...mc, id, concept });
+    const pool = [
+      ...Array.from({ length: 8 }, (_, i) => on(`weak${i}`, "normal-balance")),
+      ...Array.from({ length: 8 }, (_, i) => on(`other${i}`, "value-date")),
+    ];
+    const ids = buildSession(pool, 11, {
+      limit: 4,
+      favour: new Set(["normal-balance"]),
+    }).map((i) => i.question.id);
+
+    expect(ids.filter((id) => id.startsWith("weak"))).toHaveLength(2);
+    expect(ids.filter((id) => id.startsWith("other"))).toHaveLength(2);
+  });
+
+  it("ignores the favour set when nothing is capped", () => {
+    const pool = [mc, tf, multi, num];
+    const all = buildSession(pool, 5, { favour: new Set(["normal-balance"]) });
+    expect(all).toHaveLength(4);
   });
 });
 
@@ -106,6 +166,17 @@ describe("score", () => {
     const r = score(items, responses);
     expect(r.correct).toBe(1);
     expect(r.total).toBe(2);
-    expect(r.missed.map((q) => q.id)).toEqual(["t-tf"]);
+    expect(r.missed.map((m) => m.question.id)).toEqual(["t-tf"]);
+  });
+
+  it("carries the answer that was given, so a review can show it back", () => {
+    const items = buildSession([mc], 5);
+    const given: Response = { kind: "mc", choice: 0 };
+    expect(score(items, [given]).missed[0].response).toEqual(given);
+  });
+
+  it("reports an unanswered question as missed with a null response", () => {
+    const items = buildSession([mc], 5);
+    expect(score(items, [null]).missed[0].response).toBeNull();
   });
 });

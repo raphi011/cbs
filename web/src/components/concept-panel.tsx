@@ -25,8 +25,12 @@ export function ConceptPanelBody({ onCollapse }: { onCollapse?: () => void }) {
 
   if (!active) {
     return (
+      // Named after what a reader can act on rather than after one control:
+      // Learn has no “?” anywhere, so pointing at one described a way in that
+      // does not exist on the surface where this panel is emptiest.
       <div className="p-4 text-sm text-muted-foreground">
-        Select a “?” to see an explanation here.
+        Explanations open here — from a “?” beside a field, a linked term, or a
+        question you have just answered.
       </div>
     );
   }

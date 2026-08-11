@@ -23,28 +23,45 @@ export function ChapterCard({
         ? "100%"
         : `Best ${progress.bestPct}%`;
 
-  const pillClass = empty
-    ? "bg-muted text-muted-foreground"
-    : progress == null
-      ? "bg-muted text-muted-foreground"
-      : progress.bestPct >= 100
-        ? "bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300"
-        : "bg-indigo-50 text-indigo-700 dark:bg-indigo-950/40 dark:text-indigo-300";
+  // Only a finished chapter is filled. Everything else is an outline, because
+  // muted text on `--muted` measures 4.34:1 and the same text on the card is
+  // 4.74:1 — and because a grid of eighteen filled pills has no hierarchy to
+  // read off it.
+  const pillClass =
+    !empty && progress != null && progress.bestPct >= 100
+      ? "bg-success-muted text-success-strong"
+      : "border text-muted-foreground";
 
-  const body = (
+  return (
     <Card
       size="sm"
       className={cn(
-        "relative h-full p-4 pt-5 transition-shadow",
+        // `relative` anchors the stretched link below; `overflow-hidden` is what
+        // keeps a full-bleed child inside the card's rounded corners.
+        "relative h-full overflow-hidden p-4 transition-shadow",
         empty ? "opacity-60" : "hover:shadow-md",
       )}
     >
-      <span className="absolute inset-x-0 top-0 h-1 bg-indigo-500/80" />
-      <div className="text-xs font-bold text-indigo-600 dark:text-indigo-400">
-        CHAPTER {chapter.number}
-      </div>
-      <div className="mt-1 text-sm font-semibold leading-snug">{chapter.title}</div>
-      <div className="mt-3 flex items-center justify-between">
+      <div className="text-xs font-bold text-muted-foreground">CHAPTER {chapter.number}</div>
+
+      {/* A heading, so eighteen chapter titles are eighteen navigable landmarks
+          rather than eighteen anonymous divs. The link wraps the title alone and
+          stretches over the card, which is what keeps the accessible name
+          "What a Bank Is" instead of the card's entire text content. */}
+      <h3 className="mt-1 text-sm font-semibold leading-snug">
+        {empty ? (
+          chapter.title
+        ) : (
+          <Link
+            href={`/learn/${chapter.slug}`}
+            className="after:absolute after:inset-0 after:content-[''] focus-visible:outline-none focus-visible:after:ring-3 focus-visible:after:ring-ring/50"
+          >
+            {chapter.title}
+          </Link>
+        )}
+      </h3>
+
+      <div className="mt-3 flex items-center justify-between gap-2">
         <span className="text-xs text-muted-foreground">
           {empty ? "—" : `${count} ${count === 1 ? "question" : "questions"}`}
         </span>
@@ -52,6 +69,4 @@ export function ChapterCard({
       </div>
     </Card>
   );
-
-  return empty ? body : <Link href={`/learn/${chapter.slug}`}>{body}</Link>;
 }

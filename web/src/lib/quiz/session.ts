@@ -1,4 +1,4 @@
-import type { Question } from "./types";
+import type { Difficulty, Question } from "./types";
 
 /** A reader's answer; its shape depends on the question kind. */
 export type Response =
@@ -38,15 +38,57 @@ function optionCount(q: Question): number {
   return q.kind === "mc" || q.kind === "multi" ? q.options.length : 0;
 }
 
+/**
+ * The order a chapter is authored in: five `intro` questions before the first
+ * `core` one, and `challenge` last. A question that names no tier sits with
+ * `core` rather than at either end, where it would either open the session or
+ * close it on the strength of an omission.
+ */
+const TIER: Record<Difficulty, number> = { intro: 0, core: 1, challenge: 2 };
+
+const tierOf = (q: Question): number => TIER[q.difficulty ?? "core"];
+
+export interface SessionOptions {
+  /** Cap the session at this many questions. Omit to use every one. */
+  limit?: number;
+  /**
+   * Concepts the reader has missed before. Up to half the session is drawn
+   * from questions on them — enough to make review targeted, not so much that a
+   * session becomes only the parts already found hard.
+   */
+  favour?: ReadonlySet<string>;
+}
+
+/** Pick which questions a session asks, before deciding what order to ask them in. */
+function selectPool(
+  questions: readonly Question[],
+  rng: () => number,
+  { limit, favour }: SessionOptions,
+): Question[] {
+  const shuffled = shuffle(questions, rng);
+  if (typeof limit !== "number" || limit >= shuffled.length) return shuffled;
+  if (!favour?.size) return shuffled.slice(0, limit);
+
+  const weak = shuffled.filter((q) => q.concept != null && favour.has(q.concept));
+  const rest = shuffled.filter((q) => !(q.concept != null && favour.has(q.concept)));
+  return [...weak.slice(0, Math.ceil(limit / 2)), ...rest].slice(0, limit);
+}
+
 export function buildSession(
   questions: readonly Question[],
   seed: number,
-  limit?: number,
+  options: SessionOptions = {},
 ): SessionItem[] {
   const rng = mulberry32(seed);
-  const ordered = shuffle(questions, rng);
-  const chosen = typeof limit === "number" ? ordered.slice(0, limit) : ordered;
-  return chosen.map((question) => ({
+  const chosen = selectPool(questions, rng, options);
+
+  // Sampling happens before ordering, so a capped session still spans the tiers
+  // instead of being the first `limit` intro questions. `sort` is stable, and
+  // `chosen` is already shuffled, so this fixes the tier order and leaves the
+  // questions within a tier in the random order they arrived in.
+  const ordered = [...chosen].sort((a, b) => tierOf(a) - tierOf(b));
+
+  return ordered.map((question) => ({
     question,
     optionOrder: shuffle(
       Array.from({ length: optionCount(question) }, (_, i) => i),
@@ -73,10 +115,22 @@ export function isCorrect(q: Question, r: Response | null): boolean {
   }
 }
 
+/**
+ * A question got wrong, carrying the answer that was given.
+ *
+ * The response travels with the question because the review screen has to show
+ * a reader what they chose, not only what was right — "the correct answer is
+ * X" asks them to remember which of four options they clicked a minute ago.
+ */
+export interface MissedQuestion {
+  question: Question;
+  response: Response | null;
+}
+
 export interface ScoreResult {
   correct: number;
   total: number;
-  missed: Question[];
+  missed: MissedQuestion[];
 }
 
 export function score(
@@ -84,10 +138,11 @@ export function score(
   responses: readonly (Response | null)[],
 ): ScoreResult {
   let correct = 0;
-  const missed: Question[] = [];
+  const missed: MissedQuestion[] = [];
   items.forEach((item, i) => {
-    if (isCorrect(item.question, responses[i] ?? null)) correct++;
-    else missed.push(item.question);
+    const response = responses[i] ?? null;
+    if (isCorrect(item.question, response)) correct++;
+    else missed.push({ question: item.question, response });
   });
   return { correct, total: items.length, missed };
 }

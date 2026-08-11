@@ -27,6 +27,14 @@
   --color-input: var(--input);
   --color-border: var(--border);
   --color-destructive: var(--destructive);
+  --color-destructive-muted: var(--destructive-muted);
+  --color-destructive-strong: var(--destructive-strong);
+  --color-success: var(--success);
+  --color-success-foreground: var(--success-foreground);
+  --color-success-muted: var(--success-muted);
+  --color-success-strong: var(--success-strong);
+  --color-control: var(--control);
+  --color-control-border: var(--control-border);
   --color-accent-foreground: var(--accent-foreground);
   --color-accent: var(--accent);
   --color-muted-foreground: var(--muted-foreground);
@@ -67,6 +75,30 @@
   --border: oklch(0.922 0 0);
   --input: oklch(0.922 0 0);
   --ring: oklch(0.708 0 0);
+
+  /* The one semantic colour axis this product keeps: an answer is right or it is
+     wrong. Everything else on Learn is neutral, so the only hue a reader sees is
+     the one carrying meaning.
+
+     Four roles, because one value cannot do all four jobs at AA: `success` is a
+     3:1 boundary, `-muted` is a surface, `-strong` is text ON that surface, and
+     `-foreground` is text on the solid accent. Measured against
+     `--card`: strong-on-muted is 6.75:1 (success) and 7.46:1 (destructive);
+     `--success` on white is 3.71:1. A single mid-tone used for both text and
+     border is what fails — it lands near 3.5:1, which reads fine and is not. */
+  --success: oklch(0.6 0.13 157);
+  --success-foreground: oklch(0.985 0 0);
+  --success-muted: oklch(0.97 0.02 157);
+  --success-strong: oklch(0.44 0.11 157);
+  --destructive-muted: oklch(0.97 0.015 27);
+  --destructive-strong: oklch(0.45 0.18 27);
+
+  /* A control that sits ON a card, where `--border` (1.26:1 on white) is a
+     hairline rather than the 3:1 boundary WCAG 1.4.11 asks for. `--control`
+     steps away from the card in whichever direction the theme allows: down from
+     white here, up from the card in dark. */
+  --control: oklch(0.985 0 0);
+  --control-border: oklch(0.66 0 0);
   --chart-1: oklch(0.87 0 0);
   --chart-2: oklch(0.556 0 0);
   --chart-3: oklch(0.439 0 0);
@@ -102,6 +134,21 @@
   --border: oklch(1 0 0 / 10%);
   --input: oklch(1 0 0 / 15%);
   --ring: oklch(0.556 0 0);
+
+  /* Same four roles, re-measured on `--card` (0.205): strong-on-muted is 8.67:1
+     (success) and 7.58:1 (destructive). `--control` is LIGHTER than the card
+     here and darker than it in light mode — a control reads as raised either
+     way, and the light-first version inherited into dark is what put an
+     unselected option below its own container. */
+  --success: oklch(0.7 0.13 157);
+  --success-foreground: oklch(0.205 0 0);
+  --success-muted: oklch(0.26 0.03 157);
+  --success-strong: oklch(0.8 0.13 157);
+  --destructive-muted: oklch(0.26 0.03 27);
+  --destructive-strong: oklch(0.75 0.14 27);
+
+  --control: oklch(0.26 0 0);
+  --control-border: oklch(0.52 0 0);
   --chart-1: oklch(0.87 0 0);
   --chart-2: oklch(0.556 0 0);
   --chart-3: oklch(0.439 0 0);
@@ -126,5 +173,21 @@
   }
   html {
     @apply font-sans;
+  }
+
+  /* Honour the OS setting rather than each component remembering to. `!important`
+     is what reaches a utility class like `duration-500`, which is otherwise more
+     specific than anything written here. Motion is reduced to a frame instead of
+     removed: `0s` cancels the transitionend that some Radix animations wait for
+     before unmounting. */
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
+    }
   }
 }

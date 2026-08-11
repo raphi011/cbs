@@ -35,6 +35,18 @@ export function allQuestions(): Question[] {
   return chapters.flatMap((c) => c.questions);
 }
 
+/**
+ * How many questions one sitting asks.
+ *
+ * The pool a mixed review draws from is every question in the book; the session
+ * is this long. They are different numbers, and conflating them is what made a
+ * mixed review a 380-question commitment that saved nothing until the end. The
+ * index page labels its link with this constant so the promise and the session
+ * cannot drift apart.
+ */
+export const SESSION_SIZE = 20;
+
+/** The pool a mixed review samples from: every question, every chapter. */
 export function mixedQuestions(): Question[] {
   return allQuestions();
 }

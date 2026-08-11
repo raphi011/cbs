@@ -76,7 +76,11 @@ export function IdentityPicker() {
           size="sm"
           role="combobox"
           aria-expanded={open}
-          className="w-[240px] justify-between"
+          // A fixed 240px here put the topbar's right-hand cluster 74px wider
+          // than a 390px viewport, pushing the theme toggle off-screen and
+          // giving every page a horizontal scrollbar. The label truncates, so
+          // the narrow width costs characters rather than the control.
+          className="w-[132px] justify-between sm:w-[240px]"
         >
           <span className="truncate">{currentLabel}</span>
           <ChevronsUpDown className="size-4 shrink-0 opacity-50" />

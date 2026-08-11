@@ -58,12 +58,34 @@ function MobileNavSheet({ children }: { children: React.ReactNode }) {
   );
 }
 
+const MAIN_ID = "main-content";
+
+// The first tab stop on every shell, so a keyboard reader is not made to walk
+// the sidebar, the identity picker and the panel resize handle before reaching
+// the page. Hidden until focused, which is why it is the only element here
+// allowed to appear on focus rather than always being visible.
+function SkipLink() {
+  return (
+    <a
+      href={`#${MAIN_ID}`}
+      className="sr-only focus:not-sr-only focus:absolute focus:left-4 focus:top-4 focus:z-50 focus:rounded-md focus:bg-background focus:px-4 focus:py-2 focus:text-sm focus:font-medium focus:ring-3 focus:ring-ring/50"
+    >
+      Skip to content
+    </a>
+  );
+}
+
 // Mobile concepts: same body, opened by the topbar trigger or any `?`/link.
 function ConceptSheet() {
   const { mobileOpen, setMobileOpen } = useConceptPanel();
   return (
     <Sheet open={mobileOpen} onOpenChange={setMobileOpen}>
-      <SheetContent side="right" className="w-full max-w-sm p-0">
+      {/* A bottom sheet, not a right-hand one. At `max-w-sm` on a 390px phone
+          the panel covered the whole viewport, including the question or field
+          it was opened to explain — so reading the hint meant memorising it and
+          dismissing the panel. Two thirds of the height leaves the thing being
+          explained on screen above it. */}
+      <SheetContent side="bottom" className="h-[65svh] rounded-t-xl p-0">
         <SheetTitle className="sr-only">Concept explanation</SheetTitle>
         <Suspense fallback={null}>
           <ConceptPanelBody />
@@ -189,6 +211,7 @@ function DesktopShell({
         accent ? ({ "--identity-accent": accent } as React.CSSProperties) : undefined
       }
     >
+      <SkipLink />
       <ResizablePanelGroup
         orientation="horizontal"
         defaultLayout={defaultLayout}
@@ -216,7 +239,7 @@ function DesktopShell({
         <ResizablePanel id="main" minSize={480}>
           <div className="flex h-full min-w-0 flex-col">
             {topbarWithBrand}
-            <main className="min-w-0 flex-1 overflow-y-auto p-4 md:p-8">
+            <main id={MAIN_ID} tabIndex={-1} className="min-w-0 flex-1 overflow-y-auto p-4 md:p-8">
               {children}
             </main>
           </div>
@@ -267,11 +290,14 @@ function MobileShell({
         accent ? ({ "--identity-accent": accent } as React.CSSProperties) : undefined
       }
     >
+      <SkipLink />
       <Topbar
         mobile
         mobileSidebar={mobileSidebar && <MobileNavSheet>{mobileSidebar}</MobileNavSheet>}
       />
-      <main className="min-w-0 flex-1 p-4">{children}</main>
+      <main id={MAIN_ID} tabIndex={-1} className="min-w-0 flex-1 p-4">
+        {children}
+      </main>
       <ConceptSheet />
     </div>
   );

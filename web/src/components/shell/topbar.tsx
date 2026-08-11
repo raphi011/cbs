@@ -64,7 +64,10 @@ export function Topbar({
           Ledger
         </Link>
       )}
-      <div className="ml-auto flex items-center gap-2">
+      {/* `min-w-0` so the cluster is allowed to shrink at all: without it the
+          row is sized by its contents and simply overflows the viewport rather
+          than letting the identity label truncate. */}
+      <div className="ml-auto flex min-w-0 items-center gap-2">
         <BusinessDay />
         {mobile && <ConceptTrigger />}
         <IdentityPicker />

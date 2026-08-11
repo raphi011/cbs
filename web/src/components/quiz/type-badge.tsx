@@ -8,19 +8,23 @@ const LABEL: Record<QuestionKind, string> = {
   numeric: "Numeric",
 };
 
-const STYLE: Record<QuestionKind, string> = {
-  mc: "bg-indigo-50 text-indigo-700 dark:bg-indigo-950/40 dark:text-indigo-300",
-  truefalse: "bg-amber-50 text-amber-700 dark:bg-amber-950/40 dark:text-amber-300",
-  multi: "bg-violet-50 text-violet-700 dark:bg-violet-950/40 dark:text-violet-300",
-  numeric: "bg-teal-50 text-teal-700 dark:bg-teal-950/40 dark:text-teal-300",
-};
-
+/**
+ * How a question is answered, said once and quietly.
+ *
+ * It carries no colour of its own. Four hues here taught a reader nothing —
+ * the label already distinguishes the kinds, and the options below say it
+ * again — while spending the only saturated ink on the card on a fact that is
+ * never the point. The one thing on this surface that earns colour is whether
+ * an answer was right.
+ */
 export function TypeBadge({ kind, className }: { kind: QuestionKind; className?: string }) {
   return (
     <span
       className={cn(
-        "inline-flex h-5 items-center rounded-full px-2 text-xs font-semibold",
-        STYLE[kind],
+        // Outlined rather than filled: muted text on `--muted` measures 4.34:1
+        // and fails AA, while the same text on the card behind it is 4.74:1.
+        // A neutral pill has no fill that earns the contrast it costs.
+        "inline-flex h-5 items-center rounded-full border px-2 text-xs font-medium text-muted-foreground",
         className,
       )}
     >
