@@ -9,14 +9,11 @@ import {
   Landmark,
   LayoutDashboard,
   Network,
-  Receipt,
   RefreshCw,
   Repeat,
   ScrollText,
   Search,
-  Send,
   Users,
-  Wallet,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 
@@ -150,13 +147,11 @@ export function navFor(identity: Identity): NavItem[] {
         { href: `${base}/deposit-audit`, label: "Deposit audit", icon: ScrollText },
       ];
     }
-    case "customer": {
-      const base = `/customer/${identity.pid}/${identity.did}`;
-      return [
-        { href: base, label: "Account", icon: Wallet, exact: true },
-        { href: `${base}/send`, label: "Send", icon: Send },
-        { href: `${base}/activity`, label: "Activity", icon: Receipt },
-      ];
-    }
+    // A customer has one screen and therefore no navigation. What they hold,
+    // what they can do with it and what has happened to it are one page, because
+    // sending is an act rather than a place: the empty list is what the shell
+    // reads to render no tab strip at all.
+    case "customer":
+      return [];
   }
 }

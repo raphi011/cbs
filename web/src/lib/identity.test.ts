@@ -32,11 +32,6 @@ describe("identityFromPathname", () => {
       pid: "bank_1",
       did: "dep_9",
     });
-    expect(identityFromPathname("/customer/bank_1/dep_9/send")).toEqual({
-      persona: "customer",
-      pid: "bank_1",
-      did: "dep_9",
-    });
   });
 
   // The two null cases the design names: the lobby and Learn sit outside the
@@ -174,13 +169,9 @@ describe("navFor", () => {
     }
   });
 
-  // In the order the tab strip shows them.
-  it("gives a customer the screens they have, all under their own account", () => {
-    const nav = navFor({ persona: "customer", pid: "bank_1", did: "dep_9" });
-    expect(nav.map((n) => n.href)).toEqual([
-      "/customer/bank_1/dep_9",
-      "/customer/bank_1/dep_9/send",
-      "/customer/bank_1/dep_9/activity",
-    ]);
+  // A customer has one screen, so there is nothing to navigate between and the
+  // shell renders no tab strip. Sending is an act on that page, not a place.
+  it("gives a customer no navigation at all", () => {
+    expect(navFor({ persona: "customer", pid: "bank_1", did: "dep_9" })).toEqual([]);
   });
 });

@@ -690,11 +690,9 @@ grouping is by what kind of debt it is.
 - **The proxy caches a failed read.** "A failed read must not be cached" is a
   correctness claim in `web/`'s route layer with no test, against 6b's own rule
   that route-handler logic belongs in a plain `.ts` module.
-- **Three places render a failure as something other than a failure**: the back
-  office's `BalanceCard` (`?? 0` on error), `bank/[pid]/layout.tsx` (the whole
-  console gated on `useParticipant` with no loading/error split), and the
-  customer activity screen's *Try again*, which refetches the statement when it
-  was the account that failed.
+- **Two places render a failure as something other than a failure**: the back
+  office's `BalanceCard` (`?? 0` on error) and `bank/[pid]/layout.tsx` (the whole
+  console gated on `useParticipant` with no loading/error split).
 
 **Test debt**
 
