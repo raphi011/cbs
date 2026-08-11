@@ -53,26 +53,8 @@ func (s *Server) centralBankRouter() *router {
 	mux.HandleFunc("GET /reserves", s.handleListReserves)
 	mux.HandleFunc("GET /reserves/{bic}", s.handleGetReserve)
 	mux.HandleFunc("GET /audit", s.handleCentralBankAudit)
-	// This route FOUNDS a bank and applies to the scheme for it. What it writes
-	// is the new bank's own book, its chart of accounts, one set of internal
-	// accounts per asset and the deposit product every customer account is
-	// opened from — every one of those accounts in that bank's own book — and
-	// then one acmt.007 goes out per asset, addressed to the CLEARING HOUSE,
-	// which relays it. Hence the
-	// 202: what the applicant gets back is a Founded bank, and the answer is two
-	// other institutions' to give (mesh.Mesh.Admit).
-	//
-	// So it opens nothing in the book this listener belongs to. The settlement
-	// account is this central bank's, and this central bank opens it later, in
-	// its own handler, when the relayed application reaches its actor
-	// (mesh.centralBank.receiveAdmission, payment.OpenSettlementAccountTx).
-	// What puts the route here is therefore not an act on the central bank's
-	// book — it is the same thing that puts /admin/reset here: founding the
-	// banks a network starts with is one operator's act, and this is that
-	// operator's console.
-	mux.HandleFunc("POST /members", s.handleAddParticipant)
-	// And the read of what that act produced. It is here rather than at the
-	// clearing house because the clearing house has no banks table — the csm shape
+	// Every bank this deployment holds a database for. It is here rather than at
+	// the clearing house because the clearing house has no banks table — the csm shape
 	// holds a roster and nothing else, and a roster deliberately omits the founded
 	// bank this listing exists to show (see handleListParticipants).
 	//

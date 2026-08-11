@@ -111,43 +111,6 @@ func toParticipantDTO(p *payment.Bank) participantDTO {
 	}
 }
 
-// createParticipantRequest carries the participant's name and, optionally,
-// the set of assets it joins with. An absent or empty Assets defaults to
-// ["EUR"] — payment applies that default itself, when the bank is founded, so
-// an empty slice is forwarded unchanged rather than special-cased here.
-//
-// This is the one deliberate default anywhere in the asset dimension: it
-// preserves existing behaviour for callers that do not care which assets a
-// bank joins with. It is not a default for the asset of any account — every
-// account, deposit account and transaction still names its asset explicitly.
-type createParticipantRequest struct {
-	Name string `json:"name"`
-	// BIC is required: a bank the mesh cannot address is not a member. It is
-	// validated by mesh.Mesh.Admit, before it claims the address
-	// (iso20022.BIC.Validate), which is what turns a malformed value into a 422
-	// rather than a 400 — the field is present and well-typed, and what is
-	// wrong with it is a business rule.
-	BIC string `json:"bic"`
-
-	// Country is the market this bank means to operate in: which national
-	// registry it applies to for the bank code its customers' addresses will
-	// carry. It is required, because a bank that has applied to no registry can
-	// be allocated nothing and can address no account.
-	//
-	// There is NO bank code beside it, and its absence is the whole of what this
-	// request says about addressing. A code is the registry's to allocate and
-	// arrives on the acknowledgement, so a caller supplying one would be a bank
-	// asserting its own allocation — which is what a routing directory exists
-	// because nobody can do. See payment.Bank.Issuer.
-	//
-	// Validated through Admit, which is what makes a country this system keeps no
-	// IBAN structure for a 422 rather than a 400: the field is present and
-	// well-typed, and what is wrong with it is a business rule.
-	Country string `json:"country"`
-
-	Assets []string `json:"assets"`
-}
-
 type identifierDTO struct {
 	Scheme string `json:"scheme"`
 	Value  string `json:"value"`

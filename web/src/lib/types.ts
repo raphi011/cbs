@@ -676,25 +676,6 @@ export interface NameRequest {
   name: string;
 }
 
-// POST /members, on the central bank's listener. `bic` is required: the bank's
-// ISO 9362 business identifier code, what a counterparty addresses it by and
-// what the mesh routes on.
-//
-// `assets` is the set the bank is FOUNDED in, and it is fixed there: one
-// suspense, reserve, unclaimed-balances and returns-receivable account is
-// created per entry, in the bank's own book, and only those assets can hold
-// money at this bank afterwards. The settlement account per entry is not part
-// of this call — the central bank opens that one when it answers the bank's
-// application, which is why a bank read straight back is Founded with an empty
-// settlement reference. Omitting `assets` (or sending an empty array) means
-// ["EUR"]; that is a default for the founding *set*, not for the asset of any
-// individual account.
-export interface AddParticipantRequest {
-  name: string;
-  bic: string;
-  assets?: string[];
-}
-
 export interface CreateAccountRequest {
   name: string;
   type: AccountType;

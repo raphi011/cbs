@@ -1,7 +1,6 @@
 "use client";
 
 import { PageHeader } from "@/components/page-header";
-import { CreateParticipantDialog } from "@/components/create-participant-dialog";
 import { DataTable, type Column } from "@/components/data-table";
 import { AmountCell, Money, UnresolvedAmount } from "@/components/money";
 import { IdText } from "@/components/id-text";
@@ -91,7 +90,6 @@ export default function CentralBankPage() {
         title="Central bank"
         hint="central-bank-reserves"
         description="Banks meet only here. The central bank opens one reserve account per admitted member and asset — a bank it has not answered for yet has none — and settlement is reserves moving between them."
-        actions={<CreateParticipantDialog />}
       />
 
       <SettlementInstructions

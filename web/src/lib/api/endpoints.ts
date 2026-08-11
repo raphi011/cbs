@@ -38,7 +38,6 @@ import type {
   Installment,
   Ledger,
   Mandate,
-  AddParticipantRequest,
   NameRequest,
   OpenCycleRequest,
   OpenDepositAccountRequest,
@@ -78,10 +77,6 @@ export function listParticipants(): Promise<Participant[]> {
 
 export function getParticipant(pid: string): Promise<Participant> {
   return request("GET", bank(pid, "/me"));
-}
-
-export function addParticipant(body: AddParticipantRequest): Promise<Participant> {
-  return request("POST", cb("/members"), body);
 }
 
 // Takes cash in over the counter: credits a customer deposit account, and leaves

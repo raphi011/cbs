@@ -420,100 +420,6 @@ func TestResetDrainsBeforeTruncating(t *testing.T) {
 	}
 }
 
-// TestAdmissionAnswers202WithAFoundedBank pins what POST /members says about a
-// bank that has applied and not yet been answered.
-//
-// Three things, and they are one claim seen three ways. The status code is 202
-// rather than 201, because the resource an operator is asking for — a member of
-// the scheme — does not exist yet and this call cannot make it exist. The DTO
-// says Founded, which is the only field that distinguishes the two states. And
-// the settlement account, which is the central bank's to open, is EMPTY in that
-// answer and filled in once the conversation has finished.
-//
-// The reserves routes are the other half of the same moment. A founded bank has
-// no settlement account, so ReserveBalance answers ErrSettlementMemberNotFound —
-// and returning that for the whole participant would be a 500 for a bank in the
-// state this system creates on every admission. It reports NO ROW instead. Not a
-// zero: zero is a balance, and there is no account to have one.
-//
-// # It HOLDS the bank in Founded
-//
-// That version read the reserves straight after the 202 and depended on three
-// actor goroutines not having finished yet. It passed almost always and it was
-// not evidence: under GOMAXPROCS=2 at -count=40 it failed about once a run, with
-// `a founded bank reports [map[asset:EUR reserve:0 …]]` — the conversation
-// having completed between the POST and the GET, which is the system working. A
-// test that asserts the headline behaviour of a task must not be able to pass
-// because a background actor was slow.
-//
-// So the central bank's door is HELD. Its acmt.007 cannot be answered, the
-// acknowledgement that fills in the settlement reference cannot arrive, and the
-// bank is Founded for as long as this test wants it to be — provably, not
-// probably. Opening the gate and draining is then the other half of the same
-// measurement: the same three reads, after the conversation, all changed.
-//
-// It runs on the SEEDED harness, which the first version could not, and that is
-// worth having: the list route has four members to report while this applicant
-// is in it, so "passes over the applicant" is a real claim about a mixed network
-// rather than a statement about an empty one.
-func TestAdmissionAnswers202WithAFoundedBank(t *testing.T) {
-	srv, msh := newAPIHarness(t)
-	open := holdMessagesTo(t, msh, testMeshConfig.CentralBankBIC)
-	defer open()
-
-	members := reserveRows(t, srv, "")
-
-	founded := doJSON(t, cb(srv), "POST", "/members", `{"bic":"BNKZDEFFXXX","name":"Bank Z","country":"DE"}`, http.StatusAccepted)
-	pid := founded["id"].(string)
-	assertEqual(t, "status in the 202", founded["status"].(string), "Founded")
-	assets := founded["assets"].([]any)
-	if len(assets) != 1 {
-		t.Fatalf("a euro bank came back with %d asset rows, want 1", len(assets))
-	}
-	assertEqual(t, "settlement account in the 202",
-		assets[0].(map[string]any)["settlement"].(string), "")
-
-	// Nothing to report about it, and a 422 saying so rather than an empty list.
-	//
-	// An empty list would be a claim this institution cannot make: it presumes the
-	// settlement agent knows of a bank and holds no accounts for it. The agent's own
-	// register is the whole of what it knows — there is no banks table for it to
-	// look the applicant up in — so a BIC it has admitted nobody at is not a member
-	// with zero reserves but a member it has never heard of. See handleGetReserve.
-	assertStatus(t, cb(srv), "GET", "/reserves/"+pid, "", http.StatusUnprocessableEntity)
-	// And the list carries the members it has, with no row and no failure for
-	// the applicant.
-	if got := reserveRows(t, srv, ""); len(got) != len(members) {
-		t.Errorf("the reserve list went from %d rows to %d while a bank was mid-admission",
-			len(members), len(got))
-	}
-	for _, row := range reserveRows(t, srv, "") {
-		if row["participant"] == pid {
-			t.Errorf("the list reports %v for a bank the central bank holds no account for", row)
-		}
-	}
-
-	// Opened before anything waits on the mesh, which is this file's one rule.
-	open()
-	drainServer(t, srv)
-
-	member := doJSON(t, bank(srv, pid), "GET", "/me", "", http.StatusOK)
-	assertEqual(t, "status after the conversation", member["status"].(string), "Member")
-	if settlement := member["assets"].([]any)[0].(map[string]any)["settlement"].(string); settlement == "" {
-		t.Error("the bank is a Member and carries no settlement account")
-	}
-	got := reserveRows(t, srv, pid)
-	if len(got) != 1 || got[0]["asset"] != "EUR" {
-		t.Fatalf("a member's reserves = %v, want one EUR row", got)
-	}
-	assertEqual(t, "the reserve of a member nobody has funded",
-		int64(got[0]["reserve"].(float64)), int64(0))
-	if after := reserveRows(t, srv, ""); len(after) != len(members)+1 {
-		t.Errorf("the reserve list has %d rows once the admission finished, want %d",
-			len(after), len(members)+1)
-	}
-}
-
 // reserveRows reads the central bank's reserve report: the whole list when pid
 // is empty, one bank's when it is not.
 func reserveRows(t *testing.T, s *Server, pid string) []map[string]any {
@@ -525,210 +431,6 @@ func reserveRows(t *testing.T, s *Server, pid string) []map[string]any {
 	var out []map[string]any
 	getJSON(t, cb(s), path, &out)
 	return out
-}
-
-// TestABankTheSchemeHasNotAnsweredForCanNeitherOpenAnAccountNorLodge is the successor
-// to TestFundingABankTheSchemeHasNotAnsweredForIsRefusedByName, and it is a
-// REVERSAL rather than a rename.
-//
-// That test asserted a 422 on POST /deposits: funding was the one operation that
-// reached across to the settlement agent — cash paid in raised the customer's
-// balance and the bank's reserve in one unit of work — so a bank with no
-// settlement account had nowhere for the second leg to land, and the refusal
-// named membership rather than coming back 404 about the customer's account.
-//
-// What such a bank cannot do is give anybody an account. A deposit account is
-// opened with an address, an address is minted under a bank code, and a bank code
-// is a national registry's to allocate — so a bank the scheme has not answered
-// for has no range to give one out of. The customer-facing refusal and the
-// lodgement's are two different absences and this asserts both:
-//
-//   - POST /deposit-accounts is refused, 422, because the bank has no bank code.
-//   - POST /lodgements is refused, 422, with a sentence about the reserve account
-//     this bank cannot name. Two institutions have not answered for it and each
-//     omission has its own refusal.
-//
-// The bank is provably still Founded while this runs: the central bank's door is
-// held, so the acmt.007 cannot be answered and the acknowledgement that fills in
-// the settlement reference cannot arrive. Without the gate this would be a race
-// against three actors, and one that mostly loses.
-func TestABankTheSchemeHasNotAnsweredForCanNeitherOpenAnAccountNorLodge(t *testing.T) {
-	srv, msh := newAPIHarness(t)
-	open := holdMessagesTo(t, msh, testMeshConfig.CentralBankBIC)
-	defer open()
-
-	p := doJSON(t, cb(srv), "POST", "/members", `{"bic":"BNKZDEFFXXX","name":"Bank Z","country":"DE"}`, http.StatusAccepted)
-	pid := p["id"].(string)
-	if got := doJSON(t, bank(srv, pid), "GET", "/me", "", http.StatusOK)["status"].(string); got != "Founded" {
-		t.Fatalf("the bank is %q; this test is about one the scheme has not answered for", got)
-	}
-
-	// The customer account it cannot open, because it has no address to give her.
-	newAccount := `{"name":"Alice","asset":"EUR","productId":"` + prdOf(t, srv, pid) + `"}`
-	rec := do(t, bank(srv, pid), "POST", "/deposit-accounts", newAccount)
-	if rec.Code != http.StatusUnprocessableEntity {
-		t.Fatalf("opening an account at a bank with no bank code = %d, want 422 (body: %s)", rec.Code, rec.Body)
-	}
-	if msg := rec.Body.String(); !strings.Contains(msg, "no bank code") {
-		t.Errorf("the refusal does not say the bank has no bank code to issue under: %s", msg)
-	}
-
-	// And the cash it could not place on reserve either, because there is no
-	// reserve account to place it in.
-	rec = do(t, bank(srv, pid), "POST", "/lodgements", `{"asset":"EUR","amount":1000}`)
-	if rec.Code != http.StatusUnprocessableEntity {
-		t.Fatalf("lodging at a founded bank = %d, want 422 (body: %s)", rec.Code, rec.Body)
-	}
-	if msg := rec.Body.String(); !strings.Contains(msg, "holds no reserve account") {
-		t.Errorf("the refusal does not say the bank has no reserve account to lodge into: %s", msg)
-	}
-
-	// Once the scheme has answered, both go through: the bank has a bank code, so
-	// it can open Alice an account and take her money over the counter, and it has
-	// a reserve account to lodge that money into. The lodgement is 202, because
-	// the reserve credit is the central bank's to make and is still on the wire.
-	open()
-	drainServer(t, srv)
-	acct := doJSON(t, bank(srv, pid), "POST", "/deposit-accounts", newAccount, http.StatusCreated)["id"].(string)
-	bal := doJSON(t, bank(srv, pid), "POST", "/deposits",
-		`{"account":"`+acct+`","amount":1000,"description":"opening"}`, http.StatusOK)
-	if got := int64(bal["book"].(float64)); got != 1000 {
-		t.Errorf("the depositor's balance is %d, want 1000", got)
-	}
-	out := doJSON(t, bank(srv, pid), "POST", "/lodgements", `{"asset":"EUR","amount":1000}`, http.StatusAccepted)
-	if out["ref"].(string) == "" {
-		t.Error("the accepted lodgement carries no reference, so nothing correlates its receipt")
-	}
-	if got := out["agent"].(string); got != string(testMeshConfig.CentralBankBIC) {
-		t.Errorf("the lodgement names %q as the agent, want the central bank %q", got, testMeshConfig.CentralBankBIC)
-	}
-
-	// The reserve is real once the conversation has finished, which is what says
-	// the central bank posted its own half rather than merely answering.
-	drainServer(t, srv)
-	rows := reserveRows(t, srv, pid)
-	if len(rows) != 1 {
-		t.Fatalf("a member's reserves = %v, want one row", rows)
-	}
-	if got := int64(rows[0]["reserve"].(float64)); got != 1000 {
-		t.Errorf("the reserve after the lodgement is %d, want 1000", got)
-	}
-}
-
-// TestAFoundedBankIsRefusedAsAPaymentPartyInEitherDirection is what a founded
-// bank means to this API on the payments surface, and it is the half that used
-// to answer 202.
-//
-// Both directions were measured before the guard existed. Being paid: POST
-// /payments to a founded bank answered 202 and the payment reached Cleared.
-// Paying: an ARRANGED OVERDRAFT gives such a bank's customer spendable money
-// without any deposit, so its submission was accepted too and posted a debtor
-// leg. Both ended at the same cut-off failure, which stranded every other
-// member's payments in the cycle.
-//
-// The accounts the refused instructions quote DO NOT EXIST while the refusal is
-// being made, and cannot: a bank the scheme has not answered for has no bank code
-// and can open no account. That costs nothing, because the membership read runs
-// before anything resolves an account — which is the ORDER this test is really
-// about, and the reason a refusal that moved later would come back 500. The
-// accounts are opened once the admission has been answered, and the same two
-// instructions are sent again against them.
-//
-// 422 in both directions now, from the same door mesh.ErrOnUsPayment is refused
-// at, and the state is temporary in exactly the way the funding refusal above is
-// temporary: the same two instructions go through once the scheme has answered.
-// That is why the central bank's door is held rather than raced — without the
-// gate the bank would usually be a Member by the time the first request landed.
-func TestAFoundedBankIsRefusedAsAPaymentPartyInEitherDirection(t *testing.T) {
-	srv, msh := newAPIHarness(t)
-	open := holdMessagesTo(t, msh, testMeshConfig.CentralBankBIC)
-	defer open()
-
-	pid := doJSON(t, cb(srv), "POST", "/members", `{"bic":"BNKZDEFFXXX","name":"Bank Z","country":"DE"}`,
-		http.StatusAccepted)["id"].(string)
-	if got := doJSON(t, bank(srv, pid), "GET", "/me", "", http.StatusOK)["status"].(string); got != "Founded" {
-		t.Fatalf("the bank is %q; this test is about one the scheme has not answered for", got)
-	}
-	_, alice := seededParty(t, srv, aliceIBAN)
-	party := func(ref payment.PartyRef, iban string) string {
-		return fmt.Sprintf(`{"account":%q,"identifier":{"scheme":"IBAN","value":%q}}`,
-			ref.Account, iban)
-	}
-	// Nora's account and address as they WILL be once Bank Z has been answered:
-	// the first account the bank opens, minted under the code the registry
-	// allocates it. Quoted before either exists, because nothing on the refused
-	// path reads them.
-	nora := payment.PartyRef{Account: deposit.AccountID("dep_1")}
-	zIBAN := mustMint(iban.DE, "99999998", 1)
-	bodies := func(ref payment.PartyRef, addr string) (string, string) {
-		return fmt.Sprintf(`{"scheme":"sepa.ct","debtor":%s,"creditor":%s,"amount":1000,`+
-				`"description":"to a bank no scheme has admitted","creditorName":"Nora"}`,
-				party(alice, aliceIBAN), party(ref, addr)),
-			fmt.Sprintf(`{"scheme":"sepa.ct","debtor":%s,"creditor":%s,"amount":1000,`+
-				`"description":"from a bank no scheme has admitted","creditorName":"Alice Andersson"}`,
-				party(ref, addr), party(alice, aliceIBAN))
-	}
-	toBankZ, fromBankZ := bodies(nora, zIBAN)
-
-	// Two refusals, and they are two institutions' and two sentinels — which is
-	// the shape a routing directory gives this. Neither instruction names a bank;
-	// each is refused by whoever first cannot place one.
-	//
-	// PAID: the payer's own bank looks Bank Z's code up in its copy of the
-	// scheme's directory, which is a copy of the ROSTER, and a bank no scheme has
-	// admitted is in no roster and therefore in no copy. The refusal never leaves
-	// Aurora, and it cannot say whether Bank Z is absent from the scheme or merely
-	// absent from this copy. That is EARLIER than the clearing house's membership
-	// guard, and it is the half of that guard subscribing subsumed.
-	//
-	// PAYING: the other half, which is still the mesh's. Bank Z's own port fills
-	// in the submitting side from the listener, so the instruction reaches the
-	// door naming Bank Z as the payer's bank, and the roster read there refuses it
-	// before Bank Z's own half runs — which is what stops a debtor leg being
-	// posted and then unwound. The directory never gets a look in, and would have
-	// refused too: nothing has pulled one for Bank Z.
-	directions := []struct {
-		name string
-		by   http.Handler
-		body string
-		says string
-	}{
-		{"paid", payerRoutes(t, srv), toBankZ, "routing directory holds no entry"},
-		{"paying", bank(srv, pid), fromBankZ, "is not a member"},
-	}
-	for _, tc := range directions {
-		rec := postJSON(t, tc.by, "/payments", tc.body)
-		if rec.Code != http.StatusUnprocessableEntity {
-			t.Fatalf("a founded bank %s = %d, want 422 (body: %s)", tc.name, rec.Code, rec.Body)
-		}
-		if msg := rec.Body.String(); !strings.Contains(msg, tc.says) {
-			t.Errorf("the refusal for %q does not say %q: %s", tc.name, tc.says, msg)
-		}
-	}
-
-	// Once the scheme has answered, Nora can be given an account and both
-	// instructions go through — which is what says this refusal is about a state
-	// and not about the request.
-	open()
-	drain(t, msh)
-	// And everybody pulls a fresh directory, which is the act that makes the
-	// difference: admission put Bank Z in the roster, and until each member asks
-	// for a copy nothing has told any of them so.
-	subscribeAll(t, srv)
-	acct := doJSON(t, bank(srv, pid), "POST", "/deposit-accounts",
-		`{"name":"Nora","asset":"EUR","productId":"`+prdOf(t, srv, pid)+`","overdraftLimit":100000}`,
-		http.StatusCreated)["id"].(string)
-	if got := ibanFor(t, srv, pid, acct); got != zIBAN {
-		t.Fatalf("Bank Z minted %s for its first account, want %s; the refused instructions quoted the second",
-			got, zIBAN)
-	}
-	directions[0].body, directions[1].body = bodies(payment.PartyRef{Account: deposit.AccountID(acct)}, zIBAN)
-	for _, tc := range directions {
-		if rec := postJSON(t, tc.by, "/payments", tc.body); rec.Code != http.StatusAccepted {
-			t.Errorf("after the admission, %s = %d, want 202 (body: %s)", tc.name, rec.Code, rec.Body)
-		}
-	}
-	drain(t, msh)
 }
 
 // TestAnAddressNoMemberIsPublishedUnderIsUnprocessable is the clearing house's
@@ -801,27 +503,21 @@ func TestAReseededNetworkCanStillBePaidThrough(t *testing.T) {
 
 // A reset replaces the network, so it has to replace the mesh's picture of it.
 //
-// This is the sequence the reviewer walked over HTTP and it failed at step 4:
-// admit a bank, reset, admit the same BIC again. The mesh had never been told
-// the first bank was gone, so an actor still answered to that address, the
-// re-admission was refused, and the participant row was left behind anyway. The
-// BIC was unusable for the life of the process, on a system whose roster was
-// empty.
+// The sequence that fails without it: provision a bank, reset, provision the same
+// BIC again. If the mesh is never told the first bank is gone, an actor still
+// answers to that address, the second attempt is refused, and the row is left
+// behind anyway — the BIC unusable for the life of the process, on a system whose
+// roster is empty.
 //
-// Every assertion below is one of the three things that were wrong: the
-// re-admission is accepted, the bank that comes back can actually be paid
-// through — which is the part the 202 alone would not prove, since a row with no
-// actor answers every read and carries no payment — and the refusal that IS
+// Every assertion below is one of the three things that go wrong: the address is
+// free again, the bank that comes back can actually be paid through — a row with
+// no actor answers every read and carries no payment — and the refusal that IS
 // still reachable says something true.
 func TestResetRebuildsTheMeshSoAReadmittedBankCanPay(t *testing.T) {
 	h := newServer(t, nil)
 
-	admit := func(name, bic string, want int) map[string]any {
-		t.Helper()
-		return admitMember(t, h, `{"bic":"`+bic+`","name":"`+name+`"}`, want)
-	}
-	admit("Bank A", "BNKADEFFXXX", http.StatusAccepted)
-	admit("Bank B", "BNKBDEFFXXX", http.StatusAccepted)
+	provisionMember(t, h, "BNKADEFFXXX", "Bank A")
+	provisionMember(t, h, "BNKBDEFFXXX", "Bank B")
 
 	assertStatus(t, cb(h), "POST", "/admin/reset", "", http.StatusOK)
 
@@ -832,8 +528,8 @@ func TestResetRebuildsTheMeshSoAReadmittedBankCanPay(t *testing.T) {
 	}
 
 	// The same two addresses, on a system that has never heard of them.
-	a := admit("Bank A again", "BNKADEFFXXX", http.StatusAccepted)["id"].(string)
-	b := admit("Bank B again", "BNKBDEFFXXX", http.StatusAccepted)["id"].(string)
+	a := provisionMember(t, h, "BNKADEFFXXX", "Bank A again")
+	b := provisionMember(t, h, "BNKBDEFFXXX", "Bank B again")
 
 	alice := doJSON(t, bank(h, a), "POST", "/deposit-accounts",
 		`{"name":"Alice","asset":"EUR","productId":"`+prdOf(t, h, a)+`"}`,
@@ -859,75 +555,13 @@ func TestResetRebuildsTheMeshSoAReadmittedBankCanPay(t *testing.T) {
 		t.Fatalf("a payment between two re-admitted banks is %q, want Accepted", got["status"])
 	}
 
-	// And the refusal that is reachable — a third bank on an address one of these
-	// already answers to — says what is true of it. Nothing is half-happened: the
-	// address is claimed before anything is written, so a clash costs one error and
-	// no row. The remedy is to pick an address of your own, which is the real-world
-	// fix as much as this system's.
-	before := len(participants(t, h))
-	rec := do(t, cb(h), "POST", "/members", `{"bic":"BNKADEFFXXX","name":"Bank A yet again","country":"DE"}`)
-	if rec.Code != http.StatusUnprocessableEntity {
-		t.Fatalf("admitting a third bank on Bank A's BIC = %d, want 422", rec.Code)
-	}
-	msg := rec.Body.String()
-	if !strings.Contains(msg, "nothing was written") {
-		t.Errorf("the refusal reads %q; the whole of what changed is that nothing was written", msg)
-	}
-	if !strings.Contains(msg, "admit this bank on an address of its own") {
-		t.Errorf("the refusal reads %q; a clashing address has a remedy and it is missing", msg)
-	}
-	if after := len(participants(t, h)); after != before {
-		t.Errorf("a refused admission wrote %d bank row(s); the address is claimed before the row is", after-before)
-	}
-	// The bank that owns the address is untouched by the refusal, which is the
-	// half the old message got wrong twice over: it called the ADMITTED bank
-	// unroutable while the clash's owner went on working.
+	// Bank A's own payment survives everything above, which is the half worth
+	// stating separately: a reset that rebuilt the mesh but lost the book would
+	// pass every assertion so far.
 	var after []paymentDTO
 	getJSON(t, bank(h, a), "/payments", &after)
 	if len(after) != 1 {
-		t.Errorf("Bank A sees %d of its own payments after the refusal, want 1", len(after))
-	}
-}
-
-// Admission during a shutdown is refused WITHOUT the remedy, and the two
-// refusals are still worth telling apart — for a reason that has changed under
-// them.
-//
-// The advice matters as much as the refusal: "admit it on a BIC no other bank
-// answers to" is the fix for a clash and is actively harmful here, because the
-// operator who follows it gets the same refusal.
-//
-// Neither branch leaves anything behind now. The address is claimed before the
-// bank is written, so a shutdown refuses before there is anything to orphan —
-// which is what this asserts, and which is what makes the advice's absence a
-// matter of accuracy rather than of harm. It is a 500 rather than a 422 because
-// it is not a statement about the request: the same request would have worked a
-// moment earlier and will work again on a mesh that is running. A clash is the
-// caller's to fix and says 422; a mesh going down is not.
-func TestAdmissionDuringAShutdownIsRefusedWithoutTheRemedy(t *testing.T) {
-	h := newServer(t, nil)
-
-	// The mesh's cleanup will Stop it again; a second Stop only re-joins, and on
-	// a mesh that is already stopped it does nothing at all.
-	if err := h.mesh.Stop(context.Background()); err != nil {
-		t.Fatalf("Stop: %v", err)
-	}
-
-	rec := do(t, cb(h), "POST", "/members", `{"bic":"BNKADEFFXXX","name":"Bank A","country":"DE"}`)
-	if rec.Code != http.StatusInternalServerError {
-		t.Fatalf("admitting a bank into a stopped mesh = %d, want 500 (body: %s)", rec.Code, rec.Body.String())
-	}
-	msg := rec.Body.String()
-	if !strings.Contains(msg, "stopping") {
-		t.Errorf("the refusal reads %q; it must name the mesh going down as what refused", msg)
-	}
-	if strings.Contains(msg, "address of its own") {
-		t.Errorf("the refusal reads %q; that advice is for a clashing address and there is none here", msg)
-	}
-	// And nothing was written: an admission the mesh refuses never reaches the
-	// store.
-	if n := len(participants(t, h)); n != 0 {
-		t.Errorf("a refused admission left %d bank row(s) behind", n)
+		t.Errorf("Bank A sees %d of its own payments, want 1", len(after))
 	}
 }
 

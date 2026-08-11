@@ -96,8 +96,8 @@ func TestTheRunIsAnActAndLeavesTheTrailToProveIt(t *testing.T) {
 // under which scheme, and that this bank may send it back.
 func TestAnUnclaimedBalanceIsReportedWithItsDeadline(t *testing.T) {
 	h := newServer(t, nil)
-	a := admitMember(t, h, `{"bic":"BNKADEFFXXX","name":"Bank A"}`, http.StatusAccepted)["id"].(string)
-	b := admitMember(t, h, `{"bic":"BNKBDEFFXXX","name":"Bank B"}`, http.StatusAccepted)["id"].(string)
+	a := provisionMember(t, h, "BNKADEFFXXX", "Bank A")
+	b := provisionMember(t, h, "BNKBDEFFXXX", "Bank B")
 	alice := doJSON(t, bank(h, a), "POST", "/deposit-accounts",
 		`{"name":"Alice","asset":"EUR","productId":"`+prdOf(t, h, a)+`"}`,
 		http.StatusCreated)["id"].(string)

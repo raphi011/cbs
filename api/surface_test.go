@@ -75,6 +75,9 @@ func TestEveryRouteLandsSomewhere(t *testing.T) {
 
 	for _, old := range preSplitRoutes {
 		op, want := movedTo(old)
+		if op == routeDeleted {
+			continue
+		}
 		if !slices.Contains(got[op], want) {
 			t.Errorf("%q should have become %q on the %s, which does not serve it",
 				old, want, op)
@@ -93,17 +96,24 @@ func TestEveryRouteLandsSomewhere(t *testing.T) {
 // Returning the operator as well as the pattern matters: a bank's audit log and
 // the central bank's both become "GET /audit", so a flat set of landed patterns
 // would let either one mask the other's absence.
+// routeDeleted is the operator a pre-split route lands on when it is GONE rather
+// than moved, and it is spelled rather than left empty for the reason above: an
+// empty operator is what a route nobody has decided on produces, and a deletion
+// somebody chose must not look like one.
+const routeDeleted = "deleted"
+
 func movedTo(old string) (operator, pattern string) {
 	method, path, _ := strings.Cut(old, " ")
 	switch {
 	case path == "/participants" && method == "POST":
-		return "central-bank", "POST /members"
+		// Deleted rather than moved. Which banks exist is a deployment's to
+		// decide, and no request adds one: a bank with rows and no listener
+		// could not be reached whatever a route answered. See provision.Bank.
+		return routeDeleted, ""
 	case path == "/participants" && method == "GET":
-		// On the CENTRAL BANK's listener, beside POST /members, and both are the
-		// OPERATOR's rather than that institution's — see centralBankRouter. It
-		// was the clearing house's while that institution was thought to hold a
-		// list of banks; the csm shape holds a roster of addresses, which is
-		// exactly the list that omits the founded bank this read exists to show.
+		// On the CENTRAL BANK's listener, and the OPERATOR's rather than that
+		// institution's — see centralBankRouter. Not the clearing house's: the
+		// csm shape holds a roster of addresses and no banks table at all.
 		return "central-bank", "GET /members"
 	case path == "/participants/{pid}":
 		return "bank", "GET /me"
@@ -291,8 +301,8 @@ var preSplitRoutes = []string{
 // naming it.
 func TestABankCannotNameAnotherBank(t *testing.T) {
 	s := newServer(t, nil)
-	aurora := admitMember(t, s, `{"bic":"AURODEFFXXX","name":"Aurora Bank"}`, http.StatusAccepted)["id"].(string)
-	verde := admitMember(t, s, `{"bic":"VERDITMMXXX","name":"Banca Verde"}`, http.StatusAccepted)["id"].(string)
+	aurora := provisionMember(t, s, "AURODEFFXXX", "Aurora Bank")
+	verde := provisionMember(t, s, "VERDITMMXXX", "Banca Verde")
 
 	h := bank(s, aurora)
 	assertStatus(t, h, "GET", "/participants/"+verde+"/deposit-accounts", "", http.StatusNotFound)
@@ -408,8 +418,8 @@ func TestTheCentralBankCanReadTheCycleItSettles(t *testing.T) {
 // and there is no second console button that discharges it.
 func settledCycle(t *testing.T, h *Server) string {
 	t.Helper()
-	a := admitMember(t, h, `{"bic":"BNKADEFFXXX","name":"Bank A"}`, http.StatusAccepted)["id"].(string)
-	b := admitMember(t, h, `{"bic":"BNKBDEFFXXX","name":"Bank B"}`, http.StatusAccepted)["id"].(string)
+	a := provisionMember(t, h, "BNKADEFFXXX", "Bank A")
+	b := provisionMember(t, h, "BNKBDEFFXXX", "Bank B")
 	alice := doJSON(t, bank(h, a), "POST", "/deposit-accounts",
 		`{"name":"Alice","asset":"EUR","productId":"`+prdOf(t, h, a)+`"}`,
 		http.StatusCreated)["id"].(string)
@@ -495,7 +505,7 @@ func threeBanks(t *testing.T, h *Server) (a, b, c seededBank) {
 	// refuses two on one, so three banks that shared a BIC could not be admitted
 	// at all — let alone tell each other apart on the wire.
 	mk := func(name, bic string) seededBank {
-		pid := admitMember(t, h, `{"bic":"`+bic+`","name":"`+name+`"}`, http.StatusAccepted)["id"].(string)
+		pid := provisionMember(t, h, bic, name)
 		accountName := name + " customer"
 		did := doJSON(t, bank(h, pid), "POST", "/deposit-accounts",
 			`{"name":"`+accountName+`","asset":"EUR","productId":"`+prdOf(t, h, pid)+

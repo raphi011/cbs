@@ -1,102 +1,14 @@
 package api
 
 import (
-	"errors"
 	"net/http"
 	"sort"
 
 	"github.com/raphi011/cbs/deposit"
-	"github.com/raphi011/cbs/iban"
 	"github.com/raphi011/cbs/iso20022"
 	"github.com/raphi011/cbs/ledger"
-	"github.com/raphi011/cbs/mesh"
 	"github.com/raphi011/cbs/payment"
 )
-
-// handleAddParticipant founds a bank and applies to the scheme for it.
-//
-// # 202, and what an operator has when it answers
-//
-// A founded bank. Its book, its chart of accounts and its default product exist,
-// and it can open NO customer account yet: an account is opened with an address,
-// an address is minted under a bank code, and the code is what the registry has
-// not answered with. Nor can it LODGE anything on reserve, since only the central
-// bank can credit an account in the central bank's book and none is held for this
-// bank yet — 422 from POST /lodgements, naming the reserve account it cannot
-// name. It is in no routing directory either, which is now what stops a payment
-// reaching it: a bank in no roster is in no member's COPY of one, so an address
-// under its code resolves to nothing at the payer's own bank and the payment is
-// refused before any leg posts. That refusal is worth its cost, because for two
-// tasks nothing made it — a cut-off carrying such a payment cannot be instructed
-// at all, so EVERY member in that cycle was left with its payments Cleared, its
-// payees unpaid and its payers' money in suspense until the bank was admitted.
-// The DTO says which of the two states this bank is in: Founded here, and Member
-// once the scheme has answered.
-//
-// Whether the scheme accepts is not this call's to report. It is decided at two
-// other institutions and arrives as a message, so the honest status code is 202
-// Accepted: the application has been made and nothing about its outcome is
-// known. POST /payments has the same shape for the same reason — a handler that
-// answered 201 Created would be naming a resource whose most important property
-// it had not waited for. An operator learns the answer by reading the bank back.
-//
-// # A clash costs nothing, and a re-drive is this same call
-//
-// The address is the only thing in the operation that can clash, and
-// mesh.Mesh.Admit claims it before anything is written and releases it again if
-// the write fails. So a refusal leaves no row, no actor and nothing to clean up.
-//
-// An interrupted admission therefore leaves a founded bank rather than an orphan,
-// and calling this again on the same name and BIC RE-DRIVES it: nothing is
-// founded twice and the application goes out again. See mesh.Mesh.Admit.
-func (s *Server) handleAddParticipant(w http.ResponseWriter, r *http.Request) {
-	var req createParticipantRequest
-	if err := decodeJSON(r, &req); err != nil {
-		writeBadRequest(w, err.Error())
-		return
-	}
-	// An empty (or absent) Assets means the network's default joining set —
-	// payment applies that itself, at founding. That is a default for which
-	// assets a bank joins with, not for the asset of any account, which is
-	// always named by its caller.
-	assets := make([]ledger.AssetCode, len(req.Assets))
-	for i, a := range req.Assets {
-		assets[i] = ledger.AssetCode(a)
-	}
-	// BIC is required, but its shape is a business rule (iso20022.BIC.Validate,
-	// run by Admit before it claims the address) rather than a decoding failure,
-	// so a malformed or missing value is left to surface as the 422 writeError
-	// already maps iso20022.ErrBICFormat to, not a 400 raised here.
-	p, err := s.mesh.Admit(r.Context(), req.Name, iso20022.BIC(req.BIC), iban.Country(req.Country), assets)
-	if err != nil {
-		// The two refusals about the address, which need different advice.
-		//
-		// An admission ALREADY UNDER WAY on this BIC is checked first, because it
-		// is a case of the sentinel below and would otherwise be answered by it —
-		// wrongly on both clauses. Nothing is written YET rather than not at all,
-		// the address is not another institution's but this bank's own, and a
-		// second address would not help; what helps is waiting for the first
-		// application to be answered and reading the bank back.
-		//
-		// The advice is all this adds; the sentence about the address comes from the
-		// error alone.
-		if errors.Is(err, mesh.ErrAdmissionInFlight) {
-			writeUnprocessable(w, "nothing has been written for this request; wait for the scheme to answer the "+
-				"application that is already out, then read the bank back: "+err.Error())
-			return
-		}
-		if errors.Is(err, mesh.ErrAddressTaken) {
-			writeUnprocessable(w, "another institution already answers to this BIC, and nothing was written; "+
-				"admit this bank on an address of its own: "+err.Error())
-			return
-		}
-		writeError(w, err)
-		return
-	}
-	// 202, not 201: what exists is a founded bank, and whether the scheme admits
-	// it is answered at two other institutions and arrives as a message.
-	writeJSON(w, http.StatusAccepted, toParticipantDTO(p))
-}
 
 // handleListParticipants answers every bank this deployment holds a database
 // for, each read out of its own database, ascending by address.

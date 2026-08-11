@@ -36,23 +36,6 @@ export function useParticipant(pid: string) {
   });
 }
 
-export function useAddParticipant() {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: api.addParticipant,
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: qk.participants() });
-      // participant.added is a network-scope audit event.
-      qc.invalidateQueries({ queryKey: qk.paymentAudit() });
-      // The new bank has no listener yet, but useOperators' staleTime is
-      // Infinity — without this it would never re-probe, and the freshly
-      // admitted bank would render as a normal, clickable, dead console
-      // instead of "awaiting provisioning".
-      qc.invalidateQueries({ queryKey: qk.operators() });
-    },
-  });
-}
-
 // --- Operators (Next-side, not a backend area) ----------------------------
 
 // Which operators have a listener behind them, and a predicate over the answer.
