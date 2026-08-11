@@ -117,7 +117,7 @@ const (
 	// member's BIC: the identifier between institutions, and the only one this
 	// institution has. Its payload is the SettlementMember row, which carries
 	// every account the agent holds for that BIC and not only the one this act
-	// opened — one acmt.007 asks for one currency, so a bank in two schemes is
+	// opened — one request asks for one currency, so a bank in two schemes is
 	// admitted twice and the second event supersedes the first.
 	EventSettlementAccountOpened = "settlement_account.opened"
 	// EventMemberAdmitted is the clearing house's act, keyed by BIC for the same

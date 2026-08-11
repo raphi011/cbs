@@ -758,8 +758,8 @@ func TestASettlementInstructionNamingTwoCyclesIsRefused(t *testing.T) {
 // On a push the clearing house tells both: the payer's bank because it has been
 // waiting for the answer to its instruction, the payee's bank because it has a
 // leg to post. If the payer's bank posted it, the payee would be credited in the
-// wrong institution's book — the exact crossing this sub-project removes, arrived
-// at from the other direction.
+// wrong institution's book — the crossing separate databases exist to prevent,
+// arrived at from the other direction.
 //
 // # It was a REFUSAL and it is a BRANCH, and the change is not a weakening
 //

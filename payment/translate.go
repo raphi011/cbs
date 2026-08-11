@@ -46,11 +46,11 @@ type reasonMapping struct {
 // The empty code means two different things and the comment on each entry is
 // what says which. Most of them are errors that CANNOT reach a counterparty:
 // this system's own bookkeeping failing, with nothing truthful to tell a sender.
-// The admission refusals are the other kind — one of them does reach a
-// counterparty, on an acmt.011, whose reason is free prose rather than a code.
-// The codes here are the pacs.002's external set, so there is nothing in it for
-// an account-opening refusal either way. Both blocks are below, each under its
-// own heading.
+// The admission refusals are the other kind — each is a real answer, and it goes
+// back to whoever is provisioning the bank rather than onto a wire. The codes
+// here are the pacs.002's external set, so there is nothing in it for an
+// account-opening refusal either way. Both blocks are below, each under its own
+// heading.
 var reasonTable = []reasonMapping{
 	// --- Rejections a counterparty actually receives ---
 
@@ -201,10 +201,10 @@ var reasonTable = []reasonMapping{
 	// itself — and RC01, which is what ErrParticipantNotFound answers, would say
 	// the SENDER quoted a bank that does not exist. It did not.
 	//
-	// A bank that is founded and not yet a member will make the second of these
-	// an ordinary state rather than an inconsistency, and what it will be
-	// answered with is an acmt.011 refusing the admission — not a payment
-	// status. So this classification is the right one either way.
+	// A bank whose provisioning stopped half-way makes either of these reachable
+	// without the store disagreeing with itself, and it is still not a judgement
+	// about anybody's instruction: it is a provisioning failure to retry, and a
+	// payment/recon finding. So this classification is the right one either way.
 	{ErrSettlementMemberNotFound, "ErrSettlementMemberNotFound", ""},
 	{ErrRosterEntryNotFound, "ErrRosterEntryNotFound", ""},
 
@@ -279,26 +279,17 @@ var reasonTable = []reasonMapping{
 	// --- The admission refusals, which are answered off this code set ---
 	//
 	// These rows are empty for a different reason from the block above, and the
-	// difference matters because a refusal here CAN reach a counterparty where
-	// nothing classified above ever does. An admission refusal travels as an
-	// acmt.011, whose reason is RjctnRsn: Max350Text, repeated, free prose. The
-	// codes in this table are the pacs.002's external set, so there is nothing
-	// here for any of them to map to and an entry with a code would put a payment
-	// status on an account-opening refusal. See
-	// iso20022.AccountRejectionReferences.
+	// difference matters because a refusal here is a real answer where nothing
+	// classified above is. Admitting a bank is not a conversation: each of the
+	// four acts is called directly, one institution at a time, and a refusal goes
+	// back to the caller that asked (see package provision). The codes in this
+	// table are the pacs.002's external set, so there is nothing here for any of
+	// them to map to and an entry with a code would put a payment status on an
+	// account-opening refusal.
 	//
-	// What reaches a counterparty is what the CLEARING HOUSE refuses, because it
-	// refuses a request while its sender is still waiting: csm.relayAdmission
-	// turns each into an acmt.011 carrying the words of the error itself.
-	// ErrBICAlreadyAdmitted is answered to the applicant; ErrNotThisBanksAdmission
-	// is answered to the SENDER, which is the one message on this path addressed
-	// to somebody other than the applicant — the applicant named by an impostor's
-	// request never asked for anything.
-	//
-	// Everything the BANK refuses is never answered at all, because a bank is the
-	// LAST hop of an admission and has nobody to tell: each becomes a dead letter.
-	// So one sentinel here is answered at one institution and dead-lettered at the
-	// other, which the empty code accommodates and a code would not.
+	// So none of these reaches a wire at all, and the empty code is what says so.
+	// A refusal that stops a bank being admitted stops it in the process doing
+	// the admitting, which is where the operator is and where the retry is.
 	//
 	// No paragraph here says how many rows there are. Any change to the thing
 	// counted falsifies a count, in either direction, and a removal is the one
@@ -312,8 +303,8 @@ var reasonTable = []reasonMapping{
 	{ErrSettlementAccountReplaced, "ErrSettlementAccountReplaced", ""},
 	{ErrNotThisBanksAdmission, "ErrNotThisBanksAdmission", ""},
 	// The three about addressing, and they are on this path for the same reason
-	// the six above are: every one of them is refused during an admission, whose
-	// refusal is an acmt.011 carrying prose. ErrBankCodeNotAllocated and
+	// the six above are: every one of them is refused during an admission, and no
+	// admission is answered on a wire. ErrBankCodeNotAllocated and
 	// ErrBankCodeTaken are the settlement agent's and the clearing house's
 	// answers about the registry; ErrBankCodeReplaced is what either the roster
 	// or the joining bank says to an acknowledgement that would move an address
@@ -2269,54 +2260,15 @@ func closingBalanceIn(bals []iso20022.CashBalance) (ledger.Amount, bool, error) 
 }
 
 // ---------------------------------------------------------------------------
-// Admission
-// ---------------------------------------------------------------------------
-//
-// Three messages, and between them they carry a whole admission: the bank asks
-// for a settlement account, the settlement agent says which accounts it now
-// holds, or it refuses. Nothing here says anything about SCHEME MEMBERSHIP,
-// which is contractual and travels on no message at all — the clearing house's
-// routing entry falls out of the acknowledgement, which is why that institution
-// writes a row from a message it did not originate and is not addressed on. See
-// iso20022's Acmt007, which records the whole of that framing and the fact that
-// this is not how a real RTGS account is opened.
-//
-// ONE CURRENCY PER REQUEST, and every asymmetry below follows from it.
-// acmt.007's Acct/Ccy is minOccurs="1" maxOccurs="1", so a bank clearing a euro
-// scheme and a dollar scheme sends two requests; acmt.010's AccountForAction1 is
-// unbounded, so one acknowledgement lists every account the servicer holds for
-// that address. The consequence is not the extra message: it is that
-// Refs/PrcId — the process id, mandatory on all three — is the conversation's
-// ONLY correlator, because the acknowledgement carries no back-reference to the
-// request that caused it. AdmissionRequest.Ref and
-// AdmissionAcknowledgement.Ref are that value on this side of the wire.
-
-// countryOf is the country an institution is addressed in, read out of its own
-// BIC.
-//
-// Characters five and six of a BIC are its ISO 3166 country code — that is what
-// ISO 9362 puts there — so a bank that has told this system its address has
-// already told it its country. The acmt.007's Org is an Organisation33, which
-// makes CtryOfOpr and a legal address mandatory because eBAM was written for a
-// corporate opening an account at its bank; this system holds no address for a
-// bank and will not invent one, so the country is derived and the rest of
-// PostalAddress24 is absent rather than empty (see iso20022.PostalAddress).
-//
-// It is only ever called on a BIC that has been through Validate, which
-// guarantees six leading letters, so the slice cannot be out of range. Every
-// caller below validates first for exactly that reason.
-func countryOf(b iso20022.BIC) string { return string(b)[4:6] }
-
-// ---------------------------------------------------------------------------
 // The lodgement: camt.050 out, camt.025 back
 // ---------------------------------------------------------------------------
 
 // LodgementMessage renders a member's request for a reserve credit as the
 // camt.050 that carries it.
 //
-// It is a free function and not a method on Network, for AdmissionMessage's
-// reason: it reads no store and needs no scheme, because everything on the wire is
-// on the instruction or in the context.
+// It is a free function and not a method on Network: it reads no store and needs
+// no scheme, because everything on the wire is on the instruction or in the
+// context.
 //
 // # It names the account it credits and not the one it debits
 //
@@ -2330,9 +2282,9 @@ func countryOf(b iso20022.BIC) string { return string(b)[4:6] }
 //
 // # The reference is the message id, and it has to be
 //
-// Refs on this family are not the acmt family's. There is no process id above the
-// two messages, because a lodgement is one request and one answer; what the
-// receipt quotes back is this document's own MsgId. So the instruction's Ref and
+// There is no process id above the two messages, because a lodgement is one
+// request and one answer; what the receipt quotes back is this document's own
+// MsgId. So the instruction's Ref and
 // the context's MsgID must be the same value, and this refuses a caller that
 // disagrees rather than silently picking one — a receipt correlated against the
 // wrong one of the two would match nothing the bank ever sent.
@@ -2369,8 +2321,8 @@ func LodgementMessage(in LodgementInstruction, mc MessageContext) (iso20022.Enve
 			CdtrAcct: iso20022.CashAccount{Id: iso20022.AccountIdentification4Choice{
 				// The generic arm, not the IBAN one: a reserve account at a central
 				// bank has no IBAN, because it is not a payment address and no
-				// customer ever quotes it. The same choice camt.053's Acct and
-				// acmt.010's AcctId each make, for the same reason.
+				// customer ever quotes it. The same choice camt.053's Acct makes,
+				// for the same reason.
 				Othr: &iso20022.GenericAccountIdentification{Id: string(in.Account)},
 			}},
 			TrfdAmt: iso20022.TransferredAmount{AmtWthCcy: amount},
@@ -2396,9 +2348,9 @@ func LodgementMessage(in LodgementInstruction, mc MessageContext) (iso20022.Enve
 // the document alone.
 //
 // So this takes the header as an argument rather than only the document, which is
-// the one reader in this file that does. ReadAdmissionRequest does not, and the
-// difference is real: an acmt.007 is RELAYED — it travels bank to clearing house
-// to settlement agent, so its Fr is the last hop rather than the applicant, and a
+// the one reader in this file that does. The payment family's readers do not, and
+// the difference is real: a pacs.008 is RELAYED — it travels bank to clearing
+// house to bank, so its Fr is the last hop rather than the debtor's agent, and a
 // comparison there would refuse every legitimate message. A camt.050 goes
 // straight from the member to its central bank, one hop, so the header and the
 // body must agree.
@@ -2481,9 +2433,9 @@ func ReadLodgement(hdr iso20022.AppHdr, doc *iso20022.Camt050) (LodgementInstruc
 // nothing at all, and the servicer's handler would dead-letter its own answer.
 //
 // So this truncates, and it truncates VISIBLY, with an ellipsis, so that a reader
-// of a shortened reason can tell it was shortened. acmt.011's RjctnRsn is
-// Max350Text and needs none of this, which is why the narrower limit is called out
-// on iso20022.RequestHandling rather than left to be met here.
+// of a shortened reason can tell it was shortened. The limit is called out on
+// iso20022.RequestHandling rather than left to be met here, because it is the
+// schema's rather than this system's.
 func LodgementReceiptMessage(r LodgementReceipt, mc MessageContext) (iso20022.Envelope, error) {
 	if r.Ref == "" {
 		return iso20022.Envelope{}, fmt.Errorf(
@@ -2495,9 +2447,8 @@ func LodgementReceiptMessage(r LodgementReceipt, mc MessageContext) (iso20022.En
 	}
 	handling := iso20022.RequestHandling{StsCd: string(r.Status)}
 	if !r.Accepted() {
-		// A refusal that says nothing is one nobody can act on, and unlike
-		// acmt.011's RjctnRsn the schema does not require a reason here — so the
-		// requirement is this system's.
+		// A refusal that says nothing is one nobody can act on, and the schema does
+		// not require a reason here — so the requirement is this system's.
 		if r.Reason == "" {
 			return iso20022.Envelope{}, fmt.Errorf(
 				"%w: RctDtls/ReqHdlg/Desc on a refusal", iso20022.ErrMissingElement)

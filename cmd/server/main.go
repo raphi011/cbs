@@ -87,16 +87,15 @@ func main() {
 
 	nets := payment.NewNetworks(stores, data.Now)
 
-	// The mesh starts BEFORE the seed, and the order is load-bearing — it is the
-	// reverse of the order this process used until admission became a
-	// conversation. The seed admits its banks through the mesh's own door, the
-	// same door POST /members goes through, so the two institutions that answer
-	// an application have to be running before there is anything to answer.
+	// The mesh starts BEFORE the seed, and the order is load-bearing. The seed
+	// gives each bank it provisions an actor and pulls each one's routing
+	// directory, both through the mesh's own doors, so the transport has to be
+	// running before there is anything to run against.
 	//
 	// What that costs is Start's roster read, which finds an empty roster on a
 	// fresh store: the banks it would have registered are the ones the seed is
-	// about to admit, and each of those gets its actor from Mesh.Admit as it is
-	// founded. Against a database file that already holds the scenario the
+	// about to provision, and each of those gets its actor from Mesh.AddBank as
+	// it is built. Against a database file that already holds the scenario the
 	// read finds the whole roster and the seed builds nothing, which is the same
 	// division of labour seen from the other side.
 	msh, err := mesh.New(nets, meshConfig, log)

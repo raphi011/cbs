@@ -60,15 +60,13 @@ type entity struct {
 // root doing it rather than any institution: nothing in the domain asks another
 // bank what it is called.
 //
-// Ports are static. A bank founded at runtime through POST /members gets a store
-// row, a chart of accounts and a product — and no listener until the process
-// restarts. That is a decision about what joining a network means rather than a
-// limitation to apologise for: it is an operational act — a scheme agreement, an
-// account another institution has to open, an operator provisioning a connection
-// — and an API call that instantly yielded a running bank would teach the wrong
-// thing. Its settlement account is not part of that call either: the central
-// bank opens that one when the bank's application reaches it, so the listener is
-// the second thing such a bank waits for rather than the only one.
+// Ports are static, and so is the set of banks: this plan is made once, from the
+// databases that exist when the process starts. A bank provisioned into a
+// running deployment gets its three rows and no listener until the next restart.
+// That is a decision about what joining a network means rather than a limitation
+// to apologise for: it is an operational act — a scheme agreement, an account
+// another institution has to open, an operator provisioning a connection — and a
+// deployment that instantly yielded a running bank would teach the wrong thing.
 func plan(ctx context.Context, stores payment.Stores, nets *payment.Networks, base int) ([]entity, error) {
 	bics, err := stores.Banks(ctx)
 	if err != nil {

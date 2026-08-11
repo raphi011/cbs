@@ -11,12 +11,11 @@ import (
 	"time"
 
 	"github.com/raphi011/cbs/deposit"
-	"github.com/raphi011/cbs/iban"
 	"github.com/raphi011/cbs/iso20022"
 	"github.com/raphi011/cbs/ledger"
 )
 
-// TestReasonTableCoversEverySentinel is the mechanism 7a asked for: a new
+// TestReasonTableCoversEverySentinel is what keeps the table complete: a new
 // error added to errors.go must be classified here, or this fails.
 //
 // It parses errors.go rather than holding a hand-written list, because a
@@ -767,34 +766,4 @@ func contains(haystack []string, needle string) bool {
 		}
 	}
 	return false
-}
-
-// ---------------------------------------------------------------------------
-// The admission messages
-// ---------------------------------------------------------------------------
-//
-// Three messages and two readers, tested here rather than in message_test.go
-// because none of them touches a store: everything on the wire comes off the
-// value handed in and the context beside it. See that file's package comment for
-// why the two halves of this package's tests are split at all.
-
-// admissionNow is the instant these tests stamp their headers at.
-//
-// It is declared here rather than shared with message_test.go's messageNow
-// because that file is package payment_test and this one is package payment —
-// see message_test.go's own package comment for why the two halves cannot see
-// each other. The value is the same instant and nothing depends on that.
-var admissionNow = time.Date(2025, 1, 15, 11, 30, 0, 0, time.UTC)
-
-// admissionRequest is the request these tests build from and read back.
-func admissionRequest() AdmissionRequest {
-	return AdmissionRequest{Name: "Nordhaven Bank", BIC: "NORDSESSXXX", Country: iban.SE, Asset: "EUR", Ref: "adm-1"}
-}
-
-// testAllocation is what the settlement agent allocated the applicant in these
-// fixtures: Sweden's register, and a code at the top of its range.
-var testAllocation = iban.Issuer{Country: iban.SE, BankCode: "999"}
-
-func admissionContext() MessageContext {
-	return MessageContext{From: "NORDSESSXXX", To: "CSMXFRPPXXX", MsgID: "nord-1", Now: admissionNow}
 }

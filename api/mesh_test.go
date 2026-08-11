@@ -41,11 +41,11 @@ import (
 // rather than by id — see seededParty.
 //
 // The mesh is started BEFORE the seed, which is the order cmd/server uses and
-// for the same reason: the seed admits its banks through the mesh's own door, so
-// the two institutions that answer an application have to be running before
-// there is an application to answer. mesh.Start's roster read finds nothing here
-// — the banks it would have registered are the ones Populate is about to admit,
-// and each of those gets its actor from Mesh.Admit as it is founded.
+// for the same reason: the seed gives each bank it provisions an actor and pulls
+// each one's routing directory, both through the mesh's own doors, so the
+// transport has to be running first. mesh.Start's roster read finds nothing here
+// — the banks it would have registered are the ones Populate is about to
+// provision, and each of those gets its actor from Mesh.AddBank as it is built.
 //
 // Drain FIRST, then Stop, at cleanup. Stop closes every inbox in one step before
 // it joins anybody, so a conversation still in flight when it runs is cut — the

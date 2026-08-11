@@ -15,21 +15,19 @@ func init() {
 // it did with the request.
 //
 // It is the answer to the Camt050 a member bank sends its central bank, and it
-// closes the lodgement the way an acmt.010 closes an admission. The central bank
-// has credited the member's reserve account, or it has not, and this is how the
-// member is told which.
+// closes the lodgement. The central bank has credited the member's reserve
+// account, or it has not, and this is how the member is told which.
 //
 // # Why a receipt and not a pacs.002
 //
 // A status report is about a payment TRANSACTION, and a lodgement is not one. It
 // moves no customer's money, belongs to no scheme and no clearing cycle, and has
-// no OrgnlTxId for a pacs.002 to quote. receiveAdmission makes the same
-// discrimination for the same reason and reaches for acmt.011; the
-// cash-management family carries its own acknowledgement and this is it.
+// no OrgnlTxId for a pacs.002 to quote. The cash-management family carries its
+// own acknowledgement and this is it.
 //
-// The consequence is the same one admission's refusal has, and it lands on a
-// different element. A pacs.002 rejection carries StatusReason, a real external
-// code set this package uses as one. Here the outcome is StsCd, a
+// What that costs lands on one element. A pacs.002 rejection carries
+// StatusReason, a real external code set this package uses as one. Here the
+// outcome is StsCd, a
 // Max4AlphaNumericText with no enumeration behind it in the schema, and the
 // reason is Desc, free prose. See RequestHandling, which is where that costs
 // something.
@@ -160,11 +158,9 @@ func (d ReceiptDetails) validate() error {
 // acknowledged, named by its own message identifier.
 //
 // This is the conversation's only correlator, and it is a back-reference rather
-// than a shared process id — which is the opposite of what the acmt family does
-// (see AccountRequestReferences on PrcId). The difference is real and follows
-// from the two flows: an admission is several requests that are one process, so
-// it needs an identifier ABOVE the messages; a lodgement is one request and one
-// answer, so naming the request is enough.
+// than an identifier above the pair. A lodgement is one request and one answer,
+// so naming the request is enough; a family whose answer could arrive without
+// having been asked for would need the other shape.
 //
 // MsgNmId is the message definition identifier of the request — "camt.050.001.05"
 // — and it is optional in the schema. This package carries it, because a receipt
@@ -207,15 +203,15 @@ func (o OriginalMessageAndIssuer) validate() error {
 //
 // # Desc carries the reason, as prose
 //
-// Max140Text, optional, and absent on the accepting arm. A refusal fills it,
-// which is the same shape acmt.011's RjctnRsn has and the same loss: the reason
-// travels as text rather than as a code a counterparty can branch on. It is why
-// payment's reasonTable gives the lodgement's sentinels the empty code, exactly
-// as it does the admission's.
+// Max140Text, optional, and absent on the accepting arm. A refusal fills it, and
+// the loss is that the reason travels as text rather than as a code a
+// counterparty can branch on. It is why payment's reasonTable gives the
+// lodgement's sentinels the empty code.
 //
-// Note the width. RjctnRsn is Max350Text and this is Max140Text, so a refusal
-// reason that fits an admission may not fit here. payment.LodgementReceiptMessage
-// is where that is dealt with rather than discovered.
+// Note the width. The refusals that reach it are Go error strings quoting a BIC,
+// an asset and two account ids, which can exceed 140 characters between them.
+// payment.LodgementReceiptMessage is where that is dealt with rather than
+// discovered.
 type RequestHandling struct {
 	StsCd string `xml:"StsCd"`
 	Desc  string `xml:"Desc,omitempty"`

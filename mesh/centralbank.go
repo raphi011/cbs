@@ -56,17 +56,15 @@ type centralBank struct {
 // handle dispatches on the message that arrived. See bank.handle, which has the
 // same shape and the same reason for taking the sender as an argument.
 //
-// Four arms, and they divide three-and-one rather than two-and-two. THREE of
-// them move central-bank money: a cut-off's positions being discharged, one
-// settled payment being sent back, and a member lodging cash onto its own
-// reserve. The fourth creates the account the other three move across.
+// Three arms, and every one of them moves central-bank money: a cut-off's
+// positions being discharged, one settled payment being sent back, and a member
+// lodging cash onto its own reserve.
 //
-// The lodgement is the newest and it is the only one of the three a MEMBER asks
-// for. A settlement instruction comes from the clearing house and a return comes
-// from a bank that is telling this actor about a payment; a camt.050 is an account
-// holder asking its servicer to credit its account, which is the same relationship
-// the acmt.007 arm serves and a different one from the other two. See
-// receiveLodgement.
+// The lodgement is the only one of the three a MEMBER asks for. A settlement
+// instruction comes from the clearing house and a return comes from a bank that
+// is telling this actor about a payment; a camt.050 is an account holder asking
+// its servicer to credit its account, which is a different relationship from
+// either. See receiveLodgement.
 //
 // A pacs.008 or a pacs.003 arriving here would be a customer payment sent to the
 // settlement agent, which no actor in this mesh does and which this actor could
@@ -397,16 +395,15 @@ func (cb *centralBank) receiveReturn(ctx context.Context, from iso20022.BIC, hdr
 // entries itself: it sends a camt.050, and this handler is the only thing in the
 // system that posts them.
 //
-// It has receiveAdmission's shape and reads the parties off the message, for
-// that handler's reason: a settlement agent holds no roster and has never heard
-// of this system's bank ids. See payment.ReadLodgement, and
-// payment.ReceiveLodgementTx on why the quoted account number is a CHECK against
-// its own row rather than a lookup.
+// It reads the parties off the message rather than off a row, because a
+// settlement agent holds no roster and has never heard of this system's bank ids.
+// See payment.ReadLodgement, and payment.ReceiveLodgementTx on why the quoted
+// account number is a CHECK against its own row rather than a lookup.
 //
-// It takes the HEADER as well as the document, which receiveAdmission does not:
-// an acmt.007 arrives having been forwarded by the clearing house, so its Fr is
-// the last hop rather than the applicant, while a camt.050 comes straight from
-// the member and the header and the body must agree.
+// It takes the HEADER as well as the document, which no other reader here does:
+// a camt.050 comes straight from the member, one hop, so the header and the body
+// must agree — where a relayed message's Fr is the last hop rather than the
+// originator and a comparison would refuse every legitimate one.
 //
 // # It answers camt.025 and NOT pacs.002
 //
@@ -459,8 +456,8 @@ func (cb *centralBank) receiveLodgement(ctx context.Context, from iso20022.BIC, 
 	in, err := payment.ReadLodgement(hdr, doc)
 	if err != nil {
 		// Answered against the message id off the document rather than the
-		// reader's output, for refuseAdmission's reason: the commonest way to be
-		// here is that the reader refused. A message carrying no id at all cannot
+		// reader's output, because the commonest way to be here is that the reader
+		// refused and produced nothing. A message carrying no id at all cannot
 		// be correlated by the member that sent it, so it becomes a dead letter
 		// instead — answerUnreadable's shape for a family with no FF01 in it.
 		ref := doc.LqdtyCdtTrf.MsgHdr.MsgId

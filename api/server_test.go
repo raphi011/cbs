@@ -59,12 +59,12 @@ func bank(s *Server, pid string) http.Handler {
 //
 // The mesh is not optional and every test here gets one, because it is what
 // carries a payment past the bank it was handed to. Started BEFORE populate,
-// which is the order cmd/server uses: a reseed admits its banks through the
-// mesh's own door, so the institutions that answer an application have to be
-// running first. mesh.Start's roster read therefore finds nothing, and every
-// bank in these tests gets its actor from Mesh.Admit. That is why two banks in
-// one test may not share a BIC: two actors on one address is a routing table
-// with one entry, and the mesh refuses it at admission.
+// which is the order cmd/server uses: a reseed gives each bank it provisions an
+// actor through the mesh's own door, so the transport has to be running first.
+// mesh.Start's roster read therefore finds nothing, and every bank in these tests
+// gets its actor from Mesh.AddBank. That is why two banks in one test may not
+// share a BIC: two actors on one address is a routing table with one entry, and
+// the mesh refuses it.
 //
 // Drain FIRST, then Stop, at cleanup, and both errors are reported. See
 // newAPIHarness in mesh_test.go, which says why at length.
@@ -467,13 +467,13 @@ func TestListAssets(t *testing.T) {
 // TestAnAssetTheAgentHasNotAnsweredForYetIsAMissingRowNotA422 pins the second
 // way a reserve can be absent, which is the one that is neither rare nor broken.
 //
-// One acmt.007 asks for one currency, so a bank joining in euro and dollars has
-// two applications, answered in two commits. Between them the settlement agent
+// One request asks for one currency, so a bank joining in euro and dollars asks
+// twice and is answered in two commits. Between them the settlement agent
 // holds a euro account and no dollar one while the bank's own row says it
 // operates in both — and every two-asset admission passes through that window.
 // Answering 422 for the dollar row would take the whole LIST route down with it:
-// one applicant mid-conversation and the central bank's console could not report
-// the reserves of any bank at all.
+// one bank mid-admission and the central bank's console could not report the
+// reserves of any bank at all.
 //
 // # The state is written rather than raced for
 //
@@ -485,12 +485,12 @@ func TestListAssets(t *testing.T) {
 // of the bank's own; how the row came to look like that is not something the
 // handler can see, which is exactly why writing it is honest here.
 //
-// It is also the state of the one stuck bank this endpoint cannot see: an
-// acmt.007 that never reached the agent leaves exactly this, permanently, and
-// the difference from the window is time rather than state. It is NOT
-// mesh.Mesh.Admit's "partly admitted bank" — that one had its account opened
-// before the acknowledgement went missing, so the agent holds it and this
-// reports a row for it. See Server.reserveRows, which sets both out.
+// It is also the state of the one stuck bank this endpoint cannot see:
+// provisioning that stopped between the two requests leaves exactly this,
+// permanently, and the difference from the window is time rather than state. It
+// is NOT the half-admitted bank — that one had every account opened before its
+// own act failed to run, so the agent holds them and this reports a row for each.
+// See Server.reserveRows, which sets both out.
 func TestAnAssetTheAgentHasNotAnsweredForYetIsAMissingRowNotA422(t *testing.T) {
 	h := newServer(t, nil)
 	pid := provisionMember(t, h, "BNKADEFFXXX", "Bank A", "EUR", "USD")
@@ -3272,10 +3272,10 @@ func TestDirectoryAmbiguousIdentifierIs409(t *testing.T) {
 // second the moment an IBAN's check digits pass; nothing on a retail path asks
 // the first.
 //
-// Both answer a BIC and NEITHER answers a name. An acmt.010 delivers none, so the
-// roster holds none, so a copy of the roster can hold none — three documented
-// decisions reused rather than a fourth invented. The assertion is on the absence
-// as much as on the value.
+// Both answer a BIC and NEITHER answers a name. The acknowledgement the roster is
+// written from delivers none, so the roster holds none, so a copy of the roster
+// can hold none — three documented decisions reused rather than a fourth
+// invented. The assertion is on the absence as much as on the value.
 //
 // The refresh in between is a request somebody makes, and it is what these two
 // surfaces are separated by. subscribeAll is what makes it in this fixture.

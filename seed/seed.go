@@ -796,9 +796,9 @@ func (b *builder) build() {
 	// --- Customer accounts (each bank mints its own addresses) -------------
 	//
 	// Serials restart at 1 per bank, because the bank code already says which
-	// bank. The literals these lines used to carry did that job with a leading
-	// digit — 1001 at Aurora, 2001 at Verde — which was a convention this seed
-	// invented and no address anywhere has.
+	// bank. Distinguishing them with a leading digit instead — 1001 at Aurora,
+	// 2001 at Verde — would be a convention this seed invented and no address
+	// anywhere has.
 	alice := b.open(aurora, "Alice Andersson")
 	aaron := b.open(aurora, "Aaron Apstorp")
 	annie := b.open(aurora, "Annie Ahlberg")      // -> Dormant
@@ -936,7 +936,7 @@ func (b *builder) build() {
 	b.glShowcase(aurora, aaron)
 }
 
-// lendingShowcase exercises every state the credit sub-project introduces: a
+// lendingShowcase exercises every state a credit facility can be in: a
 // priced overdraft, a term loan part-way through its schedule, a revolving
 // line with a billed cycle, a delinquent loan, and an overdraft that is
 // actually accruing rather than sitting at a limit that costs nothing. This is

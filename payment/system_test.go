@@ -2022,11 +2022,10 @@ func TestFoundingABankTouchesNoOtherInstitution(t *testing.T) {
 }
 
 // TestOpeningASettlementAccountTwiceOpensOne is what makes a retried admission
-// safe. The mesh delivers exactly once, so this is not reachable through the
-// transport — it is reachable through the OPERATOR, who re-drives an admission
-// that failed after the accounts were opened.
+// safe. Nothing delivers an admission, so the way in is the OPERATOR, who
+// re-drives one that failed after the accounts were opened.
 //
-// The second half is the other side of the same idempotency. One acmt.007 names
+// The second half is the other side of the same idempotency. One request names
 // one currency, so a bank clearing two schemes asks twice, and the second ask
 // must EXTEND the member rather than be swallowed as a repeat.
 func TestOpeningASettlementAccountTwiceOpensOne(t *testing.T) {
@@ -2078,7 +2077,7 @@ func TestOpeningASettlementAccountTwiceOpensOne(t *testing.T) {
 		})
 		return err
 	})
-	// Nor does a second ASSET allocate a second range: one acmt.007 asks for one
+	// Nor does a second ASSET allocate a second range: one request asks for one
 	// currency, and a bank issuing addresses under two codes would be two banks
 	// to anybody routing.
 	if extendedCode != firstCode {
@@ -2147,8 +2146,8 @@ func TestAdmittingABICTwiceIsRefused(t *testing.T) {
 		return nil
 	}))
 
-	// The same admission asking again is not a clash. This is the acmt.010 for
-	// the bank's second currency, and it extends the entry it finds.
+	// The same admission asking again is not a clash. This is the acknowledgement
+	// for the bank's second currency, and it extends the entry it finds.
 	second := ack
 	second.Accounts = map[ledger.AssetCode]ledger.AccountID{testAsset: "200.100.001", "USD": "200.100.002"}
 	var extended RosterEntry
@@ -2162,13 +2161,12 @@ func TestAdmittingABICTwiceIsRefused(t *testing.T) {
 }
 
 // TestABankRefusesAnAcknowledgementOfAnotherAdmission is the guard
-// Bank.AdmissionRef exists for, made about the act rather than about the mesh.
+// Bank.AdmissionRef exists for, made about the act.
 //
-// mesh's TestAMemberRefusesAnAcknowledgementOfAnotherAdmission drives the same
-// refusal through a message and is where the measurement that provoked it is
-// written down. This one is the domain's half: the act is separately callable —
-// that is the whole point of splitting admission into four — so what it refuses
-// has to be true of the act and not only of the one caller that exists today.
+// The act is separately callable — that is the whole point of splitting
+// admission into four — so what it refuses has to be true of the act and not
+// only of the one caller that exists today. The measurement that provoked the
+// guard is written down on the field itself.
 //
 // The two arms are the point. A bank that has recorded NOTHING accepts the first
 // acknowledgement that names it, whatever reference it quotes, which is what
@@ -2205,7 +2203,7 @@ func TestABankRefusesAnAcknowledgementOfAnotherAdmission(t *testing.T) {
 	assertEqual(t, "settlement reference", string(recorded.Assets[testAsset].Settlement), "200.100.001")
 
 	// The same admission again, with a second asset: extended, not refused. This
-	// is a two-currency bank's second acknowledgement, which one acmt.007 per
+	// is a two-currency bank's second acknowledgement, which one request per
 	// currency makes ordinary.
 	second := ack
 	second.Accounts = map[ledger.AssetCode]ledger.AccountID{testAsset: "200.100.001", "USD": "200.100.002"}
@@ -2236,10 +2234,9 @@ func TestABankRefusesAnAcknowledgementOfAnotherAdmission(t *testing.T) {
 // this branch found before them: a guard closes a case and its own "does not
 // apply" value stays reachable.
 //
-// The guards above are made from the MESSAGE — whose BIC, which admission — and
-// they are complete against ReadAdmissionAcknowledgement, refusal for refusal
-// (see checkAcknowledgement's table). Neither of these is a message this system
-// will not read. Both are STATES this act would write:
+// The guards above are made from the ACKNOWLEDGEMENT — whose BIC, which
+// admission — and checkAcknowledgement makes every one of them. Neither of these
+// is an acknowledgement it would refuse. Both are STATES this act would write:
 //
 //   - an account MOVED, under the admission's own reference. ErrBankAlreadyAdmitted
 //     compares the reference and says nothing when they match, and the loop wrote
@@ -2256,9 +2253,9 @@ func TestABankRefusesAnAcknowledgementOfAnotherAdmission(t *testing.T) {
 //     same consequence reached with a non-empty one.
 //
 // The extension cases are asserted beside them, because the fix is a comparison
-// and not a prohibition: a redelivery and a second currency both quote accounts
-// the bank already holds, since an acmt.010 lists every account the servicer
-// holds for the address.
+// and not a prohibition: a re-drive and a second currency both quote accounts
+// the bank already holds, since an acknowledgement lists every account the
+// servicer holds for the address.
 func TestABankRefusesAnAcknowledgementThatWouldLeaveItWrong(t *testing.T) {
 	ctx := context.Background()
 
@@ -2373,13 +2370,13 @@ func TestABankRefusesAnAcknowledgementThatWouldLeaveItWrong(t *testing.T) {
 // the reference is real. The third is the same hole seen by the clearing house:
 // two institutions on one BIC, both quoting nothing, comparing equal.
 //
-// # Why the reader is not enough
+// # Why one act's guard is not enough
 //
-// ReadAdmissionAcknowledgement refuses an empty Refs/PrcId/Id on the way in from
-// the wire, so none of this is reachable through a message. The acts are
-// separately callable — which is this file's own premise for testing them at all
-// — so a reader's guard that is the only line is not defence in depth. Same
-// reachability profile as the currency hole beside it, and the same fix.
+// The two acts are separately callable — which is this file's own premise for
+// testing them at all — and they run at two institutions, against two databases.
+// A guard in one of them leaves the other writing from the same acknowledgement,
+// so checkAcknowledgement runs in both. Same reachability profile as the currency
+// hole beside it, and the same fix.
 func TestAnAcknowledgementQuotingNoAdmissionIsRefusedByBothActs(t *testing.T) {
 	ctx := context.Background()
 	sys := testNetwork(t)
@@ -2438,20 +2435,16 @@ func TestAnAcknowledgementQuotingNoAdmissionIsRefusedByBothActs(t *testing.T) {
 	assertEqual(t, "the admission the bank recorded", mustGetBank(t, ctx, sys, bank.ID).AdmissionRef, "adm-1")
 }
 
-// TestAnUnusableAcknowledgementIsRefusedByBothActs holds the right-hand column
-// of checkAcknowledgement's correspondence: everything
-// ReadAdmissionAcknowledgement will not read off an acmt.010, neither act will
-// act on.
+// TestAnUnusableAcknowledgementIsRefusedByBothActs holds checkAcknowledgement to
+// its claim: an acknowledgement neither act can act on is refused by BOTH of
+// them, and the two refuse the same set.
 //
-// It is a table rather than a case per shape because the property is the
-// CORRESPONDENCE and not any one refusal. The owner rows and the
-// empty-account-list row were added after the fact, each of them a hole found
-// by probing rather than by reading, and each time the missing row was the one
-// nobody had set the two lists side by side to notice. The owner is two rows
-// because the reader's column is two — OrgId/AnyBIC absent, OrgId/AnyBIC
-// malformed — and both were measured writing a roster entry keyed by a BIC
-// nothing can address: keying a row by a value is not checking it. A refusal
-// added to the reader with no row here is what this is meant to make visible.
+// It is a table rather than a case per shape because the property is that the
+// set is the same at both institutions, not any one refusal. The owner is two
+// rows, an absent BIC and a malformed one, and both were measured writing a
+// roster entry keyed by a BIC nothing can address: keying a row by a value is not
+// checking it. A guard added to one act and not the other is what this is meant
+// to make visible.
 //
 // The admission reference is a refusal of the same kind, and it is held next
 // door rather than here: TestAnAcknowledgementQuotingNoAdmissionIsRefusedByBothActs
@@ -3893,7 +3886,7 @@ func TestSubmitLeavesAPushPaymentInitiatedAndOutOfAnyCycle(t *testing.T) {
 }
 
 // TestTheClearingHouseWillNotClearForANonMember is the clearing house's half of
-// the guard mesh.TestAFoundedBankCanNeitherPayNorBePaid holds at the door.
+// the guard mesh.Mesh.Submit also makes at its own door.
 //
 // It is here and not only there because these acts are separately callable —
 // seed/seed.go composes them directly and every fixture above does too — so a
@@ -4016,15 +4009,14 @@ func TestTheClearingHouseWillNotClearForANonMember(t *testing.T) {
 // TestTheClearingHouseWillNotClearInAnAssetAMemberWasNotAdmittedIn is the second
 // arm of the same guard, and it is what gives RosterEntry.Assets a reader.
 //
-// The row says "the assets this member clears in" and until this existed nothing
-// in production read it: every caller took the BIC off the entry and touched
-// nothing else, which is the field-nothing-reads shape this sub-project has
-// refused three times before — it is what deleted RosterEntry.Name in the same
-// row.
+// The row says "the assets this member clears in", and this is what gives that
+// field a production reader. Without one it would be the field-nothing-reads
+// shape this repository refuses — the same shape that keeps a name off a roster
+// entry.
 //
 // The state it refuses is the PARTLY-ADMITTED one, and it is reachable rather
-// than hypothetical. One acmt.007 asks for one currency, so a two-asset
-// admission is two conversations that commit separately; if the settlement agent
+// than hypothetical. One request asks for one currency, so a two-asset
+// admission asks the settlement agent twice and commits twice; if it
 // answers for one and refuses the other, the bank is a Member with internal
 // accounts in both assets and a settlement account in one. Its customers can
 // hold accounts in the asset it was not admitted in, both banks' own halves pass
@@ -4042,8 +4034,8 @@ func TestTheClearingHouseWillNotClearInAnAssetAMemberWasNotAdmittedIn(t *testing
 
 	// The half-admitted bank, built out of the acts rather than out of
 	// storetest.Admit: founded in both assets, and the settlement agent asked for
-	// one. Nothing is planted — this is the sequence the mesh runs, stopped where
-	// a refused acmt.007 stops it.
+	// one. Nothing is planted — this is provisioning's own sequence, stopped where
+	// a refused request stops it.
 	half, err := sys.bank(testBIC2).FoundBank(ctx, "Half Bank", testBIC2, storetest.FixtureCountry, bothAssets)
 	assertNoError(t, err)
 	const ref = "half-admitted"
@@ -4122,8 +4114,8 @@ func TestSubmitPostsNothingForAPullPayment(t *testing.T) {
 }
 
 // The submitting half must NOT check the far side. This is the assertion that
-// makes the whole sub-project real: before it, InitiatePaymentTx read both
-// banks' books in one transaction.
+// the split is real: a submitting half that read the creditor's account would be
+// one transaction reaching into two institutions' books.
 func TestSubmitDoesNotCheckTheCreditorAccount(t *testing.T) {
 	n, req := networkWithTwoBanks(t)
 	// A creditor account that does not exist. Before the split this was a

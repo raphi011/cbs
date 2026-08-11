@@ -38,16 +38,15 @@ func init() {
 // is what splitting the two avoids. This message is the half of the lodgement
 // that travels.
 //
-// # This is closer to the real thing than the acmt family is
+// # This one is the real thing
 //
-// Acmt007 records that a central-bank account is not really opened by an eBAM
-// request. This message has no such caveat: camt.050 is exactly what a TARGET2
-// or CLM participant sends to move liquidity between its accounts, and a
-// liquidity transfer into an RTGS account is one of its ordinary uses. What this
-// system leaves out is the rest of the family — camt.051 pulls liquidity the
-// other way, and the reservation and standing-order messages manage it — for the
-// reason UseCase gives about acmt: this system lodges cash and never afterwards
-// reserves, schedules or withdraws it.
+// camt.050 is exactly what a TARGET2 or CLM participant sends to move liquidity
+// between its accounts, and a liquidity transfer into an RTGS account is one of
+// its ordinary uses — so nothing here is a stand-in for a message a real network
+// would not carry. What this system leaves out is the rest of the family:
+// camt.051 pulls liquidity the other way, and the reservation and standing-order
+// messages manage it. This system lodges cash and never afterwards reserves,
+// schedules or withdraws it.
 //
 // # What the schema said, checked rather than recalled
 //
@@ -98,11 +97,6 @@ func (m LiquidityCreditTransferV5) validate() error {
 
 // MessageHeader is MessageHeader1: what identifies this message and when it was
 // made.
-//
-// It is NOT MessageIdentification, which the acmt family uses and which spells
-// its identifier Id rather than MsgId. Two Go types because two schema types,
-// for AccountRequestReferences' reason: one struct would emit the wrong element
-// name in one of the two families.
 //
 // CreDtTm is minOccurs="0" in MessageHeader1 and this package requires it. That
 // narrowing is this system's: every other message here carries a creation

@@ -114,13 +114,10 @@ func TestAnOperatorRejectionOfASettledPaymentIsRefusedAndSendsNothing(t *testing
 //
 // # Why the fixture builds it without the mesh
 //
-// Mesh.Admit registers the actor itself, before it writes anything, so a bank
-// admitted through the mesh's own door is never in this state. What is, is a
-// bank the mesh has not READ: api.Server.Reset truncates the store and rebuilds
-// it underneath a live mesh, and every bank in the new roster is one no actor
-// answers to until JoinRoster runs. storetest.Admit builds exactly that — three
-// institutions' rows, no transport — which is why this test uses it rather than
-// Admit.
+// The state this is about is a bank the mesh has not READ: api.Server.Reset
+// truncates the store and rebuilds it underneath a live mesh, and every bank in
+// the new roster is one no actor answers to until JoinRoster runs.
+// storetest.Admit builds exactly that — three institutions' rows, no transport.
 //
 // Such a bank is not slow, it is unreachable: it cannot pay, because Mesh.Submit
 // has no actor to hand its customer's instruction to, and it cannot be paid,
@@ -317,15 +314,14 @@ func TestForgetBanksRemovesAnActorTheBankIndexDoesNotName(t *testing.T) {
 // JoinRoster merges into the bank index rather than replacing it, so a bank
 // registered beside it keeps its entry.
 //
-// The interleaving this stands for is a POST /members committing between
-// JoinRoster's roster read and its write. An assignment there dropped the new
-// bank's index entry while leaving its actor running — a bank that answers every
-// read and carries no payment, with nothing anywhere saying so.
+// The interleaving this stands for is an AddBank committing between JoinRoster's
+// roster read and its write. An assignment there drops the new bank's index entry
+// while leaving its actor running — a bank that answers every read and carries no
+// payment, with nothing anywhere saying so.
 //
-// The joining bank is a participant the ROSTER does not hold, which is what that
-// interleaving leaves behind when the admission's row is truncated away, and
-// what makes the two writes distinguishable at all: a bank in the roster would
-// be registered by JoinRoster itself and the merge would prove nothing.
+// The joining bank is a participant the ROSTER does not hold, which is what makes
+// the two writes distinguishable at all: a bank in the roster would be registered
+// by JoinRoster itself and the merge would prove nothing.
 func TestJoinRosterKeepsABankRegisteredBesideIt(t *testing.T) {
 	h := newMeshHarness(t)
 	ctx := context.Background()

@@ -65,13 +65,12 @@ type participantDTO struct {
 	// posts (payment.ErrBankCodeUnknown). Paying is refused separately, of the
 	// submitting side, by payment.ErrBankNotAdmitted at Mesh.Submit and again at
 	// the clearing house — and both halves are needed, because the mesh routes on
-	// an ACTOR TABLE that Mesh.Admit fills at founding, so nothing about the
-	// transport makes a founded bank unreachable.
+	// an ACTOR TABLE that is filled independently of any roster, so nothing about
+	// the transport makes such a bank unreachable.
 	//
-	// It became a state a client can SEE when admission became a conversation: POST /members
-	// answers 202 with a founded bank, and the scheme's answer arrives at two
-	// other institutions afterwards. Before that the two were one commit and
-	// every bank a caller could read was a member.
+	// A client can SEE it because the four acts commit separately: a deployment
+	// whose provisioning stopped part-way leaves a bank whose own row says one
+	// thing and whose two counterparties' rows say another.
 	//
 	// It is a string of the domain's own values rather than a boolean, because
 	// "not a member" is not one condition: an admission can stop halfway, and a

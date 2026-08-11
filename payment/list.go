@@ -64,10 +64,10 @@ func (s *Network) ListBanks(ctx context.Context) ([]*Bank, error) {
 // ListBanks's reason — with its Ledger and Deposit handles bound. Returns
 // ErrParticipantNotFound if no such bank exists.
 //
-// A founded one is not an edge case here: Mesh.Admit's re-drive branch reads its
-// bank through this method precisely because that bank is founded and the roster
-// has no entry for it, so a lookup that answered only for members would break the
-// one path out of an interrupted admission.
+// A founded one is not an edge case here: provision reads a bank through this
+// method before it founds anything, precisely because that bank may be founded
+// and in no roster — a lookup that answered only for members could not see the
+// bank a second run is about to re-drive.
 //
 // What it hands back is a bank's own record, live handles and all, so a caller
 // that is not that bank would get the ability to read and write its books. See
@@ -91,8 +91,9 @@ func (s *Network) GetBank(ctx context.Context, id ParticipantID) (*Bank, error) 
 
 // GetRosterEntryByBIC returns what the clearing house holds about the member at
 // one ADDRESS: the assets that address clears in, the admission it was admitted
-// under, and when. Nothing else — and in particular no NAME, which an acmt.010
-// does not carry and this row therefore cannot hold; see RosterEntry.
+// under, and when. Nothing else — and in particular no NAME, which the
+// acknowledgement this row is written from does not carry and this row therefore
+// cannot hold; see RosterEntry.
 //
 // The admission reference is on that list rather than left off it as
 // bookkeeping. It is what the clearing house's refusal of a second institution
@@ -122,13 +123,9 @@ func (s *Network) GetBank(ctx context.Context, id ParticipantID) (*Bank, error) 
 // is a state the domain can produce rather than a stated impossibility: a bank
 // founded by FoundBankTx and not yet admitted has a row and no entry, which is a
 // founded bank waiting for an admission — legitimate, and the whole point of
-// splitting founding from joining. It is REACHED in production: mesh.Mesh.Admit
-// founds a bank and the scheme answers later, so between the two commits this is
-// what the clearing house's own row says about that address.
-//
-// On the admission relay it is the ORDINARY answer rather than a fault — an
-// acmt.007 names its applicant by BIC and by nothing else, and a BIC in no roster
-// is what an address nobody has been admitted on looks like.
+// splitting founding from joining. It is REACHED in production: provisioning
+// founds a bank and the clearing house writes its entry two commits later, so in
+// between this is what the clearing house's own row says about that address.
 func (s *Network) GetRosterEntryByBIC(ctx context.Context, bic iso20022.BIC) (RosterEntry, error) {
 	var out RosterEntry
 	err := s.store.View(ctx, func(ctx context.Context, tx Tx) error {
@@ -164,8 +161,8 @@ func (s *Network) ListRosterEntries(ctx context.Context) ([]RosterEntry, error) 
 //
 // It is the settlement agent's answer to the question the clearing house answers
 // with ListRosterEntries, and the two are genuinely two answers rather than one
-// read twice: a bank whose acmt.007 the agent answered and whose acknowledgement
-// never reached the clearing house is in this one and not the roster.
+// read twice: a bank the agent opened an account for, whose provisioning stopped
+// before the clearing house wrote its entry, is in this one and not the roster.
 //
 // Its caller is api's GET /reserves, which is the operator console asking the
 // central bank what it holds and for whom. Nothing else can ask: this list names

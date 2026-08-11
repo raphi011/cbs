@@ -42,17 +42,6 @@ import (
 // relays it onward — see relayReturn and receiveReturnStatus. It clears nothing
 // and nets nothing: a return is final the moment the settlement agent posts it.
 //
-// # And it admits, which is the one flow where it DECIDES rather than carries
-//
-// An application for a settlement account is relayed to the settlement agent and
-// the acknowledgement comes back, and out of that answer this actor writes its
-// OWN row: the routing entry, which is what makes a bank reachable at all. It is
-// the only row this institution owns, and the only place in this package where a
-// clearing house writes something from a message it did not originate. It
-// carries NOTHING between the two hops, unlike the return — relayAdmission says
-// why. The domain's refusal of a duplicate address is made there, before the
-// relay, keyed on the ADMISSION rather than on the address.
-//
 // It holds a csmOps: nothing about clearing moves money, and that is what makes
 // clearing and settlement different jobs. That is not a compile-time ban on
 // posting — these interfaces narrow by method and never by book — so the ban
@@ -70,8 +59,7 @@ type csm struct {
 	// It is the only state any actor in this package keeps between messages, and
 	// it is deliberate rather than convenient: see relayReturn for why the
 	// message cannot be relayed onward before finality, and for what is lost if
-	// this map is. Admission, which is the other flow this actor relays, keeps
-	// nothing at all — see relayAdmission for what makes the difference.
+	// this map is.
 	//
 	// No lock. Only relayReturn and receiveReturnStatus touch it and both are
 	// reached only from handle, which runs on this actor's own goroutine and
@@ -374,27 +362,6 @@ func (c *csm) releaseReturn(held heldReturn, id payment.PaymentID) error {
 		// therefore stays that bank's, which is what makes the two copies of this
 		// return one message rather than two.
 		Document: held.doc,
-	})
-}
-
-// forwardAdmission passes an admission message on to the bank it is about, with
-// the header replaced and the document unchanged.
-//
-// It is csm.relay's body for the account-management family, and it is separate
-// for the reason relayAdmission gives: relay answers an unroutable destination
-// with a pacs.002, and a status report is about a payment transaction. Here an
-// unroutable destination is a bank the settlement agent has answered about and
-// this mesh cannot reach, which is nobody's to be told — so it is a dead letter.
-func (c *csm) forwardAdmission(env iso20022.Envelope, doc iso20022.Document, to iso20022.BIC) error {
-	return c.m.send(c.bic, to, iso20022.Envelope{
-		AppHdr: iso20022.AppHdr{
-			Fr:        iso20022.NewAgent(c.bic),
-			To:        iso20022.NewAgent(to),
-			BizMsgIdr: c.m.nextMsgID(c.bic),
-			MsgDefIdr: env.AppHdr.MsgDefIdr,
-			CreDt:     iso20022.ISODateTime{Time: c.m.now()},
-		},
-		Document: doc,
 	})
 }
 

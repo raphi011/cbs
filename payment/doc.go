@@ -148,18 +148,19 @@
 //     needs the central bank to credit an account in the central bank's book.
 //   - OpenSettlementAccountTx is the SETTLEMENT AGENT opening one account, in
 //     one asset, in its own book, and recording that it holds it. Idempotent
-//     per (BIC, asset), because one acmt.007 asks for one currency and a
+//     per (BIC, asset), because one request asks for one currency and a
 //     re-driven admission must not be given a second account.
 //   - AdmitMemberTx is the CLEARING HOUSE writing where to send a message
-//     addressed to this member — from an acknowledgement it did not originate,
-//     because scheme membership follows the settlement account.
+//     addressed to this member — from the settlement agent's acknowledgement
+//     rather than the bank's own word, because scheme membership follows the
+//     settlement account.
 //   - RecordMembershipTx is the BANK's second act: writing down the account
 //     numbers it has been told, and becoming a Member.
 //
-// Nothing in this package composes them. What runs them in order is a
-// CONVERSATION — mesh.Mesh.Admit and the three handlers the acmt.007 and
-// acmt.010 reach. A bank is licensed and built before any scheme has heard of
-// it, and what follows is a request that can be refused.
+// Nothing in this package composes them. What runs them in order is package
+// provision, which stands outside the domain and calls each institution's act
+// against that institution's own network. Nothing is carried between them and
+// nothing puts them on a wire.
 //
 // # Schemes
 //
@@ -197,10 +198,11 @@
 //   - Only the message definitions this system's flows need, and translate.go
 //     renders and reads every one of them: the payment family (pacs.008,
 //     pacs.003, pacs.002, pacs.004, pacs.009), the statement a settlement agent
-//     sends its members (camt.053), and the account-management family an
-//     admission is carried on (acmt.007, acmt.010, acmt.011). Package mesh
-//     carries them between institutions as marshalled bytes, so they are parsed
-//     on arrival rather than passed as structs.
+//     sends its members (camt.053), and the pair a member lodges reserves with
+//     (camt.050, camt.025). Package mesh carries them between institutions as
+//     marshalled bytes, so they are parsed on arrival rather than passed as
+//     structs. Admitting a bank travels on none of them — it is four direct
+//     acts, and package provision is what runs them.
 //
 //     Absent: pain.001/pain.008 customer initiation (an instruction arrives
 //     over this repository's REST API instead), the rest of the camt reporting

@@ -80,9 +80,10 @@ var (
 	//
 	// # What it stops, measured on both directions
 	//
-	// A bank that is founded and not yet admitted has a mesh actor from the
-	// moment Mesh.Admit reserves its address, so before this sentinel existed it
-	// was addressable in both directions and neither direction was refused:
+	// A bank that is founded and not yet admitted can still have a mesh actor —
+	// giving one is a separate act from any of the four, and nothing orders the
+	// two — so without this sentinel it is addressable in both directions and
+	// neither direction is refused:
 	//
 	//   - PAYING. Mesh.Submit accepted the submission, SubmitPaymentTx posted the
 	//     debtor leg, the payee's bank accepted, and AcceptAtCSMTx took the
@@ -284,7 +285,7 @@ var (
 	//
 	// The qualification is the whole sentinel. Two things legitimately arrive on
 	// a BIC that is already in the roster: the same bank's second currency —
-	// one acmt.007 names one currency, so a bank clearing two schemes admits
+	// one request names one currency, so a bank clearing two schemes admits
 	// twice — and an operator re-driving an admission that failed partway. A
 	// refusal keyed on "is this BIC in the roster" would refuse exactly those
 	// two and never fire on the case it exists for. Keyed on the admission
@@ -370,8 +371,7 @@ var (
 	//   - two institutions on one BIC both quoting "" compare equal, so
 	//     AdmitMemberTx extends the first's entry instead of refusing the second.
 	//
-	// ReadAdmissionAcknowledgement refuses it on the way in from the wire and
-	// checkAcknowledgement refuses it in the acts, which are separately callable.
+	// checkAcknowledgement is what refuses it, once, for both acts.
 	ErrAdmissionNotIdentified = errors.New("payment: this acknowledgement quotes no admission")
 
 	// ErrAdmittedAccountUnusable is an acknowledgement whose accounts neither act
@@ -392,10 +392,7 @@ var (
 	// the true acknowledgement then refused for ever by the admission-reference
 	// guards those two rows now carry.
 	//
-	// ReadAdmissionAcknowledgement refuses all three on the way in from the wire.
-	// These are the same refusals in the acts, so that the reader's are defence in
-	// depth rather than the only line. See checkAcknowledgement, which sets the two
-	// lists side by side.
+	// checkAcknowledgement refuses all three, once, for both acts.
 	//
 	// # A fourth arm, which only the BANK can decide
 	//
@@ -428,35 +425,30 @@ var (
 	// something different.
 	//
 	// What it does NOT refuse is a redelivery or a second asset, and that is the
-	// whole of why it compares rather than forbids: an acmt.010 lists every
-	// account the servicer holds for the address, so the second currency's
-	// acknowledgement repeats the first's account and the same message redelivered
-	// repeats all of them. Equal is an extension; different is a claim about an
-	// account this bank's settlement agent has never moved it to.
+	// whole of why it compares rather than forbids: an acknowledgement lists every
+	// account the servicer holds for the address, so the second currency's answer
+	// repeats the first's account and a re-driven admission repeats all of them.
+	// Equal is an extension; different is a claim about an account this bank's
+	// settlement agent has never moved it to.
 	//
-	// The bank is the last hop of an admission and has nobody to tell, so this
-	// becomes a dead letter like every other refusal it makes — see reasonTable,
-	// where the admission block sets that out.
+	// It reaches no counterparty, because nothing carries an admission between
+	// institutions: it goes back to whoever drove the act — see reasonTable, where
+	// the admission block sets that out.
 	ErrSettlementAccountReplaced = errors.New("payment: this acknowledgement moves a settlement account this bank already holds")
 
-	// ErrNotThisBanksAdmission is an admission message whose party is not the
-	// institution handling it, and it is made at BOTH ends of the conversation.
+	// ErrNotThisBanksAdmission is an acknowledgement addressed to another bank's
+	// BIC, refused by the bank asked to record it.
 	//
-	// The bank makes it about an ACKNOWLEDGEMENT addressed to another bank's BIC.
-	// It is ErrStatementNotForThisBank one flow over, and for the same reason:
-	// the actor passes its OWN id alongside a message it did not address, so
-	// nothing in the signature stops a caller naming somebody else's. A bank
+	// It is ErrStatementNotForThisBank one flow over, and for the same reason: the
+	// caller passes a bank's OWN network alongside an acknowledgement it did not
+	// address, so nothing in the signature stops it naming somebody else's. A bank
 	// that recorded whatever arrived would write another member's settlement
 	// account numbers onto its own row, and every reserve movement it made
 	// afterwards would name an account it does not hold.
 	//
-	// The clearing house makes it about a REQUEST whose applicant is not its
-	// sender (mesh.csm.relayAdmission). Same sentence, opposite direction, and it
-	// is the only refusal on that path answered to somebody other than the
-	// applicant — the sender is who asked, and the address it named never did.
-	// Relayed instead, it would have the settlement agent open an account for an
-	// address on the word of an institution that does not hold it, and an account
-	// servicer asked about one BIC has no way to tell who asked.
+	// What makes it reachable is that nothing in this package composes the four
+	// acts: the bank's own act is called with an answer somebody else obtained,
+	// and this is what checks the two belong together.
 	ErrNotThisBanksAdmission = errors.New("payment: this admission names a bank other than the one handling it")
 
 	// ErrSchemeUnsupportedReturn is returned when a return is attempted on a

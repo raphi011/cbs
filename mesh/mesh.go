@@ -142,15 +142,12 @@ type Mesh struct {
 
 	// clearingHouse is the network the mesh's OWN reads go through — the ones
 	// made on the caller's goroutine, before an actor has been chosen or when
-	// none exists yet: is this address a member (Submit, Admit), which banks
-	// does the roster name (joinRoster), which bank submits this payment
-	// (Return), and which scheme is this.
+	// none exists yet: is this address a member (Submit), which banks does the
+	// roster name (joinRoster), which bank submits this payment (Return), and
+	// which scheme is this.
 	//
-	// The clearing house is the right institution for the roster questions,
-	// which are its own rows. It is the WRONG one for two of them and they are
-	// named rather than hidden: joinRoster's ListBanks and Admit's
-	// GetBank/FoundBank read and write the banks table, which belongs to the bank
-	// shape, so a clearing house reaching them is a crossing.
+	// The clearing house is the right institution for every one of them, because
+	// each is a question about its own rows.
 	clearingHouse *payment.Network
 
 	cfg Config
@@ -190,13 +187,8 @@ type Mesh struct {
 // The member banks are NOT created here: they come from the CLEARING HOUSE's
 // roster, which is a store read, and a constructor that did I/O could not be
 // called before the store was ready. Start reads the roster, which is why
-// cmd/server seeds first and starts the mesh second; Admit covers the banks that
-// join after that, which is every bank a human admits over HTTP.
-//
-// Admit claims the ADDRESS before it writes anything and registers the actor
-// once the bank's own unit of work has committed. The claim is what makes a
-// clash cost nothing; the actor is what makes the bank reachable. See
-// Mesh.Admit and wire.Bus.Claim.
+// cmd/server provisions first and starts the mesh second; AddBank is how a
+// deployment gives one bank an actor without re-reading the whole roster.
 //
 // nets may be nil. A mesh with no networks has no roster and therefore no member
 // banks, which is what the tests about routing and registration use: they need
@@ -306,14 +298,14 @@ func (m *Mesh) Drain(ctx context.Context) error { return m.bus.Drain(ctx) }
 // gets no actor after a restart and this transport cannot reach it. That is not
 // what stops it being paid — payment.ErrBankNotAdmitted is, at Mesh.Submit and
 // again at the clearing house — and it is not true in the process that admitted
-// it, where Mesh.Admit registers the actor at founding so the applicant can
-// receive its own acknowledgement.
+// it, where a deployment can call AddBank for a bank the roster does not yet
+// name.
 //
 // No bank row is read: the id IS the address, and the clearing house's schema
 // has no banks table anyway. So the actor is named by its address rather than by
-// the bank's legal NAME, which a roster entry does not carry (an acmt.010 names
-// nobody — see payment.RosterEntry). The name lives on the bank's own row, which
-// is where an operator asking about a bank reads it.
+// the bank's legal NAME, which a roster entry does not carry (see
+// payment.RosterEntry). The name lives on the bank's own row, which is where an
+// operator asking about a bank reads it.
 //
 // The read happens OUTSIDE m.mu, because it is store I/O and nothing else may be
 // blocked on the mesh while it runs. The whole roster is then registered in one
@@ -331,13 +323,13 @@ func (m *Mesh) Drain(ctx context.Context) error { return m.bus.Drain(ctx) }
 //
 // The same window exists here and cannot be closed: the registration and the
 // copy below are two critical sections, so between them an actor exists that the
-// index does not name. AddBank closes it for the admission path; a batch that
+// index does not name. AddBank closes it for one bank at a time; a batch that
 // registered and indexed under one lock would hold m.mu across every bank in the
 // roster.
 //
-// Nothing else is protected by the merge. A reset racing an admission is still a
-// mess and can still refuse the admission or fail this call; what the merge
-// removes is the SILENT outcome — a bank that answers every read and carries no
+// Nothing else is protected by the merge. A reset racing an AddBank is still a
+// mess and can still refuse it or fail this call; what the merge removes is the
+// SILENT outcome — a bank that answers every read and carries no
 // payment, with nothing anywhere saying so.
 func (m *Mesh) joinRoster(ctx context.Context) error {
 	if m.nets == nil {
@@ -407,9 +399,9 @@ func (m *Mesh) JoinRoster(ctx context.Context) error { return m.joinRoster(ctx) 
 func (m *Mesh) CentralBankBIC() iso20022.BIC { return m.cfg.CentralBankBIC }
 
 // ForgetBanks removes every BANK's actor — every one the bus holds that is not
-// one of the two institutions, which after an in-process Admit includes a bank
-// the scheme has not answered for yet: closes its inbox, waits for its goroutine
-// to return, and drops it from the routing table and the bank index.
+// one of the two institutions, including a bank AddBank gave one to that the
+// roster does not name: closes its inbox, waits for its goroutine to return, and
+// drops it from the routing table and the bank index.
 //
 // # Why a mesh needs this at all
 //
@@ -468,10 +460,10 @@ func (m *Mesh) ForgetBanks(ctx context.Context) error {
 // goroutine reading an inbox nobody can address, so a taken BIC is refused with
 // ErrAddressTaken.
 //
-// It runs in the middle of Admit — after the bank's unit of work commits and
-// before the first acmt.007 is sent, since a bank that cannot be reached is one
-// whose application nobody could answer. Its other callers are the mesh's own
-// tests, which use it to plant an actor without a conversation.
+// It runs after a bank has been provisioned, because there is nothing to give an
+// actor to before that: a deployment provisions its banks and then gives each of
+// them one, and a mesh already running takes a later bank through this rather
+// than through another roster read.
 //
 // The registration, the reservation it consumes and the index entry are ONE
 // critical section, which is why m.mu is held ACROSS the bus call rather than

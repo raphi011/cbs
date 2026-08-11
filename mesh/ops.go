@@ -232,8 +232,7 @@ type bankOps interface {
 // Relaying a RETURN needs no method: the message names both agents itself
 // (OrgnlTxRef) and the recipient is whichever of them the message did not come
 // from. What that hop does need is state, and state is not an interface — see
-// csm.held. Admission needs neither, because every field of the row this actor
-// writes is on the acknowledgement it writes it from; see csm.relayAdmission.
+// csm.held.
 type csmOps interface {
 	// The clearing house's own copy of an instruction it is carrying, written as
 	// it routes one. AcceptAtCSM loads the payment by id, and every institution

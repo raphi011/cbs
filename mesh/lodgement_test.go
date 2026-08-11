@@ -62,9 +62,8 @@ func lodgementFor(t *testing.T, h *meshHarness, amount ledger.Amount, msgID stri
 // review found it.
 //
 // receiveLodgement answered EVERY non-duplicate error with a refusing camt.025.
-// That is receiveAdmission's shape and it is safe there, because an applicant
-// waiting for an account to exist has posted nothing. A lodging member has
-// already committed its leg. So a store failure at the agent — a retry budget
+// That is safe for a request whose sender has posted nothing, and a lodging
+// member has already committed its leg. So a store failure at the agent — a retry budget
 // exhausted under contention, a cancelled context, an I/O error — came back to
 // the member as a JUDGEMENT about its request, and the member's reserve mirror
 // stayed raised against an agent whose book never moved. Nothing retries and

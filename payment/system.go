@@ -508,12 +508,12 @@ func (s *Network) settlementAccountTx(ctx context.Context, tx Tx, bic iso20022.B
 // clearing house writes the routing entry, and the bank records what it was
 // told. No act writes another institution's row.
 //
-// Nothing in this package composes them. What runs them in order is a
-// CONVERSATION: mesh.Mesh.Admit founds the bank and sends one acmt.007 per
-// asset, and the other three acts run in the handlers of the messages that
-// reach the institutions whose acts they are. A bank is licensed and built
-// before any scheme has heard of it, and what follows is a request that can be
-// refused — so there is no guarantee that a bank has the accounts it needs.
+// Nothing in this package composes them. What runs them in order is package
+// provision, which stands outside the domain and calls each institution's act
+// against that institution's own network, holding each answer and handing it to
+// the next act. Four separate commits, so a run that stops half-way leaves a
+// bank with some of the three rows and not the others — a provisioning failure
+// to retry, and a payment/recon finding.
 //
 // Each act appends ONE audit event: four events across four commits, in three
 // institutions' names. See appendAuditTx, and ledger's EventParticipantAdded
@@ -523,27 +523,20 @@ func (s *Network) settlementAccountTx(ctx context.Context, tx Tx, bic iso20022.B
 // AdmissionRequest is a bank asking an account servicer to open it an account:
 // who is asking, in which asset, and which admission the question belongs to.
 //
-// ONE asset, not a list, because it is what one acmt.007 says: the schema makes
-// Acct/Ccy minOccurs="1" maxOccurs="1", so a bank clearing a euro scheme and a
-// dollar scheme asks twice rather than once for two currencies. See
-// iso20022.RequestedAccount.
+// ONE asset, not a list, because an account is denominated in one asset and one
+// of these asks for one account: a bank clearing a euro scheme and a dollar
+// scheme asks twice rather than once for two currencies. Every asymmetry against
+// AdmissionAcknowledgement, which carries a whole account set, follows from that.
 //
-// Ref is the admission's process id — acmt Refs/PrcId, echoed by every message
-// of one admission. It is the conversation's only correlator, because the
-// acknowledgement carries no back-reference to the request that caused it.
-// OpenSettlementAccountTx does not read it — an account servicer opens what it
-// is asked for; what reads it is the clearing house's refusal, against the
-// reference on the roster entry (see AdmitMemberTx).
+// Ref is the admission's own identifier, the same value on every act of one
+// admission. OpenSettlementAccountTx does not read it — an account servicer opens
+// what it is asked for; what reads it is the clearing house's refusal, against
+// the reference on the roster entry (see AdmitMemberTx).
 //
-// What carries it from here into the acknowledgement is the SETTLEMENT AGENT,
-// one hop on. OpenSettlementAccountTx answers with a SettlementMember, which has
-// no reference on it, so the handler that holds the request and the answer at
-// once is what copies the two together — mesh.centralBank.receiveAdmission,
-// which builds the acmt.010's PrcId out of the acmt.007's.
-//
-// It is a plain struct and not a message. ReadAdmissionRequest is what builds
-// one of these from an acmt.007, and AdmissionMessage is what renders one; both
-// are in translate.go, because the acts below know nothing about the wire.
+// Nothing carries it into the acknowledgement on its own.
+// OpenSettlementAccountTx answers with a SettlementMember, which has no reference
+// on it, so whoever holds the request and the answer at once is what copies the
+// two together. See provision.Ref, which is what mints one.
 type AdmissionRequest struct {
 	Name string
 	BIC  iso20022.BIC
@@ -556,9 +549,7 @@ type AdmissionRequest struct {
 	// It is not derivable from the BIC and must not be read as if it were. A
 	// BIC's fifth and sixth characters say where the INSTITUTION is; this says
 	// where it issues its customers' addresses, and a bank passported into
-	// another market answers the two differently. It travels on the acmt.007's
-	// Org/CtryOfOpr, which is the element Organisation33 makes mandatory and
-	// which nothing used to read.
+	// another market answers the two differently. See iban.Country.
 	Country iban.Country
 
 	Asset ledger.AssetCode
@@ -568,42 +559,33 @@ type AdmissionRequest struct {
 // AdmissionAcknowledgement is an account servicer answering: these are the
 // accounts I hold for you.
 //
-// It carries EVERY account, where the request carries one asset, and the
-// asymmetry is the schema's rather than this system's: acmt.010's
-// AccountForAction1 is unbounded, so one acknowledgement lists the servicer's
-// whole account set for that BIC. Both readers below rely on that — the clearing
+// It carries EVERY account, where the request carries one asset. A request is
+// one account being opened; an answer is what the servicer holds for that
+// address, which is the whole set. Both readers below rely on that — the clearing
 // house learns which assets a member clears in from this map, and the bank
-// records every account number it is told at once.
+// records every account number it is told at once, so a two-asset bank is
+// complete after the second answer.
 //
-// Ref is the same process id the request carried. It is what tells the clearing
+// Ref is the same reference the request carried. It is what tells the clearing
 // house whether an acknowledgement arriving on a BIC it already routes to is the
 // same admission going on or a different bank on a taken address.
 //
-// It names NO ONE, and that is the schema rather than an omission here. An
-// acmt.010 identifies the account owner with an OrganisationIdentification29 —
-// a BIC, an LEI, generic identifiers — and carries no legal name, no country
-// and no address; the REQUEST names the applicant with an Organisation33 and
-// the answer does not. Both readers get on without one: AdmitMemberTx writes
-// routing, and RecordMembershipTx is a bank writing its own row, which knows
-// its own name. See RosterEntry.
+// It names NO ONE, where the request names the applicant, because a servicer
+// answering about an address it has already been told about has nothing to add.
+// Both readers get on without a name: AdmitMemberTx writes routing, and
+// RecordMembershipTx is a bank writing its own row, which knows its own name. See
+// RosterEntry.
 type AdmissionAcknowledgement struct {
 	BIC iso20022.BIC
 
 	// Issuer is the bank code the registry allocated and the country it came out
-	// of, and this message is the ONLY place either value ever travels.
+	// of, and this acknowledgement is the ONLY place either value ever travels.
 	//
 	// Three institutions read it and each does something different with it. The
 	// applicant records it and mints its customers' addresses under it — before
-	// this message it has none and can open no addressable account. The clearing
+	// this answer it has none and can open no addressable account. The clearing
 	// house publishes it on the roster every member copies. The settlement agent
-	// wrote it, and is the one institution here that never reads it back off a
-	// message.
-	//
-	// It travels as Org/OrgId/Othr — an identifier, the register it came out of,
-	// and the institution that allocated it — and the country is carried by the
-	// REGISTER's name rather than as a field of its own, because that is what a
-	// scheme name is for and there is no country element on this message. See
-	// iso20022.GenericOrganisationIdentification.
+	// wrote it, and is the one institution here that never reads it back.
 	Issuer iban.Issuer
 
 	Accounts map[ledger.AssetCode]ledger.AccountID
@@ -773,7 +755,7 @@ func (s *Network) FoundBank(ctx context.Context, name string, bic iso20022.BIC, 
 }
 
 // OpenSettlementAccount is OpenSettlementAccountTx in its own unit of work: the
-// settlement agent's act, driven by an acmt.007.
+// settlement agent's act, on a request from the applicant.
 func (s *Network) OpenSettlementAccount(ctx context.Context, in AdmissionRequest) (SettlementMember, iban.Issuer, error) {
 	var (
 		out    SettlementMember
@@ -788,7 +770,7 @@ func (s *Network) OpenSettlementAccount(ctx context.Context, in AdmissionRequest
 }
 
 // AdmitMember is AdmitMemberTx in its own unit of work: the clearing house's
-// act, driven by an acmt.010.
+// act, on the settlement agent's acknowledgement.
 func (s *Network) AdmitMember(ctx context.Context, in AdmissionAcknowledgement) (RosterEntry, error) {
 	var out RosterEntry
 	err := s.store.Update(ctx, func(ctx context.Context, tx Tx) error {
@@ -800,7 +782,7 @@ func (s *Network) AdmitMember(ctx context.Context, in AdmissionAcknowledgement) 
 }
 
 // RecordMembership is RecordMembershipTx in its own unit of work: the bank's
-// second act, driven by the acmt.010 the clearing house forwards.
+// second act, on the same acknowledgement the clearing house admitted it from.
 func (s *Network) RecordMembership(ctx context.Context, in AdmissionAcknowledgement) (*Bank, error) {
 	var out *Bank
 	err := s.store.Update(ctx, func(ctx context.Context, tx Tx) error {
@@ -863,7 +845,8 @@ func (s *Network) FoundBankTx(ctx context.Context, tx Tx, name string, bic iso20
 	// It is refused here rather than at the registry so that the refusal reaches
 	// whoever is founding the bank. A country this system keeps no IBAN structure
 	// for is one no address could be minted in, and discovering that when the
-	// settlement agent answers acmt.011 would be a bank founded to be useless.
+	// settlement agent came to allocate the code would be a bank founded to be
+	// useless.
 	if _, err := iban.BankCodeWidth(country); err != nil {
 		return nil, fmt.Errorf("country of operation: %w", err)
 	}
@@ -1042,7 +1025,7 @@ func (s *Network) FoundBankTx(ctx context.Context, tx Tx, name string, bic iso20
 //
 // # Idempotent per (BIC, asset), not per BIC
 //
-// One acmt.007 names one currency, so a bank in two schemes asks twice and the
+// One request names one currency, so a bank in two schemes asks twice and the
 // second ask must not be swallowed as a repeat; and an operator re-driving an
 // admission that failed after the accounts were opened must not be given a
 // second account that the first one's balance is already sitting in.
@@ -1054,31 +1037,37 @@ func (s *Network) FoundBankTx(ctx context.Context, tx Tx, name string, bic iso20
 // The name on the row is the one it was first opened under: a second request
 // that renamed it would leave the accounts under it named two different things.
 // This is the only institution besides the bank itself that holds a member's
-// legal name, and it holds one because an acmt.007 names the applicant in
-// Org/FullLglNm. The clearing house's acmt.010 names nobody — see RosterEntry.
+// legal name, and it holds one because the request names the applicant. What it
+// answers with names nobody — see RosterEntry.
 //
 // # What it refuses, and what it does not
 //
 // An unknown asset code, because it is about to create an account denominated in
 // it. Not the BIC and not the name: whether an address is well formed is the
 // applicant's own act to establish (FoundBankTx), and whether an applicant may
-// hold this address at all is the clearing house's decision, made before a
-// request is relayed — an account servicer asked twice for one address by two
-// institutions cannot tell them apart (ErrBICAlreadyAdmitted).
+// hold this address at all is the clearing house's decision — an account
+// servicer asked twice for one address by two institutions cannot tell them
+// apart (ErrBICAlreadyAdmitted).
 //
-// That leaves the relay to guarantee the ADDRESS. The BIC becomes the primary
-// key of settlement_members, so a malformed or empty one writes a row no later
-// message can address and no reader can find. iso20022.BIC.Validate is what
-// ReadAdmissionRequest runs before this act is called.
+// The clearing house decides AFTER this act rather than before it, because the
+// roster entry is written from the acknowledgement this produces. So a second
+// bank on a taken address is given an account here and refused a routing entry
+// next, which leaves it half-admitted and is a payment/recon finding.
+// provision.ErrAddressTaken is what refuses it before anything is written at all.
+//
+// That leaves the caller to guarantee the ADDRESS. The BIC becomes the primary
+// key of settlement_members, so a malformed or empty one writes a row no reader
+// can find. iso20022.BIC.Validate is what FoundBankTx runs before this act is
+// called.
 //
 // It appends settlement_account.opened under the member's BIC, and only when it
 // opens something: an event on a request for an asset already held would make a
-// redelivered acmt.007 indistinguishable in the log from a second account.
+// re-run indistinguishable in the log from a second account.
 func (s *Network) OpenSettlementAccountTx(ctx context.Context, tx Tx, in AdmissionRequest) (SettlementMember, iban.Issuer, error) {
 	// FIRST: this act returns early for an asset the agent already holds an
 	// account in, so a guard further down would be reachable only on the path
-	// that opens something — and a redelivered acmt.007 would answer a clearing
-	// house's network with a member row and no refusal at all.
+	// that opens something — and a repeated request on a clearing house's network
+	// would come back with a member row and no refusal at all.
 	book, err := s.centralBankBook()
 	if err != nil {
 		return SettlementMember{}, iban.Issuer{}, err
@@ -1167,12 +1156,12 @@ func (s *Network) OpenSettlementAccountTx(ctx context.Context, tx Tx, in Admissi
 // AURODEFFXXX and 99999999 and there could not be — a bank code is numeric in all
 // four of these countries and a BIC is not — which is exactly why a scheme has to
 // PUBLISH a directory rather than letting every bank work it out. A version of
-// this function that hashed a BIC would make the whole of Task 21 unnecessary and
-// would be wrong about the world.
+// this function that hashed a BIC would make that directory unnecessary and would
+// be wrong about the world.
 //
 // # Idempotent per (country, BIC)
 //
-// One acmt.007 names one currency, so a bank joining in two assets applies twice
+// One request names one currency, so a bank joining in two assets applies twice
 // and must not be given two codes: an institution issuing addresses under two
 // ranges is two institutions to anybody routing. The read that makes this
 // idempotent is ordered by the id drawn before it in the calling act — see
@@ -1242,33 +1231,11 @@ func (s *Network) allocateBankCodeTx(ctx context.Context, tx Tx, country iban.Co
 
 // checkAcknowledgement refuses an acknowledgement neither act can act on.
 //
-// # It is ReadAdmissionAcknowledgement's refusals, made again in the acts
-//
-// The reader is the only guard a message meets, and the acts are separately
-// callable, so a reader's guard alone is not defence in depth. Refusal for
-// refusal:
-//
-//	ReadAdmissionAcknowledgement          here
-//	------------------------------------  ------------------------------------
-//	OrgId/AnyBIC absent                   in.BIC.Validate
-//	OrgId/AnyBIC malformed                in.BIC.Validate
-//	Refs/PrcId/Id absent                  ErrAdmissionNotIdentified
-//	OrgId/Othr not exactly one            unrepresentable: Issuer is one value
-//	OrgId/Othr/SchmeNm unknown            in.Issuer.Validate
-//	OrgId/Othr/Id absent                  in.Issuer.Validate
-//	AcctId empty                          ErrAdmittedAccountUnusable
-//	AcctId[i]/Ccy absent                  ErrAdmittedAccountUnusable
-//	AcctId[i]/Id/Othr/Id absent           ErrAdmittedAccountUnusable
-//	two accounts in one currency          unrepresentable: Accounts is a map
-//
-// A refusal added to the reader and not here is a row of this table with an
-// empty right-hand side.
-//
 // # Why each of them, and what "" means
 //
 // The BIC and the reference are both values a guard elsewhere reads as ABSENCE.
 // An empty Bank.AdmissionRef means "this bank has accepted nothing yet", so an
-// acknowledgement quoting none hands the next message the bank's settlement
+// acknowledgement quoting none hands the next caller the bank's settlement
 // references; an empty RosterEntry.AdmissionRef compares equal to every other,
 // so two institutions on one address extend a single entry. An empty or
 // malformed BIC is the KEY of the roster row AdmitMemberTx writes.
@@ -1283,18 +1250,18 @@ func (s *Network) allocateBankCodeTx(ctx context.Context, tx Tx, country iban.Co
 // One function and not lines in each act, because the two would otherwise refuse
 // different things — on an empty currency the clearing house would write a member
 // clearing in the empty asset and the bank would silently skip the account. Same
-// message, two answers, and in each pair only one of them visible.
+// acknowledgement, two answers, and in each pair only one of them visible.
 //
-// It reads no store, so it runs BEFORE admissionSequenceTx: a message this system
-// cannot act on should not cost an identity from the network's counter.
+// It reads no store, so it runs BEFORE admissionSequenceTx: an acknowledgement
+// this system cannot act on should not cost an identity from the network's
+// counter.
 //
 // It does NOT check which bank an acknowledgement is FOR — that is
 // RecordMembershipTx's comparison against the bank's own address
-// (ErrNotThisBanksAdmission) — nor what an act would WRITE. A message can be
-// perfectly readable and still leave one of the two acts wrong, and those
-// refusals live inside RecordMembershipTx: adding them here would stop this
-// being the correspondence it claims to be, and would refuse the clearing house
-// for the bank's reason.
+// (ErrNotThisBanksAdmission) — nor what an act would WRITE. An acknowledgement
+// can be perfectly readable and still leave one of the two acts wrong, and those
+// refusals live inside RecordMembershipTx: adding them here would refuse the
+// clearing house for the bank's reason.
 func checkAcknowledgement(in AdmissionAcknowledgement) error {
 	if err := in.BIC.Validate(); err != nil {
 		return fmt.Errorf("payment: this acknowledgement names no account owner this system can address: %w", err)
@@ -1307,7 +1274,7 @@ func checkAcknowledgement(in AdmissionAcknowledgement) error {
 	// a country nothing issues in would leave one institution routing to a range
 	// the other cannot address. Whether the code was really allocated is a
 	// question neither act can ask: the registry is the settlement agent's, which
-	// is the whole reason this value travels on a message.
+	// is the whole reason this value travels on the acknowledgement.
 	if err := in.Issuer.Validate(); err != nil {
 		return fmt.Errorf("payment: this acknowledgement gives %s no usable address range: %w", in.BIC, err)
 	}
@@ -1341,7 +1308,7 @@ func checkAcknowledgement(in AdmissionAcknowledgement) error {
 //
 // Two things legitimately arrive on a BIC already in the roster: this same
 // bank's next currency, and an operator re-driving an interrupted admission.
-// Both echo the process id the admission started with, so both extend the entry
+// Both echo the reference the admission started with, so both extend the entry
 // they find. A different reference is a second institution on a taken address,
 // which is the one case this refuses — see ErrBICAlreadyAdmitted and
 // RosterEntry.AdmissionRef.
@@ -1369,7 +1336,7 @@ func checkAcknowledgement(in AdmissionAcknowledgement) error {
 // on a creation: a second asset admitted is a second scheme this member clears
 // in.
 func (s *Network) AdmitMemberTx(ctx context.Context, tx Tx, in AdmissionAcknowledgement) (RosterEntry, error) {
-	// The message first, because this reads no store and a message this act
+	// The acknowledgement first, because this reads no store and one this act
 	// cannot use should not cost an identity from the network's counter.
 	if err := checkAcknowledgement(in); err != nil {
 		return RosterEntry{}, err
@@ -1443,9 +1410,9 @@ func (s *Network) AdmitMemberTx(ctx context.Context, tx Tx, in AdmissionAcknowle
 //
 // # Which bank, and which admission
 //
-// The message's address is compared against this bank's own BIC: a bank that
-// recorded whatever arrived would write another member's account numbers onto
-// its own row, and every reserve movement it made afterwards would name an
+// The acknowledgement's address is compared against this bank's own BIC: a bank
+// that recorded whatever arrived would write another member's account numbers
+// onto its own row, and every reserve movement it made afterwards would name an
 // account it does not hold.
 //
 // The BIC answers WHICH BANK and not WHICH ADMISSION, and two admissions can
@@ -1458,10 +1425,10 @@ func (s *Network) AdmitMemberTx(ctx context.Context, tx Tx, in AdmissionAcknowle
 //
 // # It records or extends
 //
-// A bank that is already a Member is EXTENDED rather than refused. One acmt.007
-// asks for one currency, so a two-asset admission produces two acknowledgements,
-// and refusing the second would leave a Member with a settlement reference it
-// never learned while the central bank held a reserve for it.
+// A bank that is already a Member is EXTENDED rather than refused. An admission
+// re-driven after an interruption quotes the same reference and repeats the
+// accounts already recorded, and refusing the second pass would make whatever the
+// first pass wrote the final state with no way to finish it.
 //
 // A bank that is still Founded accepts whatever reference arrives, because it
 // has accepted none — which is what makes re-driving an interrupted admission
@@ -1487,8 +1454,8 @@ func (s *Network) AdmitMemberTx(ctx context.Context, tx Tx, in AdmissionAcknowle
 // would leave behind — a Member with a settlement reference it never learned,
 // and a Member with a reference moved off the account the settlement agent
 // actually holds. The second is ErrSettlementAccountReplaced, and it compares
-// rather than forbids, because an acmt.010 repeats accounts already recorded and
-// equal is an extension.
+// rather than forbids, because an acknowledgement repeats accounts already
+// recorded and equal is an extension.
 //
 // It appends membership.recorded, under the bank's own id. The settlement
 // account numbers are on that event and on no other.
@@ -1497,8 +1464,8 @@ func (s *Network) RecordMembershipTx(ctx context.Context, tx Tx, in AdmissionAck
 	if err != nil {
 		return nil, err
 	}
-	// The message first, for AdmitMemberTx's reason: this reads no store, and a
-	// message this act cannot use should not cost an identity.
+	// The acknowledgement first, for AdmitMemberTx's reason: this reads no store,
+	// and one this act cannot use should not cost an identity.
 	if err := checkAcknowledgement(in); err != nil {
 		return nil, err
 	}

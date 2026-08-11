@@ -408,8 +408,8 @@ func RunCentralBankRaces(t *testing.T, newStore func(*testing.T) payment.Store) 
 			assertNoError(t, err)
 		}
 
-		// Both requests are legitimate and both must survive: one acmt.007 names
-		// one currency, so this is how a two-currency bank is admitted.
+		// Both requests are legitimate and both must survive: one request names one
+		// currency, so this is how a two-currency bank is admitted.
 		assertNoError(t, s.View(ctx, func(ctx context.Context, tx payment.Tx) error {
 			member, err := tx.GetSettlementMember(ctx, "AURODEFFXXX")
 			if err != nil {

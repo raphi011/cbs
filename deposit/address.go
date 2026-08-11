@@ -46,12 +46,11 @@ func (r *Register) mintAddressTx(ctx context.Context, tx Tx) (Identifier, error)
 //
 // # Why this is one act and not two
 //
-// Reissuing used to be a remove plus an add, and it stopped composing when the
-// add became a refusal: a bank issues these, so there is no call a caller could
-// make to supply the replacement. Splitting it into "withdraw" and "mint" would
-// also leave a real gap in between — an account with no address is unpayable,
-// and a failure between the two calls would leave one there with nothing saying
-// it had happened.
+// A remove plus an add does not compose, because a bank issues these: there is no
+// call a caller could make to supply the replacement. Splitting it into
+// "withdraw" and "mint" would also leave a real gap in between — an account with
+// no address is unpayable, and a failure between the two calls would leave one
+// there with nothing saying it had happened.
 //
 // # What it does not move
 //

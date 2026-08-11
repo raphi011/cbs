@@ -275,7 +275,7 @@ func (usdCT) Asset() ledger.AssetCode { return "USD" }
 // euroAndDollar is the asset set a bank in the two-asset fixture joins with.
 // Founding gives it a suspense and a reserve account in each, and the admission
 // that follows asks the central bank for a settlement account in each — one
-// acmt.007 per asset, because the schema carries one currency per request.
+// request per asset, because an account is denominated in one currency.
 var euroAndDollar = []ledger.AssetCode{"EUR", "USD"}
 
 // bank is one member's own network, keyed by its ADDRESS — a bank's
@@ -521,11 +521,10 @@ func (h *meshHarness) subscribeAll(t *testing.T) {
 // anything for it.
 //
 // It is three of admission's four acts driven directly, with AdmitMember left
-// out, and the mesh's own flow cannot produce it — the clearing house writes its
-// roster entry from the acknowledgement before it forwards one. What makes it
-// reachable is that the acts are separately callable, and what makes it worth
-// building is that it is the only state in which a bank has customers with money
-// and no route to anybody.
+// out, and provision.Bank cannot produce it — it runs all four in order. What
+// makes it reachable is that the acts are separately callable, and what makes it
+// worth building is that it is the only state in which a bank has customers with
+// money and no route to anybody.
 //
 // A merely FOUNDED bank is not this. A bank no registry has answered has no
 // address range at all, so it can open no customer account whatever
@@ -561,9 +560,7 @@ func (h *meshHarness) admitWithoutTheRoster(t *testing.T, name string, bic iso20
 	return b
 }
 
-// getBank re-reads a bank from the store, which is the only way to learn what
-// became of an admission: Admit answers with the bank as its own operator left
-// it, and everything after that happened at two other actors.
+// getBank re-reads a bank from the store.
 //
 // Out of the BANK's own database: the csm shape has no banks table, and a bank's
 // own row is the one thing about it no other institution keeps.
@@ -633,11 +630,10 @@ func (h *meshHarness) getRosterEntry(bic iso20022.BIC) (payment.RosterEntry, err
 // founded in it. It is what says a refused admission wrote NOTHING, which no
 // read of one bank could say.
 //
-// It was the clearing house's ListBanks, and that institution has no banks table
-// to count. What replaces it is payment.Stores.Banks, which is the composition
-// root's question and the only enumeration of banks that survives the split. A
-// fixture is the composition root: it holds every store, which is exactly what no
-// institution does.
+// It goes through payment.Stores.Banks rather than any institution's list,
+// because no institution enumerates banks: the clearing house has no banks table
+// and a bank holds only its own row. A fixture is the composition root, which is
+// what holds every store.
 func (h *meshHarness) bankCount(t *testing.T) int {
 	t.Helper()
 	return len(h.allBanks(t))

@@ -68,15 +68,6 @@ import (
 // produces no pacs.002, because a statement is not an instruction. It is the
 // only role in which this bank posts without any customer of its own being
 // involved: what moves is its own position at the central bank.
-//
-// # A seventh role, played once, before this actor was addressable
-//
-// A bank's own ADMISSION. Mesh.Admit founds the bank, registers this actor and
-// sends the first acmt.007 on its behalf, so the flow that brings this type into
-// existence is the one flow it does not begin inside a handler. It has handlers
-// for the answer: receiveAdmission records the settlement account numbers the
-// scheme opened, and receiveAdmissionRejection learns that it did not. Neither
-// answers anything, for receiveStatement's reason.
 type bank struct {
 	m   *Mesh
 	ops bankOps
@@ -122,13 +113,7 @@ type bank struct {
 // leg's owner (payment.ErrNotAPartyToThisReturn). See receiveReturn, and the
 // return flow in the package doc.
 //
-// The two acmt arms are the answers to this bank's OWN admission, and the
-// acmt.007 is deliberately not among them: a bank composes an application and is
-// never sent one. Nothing routes one here — the clearing house relays them to
-// the settlement agent — so it falls to the default like any other message
-// addressed to the wrong institution.
-//
-// What is left for the default besides that is the pacs.009: a settlement
+// What is left for the default is the pacs.009: a settlement
 // instruction is addressed to the settlement agent, names net positions between
 // members and the central bank, and is the one message definition this system
 // emits that a member bank has nothing to do with. Nobody sends one here — the
@@ -831,7 +816,7 @@ func (b *bank) lodge(ctx context.Context, asset ledger.AssetCode, amount ledger.
 // There is nothing to post. This bank's leg committed before the camt.050 was
 // sent, and the receipt carries no amount to post from even if there were — so
 // what arrives is a CONFIRMATION, and the shape of this handler follows from
-// that: it is receiveAdmissionRejection's, not receiveStatus's.
+// that: it posts nothing and it answers nobody.
 //
 // # An accepted receipt is logged and nothing else
 //
@@ -840,15 +825,15 @@ func (b *bank) lodge(ctx context.Context, asset ledger.AssetCode, amount ledger.
 // records the difference between "assumed" and "confirmed", because this system
 // keeps no lodgement row — the durable trace is the idempotency key on each
 // institution's own posting. Logging it is what makes the confirmation visible at
-// all; see receiveAdmissionRejection, which logs for the same reason.
+// all.
 //
 // # A REFUSED receipt is the interval nothing closes
 //
 // It means this bank's Reserve at Central Bank says more than the central bank's
 // book does, and will go on saying it. That is stated here rather than handled,
-// and the honest reason is that handling it needs something 18a does not have:
-// the amount to reverse is not on the receipt, so this handler cannot unwind the
-// leg without a lodgement row to read it from.
+// and the honest reason is that handling it needs something this system does not
+// have: the amount to reverse is not on the receipt, so this handler cannot
+// unwind the leg without a lodgement row to read it from.
 //
 // What makes it unreachable rather than merely unhandled is the guard on the
 // asking side. payment.LodgeReservesTx refuses a bank that cannot name its own

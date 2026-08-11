@@ -334,7 +334,7 @@ type Store struct {
 // banks sharing rows would be the split silently not happening.
 func Open(ctx context.Context, shape Shape, book ledger.BookID, path string, clock func() time.Time) (*Store, error) {
 	if shape.holds == nil {
-		return nil, fmt.Errorf("sqlite: open: no shape; a database with no institution attached is what Task 18 removed")
+		return nil, fmt.Errorf("sqlite: open: no shape; every store answers for exactly one institution")
 	}
 	if book == "" {
 		return nil, fmt.Errorf("sqlite: open %s: no book; every store answers for exactly one and refuses the rest", shape)

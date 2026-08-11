@@ -22,8 +22,8 @@ import (
 //
 // What is still absent is the third question. Neither route answers a NAME for a
 // party at another institution: the copy has none, because the roster has none,
-// because the acmt.010 delivers none. That absence arrives where a payer most
-// expects a name.
+// because the acknowledgement it is written from delivers none. That absence
+// arrives where a payer most expects a name.
 func (s *Server) registerBankIdentifierRoutes(mux *router) {
 	mux.HandleFunc("POST /deposit-accounts/{did}/identifiers", s.handleAddIdentifier)
 	mux.HandleFunc("DELETE /deposit-accounts/{did}/identifiers/{scheme}/{value}", s.handleRemoveIdentifier)
@@ -215,10 +215,11 @@ func (s *Server) handleRefreshDirectory(w http.ResponseWriter, r *http.Request) 
 // knows about another in this system. An address, the assets it clears in, the
 // admission it was admitted under, and when.
 //
-// No NAME, and its absence is domain content rather than an omission. An
-// acmt.010 carries none, so the clearing house has never been told one; the
-// name a console shows beside a BIC comes from GET /members, which is a
-// different question asked of a different table. See payment.RosterEntry.
+// No NAME, and its absence is domain content rather than an omission. The
+// acknowledgement this row is written from carries none, so the clearing house
+// has never been told one; the name a console shows beside a BIC comes from GET
+// /members, which is a different question asked of a different table. See
+// payment.RosterEntry.
 type rosterEntryDTO struct {
 	BIC string `json:"bic"`
 	// The allocation this member issues its customers' addresses under, which is

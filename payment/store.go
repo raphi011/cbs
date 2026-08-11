@@ -70,7 +70,7 @@ type Stores interface {
 	// and unadmitted bank the roster deliberately omits — a bank with a licence,
 	// a book and customers that no scheme has admitted. cmd/server's listener
 	// plan is the caller and that bank is the one it must not drop: a founded
-	// bank still has an operator, and the way in for it is Mesh.Admit.
+	// bank still has an operator, and its own console is the way in.
 	//
 	// Nothing in the domain calls it and nothing should. An institution asking
 	// which OTHER institutions exist is the crossing this whole task removes;
@@ -177,8 +177,8 @@ type Tx interface {
 	// every reserve movement in the system, since SettleCycleTx, SettleReturnTx
 	// and ReserveBalance all resolve their account through it. PutRosterEntry and
 	// GetRosterEntry are the clearing house's, called by AdmitMemberTx and by
-	// Network.GetRosterEntryByBIC, which is what the mesh's admission relay asks
-	// instead of being handed a whole bank.
+	// Network.GetRosterEntryByBIC, which is what a caller asking whether an
+	// address is a member gets instead of a whole bank.
 	//
 	// ListSettlementMembers has two callers: settlementLegsTx walks it to turn a
 	// cycle's net positions into legs, in the order the agent opened the

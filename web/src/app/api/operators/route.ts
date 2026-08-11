@@ -9,20 +9,18 @@ import {
 
 // Which operators actually have a listener behind them.
 //
-// Ports are static by design: a bank founded at runtime through POST /members
-// gets a store row and a chart of accounts of its own and no listener until the
-// server restarts, because joining a network is an operational act and modelling
-// it as an API call that instantly yields a running bank teaches the wrong
-// thing — the settlement account it needs before it can settle anything is
-// another institution's to open, after that call has already answered. The
-// lobby and the identity picker need to tell those two states apart *before*
-// offering a console, so this answers once for every bank rather than letting
-// each one discover it through a 502.
+// Ports are static by design: the set of banks a deployment serves is decided
+// before the server starts, because joining a network is an operational act — a
+// scheme agreement, an account another institution has to open, an operator
+// provisioning a connection — and a deployment that instantly yielded a running
+// bank would teach the wrong thing. The lobby and the identity picker need to
+// tell a listening bank from a listed one *before* offering a console, so this
+// answers once for every bank rather than letting each one discover it through a
+// 502.
 //
 // This is Next's own knowledge and is served by no backend: deployment topology
 // is not domain data. A bank with no listener is still a bank, and the list this
-// probes is every bank GET /members returns — founded ones included, which is
-// why the two states have to be told apart here rather than by a 502.
+// probes is every bank GET /members returns.
 export const dynamic = "force-dynamic";
 
 const CFG = backendConfig(process.env);
@@ -44,11 +42,11 @@ async function probe(base: string): Promise<boolean> {
 }
 
 export async function GET() {
-  // The bank list is GET /members on the CENTRAL BANK's listener, beside the
-  // route that founds them: it is the operator's read of a deployment rather
-  // than an institution's own record, and the clearing house — which holds a
-  // roster and no banks table — cannot answer it. Reading it doubles as that
-  // listener's probe, so the central bank gets no separate request.
+  // The bank list is GET /members on the CENTRAL BANK's listener: it is the
+  // operator's read of a deployment rather than an institution's own record, and
+  // the clearing house — which holds a roster and no banks table — cannot answer
+  // it. Reading it doubles as that listener's probe, so the central bank gets no
+  // separate request.
   let banksListed: string[] = [];
   let centralBankLive = false;
   try {

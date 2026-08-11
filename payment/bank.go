@@ -16,8 +16,8 @@ import (
 // BankStatus is how far through admission a bank is.
 //
 // There are two values and there is no third. An Applied state between them
-// would record that a request is out and nothing would read it — the
-// field-nothing-reads this sub-project has already refused twice. What "the
+// would record that a request is out and nothing would read it, which is the
+// field-nothing-reads shape this repository refuses. What "the
 // request is out" is worth knowing for is a stuck admission, which needs a
 // reconciliation that walks both ends rather than a column on one of them.
 //
@@ -51,12 +51,10 @@ const (
 	// It is a legitimate state and not a broken one — a bank exists before it
 	// joins a scheme — and it is what an interrupted admission leaves behind.
 	//
-	// FoundBankTx is what writes it, and mesh.Mesh.Admit is what hands one back:
-	// its synchronous half founds the bank and applies to the scheme, and what
-	// the scheme thinks arrives later, at two other institutions, as a message.
-	// So a caller sees this state on every admission and not only on an
-	// interrupted one — which is the whole difference between founding and
-	// joining being one commit and being two.
+	// FoundBankTx is what writes it, and it commits before the other three acts
+	// run. So this state exists on every admission and not only on an interrupted
+	// one — which is the whole difference between founding and joining being one
+	// commit and being four.
 	BankFounded BankStatus = "Founded"
 
 	// BankMember is a bank the scheme has admitted: the settlement agent holds an
@@ -290,16 +288,16 @@ type Bank struct {
 	// dropped a column.
 	Status BankStatus
 
-	// AdmissionRef is the acmt Refs/PrcId of the admission this bank recorded a
+	// AdmissionRef is the reference of the admission this bank recorded a
 	// membership under: what it accepted, not what anybody else says about it.
 	//
 	// # It is the only thing that can refuse a second admission's acknowledgement
 	//
-	// RecordMembershipTx records-or-extends, because one acmt.007 asks for one
+	// RecordMembershipTx records-or-extends, because one request asks for one
 	// currency and a bank joining in two assets is answered twice. What that
 	// gives up, without this field, is any way to tell the second answer of THIS
 	// admission from an acknowledgement belonging to another one — and the two
-	// are not the same message at all: the first adds a settlement reference the
+	// are not the same thing at all: the first adds a settlement reference the
 	// bank did not have, and the second overwrites one it did.
 	//
 	// It was measured rather than reasoned about. Without this field, an

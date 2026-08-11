@@ -30,21 +30,19 @@
 //
 // Which banks those are depends on how the mesh learned them, and the two
 // answers differ. joinRoster — what Start and Reset run — reads the CLEARING
-// HOUSE's roster, so a bank founded by an admission that never finished comes
-// back from a restart with NO actor, and only members are addressable. Mesh.Admit
-// registers the actor at FOUNDING, because the applicant has to be able to
-// receive its own acknowledgement, so in the process that admitted it a founded
-// bank has an actor from the moment its address is reserved. Both are deliberate
-// and they are not the same rule; what stops a founded bank being paid is
-// payment.ErrBankNotAdmitted, at the door and at the clearing house, and not the
-// actor table. The two institutions have no store row at all and are named in
-// Config.
+// HOUSE's roster, so a bank whose provisioning never finished comes back from a
+// restart with NO actor, and only members are addressable. AddBank takes one bank
+// at a time and asks nothing about membership, so a deployment can give an actor
+// to a bank the roster does not name. Both are deliberate and they are not the
+// same rule; what stops such a bank being paid is payment.ErrBankNotAdmitted, at
+// the door and at the clearing house, and not the actor table. The two
+// institutions have no store row at all and are named in Config.
 //
 // # The flows, listed once
 //
-// A push, a pull, a cut-off, a return and an admission — the sections below, in
-// that order. They are listed here and counted nowhere: what each flow IS does
-// not change when another arrives.
+// A push, a pull, a cut-off and a return — the sections below, in that order.
+// They are listed here and counted nowhere: what each flow IS does not change
+// when another arrives.
 //
 // # Bytes, not structs
 //
@@ -329,59 +327,18 @@
 // agent, where its own ledger refuses the reserve reversal a second time, and is
 // dead-lettered for the same reason the bank's own guard exists.
 //
-// # Admission
-//
-// A bank joining the scheme, and the only flow here that BRINGS AN ACTOR INTO
-// EXISTENCE. Every other one starts from a mesh that already holds its parties;
-// this one starts from a bank that nothing could address a moment earlier, and
-// its first message is sent by that bank.
-//
-//	joining bank  --acmt.007-->  clearing house  --acmt.007-->  central bank
-//	joining bank  <--acmt.010--  clearing house  <--acmt.010--  central bank
-//
-// Four messages, and a chain rather than a fan-out: each is sent from the
-// handler of the one before it, so unlike a cut-off or a return there is nothing
-// undetermined about the order. On a refusal the acmt.011 comes back the same
-// way and the bank stays Founded.
-//
-// # It is the return's topology, and one currency at a time
-//
-// The bank composes the request, the clearing house relays it, the settlement
-// agent acts in its own book and answers, and the clearing house writes its own
-// row from the answer and forwards it — the return's shape, reused.
-//
-// It is FOUR messages per ASSET. acmt.007's Acct/Ccy is minOccurs="1"
-// maxOccurs="1" — one currency per request — so a bank joining in two assets
-// sends two applications and is answered twice; the acknowledgement is the
-// asymmetric half, because AccountForAction1 is unbounded and each answer lists
-// every account the servicer holds for that address. The consequence is not the
-// extra message: it is that Refs/PrcId, the process id, is the conversation's
-// ONLY correlator, since an acknowledgement carries no back-reference to the
-// request that caused it. Mesh.Admit mints one per admission and every message
-// echoes it.
-//
-// # The JOINING BANK founds itself, synchronously, before anything is sent
-//
-// Mesh.Admit's synchronous half is Mesh.Submit's: the bank's own unit of work,
-// on the caller's goroutine, marked as the bank's, committed before a message
-// exists. What it returns is a FOUNDED bank — a licence, a book, a chart of
-// accounts and a product, and no customers at all, because no registry has
-// allocated it the bank code an account's address is minted under — and what the
-// scheme thinks arrives later, at two other actors, as a message.
-//
-// # "A founded bank can neither pay nor be paid" is a REFUSAL, and this
-// transport is not what makes it
+// # A bank the roster does not name, and what this transport does not refuse
 //
 // Routing here is the ACTOR TABLE, not the roster: a send resolves a BIC against
-// the transport's actors, and Admit registers the actor at founding so the bank
-// can receive its own acknowledgement. So a founded bank is perfectly REACHABLE by
-// this transport, and nothing about a send says otherwise. What it cost when
-// nothing else said otherwise either is the argument for every refusal below: a
-// payment addressed to a non-member was relayed, accepted, taken into a cycle
-// and reached Cleared, and failed at the CUT-OFF, wide — csm.settlementLegs
-// turns each net position into a BIC through the roster, so one non-member in
-// the batch means the pacs.009 cannot be built at all and the whole cycle stays
-// Closed with no settlement against it, every other member's payments included.
+// the transport's actors, and AddBank gives a bank one whether or not any scheme
+// has admitted it. So such a bank is perfectly REACHABLE by this transport, and
+// nothing about a send says otherwise. What it cost when nothing else said
+// otherwise either is the argument for every refusal below: a payment addressed
+// to a non-member was relayed, accepted, taken into a cycle and reached Cleared,
+// and failed at the CUT-OFF, wide — csm.settlementLegs turns each net position
+// into a BIC through the roster, so one non-member in the batch means the
+// pacs.009 cannot be built at all and the whole cycle stays Closed with no
+// settlement against it, every other member's payments included.
 //
 // The two directions are refused in two different places, and neither is here.
 // BEING PAID is refused by the payer's own bank: a bank in no roster is in no
@@ -392,9 +349,9 @@
 // the door, beside ErrOnUsPayment and for that guard's reason (Submit is
 // synchronous, so a refusal any later has a committed debtor leg to unwind), and
 // AcceptAtCSMTx refuses again from the clearing house's own roster row, which is
-// the institution whose judgement it is. All three are pinned —
-// TestAFoundedBankCanNeitherPayNorBePaid here, and
-// TestTheClearingHouseWillNotClearForANonMember in payment.
+// the institution whose judgement it is. payment's
+// TestTheClearingHouseWillNotClearForANonMember pins the second and says why the
+// first is not enough on its own.
 //
 // The clearing house's refusal alone is not enough for the PAYING direction,
 // measured with the door guard removed: it rejects the payment, and csm.tell
@@ -403,75 +360,16 @@
 // money stays in its clearing suspense. That is the argument for refusing at the
 // door as well.
 //
-// What makes a founded bank unreachable is losing its actor, which a restart
-// does: joinRoster builds actors from the ROSTER
-// (TestAFoundedBankIsNotAdmittedByARestart). That is a property of this
+// What makes such a bank unreachable is losing its actor, which a restart does:
+// joinRoster builds actors from the ROSTER
+// (TestStartGivesAHalfProvisionedBankNoActor). That is a property of this
 // transport rather than a refusal any institution makes, which is the
 // distinction this section exists to draw.
 //
-// Founded and not a member is a legitimate state and not half of one. Admit
-// claims the address before the unit of work runs and gives it back if that unit
-// of work fails, because an in-memory rollback is reliable and a rollback of a
-// committed transaction is not — so an interrupted admission leaves a bank that
-// exists and has not joined, and calling Admit again re-drives it.
-//
-// # The CLEARING HOUSE refuses, relays, and holds almost nothing
-//
-// Two authorities claim one address and they say different things. The mesh's
-// actor map refuses a taken BIC, which is a statement about CONNECTIVITY; the
-// roster's refusal is the statement about MEMBERSHIP, made by the institution
-// that owns routing, and it is keyed on the ADMISSION rather than on the address
-// — a refusal keyed on the address alone would refuse the same bank asking again
-// and never fire on the impostor it exists for. See
-// payment.ErrBICAlreadyAdmitted.
-//
-// It also refuses an application whose applicant is not its SENDER. An acmt.007
-// names the one in the document and the other in the header, and the two were
-// never compared: a bank could apply on an address it does not hold and the
-// settlement agent would open an account for it, having no way to tell who asked.
-// See payment.ErrNotThisBanksAdmission, which the bank makes about the answer at
-// the other end of the same conversation.
-//
-// It holds NOTHING across the relay, and that is the deliberate counterpoint to
-// the return, where csm.held keeps the whole pacs.004 until the reserves have
-// moved. The difference is what the two answers carry. A pacs.002 about a return
-// says settled or not, so the message it releases has to have been kept; an
-// acmt.010 carries the applicant's address, every account the servicer opened
-// and the admission's process id, which is every field of the routing entry —
-// so there is nothing about the request left to remember.
-//
-// The roster entry carries no legal NAME, because an acmt.010 names nobody:
-// OrganisationIdentification29 has a BIC and no name element. Routing is an
-// address. See payment.RosterEntry.
-//
-// It writes the routing entry BEFORE it forwards the acknowledgement, so a bank
-// told it is a member is one this institution can already route to. That is the
-// settlement path's statement-before-answer rule in a new place.
-//
-// # The CENTRAL BANK opens the account and answers acmt.011, not pacs.002
-//
-// One account per request, in its own book, plus its own member row keyed by
-// BIC — the only identifier it has, since it holds no roster and has never been
-// told this system's bank ids. It is idempotent per (BIC, asset), so a
-// re-driven admission is not given a second account that the first one's balance
-// is already sitting in.
-//
-// A refusal is an acmt.011 and not a pacs.002, because a status report is about
-// a payment transaction and this is not one. The reason travels as PROSE:
-// References6 makes RjctnRsn a repeated Max350Text where a payment rejection
-// carries an external code, which is the standard's decision and not this
-// system's, and it is why payment's reasonTable gives the admission sentinels
-// the empty code.
-//
-// # This is not how a real RTGS account is opened
-//
-// acmt is eBAM, designed for a corporate opening an account at its bank. A
-// bank's account at its central bank is reference data — in TARGET it is CRDM
-// static data and reda messages — and scheme membership is contractual and
-// travels on no message at all. What travels here is the settlement-account
-// request; the routing entry falls out of its acknowledgement, which is why the
-// clearing house writes a row from a message it did not originate and is not
-// addressed on. iso20022.Acmt007 records the whole of that framing.
+// Nothing here ADMITS anybody. The four acts that put a bank in the scheme are
+// payment's, they are called directly by package provision, and no message
+// carries any of them — so a deployment provisions its banks and then gives each
+// of them an actor, in that order, and this transport never sees the difference.
 //
 // # No test here waits for a duration, and Drain is why
 //

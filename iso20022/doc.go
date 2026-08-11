@@ -2,10 +2,10 @@
 // documents a bank, a clearing house and a settlement agent actually send each
 // other, rather than a Go struct standing in for one.
 //
-// The account-management messages a bank's admission depends on carry no payment
-// between banks and were built from the ISO schema alone, with no European
-// Payments Council guideline consulted for any part of the family. Which
-// messages the scheme does profile has a section of its own below.
+// The cash-management messages here carry no payment between banks and were
+// built from the ISO schema alone, with no European Payments Council guideline
+// consulted for any part of the family. Which messages the scheme does profile
+// has a section of its own below.
 //
 // It imports nothing from the rest of this repository — not ledger, not deposit,
 // not payment. That is deliberate and load-bearing: the package's claim is that
@@ -44,12 +44,10 @@
 //     arm only, which the scheme does limit to one occurrence of Max140Text.
 //     See RemittanceInformation.
 //   - Organisation identification. AnyBIC is minOccurs="0" wherever
-//     OrganisationIdentification29 appears, and this package requires it. On
-//     pacs.002 that is a status naming its originator, which is EPC-mandatory
-//     as an element but not as a BIC; on the acmt family, which no scheme
-//     profiles, it is the applicant's only identifier. One Go type makes both
-//     refusals, so the narrowing spans the profiled subset and the rest alike.
-//     See OrganisationIdentification.
+//     OrganisationIdentification29 appears, and this package requires it. Its one
+//     use here is a pacs.002's status naming its originator, which is
+//     EPC-mandatory as an element but not as a BIC. See
+//     OrganisationIdentification.
 //
 // Three of the claims above carry their index into the Implementation
 // Guidelines — the charge bearer, the settlement method and remittance
@@ -70,21 +68,20 @@
 // The rest follow the ISO schema alone. testdata/README.md already records why
 // for pacs.009 — the EPC governs SEPA Credit Transfer and SEPA Direct Debit
 // between PSPs and their customers, not a clearing house's settlement
-// instruction to a central bank — and the same holds for the three camt messages
-// and the three acmt ones: no Implementation Guideline was consulted for any of
-// them, and their shapes come from the XSD and from nothing else. That is a
+// instruction to a central bank — and the same holds for the three camt
+// messages: no Implementation Guideline was consulted for any of them, and their
+// shapes come from the XSD and from nothing else. That is a
 // statement about what was read, not a claim that the EPC is silent, and the
 // distinction is the same one the outstanding debt above is recorded for.
 //
 // So a fact taken out of this package needs its kind attached. "The charge
-// bearer is always SLEV" is the scheme narrowing the standard. "An acmt.007
-// names its applicant by AnyBIC" is the standard. "An acmt.007 without that BIC
-// is refused here" is neither — it is this package narrowing the standard on its
-// own account. Each narrowing of that third kind is recorded on the type that
-// makes it, because on these messages there is no rule book to point at: see
-// AccountOwner, PostalAddress, AccountRequestAcknowledgement and
-// OrganisationIdentification. The last of those also refuses inside the profiled
-// subset, on pacs.002, which is why it is listed above as well as here.
+// bearer is always SLEV" is the scheme narrowing the standard. "A camt.025's
+// StsCd is a code set" is the standard. "A refusal here must carry a reason" is
+// neither — it is this package narrowing the standard on its own account. Each
+// narrowing of that third kind is recorded on the type that makes it, because on
+// these messages there is no rule book to point at: see RequestHandling and
+// OrganisationIdentification. The second also refuses inside the profiled subset,
+// on pacs.002, which is why it is listed above as well as here.
 //
 // # The envelope
 //
@@ -106,10 +103,12 @@
 // Most are the interbank counterpart of an operation the payment package
 // already performs — an instruction, a collection, its status, its return, the
 // settlement leg that discharges a cycle. Another reports on an account after
-// the fact. The account-management family carries the settlement-account
-// request and its answer: NOT a bank's admission to the scheme, which is
-// contractual and travels on no message at all, but the account without which
-// an admitted bank could not settle. See Acmt007:
+// the fact, and a pair carries a member's request to have its reserve credited.
+//
+// Admitting a bank travels on none of them, and the absence is domain content:
+// scheme membership is contractual, and a bank's account at its central bank is
+// reference data its central bank's own operations set up. See package
+// provision, which performs both without a message.
 //
 //   - pacs.008.001.08 FIToFICstmrCdtTrf — a SEPA Credit Transfer.
 //   - pacs.003.001.08 FIToFICstmrDrctDbt — a SEPA Direct Debit collection.
@@ -134,27 +133,16 @@
 //     the central bank saying it credited the reserve, or saying it would not.
 //     It carries no amount, which is what decides where the member's own leg is
 //     posted; see Camt025.
-//   - acmt.007.001.03 AcctOpngReq — an account-opening request: a bank asking a
-//     settlement agent for the settlement account its admission depends on.
-//   - acmt.010.001.03 AcctReqAck — the agent's acknowledgement, naming the
-//     accounts it opened. It is the message the clearing house's routing entry
-//     is written from, by an institution that neither sent it nor was addressed
-//     on it.
-//   - acmt.011.001.03 AcctReqRjctn — the agent's refusal, and the same
-//     conversation ending the other way.
 //
-// The three acmt messages are one conversation and are read as one. Acmt007
-// carries the family's documentation, including why this use of eBAM is not how
-// a central-bank account is really opened. payment/translate.go builds and reads
-// all three, and mesh carries them between the joining bank, the clearing house
-// and the settlement agent.
+// payment/translate.go builds and reads every one of them, and mesh carries them
+// between the institutions as marshalled bytes.
 //
 // Deliberately absent: pain.001 and pain.008 (the customer-to-bank layer),
 // camt.056 recalls and pacs.007 reversals, message signing, and runtime XSD
-// validation. Each is recorded in the design document with the reason. The rest
-// of the acmt family goes with them, for the reason UseCase gives: this system
-// opens a settlement account at admission and never afterwards maintains,
-// closes or inspects one.
+// validation. Each is recorded in the design document with the reason. The whole
+// acmt family goes with them: a bank's account at its central bank is reference
+// data rather than something requested over a payment network, so there is
+// nothing here for an account-management message to carry.
 //
 // # A reversed ruling: the camt family
 //
@@ -174,17 +162,16 @@
 // than residual. camt.054 is refused because a notification carries entries and
 // no balance, so it can drive a posting and never detect a wrong one. camt.051
 // pulls liquidity back the other way, and this system lodges cash and never
-// withdraws it — the reason UseCase gives for the rest of acmt, applied to a
-// second family.
+// withdraws it.
 //
 // # A reversed ruling: "the SEPA interbank messages"
 //
-// The acmt family is not SEPA. What travels on it is not a payment between
+// The camt family is not SEPA. What travels on it is not a payment between
 // banks, and no EPC Implementation Guideline was consulted for any part of it.
 // Nobody here has verified a negative about a body of guidelines nobody here has
 // read in full, so this states the weaker thing it can source. The framing this
 // package is built on — that the standard is a superset and a scheme narrows it
-// — has nothing to say about the messages admission adds, and the section above
+// — has nothing to say about a statement or a lodgement, and the section above
 // is what to read before quoting anything in this package as a fact about SEPA.
 //
 // # Two things encoding/xml cannot do

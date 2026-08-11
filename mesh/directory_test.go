@@ -46,9 +46,8 @@ func TestABankAdmittedAfterTheLastRefreshCannotBePaidUntilTheNextOne(t *testing.
 	h := newMeshHarness(t)
 
 	// A third member, admitted after the two in the fixture pulled their copies.
-	// Its admission is the whole conversation and it finishes: it holds a
-	// settlement account, it is in the roster, and it has a customer with an
-	// address of its own.
+	// Its admission finishes in full: it holds a settlement account, it is in the
+	// roster, and it has a customer with an address of its own.
 	joiner := h.provision(t, "Nordhaven Bank", "NORDSESSXXX", euroOnly)
 	h.drain(t)
 	joiner = h.getBank(t, joiner.ID)

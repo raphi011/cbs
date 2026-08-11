@@ -326,9 +326,9 @@ func TestResolveIdentifierIsAmbiguousWhenTwoAccountsHoldIt(t *testing.T) {
 // rule: what resolution treats as the same address, withdrawal treats as the
 // same address too.
 //
-// There is no third site any more. Uniqueness and addition used to be here as
-// well, and an IBAN cannot reach either now — a bank issues them, so a caller
-// has no spelling of anything to offer.
+// There is no third site. Uniqueness and addition cannot be reached by an IBAN
+// at all — a bank issues them, so a caller has no spelling of anything to
+// offer.
 
 func TestResolveFindsAnAddressInTheSpellingAPersonTypes(t *testing.T) {
 	ctx := context.Background()

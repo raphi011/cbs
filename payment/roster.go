@@ -83,10 +83,10 @@ type DirectoryEntry struct {
 	// BIC is the institution to send to, and the whole of what this row says
 	// about it.
 	//
-	// No name beside it, because the roster carries none, because the acmt.010
-	// that writes the roster carries none. That absence arrives at the moment a
-	// payer most expects a name: an address resolves, and what comes back is
-	// AURODEFFXXX.
+	// No name beside it, because the roster carries none, because the
+	// acknowledgement the roster is written from carries none. That absence
+	// arrives at the moment a payer most expects a name: an address resolves, and
+	// what comes back is AURODEFFXXX.
 	//
 	// No assets either, and that one is a refusal deliberately not made — an
 	// early "this member does not clear in euro", computed from a copy that may
@@ -122,8 +122,8 @@ type DirectoryEntry struct {
 //
 // # It is keyed by BIC and by nothing else
 //
-// The settlement agent holds no roster and allocates no bank ids. What an
-// acmt.007 tells it is a BIC, so a BIC is what it can key by; a bank id here
+// The settlement agent holds no roster and allocates no bank ids. What the
+// request tells it is a BIC, so a BIC is what it can key by; a bank id here
 // would be an identifier this institution has no way to have been told and no
 // way to check.
 //
@@ -135,11 +135,11 @@ type DirectoryEntry struct {
 // money.
 //
 // The NAME is here and not on the clearing house's row, and the difference is
-// which message each institution writes its row from. An acmt.007 names the
-// applicant in Org/FullLglNm, so this institution is told one and uses it: the
-// reserve account it opens is called "Reserve: <name> (<asset>)", which is what
-// an account servicer names an account after. An acmt.010 names nobody, so the
-// clearing house is told none — see RosterEntry.
+// which of the two each institution writes its row from. The REQUEST names the
+// applicant, so this institution is told one and uses it: the reserve account it
+// opens is called "Reserve: <name> (<asset>)", which is what an account servicer
+// names an account after. The ACKNOWLEDGEMENT names nobody, so the clearing
+// house is told none — see RosterEntry.
 type SettlementMember struct {
 	// BIC is the key. See the note above on why it is the only one this
 	// institution could have.
@@ -169,7 +169,7 @@ type SettlementMember struct {
 // It is routing and nothing else. There is no account identifier of any kind on
 // it — no subledger, no product, no book — because a clearing house that held
 // one would be holding the means to reach into a bank's ledger, which is the
-// crossing this whole sub-project is about closing. storetest's
+// crossing the database split exists to close. storetest's
 // RosterEntryCarriesNoAccountIdentifiers is what keeps that true: a field added
 // here fails that case by name.
 //
@@ -179,22 +179,21 @@ type SettlementMember struct {
 // AdmitMemberTx, the clearing house's act, writes this row from an
 // acknowledgement it did not originate.
 //
-// # There is no NAME on it, because the message that writes it has none
+// # There is no NAME on it, because the acknowledgement that writes it has none
 //
-// AccountRequestAcknowledgementV03 identifies the account owner with an
-// OrganisationIdentification29 — a BIC, an LEI, generic identifiers — and
-// carries no legal name, no country and no address anywhere; the REQUEST names
-// the applicant with an Organisation33 and the answer does not. A name here
-// would assert something no message delivered.
+// An account servicer answering about an address it has already been told about
+// has nothing to add to it: it names the accounts it holds, and no legal name, no
+// country and no address. The REQUEST names the applicant and the answer does
+// not. A name here would assert something nobody delivered.
 //
 // A bank's legal name lives where it was told to somebody: on the bank's own
 // row, and on the settlement agent's SettlementMember, which learns it from the
-// acmt.007's Org/FullLglNm and names the account it opens after it.
+// request and names the account it opens after it.
 type RosterEntry struct {
 	BIC iso20022.BIC
 
 	// Issuer is the country and bank code this member issues its customers'
-	// addresses under, learned from the same acmt.010 that writes this row.
+	// addresses under, learned from the same acknowledgement that writes this row.
 	//
 	// It is what makes this table a ROUTING DIRECTORY rather than a list of
 	// addresses the scheme will talk to. A payer quotes an IBAN and nothing else;
@@ -224,7 +223,7 @@ type RosterEntry struct {
 	// Its reader is Network.bothBanksAreMembersTx, from AcceptAtCSMTx: the
 	// clearing house will not take a payment into a cycle unless both banks are
 	// admitted in the scheme's asset. The case that makes it load-bearing is the
-	// PARTLY-ADMITTED bank: one acmt.007 asks for one currency, so a two-asset
+	// PARTLY-ADMITTED bank: one request asks for one currency, so a two-asset
 	// admission commits twice, and an agent that answers one and refuses the
 	// other leaves a Member with internal accounts in both assets and a
 	// settlement account in one. Nothing else would refuse its payments in the
@@ -244,29 +243,19 @@ type RosterEntry struct {
 	// admitted for.
 	Assets []ledger.AssetCode
 
-	// AdmissionRef is the acmt Refs/PrcId that every message of ONE admission
-	// echoes — the conversation's only correlator, because the acknowledgement
-	// carries no back-reference to the request that caused it.
+	// AdmissionRef is the identifier every act of ONE admission quotes, and the
+	// only thing that tells two admissions on one address apart.
 	//
 	// Its reader is the clearing house's refusal, and the refusal cannot be
-	// written without it. Mesh.Admit claims the address at the mesh before
-	// anything is written or sent, so an impostor never gets a message onto the
-	// wire; what CAN arrive on a BIC already in this roster is the same bank
-	// asking again — its second currency, since the schema carries one per
-	// acmt.007, or an operator re-driving an interrupted admission. A refusal
+	// written without it. What legitimately arrives on a BIC already in this
+	// roster is the same bank again — its second asset, since one request asks for
+	// one currency, or an operator re-driving an interrupted admission. A refusal
 	// keyed on "is this BIC in the roster" would refuse exactly those and never
-	// fire on the impostor it exists for. Keyed on this field it separates them:
-	// same admission, extend; different admission, refuse.
+	// fire on the second institution it exists for. Keyed on this field it
+	// separates them: same admission, extend; different admission, refuse.
 	//
-	// This act meets the second acknowledgement of a two-currency admission every
-	// time, which is what makes the extension arm ordinary rather than defensive.
-	// The clearing house's refusal of a REQUEST is keyed on the same field and
-	// meets that case only in a transport that can delay or reorder — see
-	// mesh.csm's relayAdmission, which measures why.
-	//
-	// AdmitMemberTx is what writes it and what reads it to refuse, and
-	// mesh.Mesh.Admit is what mints the value: one process id per admission,
-	// echoed by every message of it.
+	// AdmitMemberTx is what writes it and what reads it to refuse; what mints the
+	// value is whoever composes the four acts.
 	//
 	// It cannot be EMPTY, and that is a refusal rather than a convention.
 	// AdmitMemberTx will not write an entry from an acknowledgement quoting no
@@ -277,12 +266,12 @@ type RosterEntry struct {
 	// Bank.AdmissionRef is the same value guarded the same way for the same
 	// reason, from the other end.
 	//
-	// So every caller supplies one. mesh.Mesh.Admit mints a process id per
-	// admission; the seed and the test suites compose no messages and have no
-	// process to name, so they derive a reference from the BIC (see
-	// store/storetest.Admit) — which also means two of THEIR admissions on one
-	// address quote one reference and extend a single entry, which is why a
-	// fixture whose banks settle gives each of them an address of its own.
+	// So every caller supplies one. provision.Ref derives it from the BIC, which
+	// makes provisioning one deployment twice quote the same reference and write
+	// nothing new. It also means two DIFFERENT banks listed on one address quote
+	// one reference and extend a single entry instead of the second being refused
+	// — which is what provision.ErrAddressTaken is for, made against the
+	// deployment's own spec before any act runs.
 	AdmissionRef string
 
 	// AdmittedAt is when the scheme admitted this bank, which is when this row

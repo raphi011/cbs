@@ -12,8 +12,8 @@
 //
 // Every one of those spans two databases, so no act in the domain can make it
 // and none should be able to: an institution that could read another's books to
-// check its own would not need messages, and this whole sub-project is about the
-// messages. The harness is what a supervisor or an auditor would be — somebody
+// check its own would not need messages, and messages are what this system is
+// built on. The harness is what a supervisor or an auditor would be — somebody
 // with the right to see every ledger and no power to write in any of them.
 //
 // # It is the successor to the book recorder
@@ -28,8 +28,8 @@
 // at one end, a cut-off discharged twice — none of those touches a book it
 // should not, and every one of them is money in the wrong place.
 //
-// The spec called that class invisible to everything this sub-project had. This
-// is the instrument for it.
+// That class is invisible to every other instrument here. This is the one for
+// it.
 //
 // # It reports two kinds of finding and they are not the same kind
 //
@@ -864,7 +864,7 @@ func (s *snapshot) partiesHoldTheirCopy(rep *Report) {
 //
 // The per-asset comparison is the partly-admitted bank, which
 // payment.RosterEntry.Assets records as the case its own reader exists for: one
-// acmt.007 asks for one currency, so a two-asset admission commits twice and an
+// request asks for one currency, so a two-asset admission commits twice and an
 // agent that answers one and refuses the other leaves a Member with internal
 // accounts in both assets and a settlement account in one.
 func (s *snapshot) admissionWroteItsThreeRows(rep *Report) {
@@ -981,9 +981,9 @@ func (s *snapshot) addressesResolveToTheirIssuer(rep *Report) {
 // The roster is what every member COPIES, so a roster that disagreed with the
 // registry would put the wrong pairing into every subscriber's directory at once
 // — and neither institution can check the other, which is the whole reason both
-// tables exist. The clearing house learns the allocation from the acmt.010 that
-// writes the row; a drift here means that message and the register it came from
-// have parted company.
+// tables exist. The clearing house learns the allocation from the acknowledgement
+// that writes the row; a drift here means that answer and the register it came
+// from have parted company.
 //
 // A member with no allocation published is the other half, and it is a break
 // rather than a state: a bank whose customers have addresses and whose code

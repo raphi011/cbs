@@ -249,7 +249,7 @@ func TestARegisteredSchemeReachesEveryInstitutionsNetwork(t *testing.T) {
 	} {
 		if _, ok := seen.net.Scheme(dollarPush{}.ID()); !ok {
 			t.Errorf("%s has never heard of a scheme the clearing house registered.\n"+
-				"Separate stores are what this sub-project splits; separate scheme registries "+
+				"Separate stores are what the institutions have; separate scheme registries "+
 				"would make one institution unable to read what another can write.", seen.who)
 		}
 		if got := len(seen.net.ListSchemes()); got != before+1 {

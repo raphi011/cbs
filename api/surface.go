@@ -58,24 +58,19 @@ func (s *Server) centralBankRouter() *router {
 	// holds a roster and nothing else, and a roster deliberately omits the founded
 	// bank this listing exists to show (see handleListParticipants).
 	//
-	// # These two routes are the OPERATOR's, not the settlement agent's
+	// # This route is the OPERATOR's, not the settlement agent's
 	//
 	// Which is worth stating plainly, because everything else on this listener is
-	// bound to one institution and these are not. Server.as binds the central
-	// bank's Network to this router and Server's doc says nothing reachable from a
-	// bound Server can act as anybody but the entity it was bound to; both of these
-	// reach past that binding, through s.nets, to institutions that are not this
-	// one.
-	//
-	// The POST is an exception to that: it founds a bank, which CREATES AND WRITES
-	// that bank's entire database — its book, its chart, its accounts, its product
-	// — through the mesh.
+	// bound to one institution and this is not. Server.as binds the central bank's
+	// Network to this router and Server's doc says nothing reachable from a bound
+	// Server can act as anybody but the entity it was bound to; this one reaches
+	// past that binding, through s.nets, to institutions that are not this one.
 	//
 	// What justifies it is the same thing that justifies POST /admin/reset sitting
-	// here: founding the banks a network starts with, listing them, and rebuilding
-	// them are one operator's acts over a DEPLOYMENT, and a deployment is not an
-	// institution. The listener is where the operator's console is served; it is
-	// not the claim that the settlement agent is performing them.
+	// here: listing the banks a deployment holds and rebuilding them are one
+	// operator's acts over a DEPLOYMENT, and a deployment is not an institution.
+	// The listener is where the operator's console is served; it is not the claim
+	// that the settlement agent is performing them.
 	mux.HandleFunc("GET /members", s.handleListParticipants)
 	// There is no POST here, and its absence is the shape of what the mesh
 	// changed. A settlement is performed on INSTRUCTION: the clearing house reaches
@@ -124,13 +119,12 @@ func (s *Server) clearingHouseRouter() *router {
 	// roster_entries, written by payment.AdmitMemberTx from the settlement agent's
 	// acknowledgement, and a roster is exactly the list that omits a founded bank.
 	// So the two are separate: the roster is below, on GET /roster, and it is this
-	// institution's own answer; the bank list is on the central bank's listener
-	// beside the route that founds them, where it is the operator's read rather
-	// than an institution's.
+	// institution's own answer; the bank list is on the central bank's listener,
+	// where it is the operator's read rather than an institution's.
 	//
-	// This institution's share of admission is unchanged: relay a bank's
-	// application, refuse an address it has already admitted somebody else to, and
-	// write that routing entry from the answer (mesh.csm).
+	// This institution's share of admission is one act: refuse an address it has
+	// already admitted somebody else to, and write the routing entry from the
+	// settlement agent's answer (payment.AdmitMemberTx).
 	mux.HandleFunc("GET /schemes", s.handleListSchemes)
 	// The ROUTING directory, and it is the one the paragraph above says this
 	// institution genuinely owns: roster_entries, written by payment.AdmitMemberTx

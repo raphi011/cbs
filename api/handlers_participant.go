@@ -31,11 +31,9 @@ import (
 //
 // Server.as binds one institution's Network to a router and every other handler
 // here goes through s.network(). This one goes through s.nets, to N databases
-// that are not this listener's. So does POST /members beside it, which founds a
-// bank and writes that bank's database whole. Both are the operator's acts over a
-// deployment rather than the settlement agent's over its own books; the router
-// comment in surface.go is where that exception is written down, and this is one
-// of the two routes it covers.
+// that are not this listener's. It is the operator's act over a deployment
+// rather than the settlement agent's over its own books; the router comment in
+// surface.go is where that exception is written down.
 //
 // # The cost, stated rather than implied
 //
@@ -134,8 +132,9 @@ func (s *Server) handleFundDeposit(w http.ResponseWriter, r *http.Request) {
 //
 // A bank that cannot name its own settlement account is refused with
 // payment.ErrSettlementMemberNotFound and a 422: a bank with no reserve account
-// has no reserve to lodge into. Taking cash in is not refused the same way — see
-// TestABankTheSchemeHasNotAnsweredForCanNeitherOpenAnAccountNorLodge.
+// has no reserve to lodge into. Taking cash in is not refused the same way —
+// cash over the counter is the bank's own money in its own book, and
+// mesh.TestTakingCashInReachesNoOtherInstitution is where that is held.
 func (s *Server) handleLodgeReserves(w http.ResponseWriter, r *http.Request) {
 	p, ok := s.participant(w, r)
 	if !ok {
@@ -227,8 +226,8 @@ func (s *Server) handleGetReserve(w http.ResponseWriter, r *http.Request) {
 // # One rule: a row for every account this institution holds, and nothing else
 //
 // The assets come off the MEMBER's row — payment.SettlementMember.Accounts, one
-// account per asset, written by the agent when it answered an acmt.007 — so
-// every row this builds is a reserve this institution actually keeps.
+// account per asset, written by the agent when it answered the bank's request —
+// so every row this builds is a reserve this institution actually keeps.
 //
 // It reads the agent's own register straight, which is the only version of this
 // endpoint the central bank's database can serve: it has no banks table to
@@ -240,27 +239,22 @@ func (s *Server) handleGetReserve(w http.ResponseWriter, r *http.Request) {
 // What this reading cannot show is worth naming, because the obvious candidate
 // is not one of them.
 //
-// An acmt.007 that never reached the settlement agent — a dead letter on the way
-// out — leaves the agent holding a row without that asset, permanently. An
-// acmt.007 the agent REFUSED leaves exactly the same rows:
-// mesh.bank.receiveAdmissionRejection writes nothing, since nothing about a bank
-// changes when it applies, so the bank's own row carries an empty reference and
-// the agent holds no account. The two were already indistinguishable from each
-// other — "nobody could tell it" and "it was told no" leave identical state and
-// the refusal survives only as a log line — and both now look, from this
-// endpoint, like a member admitted in one asset, which is also what a two-asset
-// admission looks like between its two commits. The difference is TIME and
-// nothing here watches a clock.
+// A two-asset bank whose provisioning stopped between its two requests leaves the
+// agent holding a row without the second asset, permanently. So does a request
+// the agent REFUSED: nothing about a bank changes when it is refused an account,
+// so the bank's own row carries an empty reference and the agent holds none. The
+// two are indistinguishable from each other — "it never asked" and "it was told
+// no" leave identical rows — and both look, from this endpoint, exactly like a
+// one-asset member, which is also what a two-asset admission looks like between
+// its two commits. The difference is TIME and nothing here watches a clock.
 //
-// mesh.Mesh.Admit's "partly admitted bank" is a DIFFERENT state and this endpoint
-// still reports it fully. There the acmt.007 arrived and the acknowledgement went
-// missing, and the agent opens the account before it acknowledges
-// (mesh.centralBank.receiveAdmission), so its row has both assets and this
-// reports two rows — the second showing a reserve the bank cannot spend, since
-// payment.DepositTx resolves through the BANK's record and that one has no
-// reference. That is precisely what payment.RecordMembershipTx describes: a
-// deposit in that asset fails while the operator console cheerfully reports the
-// reserve.
+// The half-admitted bank is a DIFFERENT state and this endpoint reports it fully.
+// There every account was opened and the bank's own act never ran, so the agent's
+// row has both assets and this reports two rows — the second showing a reserve
+// the bank cannot spend, since payment.DepositTx resolves through the BANK's
+// record and that one has no reference. That is precisely what
+// payment.RecordMembershipTx describes: a deposit in that asset fails while the
+// operator console cheerfully reports the reserve.
 //
 // Finding any of them needs the bank's own assets beside these rows, which GET
 // /me on that bank's own port carries and which no screen in this repository

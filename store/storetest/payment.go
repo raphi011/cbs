@@ -364,8 +364,7 @@ func RunPayment(t *testing.T, newStore func(*testing.T, ledger.BookID) payment.S
 		p.RejectReason = "creditor account is closed"
 		// A code AND free text, not one or the other. The code is what makes a
 		// rejection machine-actionable; the text is what a human reads. A store
-		// that keeps only the text silently turns every rejection back into the
-		// string it was before this sub-project.
+		// that keeps only the text silently turns every rejection back into prose.
 		p.RejectCode = "AC04"
 
 		updatePayment(t, s, func(ctx context.Context, tx payment.Tx) error {
@@ -1075,11 +1074,10 @@ func RunClearingHousePayment(t *testing.T, newStore func(*testing.T) payment.Sto
 	// name instead of passing silently.
 	//
 	// AdmissionRef is in the table and is not an account identifier. It is the
-	// PrcId every message of one admission echoes — a correlator for a
-	// conversation, naming no account in any book — and the clearing house's
-	// refusal is what reads it. What this case exists to keep out is an
-	// identifier that would let this institution reach into another's ledger; a
-	// process id reaches nothing.
+	// reference every act of one admission quotes — a correlator, naming no
+	// account in any book — and the clearing house's refusal is what reads it.
+	// What this case exists to keep out is an identifier that would let this
+	// institution reach into another's ledger; a correlator reaches nothing.
 	//
 	// Issuer is in the table and is the reason the row exists at all. A bank code
 	// is a national registry's allocation with no computable relationship to a
@@ -1088,11 +1086,10 @@ func RunClearingHousePayment(t *testing.T, newStore func(*testing.T) payment.Sto
 	// does. It names no account in anybody's book: it says which INSTITUTION
 	// issued a range, which is routing in the most literal sense this table has.
 	//
-	// Name is NOT in the table. The acmt.010 this row is written from identifies
-	// the account owner with an OrganisationIdentification29, which has a BIC and
-	// no name element at all, so a name here could only be filled by the clearing
-	// house remembering the application across the relay. This case is what makes
-	// putting it back a failure rather than a quiet regression.
+	// Name is NOT in the table. The acknowledgement this row is written from names
+	// the account owner by BIC and by nothing else, so a name here could only be
+	// filled by the clearing house being told one it was never sent. This case is
+	// what makes putting it back a failure rather than a quiet regression.
 	t.Run("RosterEntryCarriesNoAccountIdentifiers", func(t *testing.T) {
 		s := openInstitution(t, newStore)
 
@@ -1175,10 +1172,9 @@ func RunClearingHousePayment(t *testing.T, newStore func(*testing.T) payment.Sto
 	//
 	// No writer in the system reaches it. payment.AdmitMemberTx takes the assets
 	// from a map keyed by asset and appends only the ones the entry does not
-	// already hold, so a message that repeats a currency collapses before this
-	// table is reached — and payment.ReadAdmissionAcknowledgement will not read an
-	// acknowledgement naming two accounts in one currency, so the repeat cannot
-	// arrive from the wire either.
+	// already hold, so an acknowledgement that repeats a currency collapses before
+	// this table is reached — and a map cannot hold two accounts in one currency
+	// to begin with.
 	//
 	// What is asserted here is the STORE's contract with the Go type it is
 	// handed: Assets is a slice, a slice can repeat, and a store must hold what a
@@ -1393,10 +1389,10 @@ func RunCentralBankPayment(t *testing.T, newStore func(*testing.T) payment.Store
 	// SettlementMemberIsKeyedByBIC is the central bank's own record of a bank it
 	// holds a settlement account for, and the point of the case is the key.
 	//
-	// The settlement agent holds no roster and no participant ids. What an
-	// acmt.007 tells it is a BIC, so a lookup by anything else is a lookup it
-	// could not make — which is why the store is asked for this row by BIC here
-	// and never by a bank id.
+	// The settlement agent holds no roster and no participant ids. What the request
+	// tells it is a BIC, so a lookup by anything else is a lookup it could not
+	// make — which is why the store is asked for this row by BIC here and never by
+	// a bank id.
 	t.Run("SettlementMemberIsKeyedByBIC", func(t *testing.T) {
 		s := openInstitution(t, newStore)
 

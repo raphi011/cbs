@@ -412,7 +412,7 @@ func (m *Mesh) Return(ctx context.Context, id payment.PaymentID, reason iso20022
 //
 // What comes back from this call is the INSTRUCTION that was sent, not a
 // confirmation — the camt.025 arrives at bank.receiveLodgementReceipt after a
-// Drain, exactly as an admission's acknowledgement does.
+// Drain.
 //
 // # Why the caller names the bank and the asset
 //

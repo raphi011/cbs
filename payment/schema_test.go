@@ -21,8 +21,8 @@ import (
 // the repository when the messages were written. camt.050.001.05.xsd and
 // camt.025.001.05.xsd had to be downloaded before either could be validated at
 // all, and until they were, both message files rested entirely on having been
-// read carefully — which is the state camt.053 was in for a whole sub-project
-// while every statement the system emitted was invalid.
+// read carefully — which is the state camt.053 was in while every statement the
+// system emitted was invalid.
 //
 // The REFUSING receipt is the case worth having, and it is the second subtest
 // rather than a variation of the first. An accepted receipt carries no Desc at
@@ -88,10 +88,10 @@ func TestTheLodgementMessagesThisSystemEmitsValidateAgainstTheSchema(t *testing.
 // LodgementReceiptMessage makes, and it is about a document that would not
 // marshal rather than about tidiness.
 //
-// camt.025's Desc is Max140Text and acmt.011's RjctnRsn is Max350Text, so a
-// refusal reason that fits an admission may not fit a receipt. An over-long one
-// would produce a document xmllint rejects — and, worse, one the central bank's
-// own handler would fail to build, so the member would be told nothing at all.
+// camt.025's Desc is Max140Text, and the refusals that reach it are Go error
+// strings quoting a BIC, an asset and two account ids. An over-long one would
+// produce a document xmllint rejects — and, worse, one the central bank's own
+// handler would fail to build, so the member would be told nothing at all.
 //
 // Three claims, because the obvious implementation gets the first two wrong: the
 // result fits, the ellipsis is INSIDE the limit rather than added to it, and the

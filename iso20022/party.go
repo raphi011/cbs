@@ -99,17 +99,14 @@ func (i IBAN) Validate() error {
 // OrganisationIdentification is OrganisationIdentification29: how a party that
 // is an ORGANISATION rather than a person is identified.
 //
-// It reaches this package's messages by two different routes, and the type is
-// the same because the schema type is. In pacs.002 it is the OrgId arm of
-// Party38Choice under StsRsnInf/Orgtr, where the EPC guidelines restrict the
-// originator of a status to a BIC or a name and nothing else. In the acmt family
-// it is an element in its own right — Org/OrgId on the request, OrgId on the
-// acknowledgement and the rejection — and it is how the applicant bank is named.
+// It reaches this package's messages in one place: the OrgId arm of
+// Party38Choice under StsRsnInf/Orgtr on a pacs.002, where the EPC guidelines
+// restrict the originator of a status to a BIC or a name and nothing else.
 //
 // AnyBIC and the generic identifiers are carried; the LEI is not, because
-// nothing in this system holds one. Othr is empty on every message but the
-// acmt.010, where it is how a national bank code reaches the two institutions
-// that route by it — see GenericOrganisationIdentification.
+// nothing in this system holds one. Othr is empty on every message this system
+// emits — see GenericOrganisationIdentification, which is here because the
+// schema type has it and not because a flow fills it.
 //
 // AnyBIC's schema type is AnyBICDec2014Identifier, whose pattern is character
 // for character the same as BICFIDec2014Identifier's.
@@ -125,16 +122,13 @@ func (i IBAN) Validate() error {
 // # validate requires the BIC, and no schema does
 //
 // AnyBIC is minOccurs="0" wherever OrganisationIdentification29 appears, so this
-// is a narrowing and the callers are what justify it. pacs.002's originator must
-// be identified, or the status names nobody. The acmt family's applicant must be
-// identified by BIC specifically: it is what the settlement agent keys its member
-// record by, what the clearing house keys its routing entry by, and what the
-// acknowledgement is addressed back on. See AccountOwner.
+// is a narrowing and the one caller is what justifies it: pacs.002's originator
+// must be identified, or the status names nobody.
 //
-// Othr is NOT required here, and cannot be: the same type is pacs.002's Orgtr,
-// which carries a BIC and nothing else. Which message wants a generic identifier
-// is the message's own rule, the way LclInstrm's presence is — see
-// PaymentTypeInformation. AccountRequestAcknowledgement is the one that has it.
+// Othr is NOT required here, and cannot be: the one message using this type is
+// pacs.002's Orgtr, which carries a BIC and nothing else. Which message wants a
+// generic identifier is the message's own rule, the way LclInstrm's presence is
+// — see PaymentTypeInformation.
 type OrganisationIdentification struct {
 	AnyBIC BIC                                 `xml:"AnyBIC"`
 	Othr   []GenericOrganisationIdentification `xml:"Othr,omitempty"`
@@ -168,12 +162,9 @@ func (o OrganisationIdentification) validate() error {
 // different list that this element does not reach. Putting one in Cd would be a
 // value the schema's own enumeration has never heard of.
 //
-// So every scheme this system names here is proprietary, and the asymmetry the
-// real lists carry survives in the VALUE rather than in the arm: three of the
-// four countries name a registry the clearing-system list knows and France names
-// one it does not, because French domestic routing is IBAN-only and no equivalent
-// entry exists. The arm where a code WOULD be right is ClrSysMmbId on a
-// pacs.008's agents, and no message this package builds populates it.
+// So a scheme named here can only be proprietary, whatever the register is. The
+// arm where a code WOULD be right is ClrSysMmbId on a pacs.008's agents, and no
+// message this package builds populates it.
 type OrganisationIdentificationScheme struct {
 	Prtry string `xml:"Prtry"`
 }
@@ -328,10 +319,9 @@ func (g GenericAccountIdentification) validate() error {
 // generic identifier — never both, and never neither.
 //
 // This is an xsd:choice, which encoding/xml cannot express. Both arms are
-// pointers and validate enforces exactly-one. It is also the shape sub-project
-// 5 cited when it decided a deposit account carries a SET of identifiers rather
-// than an iban column: the standard already treats addressing as plural and
-// scheme-dependent.
+// pointers and validate enforces exactly-one. It is also the shape behind a
+// deposit account carrying a SET of identifiers rather than an iban column: the
+// standard already treats addressing as plural and scheme-dependent.
 type AccountIdentification4Choice struct {
 	IBAN *IBAN                         `xml:"IBAN,omitempty"`
 	Othr *GenericAccountIdentification `xml:"Othr,omitempty"`

@@ -60,8 +60,8 @@ func buildCreditTransfer(in fuzzInput) (iso20022.Envelope, error) {
 	return creditTransfer(p, debtor, creditor, "EUR", mc)
 }
 
-// FuzzTranslate drives the boundary this sub-project adds: a payment becomes a
-// message, the message becomes bytes, the bytes become a message again.
+// FuzzTranslate drives the translation boundary: a payment becomes a message,
+// the message becomes bytes, the bytes become a message again.
 //
 // The property is that a payment this system can hold always produces a
 // message the codec accepts. A crash or a Marshal error is a real defect —

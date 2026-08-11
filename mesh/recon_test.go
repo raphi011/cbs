@@ -315,8 +315,8 @@ func TestTheHarnessCatchesAnAccountAddressedUnderAnotherBanksCode(t *testing.T) 
 //
 // The roster is what every member COPIES, so a roster that disagrees with the
 // registry puts the wrong pairing into every subscriber's directory at once. The
-// clearing house learns the allocation from the acmt.010 that writes its row and
-// cannot see the register it came from; the settlement agent has never heard of
+// clearing house learns the allocation from the acknowledgement that writes its
+// row and cannot see the register it came from; the settlement agent has never heard of
 // the roster. So the two parting company is a state neither can notice, which is
 // what makes it this harness's.
 func TestTheHarnessCatchesARosterPublishingAnAllocationTheRegistryDidNotMake(t *testing.T) {

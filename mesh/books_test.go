@@ -716,8 +716,8 @@ var structCarriedBooks = map[string]structCarriedBook{
 	"PutBank": {
 		Scoping: false,
 		Why: "payment/store.go: a bank's row is its own bank's, in its own database, keyed by id alone. " +
-			"Bank.BookID names the book the bank owns; it does not scope this write, and since Task 18c " +
-			"it is not even stored — a bank's id IS its BIC and IS its book (payment.AsBank), so " +
+			"Bank.BookID names the book the bank owns; it does not scope this write, and it is not " +
+			"stored either — a bank's id IS its BIC and IS its book (payment.AsBank), so " +
 			"store/sqlite derives the field on the way out and normalises whatever it was written with. " +
 			"TestWritingAParticipantTouchesNoBankBook is the evidence for both halves. " +
 			"The other two rows admission writes are not candidates at all and that is worth knowing " +
@@ -1348,23 +1348,19 @@ func TestWhichBooksProvisioningReaches(t *testing.T) {
 	}
 }
 
-// TestTakingCashInReachesOnlyTheBanksOwnBook is the successor to
-// TestFundingAReserveReachesTwoBooks, and it is that measurement turned inside
-// out.
+// TestTakingCashInReachesOnlyTheBanksOwnBook is the pin on the crossing a deposit
+// would otherwise make: posting the funding bank's reserve mirror AND the central
+// bank's matching leg in one unit of work. Cash paid in lands in the bank's own
+// vault, and putting it on reserve is a LODGEMENT.
 //
-// It is the pin on the crossing a deposit would otherwise make: posting the
-// funding bank's reserve mirror AND the central bank's matching leg in one unit
-// of work. Cash paid in lands in the bank's own vault, and putting it on reserve
-// is a LODGEMENT.
+// It asserts the crossing is absent three ways, because "reaches one book" is a
+// claim two different bugs could satisfy.
 //
-// What replaces it asserts the crossing is GONE, and asserts it three ways,
-// because "reaches one book" is a claim two different bugs could satisfy.
+// # No other instrument in this file could see it
 //
-// # No instrument this sub-project had could have found the original
-//
-// That reason is unchanged and still worth keeping, because it is why this test
-// is shaped as it is. The recorder attributes a book to the actor whose unit of
-// work reached it, and taking cash in never becomes a message: it arrives at
+// That is why this test is shaped as it is. The recorder attributes a book to the
+// actor whose unit of work reached it, and taking cash in never becomes a
+// message: it arrives at
 // Network.Deposit from an operator or from a fixture, with no institution behind
 // it. So booksTouchedBy has nothing to narrow by, and every assertion built on it
 // — every other measurement in this file — is blind to this call by construction.
@@ -1560,12 +1556,10 @@ func TestABankCannotLodgeCashItDoesNotHold(t *testing.T) {
 // says so.
 //
 // It asserts the absence directly rather than by construction: no message leaves
-// the mesh and the settlement agent's book does not move. The sharper fixture
-// this replaces was a bank the scheme had answered for in no way, and it is no
-// longer buildable — a bank mints its customers' addresses under a code the
-// settlement agent allocates, so a bank the agent has never answered has no
-// account to pay anything into. That refusal is
-// TestAFoundedBankCanNeitherPayNorBePaid's neighbour, in admission_test.go.
+// the mesh and the settlement agent's book does not move. The bank here is a
+// provisioned one, because an unprovisioned bank cannot be given a depositor at
+// all — a bank mints its customers' addresses under a code the settlement agent
+// allocates, so there would be no account to pay anything into.
 func TestTakingCashInReachesNoOtherInstitution(t *testing.T) {
 	h := newMeshHarness(t)
 	ctx := context.Background()

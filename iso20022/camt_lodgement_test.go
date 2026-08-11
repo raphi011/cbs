@@ -10,9 +10,9 @@ import (
 // its central bank to move EUR 500,000.00 of vault cash onto its reserve
 // account, and the central bank saying it did.
 //
-// They are in one file for the reason acmt_test.go keeps its three together —
-// the correlation between them is the thing most likely to be got wrong, and it
-// cannot be asserted from either side alone. What correlates them here is the
+// They are in one file because the correlation between them is the thing most
+// likely to be got wrong, and it cannot be asserted from either side alone. What
+// correlates them here is the
 // REQUEST's message identifier, quoted back in the receipt, and not a process id
 // above both; see TestTheReceiptNamesTheRequestItAnswers.
 const lodgementMsgID = "AURODEFFXXX-LODGE-1"
@@ -153,7 +153,7 @@ func TestCamt050RoundTrips(t *testing.T) {
 // TestCamt050Validate covers what this package requires of a lodgement, which is
 // four elements more than the schema does.
 //
-// Each is checked on its own, for the reason TestAcmt007Validate gives: wiring
+// Each is checked on its own, for the reason every validate test here gives: wiring
 // one up and assuming the others follow is the gap this package's reviews have
 // found more than once. TrfdAmt is the only one of the five the SCHEMA also
 // makes mandatory — the other four are narrowings recorded on LiquidityTransfer,
@@ -235,10 +235,8 @@ func TestCamt025GoldenRoundTrip(t *testing.T) {
 // rests on, and the one thing neither sample can assert alone.
 //
 // It is a BACK-REFERENCE — the request's own message identifier, quoted in
-// OrgnlMsgId — and not a shared process id. That is the opposite of what the
-// acmt family does, and the difference follows from the two flows rather than
-// from taste: an admission is several requests that are one process, so it needs
-// an identifier above the messages; a lodgement is one request and one answer.
+// OrgnlMsgId — and not a process id above the pair. A lodgement is one request
+// and one answer, so naming the request is the whole of what correlation needs.
 //
 // MsgNmId is asserted beside it because a bare identifier is only dispatchable by
 // a reader that already knows what it sent. See OriginalMessageAndIssuer.
@@ -294,8 +292,7 @@ func TestCamt025RoundTrips(t *testing.T) {
 // pinned so that a reader does not go looking for a code.
 //
 // StsCd is a Max4AlphaNumericText with no enumeration behind it and Desc is
-// Max140Text, so a refusal's reason travels as text. That is the same shape
-// acmt.011's RjctnRsn has — and NARROWER, because RjctnRsn is Max350Text. It is
+// Max140Text, so a refusal's reason travels as text and travels narrow. It is
 // why payment's reasonTable gives these sentinels the empty code.
 func TestARefusingReceiptCarriesItsReasonAsProse(t *testing.T) {
 	env := sampleCamt025()

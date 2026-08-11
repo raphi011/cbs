@@ -23,7 +23,8 @@ var euroOnly = []ledger.AssetCode{"EUR"}
 // It builds them WITHOUT a mesh, through storetest.Admit, which is the point of
 // the fixture: what these two tests are about is a mesh reading a roster that
 // was there before it started, so the banks have to exist before any actor does.
-// Mesh.Admit is the other door and is exercised in admission_test.go.
+// Mesh.AddBank is the other door and gives one bank an actor without reading
+// anything.
 func rosterNetwork(t *testing.T, bics map[string]iso20022.BIC) *payment.Networks {
 	t.Helper()
 	clock := func() time.Time { return testTime }
@@ -40,9 +41,9 @@ func rosterNetwork(t *testing.T, bics map[string]iso20022.BIC) *payment.Networks
 // central bank. The banks come from the CLEARING HOUSE's roster, which is the
 // store, which is why this is the one test in the package that needs one.
 //
-// The roster and not the bank rows, and TestStartGivesAFoundedBankNoActor is the
-// other half of that: a bank that exists and has not been admitted gets nothing
-// here.
+// The roster and not the bank rows, and TestStartGivesAHalfProvisionedBankNoActor
+// is the other half of that: a bank that exists and has not been admitted gets
+// nothing here.
 func TestStartGivesEveryParticipantAnActor(t *testing.T) {
 	net := rosterNetwork(t, map[string]iso20022.BIC{
 		"Aurora Bank": "AURODEFFXXX",
@@ -85,8 +86,8 @@ func TestStartGivesEveryParticipantAnActor(t *testing.T) {
 		t.Fatal("Drain was clean; the bank's actor never ran its handler")
 	}
 	// By its ADDRESS and not by its name. joinRoster reads the clearing house's
-	// roster and nothing else, and a roster entry names nobody — an acmt.010
-	// carries a BIC and no name (payment.RosterEntry) — so the actor registered
+	// roster and nothing else, and a roster entry names nobody — it carries a BIC
+	// and no name (payment.RosterEntry) — so the actor registered
 	// at startup is labelled with its address. The name is on the bank's own row
 	// in the bank's own database, which no other institution reads.
 	if !strings.Contains(err.Error(), "AURODEFFXXX") {

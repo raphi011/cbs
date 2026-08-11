@@ -119,8 +119,8 @@ func TestIdentifierMatches(t *testing.T) {
 // that package must import nothing from this repository. Two copies of a rule
 // drift, so this is the test that stops them.
 //
-// It is two and not three. This package used to hold a set of its own, and the
-// arrival of iban collapsed that one rather than adding to it.
+// It is two and not three: this package holds no set of its own and delegates to
+// iban's.
 //
 // CASE IS THE ONE DELIBERATE DIFFERENCE, and it is folded in below rather than
 // asserted away. A register folds case because a person typed the value; the

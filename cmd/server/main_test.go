@@ -58,8 +58,8 @@ func TestTheSeedLeavesNoPaymentHalfProcessed(t *testing.T) {
 		t.Fatalf("starting the mesh: %v", err)
 	}
 	// Drain then Stop, as main does at shutdown, and neither error is discarded:
-	// the seed's admissions are the only conversations this test has, and one
-	// that failed would leave the scenario it asserts on half built.
+	// the seed's payments are the only conversations this test has, and one that
+	// failed would leave the scenario it asserts on half built.
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), meshShutdown)
 		defer cancel()
