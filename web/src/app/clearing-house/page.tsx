@@ -191,12 +191,12 @@ function Stat({
 // so a first-time visitor knows what to do.
 const STEPS: { title: string; body: string; hint: HintKey }[] = [
   {
-    // "Create" and not "Join", because founding and joining are two steps now
-    // and this one is the first: a bank is created, and what it does next is
-    // apply. Joining is the step after this one, and it is answered by two
-    // institutions that are not the bank.
-    title: "Create",
-    body: "A bank is founded and applies to the scheme; the central bank and the clearing house answer.",
+    // "Join" and not "Create", because nothing here creates a bank: which banks
+    // the network has is settled when it is set up. What this step is about is
+    // the three institutions a bank's arrival takes, which is the part a reader
+    // of the other four steps needs.
+    title: "Join",
+    body: "A bank founds itself, the central bank opens its settlement account, and the clearing house writes where to route to it.",
     hint: "double-entry",
   },
   {

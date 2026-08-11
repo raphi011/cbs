@@ -70,13 +70,13 @@ CREATE TABLE books (
     -- argument for why the column survives as a constant rather than being
     -- dropped.
     --
-    -- There is one thing to add that is only true here. This book used to be
-    -- reachable from EVERY payment.Network in the process, because every one of
-    -- them held a ledger.Book over payment.CentralBankBook, and the only thing
-    -- keeping a member bank's handler out of it was that the mesh's bankOps
-    -- named no method that reached it. Task 18b took the book away from every
-    -- network but this institution's; Task 18 took the DATABASE away, which is
-    -- what makes the refusal a fact rather than a field being nil.
+    -- There is one thing to add that is only true here. A process in which every
+    -- payment.Network holds a ledger.Book over payment.CentralBankBook makes this
+    -- book reachable from all of them, and the only thing then keeping a member
+    -- bank's handler out is that the mesh's bankOps names no method reaching it.
+    -- Only this institution's network holds the book, and only this institution's
+    -- DATABASE holds the rows — which is what makes the refusal a fact rather
+    -- than a field being nil.
     id TEXT PRIMARY KEY
 ) STRICT;
 
@@ -130,31 +130,21 @@ CREATE TABLE ledgers (
     -- rather than the only one, and no test in this repository can see it go.
     -- It stays because it costs nothing.
     --
-    -- This paragraph used to name AddParticipantTx's first statement as the
-    -- thing doing the ordering, and to warn that the find-or-create would become
-    -- racy again "if AddParticipantTx ever stops drawing a network-scoped ID
-    -- first". What happened was not the case it warned about, and then it was
-    -- worse than it. Task 17c split admission into four acts, and
-    -- payment.OpenSettlementAccountTx — a NEW caller of the find-or-create,
-    -- driven on its own by an institution doing its own unit of work — reached
-    -- it without one. Measured on store/pg at 60 runs in 60 building the central
-    -- bank a second chart of accounts. Task 17d then deleted AddParticipantTx,
-    -- so there is no first statement of anything left to point at.
+    -- THERE IS NO CONSTRAINT BEHIND THE FIND-OR-CREATE, so any new caller of it
+    -- that could reach it FIRST must draw an id from this database before it
+    -- does, and a reader who does not know that will not learn it from this
+    -- table. It was measured on the caller that did not:
+    -- payment.OpenSettlementAccountTx, an institution's own unit of work reaching
+    -- the find-or-create with no id drawn, built the central bank a second chart
+    -- of accounts in 60 runs out of 60.
     --
-    -- The warning is worth keeping in its general form: there is no constraint
-    -- behind the find-or-create, so any NEW caller of it that could reach it
-    -- FIRST must draw an id from this database before it does, and a reader who
-    -- does not know that will not learn it from this table.
-    --
-    -- ONE CALLER USED TO REACH IT WITHOUT DRAWING ONE, and the split is what
-    -- removed it rather than a guard being added. payment.DepositTx resolved a
-    -- settlement-assets account here through centralBankAssetsAccountTx, which
-    -- is to say a MEMBER BANK taking cash over the counter reached into this
-    -- institution's chart of accounts. Task 18a closed it: cash paid in becomes
-    -- vault cash in the bank's own book, moving it onward is a lodgement, and a
-    -- lodgement is a message. What is left of the exception is that it could not
-    -- be written now — a bank's store has no ledgers row of this institution's
-    -- to find.
+    -- A MEMBER BANK cannot reach it at all, and that is the store split rather
+    -- than a guard. Resolving a settlement-assets account here on a DEPOSIT would
+    -- have a bank taking cash over the counter reach into this institution's
+    -- chart of accounts; cash paid in becomes vault cash in the bank's own book,
+    -- moving it onward is a lodgement, and a lodgement is a message. What is left
+    -- of the exception is that it could not be written — a bank's store has no
+    -- ledgers row of this institution's to find.
     --
     -- Also not here: a CHECK on the text columns. See ledgers in
     -- bank/0001_init.sql, which carries that one for both.
@@ -521,13 +511,13 @@ CREATE TABLE settlement_positions (
     -- design's sentence meant.
     --
     -- The member is named by BIC, which is what settlement_members is keyed on
-    -- and the only identifier this institution is ever told. The column was
-    -- called participant_id and held a bank id allocated somewhere else: it
-    -- arrived on the instruction, computed by the clearing house from payments
-    -- this institution never saw, and nothing here could resolve it, because
-    -- turning a bank id into an address was a read of the bank's own row. Task 18
-    -- made the id BE the BIC — see banks in bank/0001_init.sql — so the value
-    -- that arrives and the key it has to line up with are the same thing.
+    -- and the only identifier this institution is ever told. A bank id would be
+    -- allocated somewhere else: it arrives on the instruction, computed by the
+    -- clearing house from payments this institution never saw, and nothing here
+    -- could resolve it, because turning a bank id into an address is a read of
+    -- the bank's own row. A bank's id IS its BIC — see banks in
+    -- bank/0001_init.sql — so the value that arrives and the key it has to line
+    -- up with are the same thing.
     --
     -- There is still NO foreign key to settlement_members, and now that is a
     -- decision rather than an impossibility, which is worth the distinction. It

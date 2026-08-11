@@ -65,11 +65,14 @@ accounts, and not a GL account either.
 
 ---
 
-**Unresolved.** Two collisions are known and not yet ruled on, so no term above
-depends on them:
+**Unresolved.** Three collisions are known and not yet ruled on, so no term
+above depends on them:
 
 - **reserve account / settlement account** — the settlement agent's
   `Reserve: <Bank> (<asset>)` and the member's own mirror of it are two rows,
   and both words are currently used for both.
-- **member / participant**, **central bank / settlement agent** — each pair is
-  live in both the code and `README.md`.
+- **member / participant** — both live. `participant` is the id and the wire
+  shape; `member` is what a bank is once a scheme has admitted it. It no longer
+  also names a STATUS, that column having gone, which is one of three senses
+  retired rather than the collision resolved.
+- **central bank / settlement agent** — live in both the code and `README.md`.

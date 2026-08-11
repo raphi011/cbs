@@ -64,10 +64,10 @@ export function PostTransactionForm({ pid }: { pid: string }) {
   const [valueDate, setValueDate] = useState("");
   const post = usePostTransaction(pid);
 
-  // A leg's amount is denominated in the asset of the account it posts to —
-  // since Task 4, legs of one transaction can balance in different assets, so
-  // each leg's scale is resolved from its own picked account, not assumed
-  // shared across the form.
+  // A leg's amount is denominated in the asset of the account it posts to, and
+  // legs of one transaction can balance in different assets — so each leg's
+  // scale is resolved from its own picked account rather than assumed shared
+  // across the form.
   const accounts = useAllAccounts(pid);
   const { byCode } = useAssetLookup();
   function assetForLeg(accountId: string) {

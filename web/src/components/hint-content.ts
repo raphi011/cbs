@@ -980,7 +980,7 @@ And the refusal cannot say **which** of two situations it is in — no such bank
 
 **Not a timer, and not a push.** A background poller buys realism and pays in tests that fail at random; a clearing house holding a subscriber list and a retry policy is a delivery system rather than a publisher, and the real vendor does not know who is listening.
 
-The copy carries a code and a BIC and **nothing else** — no name, because the acknowledgement the published row is written from delivers none, and no list of assets either. Refusing early from data that may be behind would refuse a payment the clearing house would have accepted, so whether a member clears in this currency stays a question for whoever reads the live roster. See [[routing-roster]] and [[counterparty-details]].`,
+The copy carries a code and a BIC and **nothing else** — no name, because what the published row is written from delivers none, and no list of assets either. Refusing early from data that may be behind would refuse a payment the clearing house would have accepted, so whether a member clears in this currency stays a question for whoever reads the live roster. See [[routing-roster]] and [[counterparty-details]].`,
   },
   "counterparty-details": {
     title: "Counterparty details",
@@ -1357,37 +1357,37 @@ A bank with no [[settlement-account|reserve account]] to lodge into is refused. 
 \`camt.050\` is closer to the real thing than most of this system's messages: it is exactly what a TARGET2 or CLM participant sends to move liquidity onto its RTGS account.`,
   },
   "bank-founding": {
-    title: "Founded, and not yet a member",
-    body: `**Founding a bank and admitting it to a scheme are two different things.** Founding is the bank's own act: it gets a book, a chart of accounts, its [[participant-assets|per-asset plumbing accounts]] and a deposit product to sell. It comes out **Founded**, which is a working bank that is in no scheme.
+    title: "A bank exists before a scheme answers it",
+    body: `**Founding a bank and giving it a place in a scheme are different acts, at different institutions.** Founding is the bank's own: it gets a book, a chart of accounts, its [[participant-assets|per-asset plumbing accounts]] and a deposit product to sell. What comes out is a working bank that is in no scheme.
 
 Its own book is unrestricted — it publishes products, adds ledgers, opens general-ledger accounts. What it cannot do is anything that needs something another institution gives out:
 
 \`\`\`
-Founded
+Before a scheme has answered it
   book, chart of accounts, product
   a vault cash account, per asset
   CANNOT open a customer account   no code to address one under
   CANNOT lodge cash on reserve     no reserve account to lodge into
   CANNOT pay, CANNOT be paid
 
-Member — the above, plus
+After — the above, plus
   a bank code, allocated by a registry
   a settlement account at the central bank
   a row in the scheme's published directory
   opens addressable accounts, lodges, settles
 \`\`\`
 
-**The sharpest one is that it cannot give a customer an ADDRESS.** Every account is opened with an IBAN minted under the country and [[bank-code|bank code]] its bank was allocated, and that code arrives from a registry on the answer to its application — so a bank no registry has answered has no address range and can open no customer account at all. It applies to a market; it is *given* a code. A caller allowed to supply one would make the whole [[routing-directory|routing directory]] unnecessary, and would be wrong about the world. The cost is a narrower fixture than it looks: a founded bank is a licence, a book, a chart of accounts, a product, and no customers.
+**The sharpest one is that it cannot give a customer an ADDRESS.** Every account is opened with an IBAN minted under the country and [[bank-code|bank code]] its bank was allocated, and that code is allocated by a registry when the application is answered — so a bank no registry has answered has no address range and can open no customer account at all. It applies to a market; it is *given* a code. A caller allowed to supply one would make the whole [[routing-directory|routing directory]] unnecessary, and would be wrong about the world.
 
-**Taking money in is the one people guess wrong.** The guess is that a founded bank cannot be funded — that cash paid in raises the bank's reserve in the same [[unit-of-work|unit of work]], so there is no reserve to raise until a settlement agent has opened one, and the refusal names the membership.
+**Taking money in is the one people guess wrong.** The guess is that such a bank cannot be funded — that cash paid in raises the bank's reserve in the same [[unit-of-work|unit of work]], so there is no reserve to raise until a settlement agent has opened one, and the refusal names the membership.
 
 That is a false statement about banking. **A bank's counter has nothing to do with its central bank account.** A bank that has founded itself and joined no scheme can open its doors and take cash; it holds what it takes as [[vault-cash|vault cash]], which is its own money in its own hands, and nobody else's book moves. What stops this one is the address, not the counter — a different refusal, about a different act, and worth keeping apart from the one below.
 
-What no founded bank can do is turn cash into reserves. That is a [[lodgement]] — a request to the central bank, because only the central bank can credit an account in the central bank's book — and it is refused for a bank that has no reserve account to lodge into. **That is the act the reserve refusal is true about.**
+What it cannot do is turn cash into reserves. That is a [[lodgement]] — a request to the central bank, because only the central bank can credit an account in the central bank's book — and it is refused for a bank that has no reserve account to lodge into. **That is the act the reserve refusal is true about.**
 
-**Paying is a refusal, not an inability**, and it is refused of BOTH parties in two different places. *Being paid* is refused by the **payer's own bank**: a bank in no published directory is in nobody's copy of one, so an address under its code resolves to nothing and the payment dies before either leg posts. *Paying* is refused at the network's door, which asks the roster whether the submitting bank is a member, and again at the clearing house before a payment is taken into a cut-off. Nothing else would stop it — an [[overdraft|arranged overdraft]] gives a customer spendable money with no deposit at all — and what the refusals cost when they did not exist is the point: the cut-off cannot name a non-member in the settlement instruction, so one such payment stopped the **whole cycle**, with every other member's payments in it.
+**Paying is a refusal, not an inability**, and it is refused of BOTH parties in two different places. *Being paid* is refused by the **payer's own bank**: a bank in no published directory is in nobody's copy of one, so an address under its code resolves to nothing and the payment dies before either leg posts. *Paying* is refused at the network's door, which asks the directory whether the submitting bank is a member, and again at the clearing house before a payment is taken into a cut-off. Nothing else would stop it — an [[overdraft|arranged overdraft]] gives a customer spendable money with no deposit at all — and what the refusals cost when they did not exist is the point: the cut-off cannot name a non-member in the settlement instruction, so one such payment stopped the **whole cycle**, with every other member's payments in it.
 
-**Admission is not one transaction.** One write covering the bank's accounts, the central bank's and the clearing house's together would mean "a bank can never exist without the accounts it needs", and no real admission has that guarantee. A bank is licensed and built long before any scheme has heard of it, and joining a scheme is an application to somebody else that can be refused. See [[bank-admission]].`,
+**Admission is not one transaction.** One write covering the bank's accounts, the central bank's and the clearing house's together would mean "a bank can never exist without the accounts it needs", and no real admission has that guarantee. A bank is licensed and built long before any scheme has heard of it, and no institution may write in another's book to give it what it lacks. See [[bank-admission]].`,
   },
   "settlement-account": {
     title: "The settlement account is the central bank's",
@@ -1417,37 +1417,37 @@ It does keep a **second register**, and it is a different kind of thing: the [[b
     title: "The routing directory says who may be addressed",
     body: `The scheme's **routing directory** belongs to the clearing house, and it answers one question: **where do I send a message addressed to this member?** It is not a register of banks. A bank absent from it exists perfectly well — it is simply not somewhere this scheme will send anything.
 
-Each entry carries a **BIC**, the country and [[bank-code|bank code]] that member issues its customers' addresses under, the assets it clears in, and the reference of the admission that put it there. The allocation is what makes it a routing *directory* rather than a guest list: it is the pairing every member [[routing-directory|copies and routes from]], and the clearing house learns it for free, off the same acknowledgement the row is written from.
+Each entry carries a **BIC**, the country and [[bank-code|bank code]] that member issues its customers' addresses under, the assets it clears in, and the reference of the admission that put it there. The allocation is what makes it a routing *directory* rather than a guest list: it is the pairing every member [[routing-directory|copies and routes from]], and the clearing house learns it for free, off the same answer the row is written from.
 
 What the entry does *not* carry is the point:
 
 - **no account of any kind** — no account id, no subledger, no product, no book. A clearing house holding one would be holding the means to reach into a bank's ledger. The row this replaced carried the central bank's account ids, and readers in three institutions resolved their postings through it.
-- **no name** — the acknowledgement identifies the account owner with a BIC and has no name element at all. Routing is an address; a name here could only be the clearing house remembering something no message delivered. That absence travels all the way down to a payer, who resolves an address and is shown a BIC.
+- **no name** — what the row is written from identifies the account owner by BIC and delivers no legal name at all. Routing is an address; a name here could only be the clearing house remembering something nobody told it. That absence travels all the way down to a payer, who resolves an address and is shown a BIC.
 
 It is keyed by BIC because a clearing house routes what a message addresses, and a message addresses a BIC. See [[bank-admission]] for how the row comes to be written, and by whom.`,
   },
   "bank-admission": {
-    title: "Admission is a conversation, in order",
+    title: "Admission is four acts, in order",
     body: `Admitting a bank to a scheme takes **three institutions**, and none of them can do another's part. The order is the content: **the settlement account is opened first and the routing entry is written second**, because a scheme will not route to a member that cannot settle.
 
 \`\`\`
-1  bank            --acmt.007-->  clearing house
-2  clearing house  --acmt.007-->  central bank
-3  central bank    --acmt.010-->  clearing house
-4  clearing house  --acmt.010-->  bank
+1  the bank            founds itself
+2  the central bank    allocates a bank code, opens
+                       one settlement account per asset
+3  the clearing house  writes the routing entry
+4  the bank            records what it has been told
 \`\`\`
 
-1. The **bank** founds itself first — see [[bank-founding]] — and then applies, one request per [[asset]], all quoting one process id so the scheme can tell they are one admission. It names the **country** whose registry it wants a bank code from, and it brings no code of its own.
-2. The **clearing house** relays and holds nothing. The only thing it refuses before relaying is a BIC already in its directory under a *different* admission.
-3. The **central bank** does two things in one unit of work, out of two registers: it **allocates a [[bank-code|bank code]]** in the country the request named, and it opens one [[settlement-account|settlement account]] per asset in its own book. Both travel back on its answer — the code as an identifier issued to this organisation, by that issuer, under that scheme — or it refuses, in prose rather than a code, because this message family carries no code set.
-4. The **clearing house** writes its [[routing-roster|routing entry]] from that acknowledgement, the allocation included, and only *then* forwards it, so a bank told it is a member is one the scheme can already route to. It refuses a code its directory already holds under a different admission, a second time and for a different reason: it cannot see the registry, and its own directory is what every member copies.
-5. The **bank** records the account numbers and the code it has been told, becomes a member, and can from that moment open addressable customer accounts.
+1. The **bank** founds itself first — see [[bank-founding]] — and asks for a place in a scheme, one request per [[asset]], all quoting one reference so the scheme can tell they are one admission. It names the **country** whose registry it wants a bank code from, and it brings no code of its own.
+2. The **central bank** does two things in one unit of work, out of two registers: it **allocates a [[bank-code|bank code]]** in the country the request named, and it opens one [[settlement-account|settlement account]] per asset in its own book.
+3. The **clearing house** writes its [[routing-roster|routing entry]] from what the settlement agent opened rather than from the bank's own word, so a bank the scheme routes to is one it can already settle for. It refuses a code its directory already holds under a different admission — a second refusal for a different reason: it cannot see the registry, and its own directory is what every member copies.
+4. The **bank** records the account numbers and the code it has been allocated, and can from that moment open addressable customer accounts.
 
-Four units of work at three institutions, so the API answers **202 Accepted** with a founded bank rather than 201 with a member: the scheme's answer is decided elsewhere and arrives later.
+**Four units of work, not one**, and each is one institution writing in its own book. Nothing carries between them and nothing puts them on a wire: which banks a network has is settled when it is set up, not asked for at runtime. A failure part-way leaves a bank with rows at some institutions and not others — something to retry and something found by holding all three books against each other, which no institution in the scheme may do — see [[nostro-reconciliation]] for the same shape of comparison one institution can make.
 
 **What admission does not do is fill anybody's [[routing-directory|routing directory]]**, its own included. Being in the published directory makes a bank reachable; holding a copy of it is what makes a bank able to reach anyone, and each member pulls its own copy on its own account. A bank admitted this morning is unpayable by every member that refreshed yesterday, and cannot itself pay anyone until it refreshes.
 
-**Two things here are not the real thing.** Scheme membership is *contractual* — an adherence agreement, signed — and travels on no message at all; what travels is the settlement-account request, and the routing entry falls out of its acknowledgement. And a real central bank does not open an RTGS account by message either: it is reference data (in TARGET, CRDM static data and \`reda\`). What is real is the **sequence and the ownership** — who may open which account, in whose book, and in what order.`,
+**Why none of this is a message.** Scheme membership is *contractual* — an adherence agreement, signed — and travels on no message at all. And a real central bank does not open an RTGS account over a payment network either: it is reference data (in TARGET, CRDM static data and \`reda\`), set up by the central bank's own operations. What is real here is the **sequence and the ownership** — who may open which account, in whose book, and in what order.`,
   },
   "credit-facility": {
     title: "Credit facility",

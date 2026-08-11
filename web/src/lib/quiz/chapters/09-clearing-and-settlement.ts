@@ -123,16 +123,16 @@ export const chapter: Chapter = {
       difficulty: "core",
       concept: "bank-admission",
       prompt:
-        "A bank applies to join the scheme. Two things have to come into existence: its settlement account at the central bank, and its entry in the clearing house's routing directory. In which order, and why?",
+        "A bank is given a place in the scheme. Two things have to come into existence: its settlement account at the central bank, and its entry in the clearing house's routing directory. In which order, and why?",
       options: [
         "The routing entry first — the scheme has to be able to reach the bank before anyone can open an account for it",
-        "The settlement account first; the clearing house then writes its routing entry from the account servicer's acknowledgement, because a scheme will not route to a member that cannot settle",
+        "The settlement account first; the clearing house then writes its routing entry from what the account servicer opened, because a scheme will not route to a member that cannot settle",
         "Both at once, in the single transaction that admits the bank, so it can never exist without the accounts it needs",
         "The bank opens both itself — one in each institution's book — and tells the two institutions afterwards",
       ],
       answer: 1,
       explanation:
-        "[[bank-admission|Admission is a sequence]], and the order carries the meaning. The central bank opens the [[settlement-account|settlement account]] in its own book **first** — and allocates the applicant's [[bank-code|bank code]] in the same unit of work, out of a second register of its own — then acknowledges; the clearing house writes its [[routing-roster|routing entry]] out of that acknowledgement, the allocation included, and only *then* forwards it on, so a bank told it is a member is one the scheme can already route to. Scheme membership follows the settlement account, not the other way round: routing to a bank the settlement agent will not hold an account for would produce net positions nobody could discharge. The answer about **one transaction admitting the bank** would be one write covering three institutions' records, so that \"a bank can never exist without the accounts it needs\". No real admission has that guarantee: a bank is [[bank-founding|licensed and built]] before any scheme has heard of it, and an application that cannot be refused is not an application. The answer that has **the bank open both accounts itself** is the one thing none of them may do — no institution writes in another's book.",
+        "[[bank-admission|Admission is a sequence]], and the order carries the meaning. The central bank opens the [[settlement-account|settlement account]] in its own book **first** — and allocates the applicant's [[bank-code|bank code]] in the same unit of work, out of a second register of its own. The clearing house then writes its [[routing-roster|routing entry]] from what the agent opened, the allocation included, so a bank the scheme routes to is one it can already settle for. Scheme membership follows the settlement account, not the other way round: routing to a bank the settlement agent will not hold an account for would produce net positions nobody could discharge. The answer about **one transaction admitting the bank** would be one write covering three institutions' records, so that \"a bank can never exist without the accounts it needs\". No real admission has that guarantee: a bank is [[bank-founding|licensed and built]] before any scheme has heard of it. The answer that has **the bank open both accounts itself** is the one thing none of them may do — no institution writes in another's book, which is exactly why this is four units of work and not one.",
       explore: { label: "View central bank", href: "/central-bank" },
     },
     {

@@ -71,12 +71,11 @@ CREATE TABLE roster_entries (
     -- Keyed by BIC, and it is the only key this institution has. A clearing
     -- house routes what a message addresses, and a message addresses a BIC.
     --
-    -- That used to be a narrower claim than it reads. This table was keyed by BIC
-    -- and half the readers reached it by participant id anyway, through a
-    -- GetBank on the bank's own row — eight sites in mesh, each turning an id
-    -- into an address by reading a database it did not hold. Task 18 made the id
-    -- BE the address (see banks in bank/0001_init.sql), so there is no
-    -- conversion left to perform and no table here that could perform one.
+    -- The claim is narrower than it reads unless a bank's ID IS its address,
+    -- which it is (see banks in bank/0001_init.sql). Otherwise a reader holding a
+    -- participant id reaches this table by converting one first, off the bank's
+    -- own row — a read into a database it does not hold. There is no conversion
+    -- to perform here and no table that could perform one.
     --
     -- This key is also the refusal that keeps two banks off one address, which
     -- banks in bank/0001_init.sql defers to: a second admission on a BIC already
@@ -92,12 +91,12 @@ CREATE TABLE roster_entries (
     -- the relay, and nothing read it: every reader of this row in mesh takes the
     -- BIC and touches nothing else, and the operator console lists banks from
     -- their own rows. A member's legal name lives where a message delivered
-    -- one — on the bank's row, and on settlement_members, which learns it from
-    -- the acmt.007's Org/FullLglNm and names the reserve account after it.
+    -- one — on the bank's row, and on settlement_members, which is told it by the
+    -- application and names the reserve account after it.
     bic           TEXT PRIMARY KEY,
     -- The allocation this member issues its customers' addresses under, learned
-    -- from the same acmt.010 that writes this row and published to every member
-    -- that asks for a copy. It is what makes this table a ROUTING DIRECTORY and
+    -- from the same acknowledgement that writes this row and published to every
+    -- member that asks for a copy. It is what makes this table a ROUTING DIRECTORY and
     -- not merely a list of addresses the scheme will talk to.
     --
     -- WHY IT HAS TO BE PUBLISHED AT ALL: a payer quotes an IBAN and nothing
@@ -113,7 +112,8 @@ CREATE TABLE roster_entries (
     -- the settlement agent's register and in each member's copy.
     --
     -- There is no name beside them, for the reason this row carries none at all:
-    -- an acmt.010 identifies its owner by BIC and delivers no legal name. So a
+    -- the acknowledgement identifies its owner by BIC and delivers no legal
+    -- name. So a
     -- member's copy of this table answers a BIC and cannot answer "Banca Verde",
     -- which is where a payer meets the absence.
     --
@@ -149,12 +149,10 @@ CREATE TABLE roster_entries (
     -- AdmitMemberTx refuses an acknowledgement quoting no admission, because ""
     -- compares equal to every other "" and two institutions on one address would
     -- then extend a single entry instead of the second being refused.
-    -- mesh.Mesh.Admit mints one process id per admission and every message of it
-    -- echoes that value; the seed and the test suites compose no messages and
-    -- derive a reference from the BIC instead (see store/storetest.Admit), which
-    -- means two of THEIR admissions on one address share one reference and
-    -- extend one entry — why a fixture whose banks settle gives each of them an
-    -- address of its own. The column stays unconstrained rather than
+    -- The reference is DERIVED FROM THE BIC (see provision.Ref), which makes
+    -- re-provisioning one bank idempotent and makes two admissions on one address
+    -- share one reference and extend one entry — which is why a deployment whose
+    -- banks settle gives each of them an address of its own. The column stays unconstrained rather than
     -- CHECK-constrained for the reason accounts.asset gives in
     -- bank/0001_init.sql: the rule lives in Go, and a CHECK would state it a
     -- second time, in the place least able to change.
@@ -205,19 +203,12 @@ CREATE TABLE roster_entry_assets (
     -- TYPE it is handed. storetest's RosterEntryAssetsAreAnOrderedList is what
     -- holds it to that.
     --
-    -- What this constraint is NOT about is any writer's behaviour, and the
-    -- reason it says so is that it used to. It predicted that Task 17d would
-    -- build this list from an acmt.010's unbounded AccountForAction1 and that a
-    -- repeat would arrive that way. The writer arrived at Task 17c instead —
-    -- payment's AdmitMemberTx — and it cannot produce one from either end: it
-    -- takes the assets from a map keyed by asset, and it appends only the ones
-    -- the entry does not already hold. A message repeating a currency collapses
-    -- in that map before this table is reached, and the reader between the wire
-    -- and that writer refuses one outright:
-    -- payment.ReadAdmissionAcknowledgement will not read an acknowledgement
-    -- naming two accounts in one currency. The key is still position, because
-    -- PutRosterEntry must store whatever slice a caller passes whether or not
-    -- any caller passes that one.
+    -- What this constraint is NOT about is any writer's behaviour. The one writer
+    -- there is, payment's AdmitMemberTx, cannot produce a repeat from either end:
+    -- it takes the assets from a map keyed by asset, and it appends only the ones
+    -- the entry does not already hold. The key is position anyway, because
+    -- PutRosterEntry must store whatever slice a caller passes whether or not any
+    -- caller passes that one.
     --
     -- Whether a repeated asset is a message worth refusing is a question about
     -- the message and belongs to the institution reading it, not to the store.
@@ -376,13 +367,13 @@ CREATE TABLE cycles (
     -- payments above and sent on to the settlement agent, which keys its own copy
     -- in settlement_positions the same way.
     --
-    -- They were keyed by ParticipantID and the difference was invisible while
-    -- one database held both a roster and a banks table to convert between them.
-    -- It is not invisible now: the settlement agent receiving these has
-    -- settlement_members keyed by BIC and nothing else, so a position naming a
-    -- participant id would have been a set of figures about banks it could not
-    -- identify. Task 18 made the id BE the BIC, so the column and the key it has
-    -- to line up with are the same value; see banks in bank/0001_init.sql.
+    -- Keying them by ParticipantID makes no visible difference while one database
+    -- holds both a roster and a banks table to convert between them, and it is a
+    -- real one here: the settlement agent receiving these has settlement_members
+    -- keyed by BIC and nothing else, so a position naming a participant id is a
+    -- set of figures about banks it cannot identify. A bank's id IS its BIC, so
+    -- the column and the key it has to line up with are the same value; see banks
+    -- in bank/0001_init.sql.
     net_positions TEXT CHECK (json_valid(net_positions)),
     opened_at     TEXT,
     closed_at     TEXT,

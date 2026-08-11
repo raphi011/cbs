@@ -420,9 +420,9 @@ export interface RoutingEntry {
 // accept, and the reference decides between two institutions contending for an
 // address, which is nobody's question but this one's.
 //
-// No name. An acmt.010 carries none, so the clearing house has never been told
-// one — the name beside a BIC on this screen comes from GET /members, which is a
-// different question asked of a different table.
+// No name. What writes this row delivers none, so the clearing house has never
+// been told one — the name beside a BIC on this screen comes from GET /members,
+// which is a different question asked of a different table.
 export interface RosterEntry {
   bic: string;
   country: string;

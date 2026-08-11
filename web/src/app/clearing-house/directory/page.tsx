@@ -30,8 +30,8 @@ export default function DirectoryPage() {
   const { data, isLoading, error } = useRoster();
   const { data: participants } = useParticipants();
 
-  // The roster carries no name — an acmt.010 has no name element — so the name
-  // beside an address comes from GET /members, which is a different table
+  // The roster carries no name — nothing that writes it delivers one — so the
+  // name beside an address comes from GET /members, which is a different table
   // answering a different question. An address with no member row is rendered as
   // itself rather than as a blank.
   const nameFor = (bic: string) =>

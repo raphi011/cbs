@@ -26,16 +26,6 @@ an implementation guideline, and the cross-check against `pacs.009.001.08.xsd`
 is the same `TestGoldenFilesValidateAgainstTheSchema` when that schema is
 present.
 
-`acmt007.xml`, `acmt010.xml` and `acmt011.xml` are the same kind of file for the
-same reason: the EPC profiles no part of the account-management family, so their
-shapes come from `acmt.007.001.03.xsd`, `acmt.010.001.03.xsd` and
-`acmt.011.001.03.xsd` and from nothing else. They are one admission told in three
-messages — Aurora Bank asking its settlement agent for accounts, the agent
-naming two it opened, and the agent refusing a third for an asset it does not
-operate in — which is why all three carry the same `PrcId` and their own
-`MsgId`. See `Acmt007` for why this use of the family is not how a central-bank
-account is really opened.
-
 `camt050.xml` and `camt025.xml` are a fourth file of the same kind, and one
 conversation rather than two documents: Aurora Bank asking its central bank to
 move EUR 500,000.00 of vault cash onto its reserve account, and the central bank
@@ -44,10 +34,9 @@ saying it did. Their shapes come from `camt.050.001.05.xsd` and
 the EPC governs SEPA credit transfers and direct debits between PSPs and their
 customers, not a member's liquidity transfer to its central bank.
 
-Their correlator is not the acmt family's. The receipt names the request by its
-`MsgId` (`RctDtls/OrgnlMsgId/MsgId`), because a lodgement is one request and one
-answer; an admission is several requests that are one process, so it needs a
-`PrcId` above the messages. See `Camt025` on `OriginalMessageAndIssuer`.
+The receipt names the request by its `MsgId` (`RctDtls/OrgnlMsgId/MsgId`),
+because a lodgement is one request and one answer — there is no process id above
+it, and nothing here needs one. See `Camt025` on `OriginalMessageAndIssuer`.
 
 **One value in `camt025.xml` is unverifiable and is not a schema fact.**
 `ReqHdlg/StsCd` is `Max4AlphaNumericText` with no `xs:enumeration` behind it, so
@@ -70,9 +59,6 @@ using the file names the test expects:
     testdata/xsd/camt.053.001.08.xsd
     testdata/xsd/camt.050.001.05.xsd
     testdata/xsd/camt.025.001.05.xsd
-    testdata/xsd/acmt.007.001.03.xsd
-    testdata/xsd/acmt.010.001.03.xsd
-    testdata/xsd/acmt.011.001.03.xsd
 
 The list above must match the `files` map in `xmllint_test.go`, and it did not:
 `camt.053.001.08.xsd` was missing here from the day the statement landed, so
@@ -154,13 +140,8 @@ receive until this message existed.
 | Aurora Bank (as `Dbtr`, the debiting settlement member) | `AURODEFFXXX` |
 | Banca Verde (as `Cdtr`, the crediting settlement member) | `VERDITMMXXX` |
 
-The three `acmt` files use that same settlement-layer cast, because admission is
-a settlement-layer conversation: `AURODEFFXXX` applies, `CSMXFRPPXXX` relays, and
-`CBSEDEFFXXX` is the account servicer that answers.
-
 `CSMXFRPPXXX` and `AURODEFFXXX` are deliberately not `CSMBFRPPXXX` and
-`AURTSESSXXX`: they are this system's settlement-layer identities, distinct
-from the customer-facing BICs above, and are what the rest of sub-project 7b
-uses for the clearing house's and Aurora Bank's roles at the settlement
-layer. Banca Verde's BIC is the same in both roles — `VERDITMMXXX` — because
-sub-project 7b did not need to give it a separate settlement identity.
+`AURTSESSXXX`: they are this system's settlement-layer identities, distinct from
+the customer-facing BICs above, and are what the clearing house and Aurora Bank
+are called in their settlement-layer roles. Banca Verde's BIC is the same in both
+roles — `VERDITMMXXX` — because it needs no separate settlement identity.
