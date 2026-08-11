@@ -37,11 +37,11 @@ const payablesSubledgerName = "Payables"
 // has three chart-of-accounts rows for them rather than thirty thousand.
 //
 // The refunds payable is one of the three, and it is the line that most looks
-// like it should not be. A balance pooled with NO obligor cannot say who is owed
+// like it should not be. A balance pooled with NO subsidiary cannot say who is owed
 // what, and a discharge against it is unbounded — able to pay one borrower out
 // of another's money and still balance, a Liability never being caught by the
 // sufficiency check. Both objections are about the pooling and not about the
-// account: the obligor is on every entry, and Book.checkSufficientBalance reads
+// account: the subsidiary is on every entry, and Book.checkSufficientBalance reads
 // a Position, so what stops the unbounded discharge is the dimension.
 //
 // The income slot is ByProduct and none of the other three is, for the reason
@@ -306,7 +306,7 @@ func (p *Portfolio) openTx(ctx context.Context, tx Tx, f Facility, rate interest
 //	  Cr counterparty                 1_000_000
 //
 // counterparty is any position in the facility's asset — a customer's current
-// account, which is an obligor under a control account, or the vault for a cash
+// account, which is a subsidiary under a control account, or the vault for a cash
 // advance, which is a plain account named with Total(). This layer does not know
 // what a deposit account is, so a disbursement that must also respect one's
 // status is orchestrated a layer up, through the same Tx.
@@ -798,7 +798,7 @@ func (p *Portfolio) receivableTx(ctx context.Context, tx Tx, f Facility) (ledger
 
 // FacilityPositions is where one facility's money is: what it has drawn, what it
 // owes in interest, and what the bank owes it back. All three are positions
-// under a control account, and all three carry the same obligor — the facility
+// under a control account, and all three carry the same subsidiary — the facility
 // itself, which is what a subsidiary ledger keyed on the borrower means here.
 //
 // Exported for a layer above that renders or posts to them; Positions is the
@@ -832,16 +832,16 @@ func (p *Portfolio) Positions(ctx context.Context, id FacilityID) (FacilityPosit
 // The three together rather than one at a time, because every caller that wants
 // one of them is one line from wanting another.
 func (p *Portfolio) accountsTx(ctx context.Context, tx Tx, f Facility) (FacilityPositions, error) {
-	obligor := string(f.ID)
-	principal, err := p.gl.SlotPositionTx(ctx, tx, "", principalSlot, f.Asset, obligor)
+	subsidiary := string(f.ID)
+	principal, err := p.gl.SlotPositionTx(ctx, tx, "", principalSlot, f.Asset, subsidiary)
 	if err != nil {
 		return FacilityPositions{}, err
 	}
-	receivable, err := p.gl.SlotPositionTx(ctx, tx, "", receivableSlot, f.Asset, obligor)
+	receivable, err := p.gl.SlotPositionTx(ctx, tx, "", receivableSlot, f.Asset, subsidiary)
 	if err != nil {
 		return FacilityPositions{}, err
 	}
-	payable, err := p.gl.SlotPositionTx(ctx, tx, "", payableSlot, f.Asset, obligor)
+	payable, err := p.gl.SlotPositionTx(ctx, tx, "", payableSlot, f.Asset, subsidiary)
 	if err != nil {
 		return FacilityPositions{}, err
 	}
@@ -859,8 +859,8 @@ func (p *Portfolio) ledgerIDTx(ctx context.Context, tx Tx) (ledger.LedgerID, err
 
 // ensureChartTx opens the four lines an asset's facilities post to and maps this
 // layer's slots onto them, on the first facility opened in that asset. Three are
-// control accounts and one — the income line — is the bank's own, so it takes no
-// obligor.
+// control accounts and one — the income line — is the bank's own, so it pools
+// nobody.
 //
 // It returns once the principal slot answers, so the ten thousandth facility in
 // an asset costs one lookup and writes nothing.

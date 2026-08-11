@@ -38,10 +38,11 @@ type accountDTO struct {
 	Name        string `json:"name"`
 	Type        string `json:"type"`
 	Asset       string `json:"asset"`
-	// Control says this line pools obligors: it stands for many, and every entry
-	// against it names which. A client needs it for two things it cannot get
-	// right otherwise — a posting form must ask for the obligor, and an account
-	// page must offer the detail under the line rather than only the total.
+	// Control says this line pools subsidiaries: it stands for many, and every
+	// entry against it names which. A client needs it for two things it cannot
+	// get right otherwise — a posting form must ask for the subsidiary, and an
+	// account page must offer the detail under the line rather than only the
+	// total.
 	Control   bool      `json:"control"`
 	CreatedAt time.Time `json:"createdAt"`
 }
@@ -65,7 +66,7 @@ func toAccountDTO(a ledger.Account) accountDTO {
 // deposit layer. A number with no asset is not an amount.
 type accountBalanceDTO struct {
 	AccountID string `json:"accountId"`
-	// Subsidiary is the obligor the figures are for, absent when they are the
+	// Subsidiary is which one the figures are for, absent when they are the
 	// whole account's. It is echoed back because a client asking for one
 	// customer's balance and a client asking for the pool's send the same route
 	// two different questions.
@@ -79,11 +80,11 @@ type accountBalanceDTO struct {
 	ValueDateBalance int64 `json:"valueDateBalance"`
 }
 
-// subsidiaryBalanceDTO is one obligor's share of a control account. The asset
+// subsidiaryBalanceDTO is one subsidiary's share of a control account. The asset
 // travels with the number for accountBalanceDTO's reason: an integer in minor
 // units is not an amount without it.
 //
-// What an obligor IS — a deposit account, a facility — is not said here and
+// What a subsidiary IS — a deposit account, a facility — is not said here and
 // cannot be: the ledger holds an opaque string, and the layer that knows what it
 // names is the one rendering the link.
 type subsidiaryBalanceDTO struct {
@@ -95,8 +96,8 @@ type subsidiaryBalanceDTO struct {
 type entryDTO struct {
 	ID        string `json:"id,omitempty"`
 	AccountID string `json:"accountId"`
-	// Subsidiary is the obligor this leg belongs to within a control account —
-	// a deposit account's id, a facility's. Absent means the whole account,
+	// Subsidiary is what this leg belongs to within a control account — a
+	// deposit account's id, a facility's. Absent means the whole account,
 	// which is what a leg against one of the bank's own positions carries.
 	//
 	// It travels in both directions and it is not optional in the domain sense:

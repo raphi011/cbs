@@ -33,7 +33,7 @@ type RefundPayable struct {
 	Name  string
 	Asset ledger.AssetCode
 	// Account is the Liability control account the obligation sits in. The
-	// obligor under it is FacilityID above, so a client reading a statement for
+	// subsidiary under it is FacilityID above, so a client reading a statement for
 	// this one refund has both halves.
 	Account ledger.AccountID
 	// Amount is what is still owed, in the asset's minor units. Always positive:
@@ -90,7 +90,7 @@ func (p *Portfolio) refundPayableTx(ctx context.Context, tx Tx, f Facility) (led
 // invisible — the ones with no further accrual, statement or repayment to
 // surface them.
 //
-// It reads one balance per facility, which is one per obligor under a single
+// It reads one balance per facility, which is one per subsidiary under a single
 // chart-of-accounts line.
 func (p *Portfolio) ListRefundsPayable(ctx context.Context) ([]RefundPayable, error) {
 	var out []RefundPayable

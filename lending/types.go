@@ -162,7 +162,7 @@ type Arrears struct {
 // Facility is a credit facility: a term loan or a revolving line.
 //
 // It is the mirror of deposit.Account, and it is no more a row in the chart of
-// accounts than one of those. A facility is an OBLIGOR under three control
+// accounts than one of those. A facility is a SUBSIDIARY under three control
 // lines — drawn principal, accrued interest receivable, and interest the bank
 // owes back — and the facility itself stores neither money nor a pointer to any
 // of them: Asset picks the lines, and the facility's own id is the dimension on

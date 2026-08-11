@@ -48,15 +48,15 @@ func pooledChart(t *testing.T, book *Book) (deposits, vault Account) {
 	return deposits, vault
 }
 
-// takeIn is a cash deposit for one obligor: vault cash rises, the pool owes one
+// takeIn is a cash deposit for one subsidiary: vault cash rises, the pool owes one
 // more customer.
-func takeIn(t *testing.T, book *Book, deposits, vault Account, obligor string, amount Amount) Transaction {
+func takeIn(t *testing.T, book *Book, deposits, vault Account, subsidiary string, amount Amount) Transaction {
 	t.Helper()
 	posted, err := book.PostTransaction(context.Background(), PostTransactionRequest{
-		Description: "cash in for " + obligor,
+		Description: "cash in for " + subsidiary,
 		Entries: []Entry{
 			{AccountID: vault.ID, Amount: amount, Direction: Debit},
-			{AccountID: deposits.ID, Subsidiary: obligor, Amount: amount, Direction: Credit},
+			{AccountID: deposits.ID, Subsidiary: subsidiary, Amount: amount, Direction: Credit},
 		},
 	})
 	assertNoError(t, err)
@@ -64,7 +64,7 @@ func takeIn(t *testing.T, book *Book, deposits, vault Account, obligor string, a
 }
 
 // TestAControlAccountRefusesAnUnqualifiedEntry is one half of the pair, and the
-// obvious half: money credited to a pool with no obligor named belongs to
+// obvious half: money credited to a pool with no subsidiary named belongs to
 // nobody, and no later read can say whose it was.
 func TestAControlAccountRefusesAnUnqualifiedEntry(t *testing.T) {
 	ctx := context.Background()
@@ -89,7 +89,7 @@ func TestAControlAccountRefusesAnUnqualifiedEntry(t *testing.T) {
 // TestAPlainAccountRefusesAQualifiedEntry is the other half, and the one that
 // is not the obvious way round.
 //
-// Nothing aggregates a plain account by obligor, so the dimension would be
+// Nothing aggregates a plain account by subsidiary, so the dimension would be
 // written and never read: the posting would balance, the account's own balance
 // would stay right, and the caller's belief that it had recorded whose money
 // this is would be false with nothing to contradict it.
@@ -108,15 +108,15 @@ func TestAPlainAccountRefusesAQualifiedEntry(t *testing.T) {
 	assertError(t, err, ErrSubsidiaryNotAllowed)
 }
 
-// TestTheSufficiencyCheckReadsTheObligorAndNotThePool is the test that would
+// TestTheSufficiencyCheckReadsTheSubsidiaryAndNotThePool is the test that would
 // have caught the silent version of this design.
 //
 // The guard keeps Asset and Expense accounts off the wrong side of zero. Under
-// pooling the pool is comfortably positive while an obligor under it is
+// pooling the pool is comfortably positive while a subsidiary under it is
 // overdrawn, so a check that kept reading the account would pass, report
 // nothing, and have stopped guarding — every Asset-side facility unbounded,
 // with debits still equal to credits throughout.
-func TestTheSufficiencyCheckReadsTheObligorAndNotThePool(t *testing.T) {
+func TestTheSufficiencyCheckReadsTheSubsidiaryAndNotThePool(t *testing.T) {
 	ctx := context.Background()
 	book := testBook(t)
 
@@ -147,7 +147,7 @@ func TestTheSufficiencyCheckReadsTheObligorAndNotThePool(t *testing.T) {
 	assertEqual(t, "the pool before the repayment", pool, 1000)
 
 	// A repayment on a borrower who has drawn nothing. The pool would still
-	// stand at 600 and the transaction balances; only the obligor goes negative.
+	// stand at 600 and the transaction balances; only the subsidiary goes negative.
 	_, err = book.PostTransaction(ctx, PostTransactionRequest{
 		Description: "a repayment against a borrower who never drew",
 		Entries: []Entry{
@@ -158,7 +158,7 @@ func TestTheSufficiencyCheckReadsTheObligorAndNotThePool(t *testing.T) {
 	assertError(t, err, ErrInsufficientBalance)
 
 	// And the guard does not fire on the borrower who did draw, which is what
-	// says it is reading the obligor rather than refusing everything.
+	// says it is reading the subsidiary rather than refusing everything.
 	_, err = book.PostTransaction(ctx, PostTransactionRequest{
 		Description: "a repayment against the borrower who drew",
 		Entries: []Entry{
@@ -186,10 +186,10 @@ func TestTheSubsidiaryBalancesSumToTheControlBalance(t *testing.T) {
 	book := testBook(t)
 	deposits, vault := pooledChart(t, book)
 
-	obligors := map[string]Amount{"dep_1": 1000, "dep_2": 250, "dep_3": 7}
+	subsidiaries := map[string]Amount{"dep_1": 1000, "dep_2": 250, "dep_3": 7}
 	var want Amount
-	for obligor, amount := range obligors {
-		takeIn(t, book, deposits, vault, obligor, amount)
+	for subsidiary, amount := range subsidiaries {
+		takeIn(t, book, deposits, vault, subsidiary, amount)
 		want += amount
 	}
 
@@ -198,22 +198,22 @@ func TestTheSubsidiaryBalancesSumToTheControlBalance(t *testing.T) {
 	assertEqual(t, "the control balance", control, want)
 
 	var detail Amount
-	for obligor := range obligors {
-		balance, err := book.BookBalance(ctx, deposits.ID.For(obligor))
+	for subsidiary := range subsidiaries {
+		balance, err := book.BookBalance(ctx, deposits.ID.For(subsidiary))
 		assertNoError(t, err)
-		assertEqual(t, "the balance of "+obligor, balance, obligors[obligor])
+		assertEqual(t, "the balance of "+subsidiary, balance, subsidiaries[subsidiary])
 		detail += balance
 	}
 	assertEqual(t, "the detail against the control", detail, control)
 }
 
-// TestAStatementOverOneObligorCarriesNoOtherObligorsPostings is what a customer
+// TestAStatementOverOneSubsidiaryCarriesNoOtherSubsidiariesPostings is what a customer
 // recognises: their own account, over a chart of accounts line they share with
 // everyone else at the bank.
 //
 // The transactions are returned WHOLE — a statement row still carries the other
 // leg of its own event — and it is the position that selects among the legs.
-func TestAStatementOverOneObligorCarriesNoOtherObligorsPostings(t *testing.T) {
+func TestAStatementOverOneSubsidiaryCarriesNoOtherSubsidiariesPostings(t *testing.T) {
 	ctx := context.Background()
 	book := testBook(t)
 	deposits, vault := pooledChart(t, book)
@@ -230,7 +230,7 @@ func TestAStatementOverOneObligorCarriesNoOtherObligorsPostings(t *testing.T) {
 	assertEqual(t, "the running balance", hist.Rows[1].Running, 1040)
 	assertEqual(t, "the closing balance", hist.Closing, 1040)
 
-	// The pool's own history is every obligor's, and it closes at the control
+	// The pool's own history is every subsidiary's, and it closes at the control
 	// figure.
 	pooled, err := book.AccountHistory(ctx, deposits.ID.Total())
 	assertNoError(t, err)
@@ -238,12 +238,12 @@ func TestAStatementOverOneObligorCarriesNoOtherObligorsPostings(t *testing.T) {
 	assertEqual(t, "the pool's closing balance", pooled.Closing, 1290)
 }
 
-// TestAReversalCarriesTheObligorItReverses pins the one place the dimension
+// TestAReversalCarriesTheSubsidiaryItReverses pins the one place the dimension
 // could be dropped without any refusal firing: a reversal builds its own
 // entries, and a mirrored leg that credited the pool unqualified would be
-// refused — but one that named the WRONG obligor would post cleanly, leave the
+// refused — but one that named the WRONG subsidiary would post cleanly, leave the
 // pool square, and leave one customer permanently short.
-func TestAReversalCarriesTheObligorItReverses(t *testing.T) {
+func TestAReversalCarriesTheSubsidiaryItReverses(t *testing.T) {
 	ctx := context.Background()
 	book := testBook(t)
 	deposits, vault := pooledChart(t, book)
@@ -263,10 +263,10 @@ func TestAReversalCarriesTheObligorItReverses(t *testing.T) {
 	assertEqual(t, "dep_2, which the reversal did not name", untouched, 250)
 }
 
-// TestTheValueDatedReadsCarryTheObligorToo. The book balance is not the only
+// TestTheValueDatedReadsCarryTheSubsidiaryToo. The book balance is not the only
 // read that grows the dimension: interest is computed from a value-dated series
 // and would otherwise accrue on the whole pool for every customer under it.
-func TestTheValueDatedReadsCarryTheObligorToo(t *testing.T) {
+func TestTheValueDatedReadsCarryTheSubsidiaryToo(t *testing.T) {
 	ctx := context.Background()
 	book := testBook(t)
 	deposits, vault := pooledChart(t, book)
@@ -274,14 +274,14 @@ func TestTheValueDatedReadsCarryTheObligorToo(t *testing.T) {
 	day := func(n int) time.Time {
 		return time.Date(2025, 1, n, 0, 0, 0, 0, time.UTC)
 	}
-	post := func(obligor string, amount Amount, on time.Time) {
+	post := func(subsidiary string, amount Amount, on time.Time) {
 		t.Helper()
 		_, err := book.PostTransaction(ctx, PostTransactionRequest{
-			Description: "cash in for " + obligor,
+			Description: "cash in for " + subsidiary,
 			ValueDate:   on,
 			Entries: []Entry{
 				{AccountID: vault.ID, Amount: amount, Direction: Debit},
-				{AccountID: deposits.ID, Subsidiary: obligor, Amount: amount, Direction: Credit},
+				{AccountID: deposits.ID, Subsidiary: subsidiary, Amount: amount, Direction: Credit},
 			},
 		})
 		assertNoError(t, err)

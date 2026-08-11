@@ -197,7 +197,7 @@ export const chapter: Chapter = {
       unit: { asset: "EUR", in: "major" },
       tolerance: 0,
       explanation:
-        "Drawn principal is read from the principal line alone, filtered to this facility — **€45,000** — never combined with the accrued-interest receivable, which is a separate figure on a separate line. Both are [[derived-balance|the same sum with the obligor in the filter]]; neither is a column anywhere.",
+        "Drawn principal is read from the principal line alone, filtered to this facility — **€45,000** — never combined with the accrued-interest receivable, which is a separate figure on a separate line. Both are [[derived-balance|the same sum with the facility in the filter]]; neither is a column anywhere.",
     },
     {
       kind: "mc",
@@ -291,7 +291,7 @@ export const chapter: Chapter = {
       ],
       answer: 1,
       explanation:
-        "A [[term-loan|facility]] is an obligor under lines the bank already has — the *first* euro facility opened them, and every one after it adds entries rather than rows. Its drawn principal reads zero not because an account was opened at zero but because nothing has been posted under its id. Nothing is owed and nothing has accrued until [[account-type-asset|Disburse]] posts the first real transaction naming it.",
+        "A [[term-loan|facility]] is one holder under lines the bank already has — the *first* euro facility opened them, and every one after it adds entries rather than rows. Its drawn principal reads zero not because an account was opened at zero but because nothing has been posted under its id. Nothing is owed and nothing has accrued until [[account-type-asset|Disburse]] posts the first real transaction naming it.",
     },
   ],
 };

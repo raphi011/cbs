@@ -313,7 +313,7 @@ The reason it is absent has changed, which is why this entry is worth reading
 again. It was that there was no target account to post *to* that was not one per
 customer — the thing the chart of accounts is kept clear of. Since §20 there is
 one: a `Loans and Advances to Customers (<asset>)` control account, with the same
-obligor dimension on both legs, is an ordinary line to add. What is left is not
+subsidiary dimension on both legs, is an ordinary line to add. What is left is not
 the journal but the third decision below.
 
 Three domain decisions, none of them the journal itself:

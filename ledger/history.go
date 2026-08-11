@@ -9,7 +9,7 @@ import (
 // One account's history, and the balance decomposed into dated lots
 // ---------------------------------------------------------------------------
 
-// SubsidiaryBalance is one obligor's share of a control account. It is what a
+// SubsidiaryBalance is one subsidiary's share of a control account. It is what a
 // control line drills into: the detail whose sum IS the line's own balance, read
 // from the same entries rather than from a second place that could disagree.
 type SubsidiaryBalance struct {
@@ -17,8 +17,8 @@ type SubsidiaryBalance struct {
 	Balance    Amount
 }
 
-// SubsidiaryBalances is every obligor under a control account, ordered by
-// obligor, with the ones that net to zero left out — a customer who has repaid
+// SubsidiaryBalances is every subsidiary under a control account, ordered by
+// subsidiary, with the ones that net to zero left out — a customer who has repaid
 // is not a row in what the bank owes.
 //
 // A PLAIN account answers with nothing at all rather than with one unnamed row.
@@ -79,7 +79,7 @@ func (s *Book) SubsidiaryBalancesTx(ctx context.Context, tx Tx, account AccountI
 // the balance it claims to explain, which would make every check built on it
 // wrong in the one case an auditor cares about.
 type AccountHistory struct {
-	// Position is what was asked for: a whole account, or one obligor within a
+	// Position is what was asked for: a whole account, or one subsidiary within a
 	// control account. Over a control account the two are different documents —
 	// the pool's movements, or one customer's statement — and the second is the
 	// one a customer recognises.
@@ -166,7 +166,7 @@ func (s *Book) AccountHistoryTx(ctx context.Context, tx Tx, pos Position) (Accou
 		var movement Amount
 		for _, e := range t.Entries {
 			// A transaction is listed whole, so a control account's rows carry
-			// every obligor's legs; the position is what selects among them.
+			// every subsidiary's legs; the position is what selects among them.
 			if e.AccountID != pos.Account {
 				continue
 			}

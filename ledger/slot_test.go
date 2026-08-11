@@ -105,7 +105,7 @@ func TestAProductOverridesOneSlotAndInheritsTheRest(t *testing.T) {
 }
 
 // A slot that HOLDS A BALANCE takes no product-specific row, and the refusal is
-// the whole reason Slot.ByProduct exists. Money already posted under an obligor
+// the whole reason Slot.ByProduct exists. Money already posted under a subsidiary
 // stays where it was posted: if a later resolution answered with another line,
 // the balance anybody read would be the second half only, and moving the first
 // half is a reclassification journal this system does not have.

@@ -85,7 +85,7 @@ var (
 
 	// ErrSubsidiaryNotAllowed is returned when an entry against a plain
 	// account names a subsidiary. Nothing aggregates a non-control account by
-	// obligor, so the dimension would be written and never read, and the
+	// subsidiary, so the dimension would be written and never read, and the
 	// caller's belief that it had recorded whose money this is would be false.
 	ErrSubsidiaryNotAllowed = errors.New("only a control account takes an entry with a subsidiary")
 
@@ -98,7 +98,7 @@ var (
 
 	// ErrSlotAccountMismatch is returned when the account a slot is being
 	// pointed at is not the kind of account the slot requires: wrong asset,
-	// wrong type, or plain where the flow posts obligors. Refused at the WRITE,
+	// wrong type, or plain where the flow posts subsidiaries. Refused at the WRITE,
 	// because the alternative is a posting that fails weeks later at a moment
 	// nobody connects to the configuration change that caused it.
 	ErrSlotAccountMismatch = errors.New("account does not satisfy the slot")

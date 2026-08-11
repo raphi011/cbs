@@ -92,7 +92,7 @@ export function OpenDepositAccountForm({ pid }: { pid: string }) {
             <DialogTitle>Open deposit account</DialogTitle>
             <DialogDescription>
               A customer checking/current account. It gets no line of its own in
-              the chart of accounts: it becomes an obligor under the bank&apos;s
+              the chart of accounts: it becomes one holder under the bank&apos;s
               customer-deposit control account.
             </DialogDescription>
           </DialogHeader>

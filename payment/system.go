@@ -946,7 +946,7 @@ func (s *Network) FoundBankTx(ctx context.Context, tx Tx, name string, bic iso20
 		// class as a customer's deposit, and specifically not an asset of the
 		// bank's.
 		//
-		// It is the one of this bank's own accounts that pools obligors, so it
+		// It is the one of this bank's own accounts that pools holders, so it
 		// is a CONTROL account and every leg against it names whose money it is:
 		// the deposit account that could not take the credit. The claimant is
 		// always known — this bank resolved the payee before it accepted the
@@ -2879,7 +2879,7 @@ func (s *Network) SettleAtBankTx(ctx context.Context, tx Tx, id PaymentID) (Paym
 	// and the bank's unclaimed balances if it cannot. Both are this bank's own,
 	// and both are positions in a control account — the same payee named under
 	// two different lines, which is why the diversion is a change of account and
-	// not of obligor. A closed account still names its owner, and that is what a
+	// not of holder. A closed account still names its owner, and that is what a
 	// later release pays out.
 	description := p.Description
 	if err := creditor.Deposit.CheckCreditTx(ctx, tx, p.Creditor.Account); err != nil {
@@ -2913,7 +2913,7 @@ func (s *Network) SettleAtBankTx(ctx context.Context, tx Tx, id PaymentID) (Paym
 	// the money back from where it actually went, and it cannot ask this
 	// question again later: see Payment.CreditorLegAccount and clawbackTx.
 	//
-	// The ACCOUNT and not the position: the obligor half is the payee, which the
+	// The ACCOUNT and not the position: the subsidiary half is the payee, which the
 	// payment already names, and a second copy of it could only disagree.
 	p.CreditorLegAccount = target.Account
 	if err := s.transition(&p, Settled); err != nil {
@@ -4566,7 +4566,7 @@ func (s *Network) refundTx(ctx context.Context, tx Tx, debtor *Bank, accts BankA
 	p Payment, reason string, replacing ledger.TransactionID,
 ) (ledger.Transaction, error) {
 	description := "Return of payment " + string(p.ID) + ": " + reason
-	// The payer names the obligor on both arms, and here that is the DEBTOR's
+	// The payer names the subsidiary on both arms, and here that is the DEBTOR's
 	// account rather than the creditor's: this is the payer's own bank, holding
 	// either the payer's money or a refund their closed account would not take.
 	to := accts.Unclaimed.For(string(p.Debtor.Account))

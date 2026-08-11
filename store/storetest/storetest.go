@@ -216,7 +216,7 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Sto
 	t.Run("AccountRoundTripsItsControlFlag", func(t *testing.T) {
 		s := open(t, newStore, bookA)
 
-		// Whether an account pools obligors decides which entries the domain
+		// Whether an account pools subsidiaries decides which entries the domain
 		// will accept against it, both ways round. A store that dropped the flag
 		// on the way out would report every account as plain, and the refusal
 		// that keeps money from landing in a pool with nobody's name on it would
@@ -349,9 +349,9 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Sto
 	t.Run("SubsidiaryScopedReadsSumToTheWholeAccount", func(t *testing.T) {
 		s := open(t, newStore, bookA)
 
-		// One control account, three obligors, and the reads that have to tell
+		// One control account, three subsidiaries, and the reads that have to tell
 		// them apart. What this pins is the whole claim the dimension rests on:
-		// a position with no obligor is the WHOLE account and not the obligor
+		// a position with no subsidiary is the WHOLE account and not the subsidiary
 		// named by the empty string, so the control figure is the same aggregate
 		// with one predicate dropped rather than a total stored beside the
 		// detail. A store that filtered on subsidiary_id = '' instead would
@@ -364,7 +364,7 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Sto
 		day := func(n int) time.Time {
 			return time.Date(2025, 1, n, 12, 0, 0, 0, time.UTC)
 		}
-		post := func(id ledger.TransactionID, obligor string, amount ledger.Amount, on time.Time) {
+		post := func(id ledger.TransactionID, subsidiary string, amount ledger.Amount, on time.Time) {
 			t.Helper()
 			update(t, s, func(ctx context.Context, tx ledger.Tx) error {
 				return tx.PutTransaction(ctx, bookA, ledger.Transaction{
@@ -372,7 +372,7 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Sto
 					Entries: []ledger.Entry{
 						{ID: ledger.EntryID(string(id) + "_a"), AccountID: contra,
 							Amount: amount, Direction: ledger.Debit, ValueDate: on},
-						{ID: ledger.EntryID(string(id) + "_b"), AccountID: pooled, Subsidiary: obligor,
+						{ID: ledger.EntryID(string(id) + "_b"), AccountID: pooled, Subsidiary: subsidiary,
 							Amount: amount, Direction: ledger.Credit, ValueDate: on},
 					},
 				})
@@ -388,8 +388,8 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Sto
 			if err != nil {
 				return err
 			}
-			assertEqual(t, "the pooled leg's obligor", one.Entries[1].Subsidiary, "dep_1")
-			assertEqual(t, "the plain leg's obligor", one.Entries[0].Subsidiary, "")
+			assertEqual(t, "the pooled leg's subsidiary", one.Entries[1].Subsidiary, "dep_1")
+			assertEqual(t, "the plain leg's subsidiary", one.Entries[0].Subsidiary, "")
 
 			whole, err := tx.BookBalance(ctx, bookA, pooled.Total(), ledger.Credit)
 			if err != nil {
@@ -398,27 +398,27 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Sto
 			assertEqual(t, "the control balance", whole, ledger.Amount(1290))
 
 			var detail ledger.Amount
-			for obligor, want := range map[string]ledger.Amount{"dep_1": 1040, "dep_2": 250} {
-				got, err := tx.BookBalance(ctx, bookA, pooled.For(obligor), ledger.Credit)
+			for subsidiary, want := range map[string]ledger.Amount{"dep_1": 1040, "dep_2": 250} {
+				got, err := tx.BookBalance(ctx, bookA, pooled.For(subsidiary), ledger.Credit)
 				if err != nil {
 					return err
 				}
-				assertEqual(t, "the balance of "+obligor, got, want)
+				assertEqual(t, "the balance of "+subsidiary, got, want)
 				detail += got
 			}
 			assertEqual(t, "the detail against the control", detail, whole)
 
-			// An obligor nothing was ever posted for is zero, like an account
+			// A subsidiary nothing was ever posted for is zero, like an account
 			// with no entries. Nothing here holds a list to check it against.
 			absent, err := tx.BookBalance(ctx, bookA, pooled.For("dep_9"), ledger.Credit)
 			if err != nil {
 				return err
 			}
-			assertEqual(t, "an obligor with no postings", absent, ledger.Amount(0))
+			assertEqual(t, "a subsidiary with no postings", absent, ledger.Amount(0))
 
 			// And the same detail asked for the other way round: the caller that
-			// does not know the obligors yet. It is the drill-down a control
-			// account's page renders, and it must agree with the per-obligor
+			// does not know the subsidiaries yet. It is the drill-down a control
+			// account's page renders, and it must agree with the per-subsidiary
 			// reads above rather than being a second count of the same entries.
 			breakdown, err := tx.SubsidiaryBalances(ctx, bookA, pooled, ledger.Credit)
 			if err != nil {
@@ -430,11 +430,11 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Sto
 				listed = append(listed, row.Subsidiary)
 				summed += row.Balance
 			}
-			assertEqual(t, "the obligors, in order", sliceString(listed), "[dep_1 dep_2]")
+			assertEqual(t, "the subsidiaries, in order", sliceString(listed), "[dep_1 dep_2]")
 			assertEqual(t, "the breakdown against the control", summed, whole)
 			assertEqual(t, "dep_1's row", breakdown[0].Balance, ledger.Amount(1040))
 
-			// The value-dated reads carry the obligor too: interest is computed
+			// The value-dated reads carry the subsidiary too: interest is computed
 			// from these, and a series that read the pool would accrue the whole
 			// bank's balance for every customer under it.
 			asAt, err := tx.ValueDateBalance(ctx, bookA, pooled.For("dep_1"), ledger.Credit, day(5))
@@ -451,15 +451,15 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Sto
 			assertEqual(t, "days dep_1 moved on", len(series.Movements), 1)
 			assertEqual(t, "dep_1's movement", series.Movements[0].Amount, ledger.Amount(40))
 
-			// And the listing: one obligor's statement is their own postings,
+			// And the listing: one subsidiary's statement is their own postings,
 			// each carrying the other leg of its own event.
-			forObligor, err := tx.ListTransactionsForPosition(ctx, bookA, pooled.For("dep_1"))
+			forSubsidiary, err := tx.ListTransactionsForPosition(ctx, bookA, pooled.For("dep_1"))
 			if err != nil {
 				return err
 			}
 			assertOrder(t, "dep_1's transactions",
-				ids(forObligor, func(t ledger.Transaction) string { return string(t.ID) }), "tx_1", "tx_3")
-			assertEqual(t, "legs on dep_1's first transaction", len(forObligor[0].Entries), 2)
+				ids(forSubsidiary, func(t ledger.Transaction) string { return string(t.ID) }), "tx_1", "tx_3")
+			assertEqual(t, "legs on dep_1's first transaction", len(forSubsidiary[0].Entries), 2)
 
 			forWhole, err := tx.ListTransactionsForPosition(ctx, bookA, pooled.Total())
 			if err != nil {

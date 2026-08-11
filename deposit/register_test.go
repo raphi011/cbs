@@ -198,7 +198,7 @@ func fund(t *testing.T, reg *Register, cash ledger.AccountID, acct Account, amou
 
 // entry is one leg against a position, for a test posting straight into the
 // book. Both halves together, always: an entry naming a control account and no
-// obligor is refused, and one naming a plain account and an obligor is too.
+// subsidiary is refused, and one naming a plain account and a subsidiary is too.
 func entry(p ledger.Position, amount ledger.Amount, d ledger.Direction) ledger.Entry {
 	return ledger.Entry{AccountID: p.Account, Subsidiary: p.Subsidiary, Amount: amount, Direction: d}
 }
@@ -244,7 +244,7 @@ func TestOpenAccountAddsNoRowToTheChartOfAccounts(t *testing.T) {
 	assertEqual(t, "rows in the customer folder", len(rows), 1)
 	assertEqual(t, "and it is the bank's line, not Alice's", rows[0].Name, "Customer Deposits (EUR)")
 	assertEqual(t, "a Liability", rows[0].Type, ledger.Liability)
-	assertEqual(t, "that pools obligors", rows[0].Control, true)
+	assertEqual(t, "that pools customers", rows[0].Control, true)
 
 	bruno, err := reg.OpenAccount(ctx, "Bruno", testAsset, prd, 0)
 	assertNoError(t, err)
@@ -776,7 +776,7 @@ func TestOneReceivableServesEveryAccountInAnAsset(t *testing.T) {
 	assertNoError(t, err)
 	assertEqual(t, "receivable type", shared.Type.String(), ledger.Asset.String())
 	assertEqual(t, "receivable asset", string(shared.Asset), "EUR")
-	assertEqual(t, "receivable pools obligors", shared.Control, true)
+	assertEqual(t, "receivable pools customers", shared.Control, true)
 	rows, err := book.ListAccounts(ctx, shared.SubledgerID)
 	assertNoError(t, err)
 	assertEqual(t, "rows in the receivable folder", len(rows), 1)
@@ -802,7 +802,7 @@ func TestOneReceivableServesEveryAccountInAnAsset(t *testing.T) {
 	if brunoAccrued <= 0 || carlaAccrued <= brunoAccrued {
 		t.Fatalf("expected two different non-zero accruals, got bruno %d, carla %d", brunoAccrued, carlaAccrued)
 	}
-	assertEqual(t, "the pool is the sum of its obligors", pool, brunoAccrued+carlaAccrued)
+	assertEqual(t, "the pool is the sum of its customers", pool, brunoAccrued+carlaAccrued)
 }
 
 // Four writes on one effective DAY — the opening row plus three setter calls —

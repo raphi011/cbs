@@ -34,7 +34,7 @@ type facilityDTO struct {
 
 	// The three control accounts this facility's money sits in: what it has
 	// drawn, what it owes in interest, and what the bank owes it back. The
-	// obligor under each is this facility's own ID, above, which is why there
+	// subsidiary under each is this facility's own ID, above, which is why there
 	// is no fourth field for it — see lending.FacilityPositions.
 	PrincipalAccount string `json:"principalAccount"`
 	InterestAccount  string `json:"interestAccount"`
@@ -251,8 +251,8 @@ type openFacilityRequest struct {
 type disburseFacilityRequest struct {
 	// Counterparty is any account in the facility's asset — the control account
 	// a customer's current account is pooled in, or the vault for a cash
-	// advance — and Subsidiary is the obligor within it, a deposit account's id
-	// on the first and empty on the second. The two travel together everywhere
+	// advance — and Subsidiary is which one within it, a deposit account's id on
+	// the first and empty on the second. The two travel together everywhere
 	// money moves; see captureHoldRequest, where the same pair is documented.
 	Counterparty string `json:"counterparty"`
 	Subsidiary   string `json:"subsidiary,omitempty"`

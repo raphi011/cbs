@@ -153,7 +153,7 @@ export const chapter: Chapter = {
       options: [
         "In a second set of accounts, one per depositor, that posts summary entries up to the line",
         "Nowhere — only the pooled total is knowable once money is deposited",
-        "In the entries against that line: each names the obligor whose money it moved, so one depositor's balance is the line filtered to them",
+        "In the entries against that line: each names the holder whose money it moved, so one depositor's balance is the line filtered to them",
         "In a stored balance column on the depositor's account record, kept in step with the line by a nightly job",
       ],
       answer: 2,

@@ -107,7 +107,7 @@ export const chapter: Chapter = {
       unit: { asset: "EUR", in: "minor" },
       tolerance: 0,
       explanation:
-        "The [[derived-balance|balance query]] sums debits minus credits for a debit-normal account: 500 − 200 + 150 − 50 = **400**. Nothing is read from an account row; the figure exists only as the result of that aggregate.\n\nAdd `AND subsidiary_id = ?` to the same query and it answers for one obligor instead: 300 for `fac_1`, 100 for `fac_2`. That the two come to 400 is not a reconciliation that could fail — it is the same sum with one clause dropped, which is what a [[ledger-vs-subledger|control account]] is here. See [[normal-balance]] for why the sign flips for a liability.",
+        "The [[derived-balance|balance query]] sums debits minus credits for a debit-normal account: 500 − 200 + 150 − 50 = **400**. Nothing is read from an account row; the figure exists only as the result of that aggregate.\n\nAdd `AND subsidiary_id = ?` to the same query and it answers for one holder instead: 300 for `fac_1`, 100 for `fac_2`. That the two come to 400 is not a reconciliation that could fail — it is the same sum with one clause dropped, which is what a [[ledger-vs-subledger|control account]] is here. See [[normal-balance]] for why the sign flips for a liability.",
     },
     {
       kind: "truefalse",

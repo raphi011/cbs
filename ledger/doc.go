@@ -9,13 +9,13 @@
 //
 // # Control accounts
 //
-// An account may pool obligors: one chart-of-accounts line standing for many
-// customers, with every entry against it naming which. What the obligor IS
+// An account may pool subsidiaries: one chart-of-accounts line standing for
+// many customers, with every entry against it naming which. What a subsidiary IS
 // stays outside this package — Entry.Subsidiary is an opaque string the layer
 // above supplies, with no table behind it — so the ledger gains a dimension
 // without learning what a customer is. Every balance read therefore takes a
 // Position rather than an account: the whole pool, which is the control figure,
-// or one obligor within it. The two come from one aggregate with one predicate
+// or one subsidiary within it. The two come from one aggregate with one predicate
 // between them, so no total is stored anywhere and nothing can drift.
 //
 // It also holds no state. Every entity lives behind the Store and Tx

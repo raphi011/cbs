@@ -61,7 +61,7 @@ type TrialBalanceRow struct {
 	Type    AccountType
 	Asset   AssetCode
 
-	// Control says this line stands for many obligors rather than one position.
+	// Control says this line stands for many subsidiaries rather than one position.
 	// It is what makes the row count here a property of the INSTITUTION rather
 	// than of its customer base, and it is carried so a reader can see which
 	// lines those are without joining anything.
@@ -130,8 +130,8 @@ func (s *Book) TrialBalance(ctx context.Context, asOf time.Time) (TrialBalance, 
 // per account could read half a transaction.
 //
 // Every account is read WHOLE — a control account contributes its pool and not
-// its obligors — which is what a chart of accounts is a listing of. One
-// customer's share of a control line is BookBalanceTx over that obligor's
+// its subsidiaries — which is what a chart of accounts is a listing of. One
+// customer's share of a control line is BookBalanceTx over that subsidiary's
 // position, and it is a different document.
 func (s *Book) TrialBalanceTx(ctx context.Context, tx Tx, asOf time.Time) (TrialBalance, error) {
 	accounts, err := tx.ListAccounts(ctx, s.id)

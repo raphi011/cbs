@@ -140,7 +140,7 @@ General Ledger
     └── Fee Income (Revenue)
 \`\`\`
 
-It is still a control account — one line standing for many — but it is also the only place the money is recorded. Every entry against it names *whose* money the leg is: the **obligor**. Alice's balance is that line's balance filtered to Alice; total customer deposits is the same sum with the filter dropped. So Σ(detail) = control is not a nightly proof but one statement read two ways, and there is no second number to reconcile against. What it costs is speed — every balance is still added up from entries.
+It is still a control account — one line standing for many — but it is also the only place the money is recorded. Every entry against it names *whose* money the leg is: the **holder**, recorded in \`subsidiary_id\`. Alice's balance is that line's balance filtered to Alice; total customer deposits is the same sum with the filter dropped. So Σ(detail) = control is not a nightly proof but one statement read two ways, and there is no second number to reconcile against. What it costs is speed — every balance is still added up from entries.
 
 What the control account buys is the chart of accounts itself: a bank with fifty thousand customers and ten thousand loans has a chart of a few dozen lines, one per asset per role plus its own positions, and its trial balance is a page rather than a book.`,
   },
@@ -1048,7 +1048,7 @@ The [[audit-trail]] records every snapshot event for complete auditability.`,
   },
   statement: {
     title: "Account statement",
-    body: `A deposit account has **no ledger of its own**, and no line of its own in the chart of accounts either. Its statement is *derived* — every [[double-entry]] transaction that touches this customer's **position**, meaning the customer-deposit [[ledger-vs-subledger|control account]] filtered to them as obligor, projected onto that one leg, oldest→newest, with a running balance.
+    body: `A deposit account has **no ledger of its own**, and no line of its own in the chart of accounts either. Its statement is *derived* — every [[double-entry]] transaction that touches this customer's **position**, meaning the customer-deposit [[ledger-vs-subledger|control account]] filtered to them as holder, projected onto that one leg, oldest→newest, with a running balance.
 
 The running balance reconciles to the account's **book** balance: a built-in correctness check. Holds never appear here — they post nothing to the ledger until captured.`,
   },
@@ -1085,7 +1085,7 @@ FROM entries WHERE book_id = ? AND account_id = ?;   -- the first ? is the norma
 
 Hardcoding \`debit\` there would be right for every asset and expense account and would negate every liability, equity and revenue one: a customer's checking account holding 750.00 would report −750.00.
 
-One customer's balance is the same query with \`AND subsidiary_id = ?\` added, because their account is not a line of the chart of accounts but an obligor under a [[ledger-vs-subledger|control account]]. The pooled total is that clause dropped — so the control figure and the detail behind it are one sum asked two ways, never two numbers that could disagree.
+One customer's balance is the same query with \`AND subsidiary_id = ?\` added, because their account is not a line of the chart of accounts but one holder under a [[ledger-vs-subledger|control account]]. The pooled total is that clause dropped — so the control figure and the detail behind it are one sum asked two ways, never two numbers that could disagree.
 
 A stored balance is a **cache of a derivable fact**, and caches go stale: any bug, crash or concurrent write that updates one of the two without the other leaves a number no one can reconcile. Deriving it means the [[audit-trail|append-only history]] is the single source of truth and the balance cannot disagree with it.
 
@@ -1455,7 +1455,7 @@ Four units of work at three institutions, so the API answers **202 Accepted** wi
 
 An [[overdraft|overdraft limit]] extending a deposit account below zero is a THIRD form of credit in this system, but it is deliberately not a facility: it has no drawn principal of its own, no schedule and no commitment — it is priced credit layered onto an existing liability position, not a standalone [[account-type-asset|asset]]. (It does get a position under the bank's accrued-interest receivable the moment a non-zero rate is set: interest earned is a real asset wherever it was earned.)
 
-A facility is not a line of the chart of accounts either. It is an **obligor** under three of the bank's [[ledger-vs-subledger|control accounts]] — drawn principal and accrued interest receivable, both [[account-type-asset|Asset]], plus the Liability line for interest the bank owes back after a backdated correction — with its own id named on every entry that belongs to it. A bank lending to ten thousand borrowers has three chart-of-accounts rows for its loan book, not thirty thousand.
+A facility is not a line of the chart of accounts either. It is one **holder** under three of the bank's [[ledger-vs-subledger|control accounts]] — drawn principal and accrued interest receivable, both [[account-type-asset|Asset]], plus the Liability line for interest the bank owes back after a backdated correction — with its own id named on every entry that belongs to it. A bank lending to ten thousand borrowers has three chart-of-accounts rows for its loan book, not thirty thousand.
 
 The **commitment** is the ceiling the customer may draw against, and it is stored: it is a fact about the contract. What is **drawn** is DERIVED — the loan-principal line's balance filtered to this facility, never a stored field, the same discipline [[derived-balance|a book balance]] follows — and the **accrued interest** is the rounded minor-unit figure of the facility's own exact [[accrued-interest|accrued-interest record]], which its position in the receivable always equals.`,
   },

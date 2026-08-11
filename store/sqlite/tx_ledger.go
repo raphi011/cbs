@@ -743,8 +743,8 @@ func (t *tx) ListTransactions(ctx context.Context, book ledger.BookID) ([]ledger
 // ListTransactionsForPosition returns every transaction with a leg on the
 // position — with ALL of its legs, not only the matching ones, which is why the
 // position predicate is an EXISTS rather than a join condition. Over a control
-// account that means one obligor's statement carries the other side of each of
-// its own transactions, and none of another obligor's.
+// account that means one subsidiary's statement carries the other side of each of
+// its own transactions, and none of another subsidiary's.
 //
 // The EXISTS names the entries alias `x` rather than `e`, so subsidiaryClause,
 // which is written against `e`, cannot be used here.
@@ -872,12 +872,12 @@ func (t *tx) MarkReversed(ctx context.Context, book ledger.BookID, id ledger.Tra
 	return ledger.ErrTransactionAlreadyReversed
 }
 
-// subsidiaryClause is the obligor half of a position's entry predicate, and the
+// subsidiaryClause is the subsidiary half of a position's entry predicate, and the
 // one place in this store where "an empty Subsidiary means the whole account"
 // is written down.
 //
 // An empty one adds NO predicate rather than `subsidiary_id = ”`, so a control
-// account's own balance is the identical aggregate with the obligor dropped.
+// account's own balance is the identical aggregate with the subsidiary dropped.
 // That is what makes Σ(detail) == control a property of these three queries
 // instead of a figure to reconcile. It is unambiguous because
 // ledger.Book.PostTransactionTx leaves no account holding qualified and
@@ -902,7 +902,7 @@ func subsidiaryClause(pos ledger.Position) (string, []any) {
 // double-count the correction.
 //
 // Like every aggregate, a position with no entries is zero, including an
-// account that does not exist and an obligor that never had a posting; callers
+// account that does not exist and a subsidiary that never had a posting; callers
 // wanting ErrAccountNotFound read the account first.
 func (t *tx) BookBalance(ctx context.Context, book ledger.BookID, pos ledger.Position, normal ledger.Direction) (ledger.Amount, error) {
 	if err := t.inShape("entries"); err != nil {
@@ -924,10 +924,10 @@ func (t *tx) BookBalance(ctx context.Context, book ledger.BookID, pos ledger.Pos
 	return balance, nil
 }
 
-// SubsidiaryBalances groups a control account's entries by obligor. See
+// SubsidiaryBalances groups a control account's entries by subsidiary. See
 // ledger.Tx for the contract.
 //
-// HAVING rather than a filter in Go: an obligor whose entries net to zero is a
+// HAVING rather than a filter in Go: a subsidiary whose entries net to zero is a
 // customer who has repaid, and a listing of what a bank owes should not carry a
 // row of nothing. The empty subsidiary cannot appear on a control account —
 // PostTransactionTx refuses an unqualified entry against one — so no predicate

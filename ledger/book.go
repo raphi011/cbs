@@ -279,7 +279,7 @@ func (s *Book) CreateAccountTx(ctx context.Context, tx Tx, subledgerID Subledger
 	return s.createAccountTx(ctx, tx, subledgerID, name, accountType, asset, false)
 }
 
-// CreateControlAccountTx creates an account that pools obligors: one chart-of-
+// CreateControlAccountTx creates an account that pools subsidiaries: one chart-
 // accounts line standing for many, with each entry against it naming which.
 //
 // It is a separate method rather than a flag on CreateAccountTx because control
@@ -387,7 +387,7 @@ func (s *Book) findSubledgerTx(ctx context.Context, tx Tx, ledgerID LedgerID, na
 // Expense account a Revenue one, whose normal balance runs the other way — a
 // mismatch that would surface only as a balance with the wrong sign.
 //
-// Whether the account pools obligors is matched for the same reason and is the
+// Whether the account pools subsidiaries is matched for the same reason and is the
 // sharper case of it: handing a caller posting unqualified entries a control
 // account, or the reverse, is refused at the posting rather than silently
 // mis-booked — but it is refused every time from then on, and the account it
@@ -396,7 +396,7 @@ func (s *Book) EnsureAccountTx(ctx context.Context, tx Tx, subledgerID Subledger
 	return s.ensureAccountTx(ctx, tx, subledgerID, name, accountType, asset, false)
 }
 
-// EnsureControlAccountTx is EnsureAccountTx for an account that pools obligors.
+// EnsureControlAccountTx is EnsureAccountTx for an account that pools subsidiaries.
 // See CreateControlAccountTx for why the two are separate methods.
 func (s *Book) EnsureControlAccountTx(ctx context.Context, tx Tx, subledgerID SubledgerID, name string, accountType AccountType, asset AssetCode) (Account, error) {
 	return s.ensureAccountTx(ctx, tx, subledgerID, name, accountType, asset, true)
@@ -539,7 +539,7 @@ type PostTransactionRequest struct {
 //     (100 BTC) nets to zero overall while inventing most of a hundred
 //     million euro. See validateBalance.
 //  7. Asset and Expense positions must have sufficient book balance — the
-//     obligor's, on a control account, and not the pool's.
+//     subsidiary's, on a control account, and not the pool's.
 //
 // If all validations pass, the entries are atomically applied to the
 // account balances and the transaction is recorded.
@@ -623,11 +623,11 @@ func (s *Book) PostTransactionTx(ctx context.Context, tx Tx, req PostTransaction
 
 	// Validate: the dimension matches the account, both ways round.
 	//
-	// A control account pools obligors, so an entry against one that names none
-	// is money in the pool belonging to nobody: the control figure would still
-	// be right, every detail under it wrong, and nothing afterwards could say
-	// whose it was. An entry against a plain account that names an obligor is
-	// the mirror: nothing aggregates a plain account by obligor, so the
+	// A control account pools subsidiaries, so an entry against one that names
+	// none is money in the pool belonging to nobody: the control figure would
+	// still be right, every detail under it wrong, and nothing afterwards could
+	// say whose it was. An entry against a plain account that names a subsidiary
+	// is the mirror: nothing aggregates a plain account by subsidiary, so the
 	// dimension is written and never read while the caller believes it recorded
 	// whose money this is. Neither is recoverable once posted, and neither
 	// breaks the double-entry invariant, so neither would be noticed.
@@ -777,8 +777,8 @@ func validateBalance(entries []Entry, accounts map[AccountID]Account) error {
 // Liability, Equity, and Revenue accounts are not checked.
 //
 // The unit is the position and not the account, and on a control account those
-// differ in the one direction that matters: a pool is never negative while an
-// obligor under it is, so a check that kept reading the account would still
+// differ in the one direction that matters: a pool is never negative while a
+// subsidiary under it is, so a check that kept reading the account would still
 // pass, still report nothing, and have stopped guarding. Every Asset-side
 // facility would be unbounded and the double-entry invariant would hold
 // throughout. It is the one defect in the dimension that produces no error and
@@ -904,7 +904,7 @@ func (s *Book) ReverseTransactionTx(ctx context.Context, tx Tx, txID Transaction
 		entries[i] = Entry{
 			ID:        EntryID(id),
 			AccountID: e.AccountID,
-			// The original leg's obligor, not the pool: a reversal that
+			// The original leg's subsidiary, not the pool: a reversal that
 			// credited the control account unqualified would leave the pool
 			// square and one customer permanently short.
 			Subsidiary: e.Subsidiary,
@@ -958,9 +958,9 @@ func (s *Book) ReverseTransactionTx(ctx context.Context, tx Tx, txID Transaction
 
 // BookBalance computes the current book balance of a position.
 //
-// A position is an account, or one obligor within a control account —
+// A position is an account, or one subsidiary within a control account —
 // acct.Total() and acct.For(id) respectively. There is one balance API and not
-// two, because a caller holding an account id and a caller holding an obligor
+// two, because a caller holding an account id and a caller holding a subsidiary
 // are asking the same question of the same entries with one predicate between
 // them.
 //
@@ -994,9 +994,9 @@ func (s *Book) BookBalance(ctx context.Context, pos Position) (Amount, error) {
 // way an account's balance runs is a property of the account, and a caller that
 // supplies it is asserting something it cannot check.
 //
-// An obligor with no entries reads as zero, like an account with none. Nothing
-// here can tell an obligor that never had a posting from one that never
-// existed, and this package holds no list against which to try.
+// A subsidiary with no entries reads as zero, like an account with none.
+// Nothing here can tell a subsidiary that never had a posting from one that
+// never existed, and this package holds no list against which to try.
 func (s *Book) BookBalanceTx(ctx context.Context, tx Tx, pos Position) (Amount, error) {
 	acct, err := tx.GetAccount(ctx, s.id, pos.Account)
 	if err != nil {

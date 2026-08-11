@@ -188,7 +188,7 @@ type Account struct {
 	Asset       AssetCode
 	CreatedAt   time.Time
 
-	// Control says this account pools obligors: every entry against it must
+	// Control says this account pools subsidiaries: every entry against it must
 	// name one, and every entry against an account without it must not. Both
 	// refusals are made in PostTransactionTx, which is where what each would
 	// otherwise cost is written down.
@@ -200,19 +200,19 @@ type Account struct {
 	Control bool
 }
 
-// Position is what a balance is asked for: an account, and at most one obligor
-// within it.
+// Position is what a balance is asked for: an account, and at most one
+// subsidiary within it.
 //
 // The two travel together because every read that grows the dimension needs
 // both, and a caller carrying them apart would eventually check one account's
-// balance against another obligor's. An empty Subsidiary means the WHOLE
+// balance against another subsidiary's. An empty Subsidiary means the WHOLE
 // account — on a control account that is the control figure, the same sum with
-// the obligor dropped from the WHERE clause, which is what makes
+// the subsidiary dropped from the WHERE clause, which is what makes
 // Σ(detail) == control one statement read two ways rather than a nightly proof.
 //
-// There is no ambiguity between "the whole pool" and "the obligor named by the
-// empty string", because the two posting refusals in PostTransactionTx leave no
-// account holding both kinds of entry.
+// There is no ambiguity between "the whole pool" and "the subsidiary named by
+// the empty string", because the two posting refusals in PostTransactionTx leave
+// no account holding both kinds of entry.
 type Position struct {
 	Account    AccountID
 	Subsidiary string
@@ -222,9 +222,9 @@ type Position struct {
 // account, or a plain account's own balance.
 func (a AccountID) Total() Position { return Position{Account: a} }
 
-// For is the position of one obligor within a control account. The string is
-// the obligor's id in the layer that knows what an obligor is; this package
-// does not resolve it and does not require that it resolve.
+// For is the position of one subsidiary within a control account. The string is
+// an id in the layer that knows what the subsidiary is; this package does not
+// resolve it and does not require that it resolve.
 func (a AccountID) For(subsidiary string) Position {
 	return Position{Account: a, Subsidiary: subsidiary}
 }
@@ -244,8 +244,8 @@ type Entry struct {
 	Amount    Amount
 	Direction Direction
 
-	// Subsidiary is the obligor this leg belongs to within a control account: a
-	// deposit account, a facility. It is empty on an account that pools nothing.
+	// Subsidiary is what this leg belongs to within a control account: a deposit
+	// account, a facility. It is empty on an account that pools nothing.
 	//
 	// It is an opaque string supplied by the layer above, with no foreign key
 	// and no table of subsidiaries behind it — exactly the stance AccountID

@@ -211,8 +211,8 @@ func (s *Server) handleBookBalance(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	// An obligor's balance, or the whole account's when none is named. On a
-	// control account the second is the sum of the first over every obligor,
+	// A subsidiary's balance, or the whole account's when none is named. On a
+	// control account the second is the sum of the first over every subsidiary,
 	// which is what makes the drill-down below add up.
 	pos := aid.For(r.URL.Query().Get("subsidiary"))
 	bal, err := p.Ledger.BookBalance(r.Context(), pos)
@@ -234,7 +234,7 @@ func (s *Server) handleBookBalance(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handleAccountSubsidiaries is the drill-down: which obligors a control account
+// handleAccountSubsidiaries is the drill-down: which subsidiaries a control account
 // is holding money for, and how much of the line is each one's.
 //
 // A plain account answers with an empty list rather than a 404 or an error. It
@@ -301,7 +301,7 @@ func (s *Server) handleListTransactions(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	// account alone is the WHOLE account, which on a control line is every
-	// obligor's postings; account plus subsidiary is one obligor's. That is the
+	// subsidiary's postings; account plus subsidiary is one of them. That is the
 	// same rule ledger.Position states, and it is why there is no separate
 	// route for a customer's statement: a customer is a position.
 	var txs []ledger.Transaction

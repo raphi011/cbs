@@ -74,7 +74,7 @@ func TestOpenTermLoan_PoolsUnderTheAssetsControlLinesAndHasNoSchedule(t *testing
 	}
 
 	// Two lines, both Asset, both in the loan's own asset, and the loan is an
-	// obligor under each rather than a row of its own. Separate lines because
+	// subsidiary under each rather than a row of its own. Separate lines because
 	// repayment allocates to interest before principal.
 	at := positions(t, p, loan.ID)
 	for _, tt := range []struct {
@@ -92,10 +92,10 @@ func TestOpenTermLoan_PoolsUnderTheAssetsControlLinesAndHasNoSchedule(t *testing
 			t.Errorf("%s account asset = %s, want EUR", tt.label, gl.Asset)
 		}
 		if !gl.Control {
-			t.Errorf("%s account does not pool obligors", tt.label)
+			t.Errorf("%s account does not pool subsidiaries", tt.label)
 		}
 		if tt.pos.Subsidiary != string(loan.ID) {
-			t.Errorf("%s obligor = %q, want %s", tt.label, tt.pos.Subsidiary, loan.ID)
+			t.Errorf("%s subsidiary = %q, want %s", tt.label, tt.pos.Subsidiary, loan.ID)
 		}
 	}
 	if at.Principal.Account == at.Receivable.Account {

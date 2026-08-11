@@ -228,13 +228,13 @@ CREATE TABLE accounts (
     -- asset would become a migration. settlement_member_accounts.asset below
     -- points at the same paragraph.
     asset        TEXT NOT NULL,
-    -- Whether this account pools obligors. accounts.control in
+    -- Whether this account pools subsidiaries. accounts.control in
     -- bank/0001_init.sql carries the argument and the two posting refusals it
     -- turns on.
     --
     -- No account in THIS book is one, and that is the settlement agent's shape
     -- rather than a gap: it holds a reserve account per member per asset and
-    -- has no customers at all, so there is no obligor for a line here to stand
+    -- has no customers at all, so there is no subsidiary for a line here to stand
     -- for. The column exists because the store is one implementation over three
     -- schemas and an account read back here must be the account that was
     -- written.
@@ -312,14 +312,14 @@ CREATE TABLE entries (
     position       INTEGER NOT NULL,
     id             TEXT NOT NULL,
     account_id     TEXT NOT NULL,
-    -- The obligor a leg belongs to within a control account.
+    -- What a leg belongs to within a control account.
     -- entries.subsidiary_id in bank/0001_init.sql carries the argument, and the
     -- point of it — the control figure being this column dropped from a WHERE
     -- clause rather than a stored total.
     --
     -- Every row here holds '', because no account in this book is a control
     -- account: see accounts.control above for why the settlement agent has no
-    -- obligor to name. The column exists for that comment's reason.
+    -- subsidiary to name. The column exists for that comment's reason.
     subsidiary_id  TEXT NOT NULL DEFAULT '',
     amount         INTEGER NOT NULL,
     direction      INTEGER NOT NULL,

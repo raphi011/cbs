@@ -35,7 +35,7 @@ import { cn } from "@/lib/utils";
 
 interface Leg {
   accountId: string;
-  // Whose money this leg is, when the account it posts to pools obligors. The
+  // Whose money this leg is, when the account it posts to pools subsidiaries. The
   // server refuses a leg against a control account that names nobody, and one
   // against a plain account that names somebody — so this field appears exactly
   // when the picked account says it must.
@@ -74,7 +74,7 @@ export function PostTransactionForm({ pid }: { pid: string }) {
     const acct = accounts.data?.find((a) => a.id === accountId);
     return acct ? byCode.get(acct.asset) : undefined;
   }
-  function poolsObligors(accountId: string) {
+  function poolsSubsidiaries(accountId: string) {
     return accounts.data?.find((a) => a.id === accountId)?.control ?? false;
   }
 
@@ -116,7 +116,7 @@ export function PostTransactionForm({ pid }: { pid: string }) {
     everyLegResolved &&
     debits > 0 &&
     [...netByAsset.values()].every((net) => net === 0);
-  // A leg against a control account with no obligor is refused by the server,
+  // A leg against a control account with no subsidiary is refused by the server,
   // so the form refuses it first: the alternative is a 400 the user cannot read
   // the cause of off a form that looked complete.
   const ready =
@@ -125,7 +125,7 @@ export function PostTransactionForm({ pid }: { pid: string }) {
       (l) =>
         l.accountId.trim() &&
         (l.amount ?? 0) > 0 &&
-        (!poolsObligors(l.accountId) || l.subsidiary.trim() !== ""),
+        (!poolsSubsidiaries(l.accountId) || l.subsidiary.trim() !== ""),
     );
 
   function reset() {

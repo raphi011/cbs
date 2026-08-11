@@ -59,10 +59,10 @@ export interface Account {
   name: string;
   type: AccountType;
   asset: string;
-  // Whether this line pools obligors. A control account stands for many — every
-  // customer's deposits, the whole loan book — and every posting against it
-  // names whose. Two things depend on it: a posting form has to ask for the
-  // obligor, and an account page shows the detail under the line rather than
+  // Whether this line pools subsidiaries. A control account stands for many —
+  // every customer's deposits, the whole loan book — and every posting against
+  // it names whose. Two things depend on it: a posting form has to ask for the
+  // subsidiary, and an account page shows the detail under the line rather than
   // only its total.
   control: boolean;
   createdAt: string;
@@ -71,7 +71,7 @@ export interface Account {
 export interface Entry {
   id?: string;
   accountId: string;
-  // The obligor this leg belongs to within a control account — a deposit
+  // The subsidiary this leg belongs to within a control account — a deposit
   // account's id, a facility's. Absent means the whole account, which is what a
   // leg against one of the bank's own positions carries. A statement for one
   // customer is the legs against their control account WITH their id: without
@@ -146,9 +146,9 @@ export interface AuditEvent {
 // value-dated away from its booking date. `asOf` defaults to now.
 export interface BookBalance {
   accountId: string;
-  // The obligor these figures are for, absent when they are the whole
+  // The subsidiary these figures are for, absent when they are the whole
   // account's. On a control account the second is the sum of the first over
-  // every obligor under it.
+  // every subsidiary under it.
   subsidiary?: string;
   asset: string;
   balance: number;
@@ -708,7 +708,7 @@ export interface CreateAccountRequest {
 export interface EntryInput {
   accountId: string;
   // Required when accountId is a control account and refused when it is not:
-  // the ledger accepts no unqualified entry against a line that pools obligors,
+  // the ledger accepts no unqualified entry against a line that pools subsidiaries,
   // and no qualified one against a line that does not.
   subsidiary?: string;
   amount: number;
@@ -779,9 +779,9 @@ export interface CreateHoldRequest {
 
 export interface CaptureHoldRequest {
   counterparty: string;
-  // The obligor within the counterparty account, when it pools them — another
-  // customer of this bank is a position, not an account of their own. Omitted
-  // for one of the bank's own accounts.
+  // The subsidiary within the counterparty account, when it pools them —
+  // another customer of this bank is a position, not an account of their own.
+  // Omitted for one of the bank's own accounts.
   subsidiary?: string;
   amount: number;
   description?: string;

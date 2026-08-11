@@ -28,7 +28,7 @@ type depositAccountDTO struct {
 	ID   string `json:"id"`
 	Name string `json:"name"`
 	// ControlAccount is the chart-of-accounts line this account's money is
-	// pooled in. There is no second field for the obligor within it: that is
+	// pooled in. There is no second field for the subsidiary within it: that is
 	// this account's own ID, above. A client naming a customer's money in a
 	// posting sends the two together — see entryDTO.Subsidiary.
 	ControlAccount string `json:"controlAccount"`
@@ -223,7 +223,7 @@ type createHoldRequest struct {
 
 type captureHoldRequest struct {
 	Counterparty string `json:"counterparty"`
-	// Subsidiary names the obligor when Counterparty is a control account: a
+	// Subsidiary names which one when Counterparty is a control account: a
 	// deposit account's id when the money is going to another customer of this
 	// bank, and empty for one of the bank's own accounts. A control account
 	// named without one is refused by the ledger, and so is a plain one named

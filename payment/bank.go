@@ -77,7 +77,7 @@ const (
 //     it has, and the interval between is the unreconciled position.
 //   - Unclaimed (Liability): where a credit goes when the payee's account will
 //     not take it. Money the bank owes the holder of an account that can no
-//     longer receive it, and the one of these accounts that pools obligors —
+//     longer receive it, and the one of these accounts that pools holders —
 //     each leg names whose the money is.
 //   - ReturnsReceivable (Asset): a claim on a biller, opened when this bank
 //     honours a refund it cannot fund out of the biller's account. The

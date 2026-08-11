@@ -42,13 +42,13 @@ type Slot struct {
 	// Type is the account type the slot requires.
 	Type AccountType
 
-	// Control says the slot requires an account that pools obligors.
+	// Control says the slot requires an account that pools subsidiaries.
 	Control bool
 
 	// ByProduct says a product may override the bank-wide row for this slot.
 	//
 	// A slot that HOLDS A BALANCE never may, and that is the whole of this
-	// field. Money already posted under an obligor stays in the line it was
+	// field. Money already posted under a subsidiary stays in the line it was
 	// posted to; if a later resolution answered with a different line, the
 	// customer's balance would be the second half only and the first half would
 	// be stranded where nothing reads it. Moving a balance between control
@@ -151,19 +151,19 @@ func (s *Book) SlotAccountTx(ctx context.Context, tx Tx, product string, slot Sl
 	return tx.GetSlotAccount(ctx, s.id, "", slot.Key, asset)
 }
 
-// SlotPositionTx is SlotAccountTx for a slot that pools obligors: the account,
-// with the obligor already on it.
+// SlotPositionTx is SlotAccountTx for a slot that pools subsidiaries: the
+// account, with the subsidiary already on it.
 //
 // The two travel together for the reason Position exists — a caller holding an
-// account and an obligor apart eventually pairs one flow's account with
-// another's obligor — and it is why nothing here hands back a bare AccountID for
-// a control slot.
-func (s *Book) SlotPositionTx(ctx context.Context, tx Tx, product string, slot Slot, asset AssetCode, obligor string) (Position, error) {
+// account and a subsidiary apart eventually pairs one flow's account with
+// another's subsidiary — and it is why nothing here hands back a bare AccountID
+// for a control slot.
+func (s *Book) SlotPositionTx(ctx context.Context, tx Tx, product string, slot Slot, asset AssetCode, subsidiary string) (Position, error) {
 	account, err := s.SlotAccountTx(ctx, tx, product, slot, asset)
 	if err != nil {
 		return Position{}, err
 	}
-	return account.For(obligor), nil
+	return account.For(subsidiary), nil
 }
 
 // ListSlotAccounts returns the whole mapping, ordered by slot, product and

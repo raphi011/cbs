@@ -447,7 +447,7 @@ export function useDepositBalance(pid: string, did: string) {
 // `controlAccount` must be a real account id — call this only once the deposit
 // account has loaded — and the statement is that account's postings UNDER THIS
 // CUSTOMER. Dropping the customer would render the whole bank's deposits as one
-// customer's statement, which is what a control account without its obligor is.
+// customer's statement, which is what a control account without its subsidiary is.
 export function useStatement(pid: string, did: string, controlAccount: string) {
   const txq = useTransactions(pid, controlAccount, did);
   const balq = useDepositBalance(pid, did);

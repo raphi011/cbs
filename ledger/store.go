@@ -99,7 +99,7 @@ type Tx interface {
 	ListTransactions(ctx context.Context, book BookID) ([]Transaction, error)
 
 	// ListTransactionsForPosition returns every transaction with a leg on the
-	// position: on the account, or on one obligor within it. A transaction is
+	// position: on the account, or on one subsidiary within it. A transaction is
 	// returned whole — all of its legs, not only the matching ones.
 	ListTransactionsForPosition(ctx context.Context, book BookID, pos Position) ([]Transaction, error)
 
@@ -112,11 +112,11 @@ type Tx interface {
 	// the account type's normal direction; entries in that direction add.
 	//
 	// A Position with an empty Subsidiary is the WHOLE account and not the
-	// obligor named by the empty string: it aggregates every entry against the
+	// subsidiary named by the empty string: it aggregates every entry against the
 	// account, which on a control account is the control figure. The two
 	// readings cannot both apply, because PostTransactionTx leaves no account
 	// holding qualified and unqualified entries at once — so a store adds the
-	// obligor to the predicate only when it is non-empty, and Σ(detail) ==
+	// subsidiary to the predicate only when it is non-empty, and Σ(detail) ==
 	// control follows from the SQL rather than from a reconciliation.
 	BookBalance(ctx context.Context, book BookID, pos Position, normal Direction) (Amount, error)
 
@@ -141,12 +141,12 @@ type Tx interface {
 	// fixtures do.
 	ValueDateBalance(ctx context.Context, book BookID, pos Position, normal Direction, before time.Time) (Amount, error)
 
-	// SubsidiaryBalances is the balance of every obligor under an account, in
-	// one query rather than one BookBalance per obligor: the caller does not
-	// know the obligors before it asks, which is the whole difference between
+	// SubsidiaryBalances is the balance of every subsidiary under an account, in
+	// one query rather than one BookBalance per subsidiary: the caller does not
+	// know the subsidiaries before it asks, which is the whole difference between
 	// this and reading a Position.
 	//
-	// Ordered by obligor, and obligors netting to zero are omitted — a customer
+	// Ordered by subsidiary, and subsidiaries netting to zero are omitted — a customer
 	// who has repaid is not a row in what the bank owes. normal is the account
 	// type's normal direction, as it is for BookBalance.
 	SubsidiaryBalances(ctx context.Context, book BookID, account AccountID, normal Direction) ([]SubsidiaryBalance, error)

@@ -321,7 +321,7 @@ export const chapter: Chapter = {
       ],
       answers: [0, 1, 3],
       explanation:
-        "A control account is one line standing for many, and *both* designs have that — so option c is not a difference. What differs is whether the total is a second copy of a number. Classically the general ledger stores the control figure while a separate subledger holds one account per customer, and because the same money is written down twice the two can drift, which is what the daily reconciliation exists to catch. Here every entry against the line names its **obligor**, so one customer's balance is the line filtered to them and the pooled total is the same sum unfiltered — [[derived-balance|one number, read two ways]]. The detail is fully recoverable, so option e is wrong; it simply lives in the entries rather than in accounts of its own. See [[ledger-vs-subledger]].",
+        "A control account is one line standing for many, and *both* designs have that — so option c is not a difference. What differs is whether the total is a second copy of a number. Classically the general ledger stores the control figure while a separate subledger holds one account per customer, and because the same money is written down twice the two can drift, which is what the daily reconciliation exists to catch. Here every entry against the line names its **holder**, so one customer's balance is the line filtered to them and the pooled total is the same sum unfiltered — [[derived-balance|one number, read two ways]]. The detail is fully recoverable, so option e is wrong; it simply lives in the entries rather than in accounts of its own. See [[ledger-vs-subledger]].",
     },
   ],
 };

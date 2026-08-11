@@ -368,7 +368,7 @@ const incomeSubledgerName = "Income"
 //
 // A slot is the ROLE, and which account fills it is a row in the mapping rather
 // than a name matched here — see ledger.Slot. What each declares is the account
-// it will accept: two control accounts holding obligors' balances, and one
+// it will accept: two control accounts holding customers' balances, and one
 // Revenue line that is the bank's own.
 //
 // Only the income slot is ByProduct. A bank may earn a savings product's
@@ -655,7 +655,7 @@ func (r *Register) positionTx(ctx context.Context, tx Tx, acct Account) (ledger.
 // layer above that has to post to it.
 //
 // It hands back both halves in one value because a caller carrying an account
-// and an obligor apart would eventually pair one customer's account with
+// and a customer apart would eventually pair one customer's account with
 // another's id — and on a control account that posting balances, passes every
 // check, and pays one customer out of another's money.
 //
@@ -699,10 +699,10 @@ func (r *Register) PositionTx(ctx context.Context, tx Tx, id AccountID) (ledger.
 
 // interestAccounts is where one account's overdraft interest moves between: the
 // customer's own position, and their share of the bank's accrued-interest
-// receivable. Both carry the same obligor, which is what makes one shared
+// receivable. Both name the same customer, which is what makes one shared
 // receivable answer "what does THIS customer owe".
 //
-// The income line is not here. It is the bank's own, it takes no obligor, and it
+// The income line is not here. It is the bank's own, it pools nobody, and it
 // is the one of the three a product may have its own of — so it is resolved
 // where the product is known, which is inside the accrual.
 type interestAccounts struct {

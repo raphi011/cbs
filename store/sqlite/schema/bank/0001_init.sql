@@ -272,7 +272,7 @@ CREATE TABLE accounts (
     -- subledgers (book_id, ledger_id) broke that same subtest and was removed for
     -- the same reason.
     asset        TEXT NOT NULL,
-    -- Whether this account pools obligors: one chart-of-accounts line standing
+    -- Whether this account pools subsidiaries: one chart-of-accounts line standing
     -- for many customers, with entries.subsidiary_id saying which. Fixed at
     -- creation, like type and asset, and for a stronger reason than either —
     -- flipping it would strand every leg already posted on the wrong side of
@@ -282,9 +282,9 @@ CREATE TABLE accounts (
     -- The two refusals are the substance and neither is expressible here, since
     -- a control account and a plain one differ only in which entries they will
     -- ACCEPT. ledger.Book.PostTransactionTx refuses an entry against a control
-    -- account that names no obligor — money in the pool belonging to nobody,
+    -- account that names no subsidiary — money in the pool belonging to nobody,
     -- with the control figure right and every detail under it wrong — and
-    -- refuses one against a plain account that names an obligor, which writes a
+    -- refuses one against a plain account that names one, which writes a
     -- dimension nothing will ever read. Both post cleanly under a CHECK-less
     -- schema, both keep debits equal to credits, and neither is recoverable
     -- afterwards.
@@ -309,7 +309,7 @@ CREATE TABLE slot_accounts (
     -- columns. account_id carries none for the reason given on accounts.asset;
     -- the constraints that matter here are not expressible in SQL anyway. A slot
     -- declares the account TYPE it requires and whether that account must pool
-    -- obligors, both of which live in Go (ledger.Slot), and
+    -- subsidiaries, both of which live in Go (ledger.Slot), and
     -- ledger.Book.MapSlotTx checks them at the write — which is the point of
     -- checking there at all. A mapping is configuration, so the alternative to
     -- refusing a wrong account now is a posting that fails weeks later, at a
@@ -413,7 +413,7 @@ CREATE TABLE entries (
     position       INTEGER NOT NULL,
     id             TEXT NOT NULL,
     account_id     TEXT NOT NULL,
-    -- The obligor this leg belongs to within a control account: a deposit
+    -- What this leg belongs to within a control account: a deposit
     -- account, a facility. It is '' on an account that pools nothing, and
     -- accounts.control decides which of the two an account is — an account
     -- never holds both kinds of leg, which is what lets a reader take the
@@ -445,8 +445,8 @@ CREATE INDEX entries_account_idx ON entries (
     --
     -- subsidiary_id sits BETWEEN account_id and value_date so that prefix
     -- survives: a control account's own balance reads the whole pool and must
-    -- not pay for a dimension it is not filtering on, while one obligor's
-    -- balance and one obligor's day series both get a full prefix match.
+    -- not pay for a dimension it is not filtering on, while one subsidiary's
+    -- balance and one subsidiary's day series both get a full prefix match.
     book_id, account_id, subsidiary_id, value_date
 );
 
@@ -839,7 +839,7 @@ CREATE TABLE facilities (
     -- A credit facility: a term loan or a revolving credit line. The mirror of a
     -- deposit account, and no more a line in the chart of accounts than one:
     -- what is ABSENT here is principal_gl, interest_gl and refund_gl. A
-    -- facility is an OBLIGOR under three control accounts — drawn principal,
+    -- facility is a SUBSIDIARY under three control accounts — drawn principal,
     -- accrued interest receivable, and interest the bank owes back — and its own
     -- id is the value in entries.subsidiary_id that says which of them is
     -- whose. A bank lending to ten thousand borrowers has three
@@ -847,10 +847,10 @@ CREATE TABLE facilities (
     --
     -- The refunds payable is the line that most looks like it should be per
     -- borrower, and it is the sharpest case for the dimension rather than an
-    -- exception to it: pooled with no obligor, one balance cannot say who is
+    -- exception to it: pooled with no subsidiary, one balance cannot say who is
     -- owed what, and a refund against it could pay one borrower out of
     -- another's money and still balance, a Liability never being caught by the
-    -- sufficiency check. What answers both is the obligor on the entry.
+    -- sufficiency check. What answers both is the subsidiary on the entry.
     --
     -- There is no row here for an arranged overdraft, and that is the design
     -- rather than an omission. An overdrawn current account's drawn amount IS

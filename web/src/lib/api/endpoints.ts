@@ -318,7 +318,7 @@ export async function getAllAccounts(
 
 // --- Ledger: transactions -------------------------------------------------
 
-// `account` alone is the WHOLE account — on a control line, every obligor's
+// `account` alone is the WHOLE account — on a control line, every subsidiary's
 // postings. `subsidiary` narrows it to one of them, which is what a customer's
 // statement is: a customer is a position, not an account.
 export function listTransactions(

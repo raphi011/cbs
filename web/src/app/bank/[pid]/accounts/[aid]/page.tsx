@@ -39,11 +39,11 @@ export default function AccountDetailPage() {
   const back = `/bank/${pid}/ledger`;
   const role = participant ? buildKnownAccounts(participant)[aid] : undefined;
 
-  // What an obligor IS, the ledger does not know: it holds a string the layer
+  // What a subsidiary IS, the ledger does not know: it holds a string the layer
   // above supplied. This page is that layer, so it resolves the string against
   // the two things it can be — a deposit account or a facility — and shows the
   // raw id when it is neither, rather than pretending it resolved.
-  const obligor = (id: string) => {
+  const subsidiaryRef = (id: string) => {
     const deposit = deposits?.find((d) => d.id === id);
     if (deposit) return { name: deposit.name, href: `/bank/${pid}/deposit-accounts/${deposit.id}` };
     const facility = facilities?.find((f) => f.id === id);
@@ -129,7 +129,7 @@ export default function AccountDetailPage() {
                 ) : (
                   <ul className="divide-y text-sm">
                     {subsidiaries.map((row) => {
-                      const who = obligor(row.subsidiary);
+                      const who = subsidiaryRef(row.subsidiary);
                       return (
                         <li key={row.subsidiary} className="flex items-center justify-between py-2">
                           {who ? (

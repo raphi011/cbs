@@ -175,7 +175,7 @@ func TestTheHarnessCatchesAReserveMirrorThatDiverged(t *testing.T) {
 	// rather than vault cash because vault cash is an Asset the ledger will not
 	// let go negative, and this fixture's payer lodged all of its.
 	//
-	// Unclaimed pools obligors, so the leg names one. It names an account that
+	// Unclaimed pools holders, so the leg names one. It names an account that
 	// does not exist, which the ledger neither checks nor could: the break this
 	// fixture builds is about the reserve, and a subsidiary that resolves to
 	// nothing is as postable as one that resolves.

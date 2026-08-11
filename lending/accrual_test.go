@@ -831,12 +831,12 @@ func TestAccrue_CorrectionClampsToWhatTheFacilityOwes(t *testing.T) {
 	// The whole 4932 the borrower paid and never owed is now a debt the bank
 	// records against itself, and income is back to nothing earned. It is
 	// recorded UNDER THIS FACILITY on the bank's one refunds-payable line — a
-	// balance pooled with no obligor could not say which borrower is owed the
-	// 4932, and it is the obligor that makes the pool answerable.
+	// balance pooled with no subsidiary could not say which borrower is owed the
+	// 4932, and it is the subsidiary that makes the pool answerable.
 	payable := accountNamed(t, book, "Interest Refunds Payable (EUR)")
 	owed := positions(t, p, loan.ID).Payable
 	if owed.Account != payable {
-		t.Errorf("payable position = %s, want an obligor under %s", owed, payable)
+		t.Errorf("payable position = %s, want a subsidiary under %s", owed, payable)
 	}
 	if got := bookBalance(t, book, owed); got != 4_932 {
 		t.Errorf("interest refunds payable = %d, want 4932; the overpayment must be recorded, not kept", got)

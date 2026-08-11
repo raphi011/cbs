@@ -55,7 +55,7 @@ export function buildKnownAccounts(participant?: Participant): Record<string, st
   );
 }
 
-// Project the General Ledger onto a single POSITION: an account, or one obligor
+// Project the General Ledger onto a single POSITION: an account, or one subsidiary
 // within it. Rows are returned newest-first; the running balance is accumulated
 // over the FULL ordered history (oldest→newest) so the newest row reconciles to
 // the position's book balance. Amounts are signed by the account's normal
@@ -79,7 +79,7 @@ export function projectStatement(
   const increases = NORMAL_BALANCE[type]; // the direction that increases this account
 
   // Mine is the position's leg, and a leg against the same account under
-  // another obligor is somebody else's — a contra, not a row of this statement.
+  // another subsidiary is somebody else's — a contra, not a row of this statement.
   const isMine = (e: Entry) =>
     e.accountId === accountId && (subsidiary === undefined || e.subsidiary === subsidiary);
 

@@ -254,7 +254,7 @@ func errorStatus(err error) int {
 		errors.Is(err, ledger.ErrUnbalancedTransaction),
 		errors.Is(err, ledger.ErrInvalidAmount),
 		errors.Is(err, ledger.ErrInvalidText),
-		// A leg that names a control account and no obligor, or a plain account
+		// A leg that names a control account and no subsidiary, or a plain account
 		// and one. 400 for ErrUnbalancedTransaction's reason: the request is
 		// wrong about what it is posting to, and no account's state would let
 		// it through on a retry.

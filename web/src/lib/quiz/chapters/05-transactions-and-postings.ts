@@ -66,7 +66,7 @@ export const chapter: Chapter = {
       ],
       answer: 1,
       explanation:
-        "A control account is one line standing for many, and its balance is the sum of every entry posted against it — $10 M, not 50,000 lines. What keeps the per-depositor detail recoverable is that each of those entries names its **obligor**, so one depositor's balance is the same line filtered to them. See [[ledger-vs-subledger]].",
+        "A control account is one line standing for many, and its balance is the sum of every entry posted against it — $10 M, not 50,000 lines. What keeps the per-depositor detail recoverable is that each of those entries names its **holder**, so one depositor's balance is the same line filtered to them. See [[ledger-vs-subledger]].",
     },
     {
       kind: "truefalse",

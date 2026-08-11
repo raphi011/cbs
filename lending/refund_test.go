@@ -60,7 +60,7 @@ var refundDate = drawdown.AddDate(0, 0, 40)
 // pooled line has to answer for a borrower who is owed nothing. The line exists
 // from the first facility in the asset and holds whatever every other borrower
 // is owed, so a read that answered with the ACCOUNT's balance would tell this
-// borrower they are owed the whole book's refunds. The obligor is what makes the
+// borrower they are owed the whole book's refunds. The subsidiary is what makes the
 // answer zero.
 func TestRefundPayableFor_IsZeroForAFacilityNothingWasPostedUnder(t *testing.T) {
 	ctx := context.Background()
@@ -78,14 +78,14 @@ func TestRefundPayableFor_IsZeroForAFacilityNothingWasPostedUnder(t *testing.T) 
 	// bank, not about which of its borrowers happen to be owed money today.
 	payable := positions(t, p, loan.ID).Payable
 	if payable.Subsidiary != string(loan.ID) {
-		t.Errorf("payable obligor = %q, want %s", payable.Subsidiary, loan.ID)
+		t.Errorf("payable subsidiary = %q, want %s", payable.Subsidiary, loan.ID)
 	}
 	gl, err := book.GetAccount(ctx, payable.Account)
 	if err != nil {
 		t.Fatalf("GetAccount: %v", err)
 	}
 	if gl.Type != ledger.Liability || !gl.Control {
-		t.Errorf("payable account = %s %v, want a Liability that pools obligors", gl.Type, gl.Control)
+		t.Errorf("payable account = %s %v, want a Liability that pools subsidiaries", gl.Type, gl.Control)
 	}
 }
 

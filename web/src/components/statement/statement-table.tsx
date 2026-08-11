@@ -50,7 +50,7 @@ export function StatementTable({
 }: {
   rows: StatementRow[];
   book?: number;
-  // The POSITION this statement is projected onto: the account, and the obligor
+  // The POSITION this statement is projected onto: the account, and the subsidiary
   // within it when there is one. Both are needed to highlight the reader's own
   // leg, because a control account carries every other customer's legs too and
   // the account alone would light all of them up.

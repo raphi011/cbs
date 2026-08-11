@@ -116,16 +116,16 @@ func TestATrialBalanceBalancesPerAssetAndNotAcross(t *testing.T) {
 	assertEqual(t, "balanced", tb.Balanced(), true)
 }
 
-// TestATrialBalanceCountsAControlAccountOnceAndNotOncePerObligor is the
+// TestATrialBalanceCountsAControlAccountOnceAndNotOncePerSubsidiary is the
 // observable point of moving customer accounts out of the chart of accounts:
 // the report is bounded by the institution rather than by its customer base.
-func TestATrialBalanceCountsAControlAccountOnceAndNotOncePerObligor(t *testing.T) {
+func TestATrialBalanceCountsAControlAccountOnceAndNotOncePerSubsidiary(t *testing.T) {
 	ctx := context.Background()
 	book := testBook(t)
 	deposits, vault := pooledChart(t, book)
 
-	for _, obligor := range []string{"dep_1", "dep_2", "dep_3", "dep_4"} {
-		takeIn(t, book, deposits, vault, obligor, 1000)
+	for _, subsidiary := range []string{"dep_1", "dep_2", "dep_3", "dep_4"} {
+		takeIn(t, book, deposits, vault, subsidiary, 1000)
 	}
 
 	tb, err := book.TrialBalance(ctx, testClock())
@@ -139,11 +139,11 @@ func TestATrialBalanceCountsAControlAccountOnceAndNotOncePerObligor(t *testing.T
 	assertEqual(t, "the vault line is not a control line", rowFor(t, tb, vault.ID).Control, false)
 	assertEqual(t, "balanced", tb.Balanced(), true)
 
-	// And the pool is the sum of the obligors under it — the same statement the
+	// And the pool is the sum of the subsidiaries under it — the same statement the
 	// trial balance is built on, read the other way.
 	var detail Amount
-	for _, obligor := range []string{"dep_1", "dep_2", "dep_3", "dep_4"} {
-		balance, err := book.BookBalance(ctx, deposits.ID.For(obligor))
+	for _, subsidiary := range []string{"dep_1", "dep_2", "dep_3", "dep_4"} {
+		balance, err := book.BookBalance(ctx, deposits.ID.For(subsidiary))
 		assertNoError(t, err)
 		detail += balance
 	}

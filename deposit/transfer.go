@@ -21,7 +21,7 @@ import (
 // the contrast that settles where the line falls — cash over the counter is up
 // there because it debits VAULT CASH, which is the bank's own.
 //
-// Both legs name ONE chart-of-accounts row, one obligor apart, so the bank's
+// Both legs name ONE chart-of-accounts row, one customer apart, so the bank's
 // total customer deposits does not move — which is exactly what happens
 // economically when money changes hands inside a bank and nothing leaves it.
 
@@ -89,7 +89,7 @@ func (r *Register) TransferTx(ctx context.Context, tx Tx, from, to AccountID, am
 	}
 
 	// Resolved once, after the assets have been compared: two accounts in one
-	// asset are two obligors under one control account, and asking twice would
+	// asset are two customers under one control account, and asking twice would
 	// be asking the same question twice.
 	control, err := r.depositControlTx(ctx, tx, payer.Asset)
 	if err != nil {
