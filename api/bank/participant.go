@@ -62,7 +62,7 @@ func (s *surface) handleFundDeposit(r *http.Request, p *payment.Bank, req api.Fu
 // payment.ErrSettlementMemberNotFound and a 422: a bank with no reserve account
 // has no reserve to lodge into. Taking cash in is not refused the same way —
 // cash over the counter is the bank's own money in its own book, and
-// mesh.TestTakingCashInReachesNoOtherInstitution is where that is held.
+// cmd/server's TestTakingCashInReachesNoOtherInstitution is where that is held.
 func (s *surface) handleLodgeReserves(r *http.Request, p *payment.Bank, req api.LodgementRequest) (api.LodgementDTO, error) {
 	if req.Asset == "" {
 		return api.LodgementDTO{}, api.BadRequest("asset is required: a bank holds one pot of vault cash per asset and nothing else in this request says which")
@@ -70,7 +70,7 @@ func (s *surface) handleLodgeReserves(r *http.Request, p *payment.Bank, req api.
 	in, err := s.inst.Lodge(r.Context(), ledger.AssetCode(req.Asset), ledger.Amount(req.Amount))
 	if err != nil {
 		// A lodgement that committed and could not be SENT hands the instruction
-		// back beside the error, as Mesh.Submit does with its payment: this bank's
+		// back beside the error, as Deployment.Submit does with its payment: this bank's
 		// vault is down and its reserve mirror up, with nothing on its way to the
 		// central bank to match it. It is the one place that half-happened state
 		// can be recorded, because this system keeps no lodgement row.

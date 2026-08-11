@@ -101,7 +101,7 @@ func errorStatus(err error) int {
 		//
 		// Two routes answer with it. POST /participants/{pid}/deposits, where the
 		// funded account is in an asset its bank does not operate in; and
-		// POST /payments, where the scheme's asset is — Mesh.Submit runs the
+		// POST /payments, where the scheme's asset is — Deployment.Submit runs the
 		// submitting bank's half on the caller's goroutine, so Bank.AccountsFor's
 		// refusal comes back as a status code rather than as a message. Measured
 		// on a bank admitted in dollars only, paying in a euro scheme: 422,
@@ -238,16 +238,16 @@ func errorStatus(err error) int {
 		// perfectly legitimate thing to want; what refuses it is that this route
 		// does not carry it. Both parties bank at one institution, so nothing
 		// clears — see payment.ErrOnUsPayment. The same category as an unaddressable
-		// account, and the reason it is mapped here rather than in the handler
-		// (as mesh.ErrAddressTaken is): two handlers submit through Mesh.Submit,
-		// and a rule written twice is a rule that can differ by route.
+		// account, and the reason it is mapped here rather than in the handler is
+		// that two handlers submit through Deployment.Submit, and a rule written
+		// twice is a rule that can differ by route.
 		errors.Is(err, payment.ErrOnUsPayment),
 		// A payment to or from a bank the scheme has not admitted is the same
 		// category again: the request is well formed, both accounts are real, and
 		// what refuses it is that this route does not carry it — a founded bank
 		// has a licence and a book and no place in a clearing scheme. It is
 		// mapped here rather than in the handler for payment.ErrOnUsPayment's stated
-		// reason, and it arrives here from Mesh.Submit; the clearing house's own
+		// reason, and it arrives here from Deployment.Submit; the clearing house's own
 		// copy of the refusal is asked after the 202 has been answered and is
 		// reported as a rejected payment, not as a status. See
 		// payment.ErrBankNotAdmitted.

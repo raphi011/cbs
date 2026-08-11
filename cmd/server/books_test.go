@@ -65,7 +65,7 @@ type recordingStores struct {
 	mu    sync.Mutex
 	books map[ledger.BookID]bool
 	// byActor is the same set, split by the institution whose unit of work made
-	// the access. See Mesh.withActor for where that identity comes from, and
+	// the access. See withActor for where that identity comes from, and
 	// touchedBy for what it is worth: "which books did this bank reach" is the
 	// question this whole file exists to answer, and it cannot be asked of one
 	// global set.
@@ -188,7 +188,7 @@ func (s *recordingStores) noterFor(ctx context.Context, unit map[ledger.BookID]b
 
 // note records one book access, against the whole store and against the actor
 // that made it. It is called from actor goroutines, so it takes the lock — the
-// mesh runs one goroutine per institution and they touch the same store
+// harness serves both hosts on HTTP listeners, whose goroutines touch the same store
 // concurrently.
 //
 // What it records is NOT rolled back with the unit of work it was called in. A
@@ -832,7 +832,7 @@ func assertBooksTouched(t *testing.T, who string, got, want []ledger.BookID) {
 // member's book through a method it legitimately holds would still fail here and
 // nowhere else.
 func TestWhichBooksEachBankActuallyReaches(t *testing.T) {
-	h := newHarness(t) // builds a seeded network + mesh over a recordingStore
+	h := newHarness(t) // builds a seeded network over a recordingStore
 
 	h.rec.reset()
 	h.submitCreditTransfer(t)
@@ -911,15 +911,15 @@ func TestWhichBooksEachBankActuallyReaches(t *testing.T) {
 // # A two-phase version is neither needed nor safe
 //
 // One combined measurement is enough, as above. A split would also be unsafe:
-// Mesh.Submit sends to the clearing house BEFORE it returns, so the moment
+// Deployment.Submit sends to the clearing house BEFORE it returns, so the moment
 // submitDirectDebit hands back the payer's bank may already be running its half
 // — concurrently with the reset and with any assertion beside it. Drain means
 // "nothing is in flight", and a phase boundary needs "nothing has started".
 //
-// A tap on Mesh.dispatch COULD build one, and it would buy nothing: the only
+// A tap on the wire COULD build one, and it would buy nothing: the only
 // thing it would gate is an assertion this system is entitled to violate. "The
 // payer's bank had touched nothing at the instant Submit returned" is a claim
-// about TIME in a concurrent mesh and is not true in general — that bank is
+// about TIME rather than about entitlement, and is not true in general — that bank is
 // entitled to have answered already. The claim that IS true is about
 // ATTRIBUTION, which is what the union above measures.
 func TestWhichBooksEachBankReachesInAPull(t *testing.T) {
@@ -1555,7 +1555,7 @@ func TestABankCannotLodgeCashItDoesNotHold(t *testing.T) {
 // says so.
 //
 // It asserts the absence directly rather than by construction: no message leaves
-// the mesh and the settlement agent's book does not move. The bank here is a
+// the network and the settlement agent's book does not move. The bank here is a
 // provisioned one, because an unprovisioned bank cannot be given a depositor at
 // all — a bank mints its customers' addresses under a code the settlement agent
 // allocates, so there would be no account to pay anything into.
@@ -1805,7 +1805,7 @@ func TestEveryRecordingTxMethodNotesItsBookThenDelegates(t *testing.T) {
 		shape[m.Name] = m
 	}
 
-	fset, file := parseMeshFile(t, "books_test.go")
+	fset, file := parseSourceFile(t, "books_test.go")
 	var checked int
 	for _, d := range file.Decls {
 		fd, ok := d.(*ast.FuncDecl)
@@ -2015,7 +2015,7 @@ func TestWritingANetworkRowRecordsTheNetworkBook(t *testing.T) {
 // Those packages are the ones the chain walk visited, not a list kept by hand.
 //
 // store/storetest is deliberately out of range. It builds deliberately odd
-// events to probe the store, and it is not a layer a mesh handler drives.
+// events to probe the store, and it is not a layer an institution's handler drives.
 func TestEveryAuditEventTheDomainAppendsCarriesABook(t *testing.T) {
 	w := realChainWalk(t)
 	var found int
@@ -2077,7 +2077,7 @@ func isAuditEventType(w *chainWalk, pkg *pkgAST, imports map[string]string, typ 
 // TestRecordingTxReachesTheStoreUnderneath is the delegation half at run time.
 //
 // A decorator that noted and returned a zero value would satisfy every book
-// assertion in this package while quietly detaching the mesh from its store —
+// assertion in this package while quietly detaching the institutions from the store —
 // the failure mode where the boundary check passes because nothing happens at
 // all. Probes across three layers: NextID has to allocate from real state,
 // GetLedger has to bring back the ledger's own not-found sentinel,
@@ -2160,7 +2160,7 @@ func TestRecordingTxReachesTheStoreUnderneath(t *testing.T) {
 // claims about the recorder's own bookkeeping falsifiable, none of which any
 // test above can see.
 //
-// Concurrency, because the mesh runs one goroutine per institution and they all
+// Concurrency, because the listeners serve requests on goroutines of their own and they all
 // drive the same recorder: an unlocked map here would be a data race in every
 // flow test, reported against the flow rather than against this. Under -race,
 // dropping the mutex in note fails this.
@@ -3175,7 +3175,7 @@ func flatParams(fn *ast.FuncType) []param {
 // reads the source instead of asking reflect.
 func recordingTxMethods(t *testing.T) []string {
 	t.Helper()
-	_, file := parseMeshFile(t, "books_test.go")
+	_, file := parseSourceFile(t, "books_test.go")
 	var out []string
 	for _, d := range file.Decls {
 		if fd, ok := d.(*ast.FuncDecl); ok && receiverTypeName(fd) == "recordingTx" {
@@ -3214,7 +3214,7 @@ func parseFile(path string) (*ast.File, error) {
 	return parser.ParseFile(token.NewFileSet(), path, nil, 0)
 }
 
-func parseMeshFile(t *testing.T, path string) (*token.FileSet, *ast.File) {
+func parseSourceFile(t *testing.T, path string) (*token.FileSet, *ast.File) {
 	t.Helper()
 	fset := token.NewFileSet()
 	file, err := parser.ParseFile(fset, path, nil, 0)

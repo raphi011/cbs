@@ -118,7 +118,7 @@ func TestTheDirectDebitChainIsFourMessages(t *testing.T) {
 	h.mu.Unlock()
 
 	if len(seen) != len(want) {
-		t.Fatalf("the mesh carried %d messages, want %d", len(seen), len(want))
+		t.Fatalf("the network carried %d files, want %d", len(seen), len(want))
 	}
 	for i, w := range want {
 		env, err := iso20022.Unmarshal(seen[i].raw)
@@ -289,7 +289,7 @@ func TestTheRefundIsAttemptedEvenWhenTheSubmitterCannotBeAddressed(t *testing.T)
 // dead-lettered, not answered again — and above all not answered TWICE with two
 // different answers.
 //
-// This is the mesh end of the guard payment.AcceptInboundTx documents. Through a
+// This is the transport end of the guard payment.AcceptInboundTx documents. Through a
 // completed chain the redelivery meets the STATUS guard first: the clearing
 // house has taken the payment into a cycle, so it is no longer Initiated and
 // ErrInvalidStateTransition comes back. That sentinel carries the empty code in

@@ -18,11 +18,16 @@
 // same instant and its order is the order it was written in. That is
 // calendar.Clock's own property rather than this package's convenience.
 //
-// It builds into a network AND through a mesh, and needs both running. The four
-// banks here are provisioned — three rows apiece, in three institutions'
-// databases — and then given actors, because a bank with rows and no inbox
+// It builds into a network AND through a deployment, and needs both. The banks
+// here are provisioned — three rows apiece, in three institutions' databases —
+// and then given their place, because a bank with rows and no download queue
 // cannot be paid. Everything else — accounts, payments, cycles, settlements — is
 // composed directly, one unit of work at a time, and deliberately so: a fixture
-// is an outcome, and a conversation carried out at startup could not promise a
-// fixed one.
+// is an outcome, and a conversation carried over the transport would not finish
+// until a business day ran, so the dataset would depend on when somebody
+// advanced the clock.
+//
+// It uploads no file at all, and that is what makes the three acts it asks a
+// deployment for synchronous: an admission, a directory pull and the settlement
+// agent's address. See Deployment.
 package seed

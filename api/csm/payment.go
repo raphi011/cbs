@@ -46,10 +46,10 @@ func (s *surface) registerPaymentRoutes(mux *api.Router) {
 //
 // Running all three halves of an initiation — the submitting bank's, the
 // receiving bank's and the clearing house's — in a single unit of work would be
-// one process playing three institutions, which is exactly what the mesh
+// one process playing three institutions, which is exactly what the transport
 // replaces.
 //
-// It now calls Mesh.Submit, which runs the submitting bank's half and sends. The
+// It calls Deployment.Submit, which runs the submitting bank's half and uploads. The
 // counterparty's answer and the clearing house's acceptance arrive later, at
 // other actors, as messages. So the payment in this response is INITIATED, in no
 // cycle, and unseen by the far side — and 202 is what says that: the instruction
@@ -69,15 +69,15 @@ func (s *surface) registerPaymentRoutes(mux *api.Router) {
 // a clearing house with no open cycle, a settlement agent short of reserves —
 // each of those decides about a payment whose HTTP request finished long ago,
 // and each answers with a pacs.002 rather than a status code. That is the
-// difference the mesh makes, and it is why the client shape is "here is an
+// difference the transport makes, and it is why the client shape is "here is an
 // identifier, ask again". Nothing is dropped: the payment's own row is where the
-// answer lands, and a failure nobody could be told about is a mesh dead letter.
+// answer lands, and a failure nobody could be told about is a line in the day's report.
 //
 // # This is the clearing house's console, and it does not submit
 //
 // The route lives on the clearing house's surface because that is the operator
 // who can see every payment in the network, but the WORK is a member bank's:
-// Mesh.Submit reads the scheme's direction and hands the instruction to the
+// Deployment.Submit reads the scheme's direction and hands the instruction to the
 // payer's bank on a push and the payee's on a pull. A customer's own instruction
 // goes to their bank's own POST /payments (see handleSubmitPayment), which is
 // the only door a retail client has.
@@ -93,7 +93,7 @@ func (s *surface) handleInitiatePayment(r *http.Request, req api.InitiatePayment
 	// sources, and each is the only one its caller has.
 	//
 	// A push is submitted by the payer's bank and a pull by the payee's, which is
-	// the same rule Mesh.Submit applies a moment later to pick the actor.
+	// the same rule Deployment.Submit applies a moment later to pick the bank.
 	sc, ok := s.network().Scheme(dom.Scheme)
 	if !ok {
 		return api.PaymentDTO{}, payment.ErrSchemeNotFound
@@ -150,7 +150,7 @@ func (s *surface) handleGetPayment(r *http.Request) (api.PaymentDTO, error) {
 // handleRejectPayment declines an in-flight payment on the operator's say-so.
 //
 // Both halves of a rejection — the clearing house's and the payer's bank's —
-// cannot share a transaction: two institutions, two databases. Mesh.Reject is
+// cannot share a transaction: two institutions, two databases. ClearingHouse.Reject is
 // what runs them.
 //
 // So the payment in this response is REJECTED and out of its cycle, which is the
@@ -162,7 +162,7 @@ func (s *surface) handleGetPayment(r *http.Request) (api.PaymentDTO, error) {
 // A rejection the clearing house refuses — a payment that has already settled, a
 // payment id that names nothing — is decided inside its own unit of work and
 // comes back here as a 4xx. A refund that then fails at the payer's bank cannot:
-// nobody is left to tell, so it becomes a mesh dead letter and the payment's own
+// nobody is left to tell, so it becomes a line in the day's report and the payment's own
 // row is where it shows, Rejected with the money still in suspense.
 func (s *surface) handleRejectPayment(r *http.Request, req api.ReasonRequest) (api.PaymentDTO, error) {
 	// An operator-initiated rejection carries no more specific external status
@@ -170,7 +170,7 @@ func (s *surface) handleRejectPayment(r *http.Request, req api.ReasonRequest) (a
 	// there is no more honest choice than the one that says exactly that.
 	p, err := s.inst.Reject(r.Context(), payment.PaymentID(r.PathValue("payid")), iso20022.StatusReasonNotSpecifiedAgentGenerated, req.Reason)
 	if err != nil {
-		// Mesh.Reject hands the payment back beside the error when its own half
+		// ClearingHouse.Reject hands the payment back beside the error when its own half
 		// committed and the pacs.002 did not go out — the payment is Rejected
 		// and out of its cycle, and the payer's money is still in their bank's
 		// suspense with nothing on its way to release it. The 5xx below carries
@@ -189,7 +189,7 @@ func (s *surface) handleRejectPayment(r *http.Request, req api.ReasonRequest) (a
 //
 // The returning bank is not named in the request and is not this operator: a
 // return is sent by the bank that RECEIVED the original instruction — the
-// payee's bank on a push, the payer's on a pull — and Mesh.Return works that out
+// payee's bank on a push, the payer's on a pull — and Deployment.Return works that out
 // from the payment's own scheme. That bank posts its OWN customer leg and then
 // builds and sends a pacs.004; the reserve reversal is the settlement agent's,
 // because it moves central-bank money, and the other bank's customer leg is that
@@ -208,7 +208,7 @@ func (s *surface) handleRejectPayment(r *http.Request, req api.ReasonRequest) (a
 // # It answers with an identifier and no payment
 //
 // Deliberately, and it is the one response on this surface that carries no
-// resource. Mesh.Return returns no payment either: the Payment there is to hand
+// resource. Deployment.Return returns no payment either: the Payment there is to hand
 // back is one the caller could already read, and it is still Settled, because
 // the return is not finished until the OTHER bank posts, four hops away.
 // Re-reading the row after the send would be a race dressed up as a result. Ask
@@ -259,7 +259,7 @@ func (s *surface) handleGetCycle(r *http.Request) (api.ClearingCycleDTO, error) 
 // handleCloseCycle reaches the cut-off, and is the only way a settlement is
 // instructed in this system.
 //
-// It goes through the mesh rather than through the network. Netting is the
+// It goes through the clearing house rather than through the network. Netting is the
 // clearing house's own act and moves nothing — every payment in the batch
 // becomes Cleared and the net positions are written onto the cycle — but
 // DISCHARGING those positions moves central-bank reserves, which no clearing
@@ -312,7 +312,7 @@ func (s *surface) handleCloseCycle(r *http.Request) (api.ClearingCycleDTO, error
 // # It is not the deleted POST /settlements
 //
 // That route was the central bank's, and it SETTLED: a human pressed a button
-// and reserves moved, beside a mesh that was instructing the same thing — two
+// and reserves moved, beside a transport that was instructing the same thing — two
 // ways to settle one cycle, racing. This is on the CLEARING HOUSE and it moves
 // nothing. It rebuilds the pacs.009 from the cycle's own stored net positions
 // and sends it, and the settlement agent decides, exactly as it does at a

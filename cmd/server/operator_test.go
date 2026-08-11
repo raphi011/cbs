@@ -28,8 +28,8 @@ import (
 // The clearing house's half is what Reject returns: the payment is Rejected and
 // out of its cycle, then and there. Giving the payer their money back is their
 // own bank's act, in their own bank's book, and it happens when the pacs.002
-// gets there. Before the mesh, api ran both in one transaction and no caller
-// could tell the two apart.
+// gets there: a rejection and the refund it provokes are two institutions' acts,
+// in two databases, and nothing can make them one.
 //
 // # How that is measured, and how it deliberately is not
 //

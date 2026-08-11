@@ -33,11 +33,11 @@ func Routes(inst Institution) *api.Router {
 	// The listener is where the operator's console is served; it is not the claim
 	// that the settlement agent is performing them.
 	mux.HandleFunc("GET /members", api.Handle(http.StatusOK, s.handleListParticipants))
-	// There is no POST here, and its absence is the shape of what the mesh
-	// changed. A settlement is performed on INSTRUCTION: the clearing house reaches
-	// a cut-off, sends a pacs.009, and the central bank's actor answers ACSC or
-	// RJCT/AM04 (cmd/server's centralBank). A route that let a human do it beside that
-	// would be a second way to settle the same cycle, racing the first.
+	// There is no POST here, and its absence is the shape of the transport. A
+	// settlement is performed on INSTRUCTION: the clearing house reaches a cut-off,
+	// uploads a pacs.009, and this institution answers ACSC or RJCT/AM04
+	// (cmd/server's CentralBank). A route that let a human do it beside that would
+	// be a second way to settle the same cycle.
 	//
 	// So the two reads below are what is left, and they are the point of keeping
 	// them: the console does not drive settlement, it WATCHES it. A settlement row

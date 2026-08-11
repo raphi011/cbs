@@ -259,7 +259,7 @@ func (h *harness) directoryEvents(t *testing.T, bic iso20022.BIC) []ledger.Audit
 // one: it means "not for this address", and not "this system has nowhere to get
 // an agent from".
 //
-// The refusal is asserted and the success is not: nothing in this mesh routes a
+// The refusal is asserted and the success is not: nothing in this deployment routes a
 // PAN, so an instruction quoting one is refused a step later for a reason that
 // has nothing to do with directories. What is worth pinning is that the address's
 // kind, and not the presence of an agent, is what decides which refusal a payer

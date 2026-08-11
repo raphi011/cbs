@@ -195,7 +195,7 @@ func carry(t *testing.T, s *server) {
 // The refresh is a separate act and no part of provisioning — see
 // provision.Subscribe. It runs after every one because these suites are about
 // something else and want banks that can pay each other; the staleness it papers
-// over is measured in mesh, where nothing calls it for anybody.
+// over is measured in directory_test.go, where nothing calls it for anybody.
 func provisionMember(t *testing.T, s *server, bic, name string, assets ...string) string {
 	t.Helper()
 	ctx := context.Background()
@@ -227,7 +227,7 @@ func provisionMember(t *testing.T, s *server, bic, name string, assets ...string
 //
 // It runs after every admission because these suites are about something else and
 // want banks that can pay each other. The staleness it papers over is measured in
-// mesh, over the real conversation, where nothing calls this for anybody.
+// directory_test.go, over the real conversation, where nothing calls this for anybody.
 func subscribeAll(t *testing.T, s *server) {
 	t.Helper()
 	var members []map[string]any
@@ -962,7 +962,7 @@ func TestNoRouteSettlesACycle(t *testing.T) {
 // TestARefusedSettlementIsRecoverableOverHTTP walks the whole way out of a
 // refused settlement through the console, which is where an operator is.
 //
-// The mesh-level walk is TestARefusedSettlementCanBeInstructedAgain; this is the
+// The institution-level walk is TestARefusedSettlementCanBeInstructedAgain; this is the
 // half that says the operator can actually reach it. Before this route the
 // state below was terminal: a cycle Closed with no settlement, its payments
 // Cleared, Alice's money in her own bank's clearing suspense and Bob unpaid,
@@ -1715,7 +1715,7 @@ func TestRejectPaymentGivesThePayerTheirMoneyBack(t *testing.T) {
 //
 // What must not happen is that it passes quietly. Nobody is left to answer: the
 // operator's request was answered 202 before the pacs.002 was even sent. So the
-// refund's failure becomes a mesh dead letter, and Drain is what hands it back.
+// refund's failure becomes a problem in the day's report, which is what hands it back.
 //
 // The forced failure is a leg that has already been reversed, which is what a
 // retried rejection produces. It is set up through the network because no route
@@ -3447,10 +3447,10 @@ func TestPaymentAddressingRefusalsAre422(t *testing.T) {
 	}`, http.StatusUnprocessableEntity)
 	assertAliceUntouched("after the payee's address quoted on the payer's leg")
 
-	// A push that quotes no payee address is refused, and the mesh is what made
+	// A push that quotes no payee address is refused, and the transport is what made
 	// that so. The payer's bank has to put an IBAN in the pacs.008 it is about to
 	// send, and it cannot invent one: an address in another bank's register is
-	// exactly what it has no way to look up. Before the mesh nothing built a
+	// exactly what it has no way to look up. Nothing else builds a
 	// message here, so an instruction naming only an account id went through and
 	// the address was filled in later by the bank at the other end.
 	assertStatus(t, csmSurface(h), "POST", "/payments", `{
@@ -3485,7 +3485,7 @@ func TestPaymentAddressingRefusalsAre422(t *testing.T) {
 	// creditorSideTx (payment/system.go:1544) re-derives the same address and
 	// AcceptInboundTx (payment/system.go:1400) skips the write when nothing
 	// changed. The two cases above that quote no creditor address prove a push
-	// of that shape is refused synchronously inside the mesh — Mesh.Submit ->
+	// of that shape is refused synchronously at the door — Deployment.Submit ->
 	// bank.submit (bank.go) -> payment.SubmitAndInstruct, where the
 	// message is now built in the same unit of work as the leg — so there is no
 	// path through this route on which a creditor back-fill is ever attempted,

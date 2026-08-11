@@ -69,7 +69,7 @@ func (s *surface) handleGetBankPayment(r *http.Request) (api.PaymentDTO, error) 
 //
 // # Which failures reach the caller
 //
-// Mesh.Submit runs this bank's own half synchronously, so what THIS bank decides
+// Deployment.Submit runs this bank's own half synchronously, so what THIS bank decides
 // is answerable here and now: no funds, an account that is not the payer's, a
 // duplicate reference, a mandate that does not authorise the collection. Those
 // are the 4xx below.
@@ -78,7 +78,7 @@ func (s *surface) handleGetBankPayment(r *http.Request) (api.PaymentDTO, error) 
 // refusing the credit, the clearing house having no window open, the settlement
 // agent short of reserves — each of those is another institution answering a
 // message, long after this response was written, and each lands on the payment's
-// own row instead. A failure that reached nobody at all is a mesh dead letter,
+// own row instead. A failure that reached nobody at all is a line in the day's report,
 // which is the point of Drain returning them.
 func (s *surface) handleSubmitPayment(r *http.Request, req api.InitiatePaymentRequest) (api.SubmittedPaymentDTO, error) {
 	dom := req.ToDomain()
@@ -107,9 +107,9 @@ func (s *surface) handleSubmitPayment(r *http.Request, req api.InitiatePaymentRe
 	// the payee's, and SubmitPaymentTx refills this from the bank's own row a
 	// moment later. What it is doing here is earlier than that — submitterOf picks
 	// the ACTOR off this field before any bank's half runs, so an instruction that
-	// reached the mesh without it came back "no bank actor for".
+	// reached the deployment without it came back "holds no bank at".
 	//
-	// The COUNTERPARTY's side stays empty, and stays that way through the mesh: it
+	// The COUNTERPARTY's side stays empty, and stays that way on the wire: it
 	// is derived from the counterparty's address inside the submitting bank's own
 	// unit of work. See payment.Network.routeTx.
 	if sc.Direction() == payment.Pull {
@@ -117,7 +117,7 @@ func (s *surface) handleSubmitPayment(r *http.Request, req api.InitiatePaymentRe
 	} else {
 		dom.DebtorDetails.Agent = s.boundBIC()
 	}
-	// The submitting bank's half, and then the send. Mesh.Submit runs it on this
+	// The submitting bank's half, and then the upload. Deployment.Submit runs it on this
 	// goroutine and marks it as this bank's work, so the books it touches are
 	// attributed to the bank and not to whoever called in; the pacs.008 or
 	// pacs.003 goes out after the unit of work has committed, never inside it.

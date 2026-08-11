@@ -62,7 +62,8 @@ func testEnvelope(from, to iso20022.BIC, id string) iso20022.Envelope {
 // The helper the other suites depend on has to be checked by a test of its own.
 // If testEnvelope stopped being valid, send would fail at the marshaller and
 // several tests would go on passing for the wrong reason — an assertion about a
-// refusal would be satisfied by the marshaller's refusal rather than the mesh's.
+// refusal would be satisfied by the marshaller's refusal rather than the receiving
+// institution's.
 func TestTestEnvelopeMarshals(t *testing.T) {
 	if _, err := iso20022.Marshal(testEnvelope("AAAADEFFXXX", "BBBBDEFFXXX", "x")); err != nil {
 		t.Fatalf("the test envelope does not marshal: %v", err)

@@ -58,11 +58,11 @@ func TestAReturnIsExecutedByTheCentralBank(t *testing.T) {
 //
 // It goes to the CENTRAL BANK, because a return moves reserves — which is why
 // this flow lives at the settlement agent — and THROUGH the clearing house
-// rather than bank-to-central-bank directly, because a member bank in this mesh
-// addresses the clearing house and nothing else. That claim is this test's and
-// not the book assertions': point the returning bank straight at the central
-// bank and every book assertion stays green, because an actor that is skipped
-// touches no book either.
+// rather than bank-to-central-bank directly, because a member bank uploads a
+// pacs.004 to the clearing house and to nobody else. That claim is this test's
+// and not the book assertions': point the returning bank straight at the
+// settlement agent and every book assertion stays green, because an institution
+// that is skipped touches no book either.
 //
 // The two CAMT.053s are the reserve movement stated to the two banks whose
 // accounts moved, exactly as at a cut-off. The PAYER's bank is in TWO of the
@@ -73,30 +73,33 @@ func TestAReturnIsExecutedByTheCentralBank(t *testing.T) {
 //
 // # It is a SET, plus the orderings that are actually forced
 //
-// The tap fires in Mesh.dispatch, on the RECEIVING actor's goroutine, so what
-// this test observes is handling order and not send order. Messages to different
-// actors race, and a positional assertion over all seven would be flaky rather
-// than strict. Three relations survive: the returning bank's pacs.004 is handled
-// FIRST, the central bank's pacs.002 is handled before both messages the
-// clearing house sends — both chain arguments — and the PAYER's BANK's camt.053
-// is handled before the pacs.004 addressed to that same bank, which is not a
-// chain argument and is the load-bearing one.
+// The tap fires when a file CROSSES — on the upload, or on the download that
+// hands it over — so what this test observes is delivery order. Files sitting in
+// two different institutions' queues have no order at all between them, and a
+// positional assertion over all seven would be asserting the order the phases
+// happen to run in.
+//
+// Three relations survive: the returning bank's pacs.004 is uploaded FIRST, the
+// settlement agent's pacs.002 crosses before both files the clearing house
+// queues — both chain arguments, since each is built by the institution that
+// collected the one before — and the PAYER's BANK's camt.053 crosses before the
+// pacs.004 addressed to that same bank, which is not a chain argument and is the
+// load-bearing one.
 //
 // # Why that pair CAN be asserted when the set cannot be ordered
 //
-// Not merely "both go to one actor": two messages racing into one inbox from two
-// goroutines would arrive in either order. What forces this pair is a
-// happens-before chain — Mesh.send pushes onto the target's queue SYNCHRONOUSLY
-// in the sender's own goroutine; centralBank.receiveReturn calls advise before
-// answer, so both camt.053s are pushed before the pacs.002 is; the relayed
-// pacs.004 does not exist until the clearing house HANDLES that pacs.002; and
-// Mesh.run is one goroutine popping each queue FIFO.
+// Not because both go to one bank: they are in two DIFFERENT queues, at the
+// settlement agent and at the clearing house, and two connections share no
+// ordering whatever. What forces the pair is the BANK's own collection order —
+// the settlement agent first, then the clearing house — which is a decision each
+// bank makes about its own operations. See AdvanceDay's phase 7, and
+// CentralBank.advise, which argues what the other order would cost.
 //
-// A reader who tries to falsify this by swapping advise and answer will find the
-// test still passes, and should not conclude the assertion is weak: swapping
-// makes the pair a RACE rather than an inversion, and the central bank wins that
-// race almost always. Inverting it takes a delay between the answer and the
-// advice, and with one the assertion fails every run.
+// A reader who tries to falsify it by swapping advise and answer will find the
+// test still passes, and that is the point rather than a weakness: the order the
+// settlement agent wrote the two files in is not what decides anything any more.
+// Swapping the BANK's two collections is what inverts the pair, and with that
+// swapped the assertion fails every run.
 //
 // What it pins is why centralBank.advise sends the statements before it answers.
 // The payer's bank receives the reserves back, so its camt.053 CREDITS the
@@ -423,7 +426,7 @@ func TestARedeliveredReturnIsReportedAndNotAnswered(t *testing.T) {
 // naming two cycles. Returning the first and dropping the rest would leave a
 // payment somebody was told had been sent back and never was.
 //
-// Injected rather than provoked, because no actor in this mesh emits either:
+// Injected rather than provoked, because no actor in this deployment emits either:
 // payment.ReturnMessage builds exactly one transaction and counts it. So each
 // case is a real message, doctored — which is also why the refusal is asserted
 // at the RETURNING BANK rather than at the clearing house. The whole path runs:
@@ -574,7 +577,7 @@ func TestTheReturnsReasonTravelsFromTheAskingBankToTheLedgers(t *testing.T) {
 // agent that read only the code would describe such a return as "returned" and
 // throw away the only thing the sender said about it.
 //
-// Injected, because no actor in this mesh emits one: payment.ReturnMessage
+// Injected, because no actor in this deployment emits one: payment.ReturnMessage
 // takes an iso20022.ReturnReason and puts it in Cd. The free text is left empty
 // as well, so this covers the join's other arm at the same time — a reason with
 // a code and no text.
@@ -661,7 +664,7 @@ func TestAProprietaryReturnReasonReachesTheLedgersToo(t *testing.T) {
 // that the clearing house would have to resolve a payment by its end-to-end
 // reference, which is a lookup this system does not have.
 //
-// No actor in this mesh emits one — payment.ReturnMessage always writes
+// No actor in this deployment emits one — payment.ReturnMessage always writes
 // OrgnlTxId — so it is injected.
 func TestAReturnThatNamesNoPaymentCannotBeAnswered(t *testing.T) {
 	h := newHarness(t)
@@ -753,13 +756,13 @@ func TestARefusedReturnNamesTheSettlementAgentAsTheOriginator(t *testing.T) {
 }
 
 // TestTheSettlementAgentsAnswerQuotesTheReferenceTheBankSent is the convention
-// every per-payment status in this mesh follows, asserted at the one actor that
+// every per-payment status in this deployment follows, asserted at the one actor that
 // had drifted off it.
 //
 // A bank matches an answer to its instruction by comparing what it SENT with
 // what came back. centralBank.answer quoted the payment id as the end-to-end
 // reference as well as the transaction id, which matches nothing any bank ever
-// sent — csm.endToEndOf is the same convention on the other side of the mesh,
+// sent — endToEndOf is the same convention on the other side of the network,
 // and payment's own helper is where it comes from.
 //
 // Both cases, because the convention has two halves and only one of them is
@@ -850,7 +853,7 @@ func TestTheSettlementAgentCannotAnswerYesWithAReason(t *testing.T) {
 //
 // payment.TestAPayeeWhoSpentTheMoneyStopsTheReturnBeforeItIsSent measures the
 // domain call. This measures what the MESH does with it, which is three things
-// that test cannot see: the caller of Mesh.Return gets the refusal, NOTHING goes
+// that test cannot see: the caller of Deployment.Return gets the refusal, NOTHING goes
 // on the wire, and the code the refusal carries is AM04 about the returning
 // bank's OWN customer.
 //
@@ -1109,7 +1112,7 @@ func TestAReturnRetriedAfterAnUnwindRepaysThePayer(t *testing.T) {
 // relayReturn and receiveReturnStatus are reached only from handle, which runs
 // on the clearing house's own goroutine and nobody else's. The three methods on
 // this type that run on a CALLER's goroutine — closeCycle, settle and reject,
-// each reached from outside the mesh — must therefore never touch it.
+// each reached from outside a business day — must therefore never touch it.
 //
 // A comment saying so is a claim nobody has to keep true. This is the same
 // answer this package gives to the analogous hole in the recorder, where
@@ -1131,7 +1134,7 @@ func TestTheClearingHousesOtherCallersLeaveTheHeldReturnsAlone(t *testing.T) {
 
 	// A real pacs.004 is built and carried, so that the entry placed below is the
 	// value this actor really holds rather than a shape invented by the test. It
-	// cannot be LEFT in flight to hold the map open: every return this mesh
+	// cannot be LEFT in flight to hold the map open: every return this deployment
 	// carries is answered, and an answer is what empties the map. So the flow is
 	// run to completion and one entry is then put back by hand — which is the
 	// honest arrangement anyway, since what is under test is the three OTHER

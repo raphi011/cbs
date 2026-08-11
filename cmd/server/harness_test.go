@@ -218,7 +218,7 @@ func newHarnessWithNoOpenCycle(t *testing.T) *harness {
 // DEBTOR's bank can see, and therefore the one that proves which bank answered.
 // A creditor's bank cannot know what is in the account it is collecting from —
 // that is the whole asymmetry a direct debit is built on — so an empty account
-// is a refusal that can only have come from the far side of the mesh.
+// is a refusal that can only have come from the far side of the network.
 func newHarnessWithAnUnfundedDebtor(t *testing.T) *harness {
 	t.Helper()
 	return build(t, harnessOptions{openCycles: true})
@@ -307,7 +307,7 @@ var euroAndDollar = []ledger.AssetCode{"EUR", "USD"}
 func (h *harness) bank(bic iso20022.BIC) *payment.Network {
 	net, err := h.nets.Bank(context.Background(), payment.ParticipantID(bic))
 	if err != nil {
-		panic("mesh_test: opening " + string(bic) + "'s store: " + err.Error())
+		panic("harness_test: opening " + string(bic) + "'s store: " + err.Error())
 	}
 	return net
 }
@@ -753,9 +753,9 @@ func (h *harness) creditTransferRequestTo(t *testing.T, iban string) payment.Ini
 		// above, through its own copy of the routing directory.
 		CreditorDetails: payment.PartyDetails{Name: h.creditorAcct.Name},
 		// And the payer's own bank, which this fixture has to name and a customer's
-		// instruction does not. Mesh.Submit picks the SUBMITTING actor out of the
-		// two agents (submitterOf) before any bank's half runs, so a request that
-		// left this empty would be refused with "no bank actor for" — the mesh
+		// instruction does not. Deployment.Submit picks the SUBMITTING bank out of
+		// the two agents (submitterOf) before any bank's half runs, so a request that
+		// left this empty would be refused with "holds no bank at" — the deployment
 		// having nobody to hand it to. api's POST /payments fills the same field
 		// from the port's bound identity and the seed names it outright; this is a
 		// caller that names its own side, which every fixture here is.
@@ -788,7 +788,7 @@ func (h *harness) creditorRef(iban string) payment.PartyRef {
 //
 // The mirror of creditTransferRequest, and the difference is who hands it in. A
 // credit transfer is the payer instructing their bank to push; a collection is
-// the payee instructing THEIR bank to pull, which is why Mesh.Submit routes it
+// the payee instructing THEIR bank to pull, which is why Deployment.Submit routes it
 // to the creditor's actor and why nothing is posted when it is accepted.
 func (h *harness) directDebitRequest(t *testing.T) payment.InitiatePaymentRequest {
 	t.Helper()
@@ -803,7 +803,7 @@ func (h *harness) directDebitRequest(t *testing.T) payment.InitiatePaymentReques
 		// and nothing else. See creditTransferRequestTo on why no agent sits beside
 		// it.
 		DebtorDetails: payment.PartyDetails{Name: h.debtorAcct.Name},
-		// And the SUBMITTER, which on a pull is the payee's bank. Mesh.Submit picks
+		// And the SUBMITTER, which on a pull is the payee's bank. Deployment.Submit picks
 		// the actor out of the submitting side's agent before any bank's half runs,
 		// so a request leaving it empty has nobody to hand the collection to. See
 		// creditTransferRequestTo, where the same field is here for the same
@@ -828,7 +828,7 @@ func (h *harness) submitDirectDebit(t *testing.T) payment.Payment {
 
 // submitCreditTransfer runs the payer's instruction through their own bank, and
 // returns what that bank answered. It does NOT wait: the creditor's bank has not
-// seen the payment yet, which is the whole point of the mesh.
+// seen the payment yet, which is the whole point of a store-and-forward transport.
 func (h *harness) submitCreditTransfer(t *testing.T) payment.Payment {
 	t.Helper()
 	return h.submitCreditTransferTo(t, h.creditorIBAN)
@@ -1003,7 +1003,7 @@ func (h *harness) closeCycle(t *testing.T) {
 // It is what a RETURN needs, because a return is the one flow whose
 // precondition is finality — the returning bank's own guard and
 // payment.PostReturnLegTx both refuse anything that is not Settled. Built by
-// driving the mesh rather than by writing a Settled payment into the store, so
+// driving the real flow rather than by writing a Settled payment into the store, so
 // that what is returned is a payment this system really carried: the payer's
 // money is in the payee's account and the reserves have moved, which is exactly
 // what the return has to undo.
@@ -1061,7 +1061,7 @@ func (h *harness) settle(t *testing.T, p payment.Payment) payment.Payment {
 // It opens a cycle of its own, because the fixture's cut-off has already been
 // reached by whatever settled the first payment and a payment with no open
 // window is refused TM01 by the clearing house. Opened on h.net rather than
-// through the mesh: opening one is nobody's message, and closeCycle is what
+// through the clearing house: opening one is nobody's file, and closeCycle is what
 // makes reaching the cut-off the clearing house's act.
 func (h *harness) spendTheCredit(t *testing.T) {
 	t.Helper()

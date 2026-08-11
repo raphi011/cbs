@@ -38,7 +38,7 @@ func TestClosingACycleSettlesItThroughTheCentralBank(t *testing.T) {
 }
 
 // A net payer who cannot cover becomes RJCT/AM04 on the settlement
-// instruction. Before the mesh this was a Go error returned to whoever clicked
+// instruction. It is not a Go error returned to whoever clicked
 // settle, which is not something a clearing house can act on.
 func TestANetPayerWhoCannotCoverIsRejectedOnTheInstruction(t *testing.T) {
 	h := newHarnessWithAnUnfundedReserve(t)
@@ -593,33 +593,30 @@ func TestARefusedSettlementLeavesTheCycleClosedAndThePaymentsCleared(t *testing.
 //
 // # It is a SET, plus the three orderings that are actually forced
 //
-// The three messages of the chain are each sent by the handler of the one
-// before, so their order is forced. The statements are not in that chain: they
-// go to other actors' inboxes, and those goroutines run concurrently. The tap
-// fires in Mesh.dispatch, on the RECEIVING actor's goroutine, so what this test
-// observes is handling order and not send order, and a positional assertion over
-// all six would be flaky rather than strict.
+// The three files of the chain are each built by the institution that collected
+// the one before, so their order is forced. The statements are not in that
+// chain: they go into other banks' queues, and a queue has no order against
+// another queue. The tap fires when a file CROSSES, so what this test observes
+// is delivery order, and a positional assertion over all six would be asserting
+// the order the day's phases happen to run in.
 //
-// Three relations survive: the INSTRUCTION is handled first; the central bank's
-// pacs.002 is handled before the clearing house's — both chain arguments — and
-// the PAYEE's BANK's camt.053 is handled before the ACSC addressed to that same
-// bank, which is not a chain argument and is the load-bearing one.
+// Three relations survive: the INSTRUCTION crosses first; the settlement agent's
+// pacs.002 crosses before the clearing house's — both chain arguments — and the
+// PAYEE's BANK's camt.053 crosses before the ACSC addressed to that same bank,
+// which is not a chain argument and is the load-bearing one.
 //
 // # Why that pair CAN be asserted when the set cannot be ordered
 //
-// Not merely "both go to one actor": two messages racing into one inbox from two
-// goroutines would arrive in either order. What forces this pair is a
-// happens-before chain — Mesh.send pushes onto the target's queue SYNCHRONOUSLY
-// in the sender's own goroutine; centralBank.receiveSettlement calls advise
-// before answer, so the camt.053 is pushed before the pacs.002 is; the ACSC does
-// not exist until the clearing house HANDLES that pacs.002; and Mesh.run is one
-// goroutine popping that queue FIFO with Mesh.dispatch firing the tap
-// immediately before the handler. Deterministic, then, not lucky.
+// Not because both go to one bank: they are in two DIFFERENT queues, at the
+// settlement agent and at the clearing house, and two connections share no
+// ordering whatever. What forces the pair is the BANK's own collection order —
+// the settlement agent first, then the clearing house — which is a decision each
+// bank makes about its own operations. See AdvanceDay's phase 7.
 //
-// A reader who tries to falsify this by swapping advise and answer will find the
-// test still passes, and should not conclude the assertion is weak: swapping
-// makes the pair a RACE rather than an inversion, and the central bank wins that
-// race almost always. Inverting it takes a delay between the two.
+// A reader who tries to falsify it by swapping advise and answer will find the
+// test still passes, and that is the point rather than a weakness: the order the
+// settlement agent wrote the two files in decides nothing. Swapping the BANK's
+// two collections is what inverts the pair.
 //
 // What it pins is why centralBank.advise sends the statements before it answers.
 // The payee's bank is a net RECEIVER here, so its camt.053 CREDITS the clearing
@@ -717,7 +714,7 @@ func TestTheMessagesACutOffPutsOnTheWire(t *testing.T) {
 // assumption it makes: settling the first cycle it saw and dropping the second
 // would leave a closed cycle nobody ever settles and nobody ever hears about.
 //
-// Injected rather than provoked, because no actor in this mesh emits this
+// Injected rather than provoked, because no actor in this deployment emits this
 // message. That is what injectRaw is for.
 func TestASettlementInstructionNamingTwoCyclesIsRefused(t *testing.T) {
 	h := newHarness(t)

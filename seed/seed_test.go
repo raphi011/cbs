@@ -379,7 +379,7 @@ func TestRejectedCollectionWasReversedInThePayersBank(t *testing.T) {
 // a dataset this seed can build.
 //
 // So the half-happened state RejectAtCSMTx names is reachable here, as it always
-// was in the mesh, and the guarantee that replaces it is the one a single
+// was over the transport, and the guarantee that replaces it is the one a single
 // institution can still make: RejectAtBankTx transitions THIS bank's copy and
 // reverses THIS bank's leg together, so a bank that cannot give the money back
 // does not record the rejection either. That is the inconsistency that would

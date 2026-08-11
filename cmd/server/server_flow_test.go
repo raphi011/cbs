@@ -190,7 +190,7 @@ func validSubmission(t *testing.T, s *server) string {
 		"debtor":{"account":%q,"identifier":{"scheme":"IBAN","value":%q}},
 		"creditor":{"account":%q,"identifier":{"scheme":"IBAN","value":%q}},
 		"amount":1000,
-		"description":"mesh handoff",
+		"description":"interbank handoff",
 		"creditorName":"Bella Bruno"
 	}`,
 		payer.Account, aliceIBAN,
@@ -327,8 +327,8 @@ func TestAnAddressNoMemberIsPublishedUnderIsUnprocessable(t *testing.T) {
 // Reset stopped calling JoinRoster.
 //
 // A reset forgets every bank actor, truncates and reseeds. The actors are not put
-// back in a step of the reset's own: the reseed admits its banks through the mesh,
-// so each one gets its actor in the call that founds it. That is a better division
+// back in a step of the reset's own: the reseed admits its banks through the
+// deployment, so each one is enrolled in the call that founds it. That is a better division
 // of labour and a weaker guarantee, because nothing in Reset can check that a
 // reseed did it. This is what checks it, from the outside, in the only way that matters:
 // a payment between two reseeded banks reaches the far side.
@@ -358,19 +358,18 @@ func TestAReseededNetworkCanStillBePaidThrough(t *testing.T) {
 	}
 }
 
-// A reset replaces the network, so it has to replace the mesh's picture of it.
+// A reset replaces the network, so it has to replace the deployment's picture of it.
 //
 // The sequence that fails without it: provision a bank, reset, provision the same
-// BIC again. If the mesh is never told the first bank is gone, an actor still
-// answers to that address, the second attempt is refused, and the row is left
-// behind anyway — the BIC unusable for the life of the process, on a system whose
-// roster is empty.
+// BIC again. If the deployment keeps the first bank's queues, a file addressed
+// to that BIC lands in a queue about a payment no institution holds a row for,
+// on a system whose roster is empty.
 //
 // Every assertion below is one of the three things that go wrong: the address is
 // free again, the bank that comes back can actually be paid through — a row with
 // no actor answers every read and carries no payment — and the refusal that IS
 // still reachable says something true.
-func TestResetRebuildsTheMeshSoAReadmittedBankCanPay(t *testing.T) {
+func TestResetRebuildsTheDeploymentSoAReadmittedBankCanPay(t *testing.T) {
 	h := newServer(t, nil)
 
 	provisionMember(t, h, "BNKADEFFXXX", "Bank A")
@@ -413,7 +412,7 @@ func TestResetRebuildsTheMeshSoAReadmittedBankCanPay(t *testing.T) {
 	}
 
 	// Bank A's own payment survives everything above, which is the half worth
-	// stating separately: a reset that rebuilt the mesh but lost the book would
+	// stating separately: a reset that rebuilt the deployment but lost the book would
 	// pass every assertion so far.
 	var after []api.PaymentDTO
 	getJSON(t, bankSurface(h, a), "/payments", &after)
@@ -425,7 +424,7 @@ func TestResetRebuildsTheMeshSoAReadmittedBankCanPay(t *testing.T) {
 // The reseeded banks are rejoined, not just recreated.
 //
 // The sample dataset is rebuilt by seed.Populate, which drives payment.Network
-// directly and knows nothing about the mesh — so every bank it creates is a row
+// directly and knows nothing about a deployment — so every bank it creates is a row
 // with no actor until Reset rejoins the roster. Without that, a reset leaves a
 // system that answers every read and cannot carry a payment, which is the worst
 // shape a demo can be in: nothing looks broken until somebody tries to pay.
@@ -448,7 +447,7 @@ func TestPayingAfterAResetGoesThroughTheReseededBanks(t *testing.T) {
 	}
 }
 
-// The two kinds of failure a mesh-driven handler has, and the line between them.
+// The two kinds of failure a file-driven handler has, and the line between them.
 //
 // A submission the payer's own bank refuses is decided inside its own unit of
 // work, before anything is sent, so it comes back as a status code in the
@@ -498,7 +497,7 @@ func TestWhichRefusalsReachTheCallerAndWhichDoNot(t *testing.T) {
 // The cut-off instructs settlement, and the console can reach it.
 //
 // Closing a cycle sends a pacs.009. There is no second console button that
-// discharges it, and that is the whole of what "the mesh is wired into api"
+// discharges it, and that is the whole of what "the transport is wired into api"
 // buys.
 //
 // What this test asserts, exactly: 200 with a Closed cycle carrying no
@@ -586,7 +585,7 @@ func TestClosingACycleThroughTheAPIInstructsSettlement(t *testing.T) {
 // clearing house's half and only that — and the balance after the drain. It
 // deliberately does not read the balance in between: the payer's bank actor runs
 // concurrently with this goroutine, so "not yet refunded" would be a race dressed
-// up as an assertion. mesh's own
+// up as an assertion. This package's own
 // TestAnOperatorRejectionRefundsThePayerOnlyOnceTheMessageArrives measures which
 // actor posted the refund, without a clock, and
 // TestARejectionWhoseRefundFailsStandsAndIsReported pins that the two halves
@@ -617,11 +616,11 @@ func TestRejectingThroughTheAPIRefundsThePayerOnlyAfterTheMessageArrives(t *test
 	}
 }
 
-// A return goes round the mesh, and the reason code it carries is how that is
+// A return goes round the network, and the reason code it carries is how that is
 // visible from here.
 //
 // The distinction this pins is not "did the money come back" — a synchronous
-// domain call would do that too. It is WHO did it and WITH WHAT. Mesh.Return
+// domain call would do that too. It is WHO did it and WITH WHAT. Deployment.Return
 // hands the instruction to the bank that RECEIVED the original — the payee's bank
 // on a push — which posts its own clawback and sends a pacs.004; the refund
 // asserted below is a DIFFERENT bank's posting, made from that same message after
@@ -632,7 +631,7 @@ func TestRejectingThroughTheAPIRefundsThePayerOnlyAfterTheMessageArrives(t *test
 // The payment is a SETTLED one out of the seeded dataset, because finality is a
 // return's precondition: PostReturnLegTx refuses anything else, and the
 // returning bank checks it again before any message exists.
-func TestReturningThroughTheAPIGoesRoundTheMesh(t *testing.T) {
+func TestReturningThroughTheAPIGoesRoundTheNetwork(t *testing.T) {
 	srv := newAPIHarness(t)
 
 	var payments []api.PaymentDTO

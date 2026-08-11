@@ -56,7 +56,7 @@ type ParticipantDTO struct {
 	ID   string `json:"id"`
 	Name string `json:"name"`
 	// BIC is this bank's ISO 9362 business identifier code — what a
-	// counterparty addresses it by, and what the mesh routes on.
+	// counterparty addresses it by, and what the clearing house routes on.
 	BIC string `json:"bic"`
 	// ProductID is the bank's default deposit product, created with its chart
 	// of accounts at onboarding. Every deposit account is opened FROM a

@@ -12,8 +12,8 @@
 //
 // Institution below is declared HERE, by the package that needs it, and is
 // satisfied by whatever the process builds its banks out of. So this package
-// knows nothing about a mesh, a store set or a deployment, and its handlers can
-// be driven by a fake that has none of them.
+// knows nothing about the transport, a store set or a deployment, and its
+// handlers can be driven by a fake that has none of them.
 package bank
 
 import (
@@ -53,8 +53,8 @@ type Institution interface {
 	// disagree, and participant below converts rather than asking twice.
 	BIC() iso20022.BIC
 
-	// Submit runs this bank's own half of a customer's instruction and sends.
-	// Synchronous up to the send, which is what lets POST /payments answer 422
+	// Submit runs this bank's own half of a customer's instruction and uploads it.
+	// Synchronous up to the upload, which is what lets POST /payments answer 422
 	// rather than 202 followed by a rejection nobody can be told about.
 	Submit(ctx context.Context, req payment.InitiatePaymentRequest) (payment.Payment, error)
 
@@ -71,7 +71,7 @@ type Institution interface {
 	RefreshDirectory(ctx context.Context) ([]payment.DirectoryEntry, error)
 
 	// Log is what the middleware chain writes through, and what the four handlers
-	// that can commit a leg and fail to send record the half-happened state on.
+	// that can commit a leg and fail to upload record the half-happened state on.
 	Log() *slog.Logger
 }
 

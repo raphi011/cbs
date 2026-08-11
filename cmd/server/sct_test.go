@@ -59,7 +59,7 @@ func TestTheCreditTransferChainIsFourMessages(t *testing.T) {
 	h.mu.Unlock()
 
 	if len(seen) != len(want) {
-		t.Fatalf("the mesh carried %d messages, want %d", len(seen), len(want))
+		t.Fatalf("the network carried %d files, want %d", len(seen), len(want))
 	}
 	for i, w := range want {
 		env, err := iso20022.Unmarshal(seen[i].raw)
@@ -345,7 +345,7 @@ func TestARedeliveredAcceptanceIsReportedAndNotRejected(t *testing.T) {
 	}
 }
 
-// A payment addressed to a bank the mesh cannot route to is RC01, and it is the
+// A payment addressed to a bank the clearing house cannot route to is RC01, and it is the
 // clearing house that says so — the only party that holds the routing table.
 //
 // # The message names a payment nobody has seen, and it has to
@@ -371,7 +371,7 @@ func TestARedeliveredAcceptanceIsReportedAndNotRejected(t *testing.T) {
 // incidental: it is being told about a payment it never submitted and holds no
 // row for. It is asserted rather than discarded so that a failure anywhere else
 // in the chain cannot hide underneath the assertions below.
-func TestACreditTransferForABankTheMeshCannotRouteToIsRC01(t *testing.T) {
+func TestACreditTransferForABankTheClearingHouseCannotRouteToIsRC01(t *testing.T) {
 	h := newHarness(t)
 	p := h.submitCreditTransfer(t)
 	h.work(t)
@@ -460,7 +460,7 @@ func TestARedeliveredCreditTransferIsReportedAtThePayeesBank(t *testing.T) {
 // The message is a doctored copy of a real one, with its single transaction
 // duplicated and GrpHdr/NbOfTxs raised to match, because that is the only way to
 // have one: nothing in this system builds a bulk file, so the limit is a rule
-// about messages the mesh could RECEIVE rather than about ones it sends.
+// about files an institution could COLLECT rather than about ones it sends.
 //
 // What is asserted is that the sender was told, and told WHICH element carried
 // how many. The count is what a sender has to see to fix its file, and the
@@ -577,7 +577,7 @@ func TestABulkCollectionIsRefusedByTheClearingHouse(t *testing.T) {
 }
 
 // TestAnOnUsPaymentIsRefusedBeforeItReachesAClearingHouse is the boundary this
-// mesh did not have, and the thing it refuses is not an error in the message.
+// this transport does not have, and the thing it refuses is not an error in the message.
 //
 // # Why an on-us payment is not a clearing payment
 //
@@ -609,7 +609,7 @@ func TestABulkCollectionIsRefusedByTheClearingHouse(t *testing.T) {
 //
 // A book transfer between two customers of one bank is a real product and this
 // system offers it — deposit.Register.TransferTx, which is the register's own
-// act and reaches no mesh at all. The refusal is a statement about the wrong
+// act and reaches no transport at all. The refusal is a statement about the wrong
 // ROUTE and not about the payment being illegitimate, so a caller reading it
 // knows which of the two to ask for instead.
 func TestAnOnUsPaymentIsRefusedBeforeItReachesAClearingHouse(t *testing.T) {
@@ -633,7 +633,7 @@ func TestAnOnUsPaymentIsRefusedBeforeItReachesAClearingHouse(t *testing.T) {
 			otherRef := payment.PartyRef{Account: other.ID, Identifier: other.Identifiers[0]}
 			// A mandate, so that a collection is refused for being on-us and not
 			// for being unauthorised. Without it SDD.ValidateMandate would refuse
-			// first and this test would pass on a mesh with no boundary at all.
+			// first and this test would pass on a network with no boundary at all.
 			// Both parties are the payer's bank's, so it is also the creditor's
 			// bank and the one that records the mandate.
 			mandate, err := h.bank(h.debtorBIC).CreateMandate(ctx, h.debtorBIC, h.debtorRef(), otherRef, 0)

@@ -8,7 +8,7 @@
 // surface is one of those or a read of the rows they wrote.
 //
 // Institution below is declared here, by the package that needs it, so this
-// package knows nothing about a mesh or a deployment.
+// package knows nothing about the transport or a deployment.
 package csm
 
 import (

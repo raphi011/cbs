@@ -194,7 +194,7 @@ func TestARedeliveredSettlementStatusPaysThePayeeOnce(t *testing.T) {
 // The failure is worth stating precisely: a bank that booked whatever camt.053
 // arrived would move its OWN reserve mirror by ANOTHER member's position, in its
 // own book, and under isolation there is nobody else who can see both books to
-// notice. Nothing in this mesh misroutes a statement, so the misrouting is
+// notice. Nothing in this deployment misroutes a statement, so the misrouting is
 // injected — the payer's bank's own statement, delivered to the payee's bank.
 //
 // Both layers, because they refuse for different reasons. The domain refuses

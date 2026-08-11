@@ -24,7 +24,7 @@ import (
 // says which books, because a break that named no institution would send its
 // reader to five databases.
 //
-// This is the mesh's package because this is where a real network can be built
+// This is this package because this is where a real network can be built
 // and driven to finality. The harness itself names no fixture and could be run
 // over any deployment; seed/seed_test.go runs it over the widest one.
 //

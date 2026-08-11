@@ -17,10 +17,10 @@ import (
 // between a debit and the answer to it.
 //
 // It matters because a half-processed payment reads as a bug in the payment
-// rather than as a moment in its life. In the mesh a credit transfer really
-// does pass through that moment — the payer's bank debits, sends its pacs.008,
-// and waits — and Initiated is the status that names it: money gone from the
-// payer, no institution having yet said accept or reject.
+// rather than as a moment in its life. A credit transfer really does pass
+// through that moment — the payer's bank debits, uploads its pacs.008, and
+// waits — and Initiated is the status that names it: money gone from the payer,
+// no institution having yet said accept or reject.
 //
 // The property holds by CONSTRUCTION, and this test carries nothing of its own.
 // Every PAYMENT in the scenario is composed inside ONE unit of work

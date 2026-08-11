@@ -170,14 +170,13 @@ func recoverBuild(r any) error {
 	return fmt.Errorf("seed: %w", se.err)
 }
 
-// There is no Network() convenience constructor any more, and the reason is
-// worth recording rather than rediscovering.
+// There is no Network() convenience constructor, and the reason is worth
+// recording rather than rediscovering.
 //
-// Building the scenario needs a running mesh, and a mesh is a set of goroutines
-// somebody has to stop — so there is no one-call helper that hands back only the
-// network and leaves them running for the life of the process. Callers build the
-// four pieces themselves: cmd/server does, and so does this package's own test
-// helper.
+// Building the scenario needs a DEPLOYMENT as well as a network — three acts
+// need a table no single institution owns — and a deployment is a composition
+// root, which a package it imports cannot name. So callers build the pieces
+// themselves: cmd/server does, and so does this package's own test helper.
 
 type builder struct {
 	ctx context.Context
@@ -469,23 +468,22 @@ func (b *builder) lodge(p *payment.Bank, amount ledger.Amount) {
 // receiving bank's and the clearing house's — leaving the payment Accepted in
 // its scheme's open cycle.
 //
-// The seed is one process building a scenario, so it plays every actor; the
-// mesh is what makes them separate. Composing the three halves here rather
-// than calling one method that does all three is the point of the split: there
-// is no such method, precisely so that no caller can validate both ends of a
-// payment by accident.
+// The seed is one process building a scenario, so it plays every institution;
+// the transport is what makes them separate. Composing the three halves here
+// rather than calling one method that does all three is the point of the split:
+// there is no such method, precisely so that no caller can validate both ends of
+// a payment by accident.
 //
-// It is the LAST composite in this repository, and it survives for a reason no
-// HTTP handler has: the seed runs before any actor exists, so there is nothing
-// to send a message to and nobody to answer one — and its whole job is to leave
-// a FIXED scenario, which a conversation carried out at startup could not
-// promise.
+// It survives for a reason no HTTP handler has: its whole job is to leave a
+// FIXED scenario, and a conversation carried out over the transport would not
+// finish until a business day ran — so the dataset would depend on when somebody
+// advanced the clock.
 //
 // # It is THREE units of work now, and it has to be
 //
 // The three halves shared one Tx until the store split, and the doc here said
-// what that bought: the whole initiation or none of it, which in the mesh is
-// exactly what the three actors do not have. There is no Tx to share. A unit of
+// what that bought: the whole initiation or none of it, which is exactly what
+// three institutions with a database each do not have. There is no Tx to share. A unit of
 // work is one database's, each institution has its own, and a statement that
 // spanned two of them is the thing this task removed — so what the seed gives up
 // is not a convenience but an impossibility.
@@ -514,7 +512,7 @@ func (b *builder) initiate(req payment.InitiatePaymentRequest) payment.Payment {
 	// message it would have built carries what it wrote. Everything else is the
 	// instruction unchanged, including both account ids — which is the seed being
 	// the seed. A real receiving bank resolves its own side from the address and
-	// has no way to know the other's, and the mesh is where that is modelled;
+	// has no way to know the other's, and cmd/server is where that is modelled;
 	// this process holds every register and is building a fixed scenario.
 	relayed := req
 	relayed.DebtorDetails, relayed.CreditorDetails = p.DebtorDetails, p.CreditorDetails
@@ -528,18 +526,18 @@ func (b *builder) initiate(req payment.InitiatePaymentRequest) payment.Payment {
 	}
 	check(b.bank(receiver).AcceptInbound(b.ctx, p.ID, relayed))
 	// And the CLEARING HOUSE, which has to be carrying the payment before it can
-	// take it into a cycle. In the mesh this is the moment it relays the
-	// instruction on; here there is nothing to relay, so the record stands alone.
+	// take it into a cycle. In the running system this is the moment it routes the
+	// instruction on; here there is nothing to route, so the record stands alone.
 	must(b.csm().RecordRelayed(b.ctx, []payment.InboundTransaction{{ID: p.ID, Request: relayed}}))
 	accepted := must(b.csm().AcceptAtCSM(b.ctx, p.ID))
 
 	// And the SUBMITTING bank is told, which is the act this composite was
-	// missing. In the mesh the clearing house answers the instruction with an
-	// ACCP addressed to the bank that sent it, and that bank records Accepted on
-	// its own copy (csm.tell, payment.AcceptAtBankTx). Without it the seed's
-	// banks sat at Initiated where the mesh's reach Accepted — the same payment
-	// with two different histories depending on which fixture built it, which is
-	// exactly the divergence a sample dataset must not have.
+	// missing. In the running system the clearing house answers the instruction
+	// with an ACCP addressed to the bank that sent it, and that bank records
+	// Accepted on its own copy (ClearingHouse.tell, payment.AcceptAtBankTx).
+	// Without it a seeded bank would sit at Initiated where a carried one reaches
+	// Accepted — the same payment with two different histories depending on which
+	// built it, which is exactly the divergence a sample dataset must not have.
 	//
 	// Only the submitter. The other bank ANSWERED the instruction and is told
 	// nothing further until the cut-off; its copy goes Initiated -> Settled and
@@ -554,8 +552,8 @@ func (b *builder) initiate(req payment.InitiatePaymentRequest) payment.Payment {
 //
 // Split for the same reason initiate is: there is no method that plays both
 // actors, and the two cannot share a Tx — two institutions, two databases. So
-// the fixture has the mesh's shape here as well, and what it promises is the
-// OUTCOME rather than the process.
+// the fixture has the running system's shape here as well, and what it promises
+// is the OUTCOME rather than the process.
 func (b *builder) reject(id payment.PaymentID, code iso20022.StatusReason, reason string) {
 	rejected := must(b.csm().RejectAtCSM(b.ctx, id, code, reason))
 	// Both banks record it, each on its own copy, and only the payer's bank gives
@@ -565,7 +563,7 @@ func (b *builder) reject(id payment.PaymentID, code iso20022.StatusReason, reaso
 	//
 	// On a push the two are one bank and there is one call; on a pull the payee's
 	// bank submitted and is being told the answer to its instruction, with nothing
-	// to undo. csm.tell is what decides the same thing in the mesh, and it decides
+	// to undo. ClearingHouse.tell is what decides the same thing in the running system, and it decides
 	// it the same way.
 	must(b.bank(rejected.DebtorDetails.Agent).RejectAtBank(b.ctx, id, code, reason))
 	if other := rejected.CreditorDetails.Agent; other != rejected.DebtorDetails.Agent {
@@ -596,8 +594,8 @@ func (b *builder) reject(id payment.PaymentID, code iso20022.StatusReason, reaso
 // together.
 //
 // The instruction handed to SettleReturn is built from the CLEARING HOUSE's
-// payment row here, which is the one thing the mesh does differently rather than
-// merely faster: in the mesh both agents come off the pacs.004's OrgnlTxRef,
+// payment row here, which is the one thing the running system does differently
+// rather than merely faster: there both agents come off the pacs.004's OrgnlTxRef,
 // because a settlement agent holds no payment rows. The values are identical —
 // payment.ReturnMessage writes these same two fields and payment.ReadReturn
 // reads them back — and the way they were obtained is the whole difference.
@@ -631,7 +629,7 @@ func (b *builder) returnPayment(id payment.PaymentID, reason string) {
 	// something readable off a row; see payment.PostReturnLegTx.
 	must(b.bank(other).PostReturnLeg(b.ctx, id, reason))
 	// So the returner's copy and the clearing house's are moved by what they are
-	// TOLD, which in the mesh is the settlement agent's ACSC relayed on. The seed
+	// TOLD, which in the running system is the settlement agent's ACSC relayed on. The seed
 	// has no message and says the same thing directly.
 	must(b.bank(returner).CompleteReturn(b.ctx, id))
 	must(b.csm().CompleteReturn(b.ctx, id))
@@ -672,8 +670,8 @@ func (b *builder) advise(statements []payment.SettlementStatement) {
 // fixed scenario before any actor exists, and a conversation carried out at
 // startup could not promise a fixed outcome.
 //
-// What the seed gives up by doing so is exactly what the mesh exists to model:
-// in the mesh these halves are several units of work with an unreconciled
+// What the seed gives up by doing so is exactly what the transport exists to
+// model: there these halves are several units of work with an unreconciled
 // interval between them. They are several here too — one database each, and no
 // statement spans two. The fixture is the outcome, not the process.
 func (b *builder) settle(id payment.CycleID) {
@@ -695,7 +693,7 @@ func (b *builder) settle(id payment.CycleID) {
 	// The CLEARING HOUSE's own copies move first, and they are also the payment
 	// list — which the settlement does not carry: a settlement agent answers about
 	// net positions per MEMBER and holds no way to enumerate the batch. That is
-	// why the fan-out is the clearing house's in the mesh, and why the seed asks
+	// why the fan-out is the clearing house's in the running system, and why the seed asks
 	// this institution rather than the statements above.
 	for _, p := range must(b.csm().SettleAtCSM(b.ctx, id)) {
 		// Then both banks, each on its own copy, and only the payee's bank pays
@@ -736,7 +734,7 @@ func (b *builder) initSCT(dp *payment.Bank, d deposit.Account, cp *payment.Bank,
 		// refilled from its own row either way (payment.SubmitPaymentTx), so
 		// naming it changes nothing about the payment — what it buys is that the
 		// seed's requests still say which bank submits, which is what initiate
-		// below reads and what cmd/server's Mesh.Submit's on-us guard compares.
+		// below reads and what cmd/server's Deployment.Submit on-us guard compares.
 		DebtorDetails:   payment.PartyDetails{Agent: dp.BIC, Name: d.Name},
 		CreditorDetails: payment.PartyDetails{Agent: cp.BIC, Name: c.Name},
 	})
@@ -795,7 +793,7 @@ func (b *builder) build() {
 	// every bank can pay every other. Refreshing inside provision would give
 	// Aurora a directory holding only itself, Verde one holding two, and a dataset
 	// whose payments worked or did not depending on the order the banks joined —
-	// which is real behaviour, and is measured in mesh rather than baked into the
+	// which is real behaviour, and is measured in cmd/server rather than baked into the
 	// fixture every other suite reads.
 	for _, p := range []*payment.Bank{aurora, verde, nord, soleil} {
 		b.subscribe(p)
@@ -859,7 +857,6 @@ func (b *builder) build() {
 	b.lodge(nord, 360_000)
 	b.lodge(soleil, 210_000)
 
-
 	// --- Holds on Alice: active / released / captured ----------------------
 	ctx := b.ctx
 	must(aurora.Deposit.CreateHold(ctx, deposit.CreateHoldRequest{
@@ -895,7 +892,6 @@ func (b *builder) build() {
 	m2 := must(b.bank(aurora.BIC).CreateMandate(b.ctx, verde.BIC, b.ref(bruno), b.ref(aaron), 0))
 	m3 := must(b.bank(soleil.BIC).CreateMandate(b.ctx, nord.BIC, b.ref(niklas), b.ref(claude), 25_000))
 	check(b.bank(soleil.BIC).RevokeMandate(b.ctx, m3.ID)) // revoked, for display
-
 
 	// --- Phase A: a fully settled SEPA Credit Transfer cycle ---------------
 	sct1 := must(b.csm().OpenCycle(b.ctx, payment.SchemeSEPACT))

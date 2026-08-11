@@ -61,7 +61,7 @@ import (
 // payment.ErrNotThisBanksPayment.
 type bankOps interface {
 	// The submitting bank's half, and the message it then sends. See
-	// Mesh.Submit for why the send is not inside the unit of work.
+	// Deployment.Submit for why the upload is not inside the unit of work.
 	//
 	// ONE method and not two: building a message can fail — a payee the
 	// instruction quoted no address for — and a refusal reported after the
@@ -97,11 +97,11 @@ type bankOps interface {
 	DirectDebitRequest(ctx context.Context, doc *iso20022.Pacs003) ([]payment.InboundTransaction, error)
 	AcceptInbound(ctx context.Context, id payment.PaymentID, req payment.InitiatePaymentRequest) error
 
-	// ResolveIdentifier is the on-us check, and it is the one method here the
-	// mesh calls on the caller's goroutine rather than inside a handler: an
-	// instruction naming a payee this same bank holds is not a payment this
-	// transport carries, and the bank that would submit it is the only
-	// institution that can say so. See Mesh.Submit and payment.ErrOnUsPayment.
+	// ResolveIdentifier is the on-us check, and it is the one method here that is
+	// called from a door rather than from a handler: an instruction naming a payee
+	// this same bank holds is not a payment this transport carries, and the bank
+	// that would submit it is the only institution that can say so. See
+	// Deployment.Submit and payment.ErrOnUsPayment.
 	//
 	// It reaches THIS bank's register and no other, and that is a property of
 	// the network behind the interface rather than of what the caller passes.
@@ -179,7 +179,7 @@ type bankOps interface {
 	ReverseReturnLeg(ctx context.Context, id payment.PaymentID, reason string) error
 
 	// The mirror leg. A member books it from the statement the settlement agent
-	// sent; nothing else in this mesh may post in that book, and nothing on this
+	// sent; nothing else in this deployment may post in that book, and nothing on this
 	// interface lets this bank post in anybody else's.
 	PostSettlementAdvice(ctx context.Context, m payment.AdvisedMovement) (payment.SettlementAdvice, error)
 
@@ -335,7 +335,7 @@ type csmOps interface {
 	// ParticipantID and has to go through the bank's own row to reach an address
 	// (see payment.Network.GetRosterEntry); this one starts from the BIC,
 	// because an instruction names a counterparty's agent by address and by
-	// nothing else. See Mesh.instruct, which asks it before either leg posts.
+	// nothing else. See Deployment.Submit, which asks it before either leg posts.
 	GetRosterEntryByBIC(ctx context.Context, bic iso20022.BIC) (payment.RosterEntry, error)
 
 	// ListRosterEntries is the roster PUBLISHED: every member, as the directory a

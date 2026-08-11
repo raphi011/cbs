@@ -392,7 +392,7 @@ func TestTheCentralBankCanReadTheCycleItSettles(t *testing.T) {
 	}
 
 	// Settled, and by this institution: the clearing house sent a pacs.009 and
-	// this actor discharged it. Before the mesh a cycle sat Closed until a human
+	// this institution discharged it. A cycle sits Closed until a human
 	// pressed a second button on this console.
 	got := doJSON(t, csmSurface(h), "GET", "/cycles/"+cid, "", http.StatusOK)
 	if got["status"] != "Settled" {
@@ -507,7 +507,7 @@ type seededBank struct {
 
 func threeBanks(t *testing.T, h *server) (a, b, c seededBank) {
 	t.Helper()
-	// A BIC each: the mesh gives every bank an actor keyed by its address and
+	// A BIC each: a deployment gives every member a download queue keyed by its address and
 	// refuses two on one, so three banks that shared a BIC could not be admitted
 	// at all — let alone tell each other apart on the wire.
 	mk := func(name, bic string) seededBank {
