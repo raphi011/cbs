@@ -128,7 +128,7 @@ func errorStatus(err error) int {
 		// INSTRUCTED, so their refusal leaves as a pacs.002 and never as a status
 		// code. But they are not only reached that way: seed.builder calls
 		// Network.Deposit, SettleReturnTx and SettleCycleTx directly, and
-		// seed.Populate runs inside POST /admin/reset (see api.Deployment.Reset), whose
+		// seed.Populate runs inside POST /admin/reset (see cmd/server's Deployment.Reset), whose
 		// error is written by this same function — so a seed that could produce
 		// this sentinel would produce a 422 from the reset route too. It cannot,
 		// and that is a property of the seed rather than of the code's shape:

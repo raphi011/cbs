@@ -10,10 +10,9 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/raphi011/cbs/api"
-	"github.com/raphi011/cbs/api/bank"
-	"github.com/raphi011/cbs/api/centralbank"
-	"github.com/raphi011/cbs/api/csm"
+	bankapi "github.com/raphi011/cbs/api/bank"
+	cbapi "github.com/raphi011/cbs/api/centralbank"
+	csmapi "github.com/raphi011/cbs/api/csm"
 	"github.com/raphi011/cbs/payment"
 )
 
@@ -108,18 +107,18 @@ func addrFor(port int) string { return ":" + strconv.Itoa(port) }
 // Each of the three surface packages declares the interface it is driven by and
 // the deployment's institution satisfies it, so this is the one place in the
 // process that knows which of the three a listener is.
-func handlerFor(ctx context.Context, dep *api.Deployment, e entity, log *slog.Logger) (http.Handler, error) {
+func handlerFor(ctx context.Context, dep *Deployment, e entity, log *slog.Logger) (http.Handler, error) {
 	switch e.key {
 	case centralBankKey:
-		return centralbank.Routes(dep.CentralBank()).Handler(log), nil
+		return cbapi.Routes(dep.CentralBank()).Handler(log), nil
 	case clearingHouseKey:
-		return csm.Routes(dep.ClearingHouse()).Handler(log), nil
+		return csmapi.Routes(dep.ClearingHouse()).Handler(log), nil
 	default:
 		b, err := dep.Bank(ctx, e.pid)
 		if err != nil {
 			return nil, err
 		}
-		return bank.Routes(b).Handler(log), nil
+		return bankapi.Routes(b).Handler(log), nil
 	}
 }
 
@@ -131,7 +130,7 @@ func handlerFor(ctx context.Context, dep *api.Deployment, e entity, log *slog.Lo
 // rather than survivable: a network missing one of its banks is not a degraded
 // system but a wrong one, and a payment routed to the missing member would fail
 // somewhere far from the cause.
-func serve(ctx context.Context, entities []entity, dep *api.Deployment, log *slog.Logger) (func(context.Context) error, error) {
+func serve(ctx context.Context, entities []entity, dep *Deployment, log *slog.Logger) (func(context.Context) error, error) {
 	type bound struct {
 		e  entity
 		ln net.Listener

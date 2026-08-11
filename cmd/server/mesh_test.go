@@ -1,4 +1,4 @@
-package api_test
+package main
 
 import (
 	"context"
@@ -27,7 +27,7 @@ import (
 
 // What this file is for: the seam between HTTP and the mesh.
 //
-// Everything else in api's suite drives a Server over a store. These tests drive
+// Every other file here drives the three surfaces over a store. These tests drive
 // one over a store AND a running mesh, because what they are about is the thing
 // that is not synchronous: a request returns while three other actors are still
 // working, and the answer to "what happened" arrives at a different actor
@@ -98,7 +98,7 @@ func newAPIHarness(t *testing.T) (*server, *mesh.Mesh) {
 	if err := data.Populate(ctx, nets, msh); err != nil {
 		t.Fatalf("populate: %v", err)
 	}
-	return &server{dep: api.NewDeployment(nets, msh, data.Populate, log), nets: nets, mesh: msh}, msh
+	return &server{dep: NewDeployment(nets, msh, data.Populate, log), nets: nets, mesh: msh}, msh
 }
 
 // The gate: how a test reads the world at a moment the mesh would otherwise
@@ -349,7 +349,7 @@ func decodePaymentID(t *testing.T, rec *httptest.ResponseRecorder) string {
 func getPayment(t *testing.T, s *server, id string) api.PaymentDTO {
 	t.Helper()
 	var out api.PaymentDTO
-	getJSON(t, csm(s), "/payments/"+id, &out)
+	getJSON(t, csmSurface(s), "/payments/"+id, &out)
 	return out
 }
 
@@ -391,7 +391,7 @@ func TestSubmitAnswers202AndThePaymentIsNotYetAccepted(t *testing.T) {
 	if before.Status != "Initiated" {
 		t.Errorf("status before draining = %q, want Initiated", before.Status)
 	}
-	assertStatus(t, csm(srv), "GET", "/payments/"+id, "", http.StatusNotFound)
+	assertStatus(t, csmSurface(srv), "GET", "/payments/"+id, "", http.StatusNotFound)
 
 	open()
 	drain(t, msh)
@@ -426,7 +426,7 @@ func reserveRows(t *testing.T, s *server, pid string) []map[string]any {
 		path += "/" + pid
 	}
 	var out []map[string]any
-	getJSON(t, cb(s), path, &out)
+	getJSON(t, cbSurface(s), path, &out)
 	return out
 }
 
@@ -457,7 +457,7 @@ func TestAnAddressNoMemberIsPublishedUnderIsUnprocessable(t *testing.T) {
 	// nobody. It passes mod-97, so what refuses it is the roster and not the
 	// check digits.
 	body := strings.Replace(validSubmission(t, srv), aliceIBAN, mustMint(iban.DE, "10000000", 1), 1)
-	rec := postJSON(t, csm(srv), "/payments", body)
+	rec := postJSON(t, csmSurface(srv), "/payments", body)
 	if rec.Code != http.StatusUnprocessableEntity {
 		t.Fatalf("a payer's address no member is published under = %d, want 422 (body: %s)", rec.Code, rec.Body)
 	}
@@ -469,8 +469,8 @@ func TestAnAddressNoMemberIsPublishedUnderIsUnprocessable(t *testing.T) {
 // A reset forgets every bank actor, truncates and reseeds. The actors are not put
 // back in a step of the reset's own: the reseed admits its banks through the mesh,
 // so each one gets its actor in the call that founds it. That is a better division
-// of labour and a weaker guarantee, because nothing in api can check that a reseed
-// did it. This is what checks it, from the outside, in the only way that matters:
+// of labour and a weaker guarantee, because nothing in Reset can check that a
+// reseed did it. This is what checks it, from the outside, in the only way that matters:
 // a payment between two reseeded banks reaches the far side.
 //
 // A row with no actor answers every read, so an assertion on the participant
@@ -516,10 +516,10 @@ func TestResetRebuildsTheMeshSoAReadmittedBankCanPay(t *testing.T) {
 	provisionMember(t, h, "BNKADEFFXXX", "Bank A")
 	provisionMember(t, h, "BNKBDEFFXXX", "Bank B")
 
-	assertStatus(t, cb(h), "POST", "/admin/reset", "", http.StatusOK)
+	assertStatus(t, cbSurface(h), "POST", "/admin/reset", "", http.StatusOK)
 
 	var members []api.ParticipantDTO
-	getJSON(t, cb(h), "/members", &members)
+	getJSON(t, cbSurface(h), "/members", &members)
 	if len(members) != 0 {
 		t.Fatalf("the roster holds %d banks after a reset with no reseed, want 0", len(members))
 	}
@@ -528,19 +528,19 @@ func TestResetRebuildsTheMeshSoAReadmittedBankCanPay(t *testing.T) {
 	a := provisionMember(t, h, "BNKADEFFXXX", "Bank A again")
 	b := provisionMember(t, h, "BNKBDEFFXXX", "Bank B again")
 
-	alice := doJSON(t, bank(h, a), "POST", "/deposit-accounts",
+	alice := doJSON(t, bankSurface(h, a), "POST", "/deposit-accounts",
 		`{"name":"Alice","asset":"EUR","productId":"`+prdOf(t, h, a)+`"}`,
 		http.StatusCreated)["id"].(string)
-	bob := doJSON(t, bank(h, b), "POST", "/deposit-accounts",
+	bob := doJSON(t, bankSurface(h, b), "POST", "/deposit-accounts",
 		`{"name":"Bob","asset":"EUR","productId":"`+prdOf(t, h, b)+`"}`,
 		http.StatusCreated)["id"].(string)
-	doJSON(t, bank(h, a), "POST", "/deposits", `{"account":"`+alice+`","amount":100000,"description":"opening"}`, http.StatusOK)
-	doJSON(t, csm(h), "POST", "/cycles", `{"scheme":"sepa.ct"}`, http.StatusCreated)
+	doJSON(t, bankSurface(h, a), "POST", "/deposits", `{"account":"`+alice+`","amount":100000,"description":"opening"}`, http.StatusOK)
+	doJSON(t, csmSurface(h), "POST", "/cycles", `{"scheme":"sepa.ct"}`, http.StatusCreated)
 
 	// The whole point: these banks are routable in both directions. A stale
 	// actor would have made this "no bank actor", and an actor that was never
 	// registered would have made it RC01 at the clearing house.
-	pay := doJSON(t, bank(h, a), "POST", "/payments", `{
+	pay := doJSON(t, bankSurface(h, a), "POST", "/payments", `{
 		"scheme":"sepa.ct",
 		"debtor":{"account":"`+alice+`","identifier":{"scheme":"IBAN","value":"`+ibanFor(t, h, a, alice)+`"}},
 		"creditor":{"account":"`+bob+`","identifier":{"scheme":"IBAN","value":"`+ibanFor(t, h, b, bob)+`"}},
@@ -548,7 +548,7 @@ func TestResetRebuildsTheMeshSoAReadmittedBankCanPay(t *testing.T) {
 		"creditorName":"Bob"
 	}`, http.StatusAccepted)["paymentId"].(string)
 	drainServer(t, h)
-	if got := doJSON(t, csm(h), "GET", "/payments/"+pay, "", http.StatusOK); got["status"].(string) != "Accepted" {
+	if got := doJSON(t, csmSurface(h), "GET", "/payments/"+pay, "", http.StatusOK); got["status"].(string) != "Accepted" {
 		t.Fatalf("a payment between two re-admitted banks is %q, want Accepted", got["status"])
 	}
 
@@ -556,7 +556,7 @@ func TestResetRebuildsTheMeshSoAReadmittedBankCanPay(t *testing.T) {
 	// stating separately: a reset that rebuilt the mesh but lost the book would
 	// pass every assertion so far.
 	var after []api.PaymentDTO
-	getJSON(t, bank(h, a), "/payments", &after)
+	getJSON(t, bankSurface(h, a), "/payments", &after)
 	if len(after) != 1 {
 		t.Errorf("Bank A sees %d of its own payments, want 1", len(after))
 	}
@@ -567,7 +567,7 @@ func TestResetRebuildsTheMeshSoAReadmittedBankCanPay(t *testing.T) {
 func participants(t *testing.T, h *server) []api.ParticipantDTO {
 	t.Helper()
 	var out []api.ParticipantDTO
-	getJSON(t, cb(h), "/members", &out)
+	getJSON(t, cbSurface(h), "/members", &out)
 	return out
 }
 
@@ -657,7 +657,7 @@ func TestWhichRefusalsReachTheCallerAndWhichDoNot(t *testing.T) {
 //
 // The rest of the 6b read surface is covered where it was covered before, and
 // deliberately not duplicated here: TestTheCentralBankCanReadTheCycleItSettles
-// (api/surface_test.go) walks all four of the central bank's, and
+// (surface_test.go) walks all four of the central bank's, and
 // TestTheClearingHouseReadsTheSettlementItDidNotPerform walks the clearing
 // house's side of the same settlement. This test is about the INSTRUCTION, not
 // about who may read what.
@@ -677,7 +677,7 @@ func TestClosingACycleThroughTheAPIInstructsSettlement(t *testing.T) {
 	}
 
 	var closed api.ClearingCycleDTO
-	crec := post(t, csm(srv), "/cycles/"+cid+"/close")
+	crec := post(t, csmSurface(srv), "/cycles/"+cid+"/close")
 	if crec.Code != http.StatusOK {
 		t.Fatalf("close = %d (body: %s)", crec.Code, crec.Body.String())
 	}
@@ -693,7 +693,7 @@ func TestClosingACycleThroughTheAPIInstructsSettlement(t *testing.T) {
 	// that has one: there is no cycles table in the central bank's schema, and
 	// asking it is not a wrong answer but a missing table.
 	var settled api.ClearingCycleDTO
-	getJSON(t, csm(srv), "/cycles/"+cid, &settled)
+	getJSON(t, csmSurface(srv), "/cycles/"+cid, &settled)
 	if settled.Status != "Settled" {
 		t.Fatalf("cycle is %q after draining, want Settled — the pacs.009 is what discharges it", settled.Status)
 	}
@@ -707,7 +707,7 @@ func TestClosingACycleThroughTheAPIInstructsSettlement(t *testing.T) {
 	// asserted from the end that can hold it. That closing a cycle does not settle
 	// it is the Status above and the empty listing below.
 	var settlements []api.SettlementDTO
-	getJSON(t, cb(srv), "/settlements", &settlements)
+	getJSON(t, cbSurface(srv), "/settlements", &settlements)
 	var found api.SettlementDTO
 	for _, st := range settlements {
 		if st.CycleID == cid {
@@ -718,7 +718,7 @@ func TestClosingACycleThroughTheAPIInstructsSettlement(t *testing.T) {
 		t.Fatalf("the settlement agent lists no settlement against cycle %q", cid)
 	}
 	var st api.SettlementDTO
-	getJSON(t, cb(srv), "/settlements/"+found.ID, &st)
+	getJSON(t, cbSurface(srv), "/settlements/"+found.ID, &st)
 	if st.CycleID != cid {
 		t.Errorf("settlement %s is against cycle %q, want %q", st.ID, st.CycleID, cid)
 	}
@@ -748,7 +748,7 @@ func TestRejectingThroughTheAPIRefundsThePayerOnlyAfterTheMessageArrives(t *test
 	drain(t, msh)
 	before := aliceBalance(t, srv)
 
-	rrec := postJSON(t, csm(srv), "/payments/"+id+"/reject", `{"reason":"card lost"}`)
+	rrec := postJSON(t, csmSurface(srv), "/payments/"+id+"/reject", `{"reason":"card lost"}`)
 	if rrec.Code != http.StatusAccepted {
 		t.Fatalf("reject = %d (body: %s)", rrec.Code, rrec.Body.String())
 	}
@@ -785,7 +785,7 @@ func TestReturningThroughTheAPIGoesRoundTheMesh(t *testing.T) {
 	srv, msh := newAPIHarness(t)
 
 	var payments []api.PaymentDTO
-	getJSON(t, csm(srv), "/payments", &payments)
+	getJSON(t, csmSurface(srv), "/payments", &payments)
 	var settled api.PaymentDTO
 	for _, p := range payments {
 		if p.Status == "Settled" && p.Scheme == "sepa.ct" {
@@ -797,7 +797,7 @@ func TestReturningThroughTheAPIGoesRoundTheMesh(t *testing.T) {
 		t.Fatal("the seeded dataset holds no settled credit transfer to return")
 	}
 
-	rec := postJSON(t, csm(srv), "/payments/"+settled.ID+"/return", `{"reason":"account closed"}`)
+	rec := postJSON(t, csmSurface(srv), "/payments/"+settled.ID+"/return", `{"reason":"account closed"}`)
 	if rec.Code != http.StatusAccepted {
 		t.Fatalf("return = %d (body: %s)", rec.Code, rec.Body.String())
 	}
@@ -826,7 +826,7 @@ func TestReturningThroughTheAPIGoesRoundTheMesh(t *testing.T) {
 	// A handler that called the domain directly would describe it with the text
 	// alone: there would have been no message to put a code on.
 	var txns []api.TransactionDTO
-	getJSON(t, bank(srv, settled.DebtorAgent), "/transactions", &txns)
+	getJSON(t, bankSurface(srv, settled.DebtorAgent), "/transactions", &txns)
 	want := settled.ID + ":return-refund"
 	for _, tx := range txns {
 		if tx.IdempotencyKey != want {
@@ -844,7 +844,7 @@ func TestReturningThroughTheAPIGoesRoundTheMesh(t *testing.T) {
 func aliceBalance(t *testing.T, s *server) int64 {
 	t.Helper()
 	aliceBIC, alice := seededParty(t, s, aliceIBAN)
-	bal := doJSON(t, bank(s, string(aliceBIC)), "GET",
+	bal := doJSON(t, bankSurface(s, string(aliceBIC)), "GET",
 		"/deposit-accounts/"+string(alice.Account)+"/balance", "", http.StatusOK)
 	return int64(bal["book"].(float64))
 }

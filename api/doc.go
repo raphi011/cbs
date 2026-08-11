@@ -10,11 +10,10 @@
 // runs one way, so a DTO or an error mapping cannot come to depend on which
 // operator is asking.
 //
-// What this package also holds is the Deployment: every institution the process
-// has, and the three bound values (Bank, ClearingHouse, CentralBank) that
-// satisfy the three surfaces' interfaces. Each is bound at construction and
-// never rebound, which is what makes "a listener acts as exactly one
-// institution" a fact about the types rather than a convention.
+// What SATISFIES those three interfaces is not here either: the institutions are
+// this deployment's, in cmd/server, and they satisfy them structurally. So
+// nothing in the HTTP layer names a transport, a store set or a composition
+// root, and what a handler can reach is exactly what its own package asked for.
 //
 // # One listener per entity, and the port is the claim
 //

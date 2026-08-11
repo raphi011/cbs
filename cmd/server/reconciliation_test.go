@@ -1,4 +1,4 @@
-package api_test
+package main
 
 import (
 	"net/http"
@@ -24,7 +24,7 @@ func TestABankReconcilesItsOwnBooksOverHTTP(t *testing.T) {
 
 	// Bank A funded 100000 onto reserve and paid 25000 away, so the agent's
 	// statement leaves it at 75000 and this bank's own book has to agree.
-	got := doJSON(t, bank(h, "BNKADEFFXXX"), "POST", "/reconciliation?asset=EUR", "", http.StatusOK)
+	got := doJSON(t, bankSurface(h, "BNKADEFFXXX"), "POST", "/reconciliation?asset=EUR", "", http.StatusOK)
 	assertEqual(t, "reconciled", got["reconciled"], any(true))
 	assertEqual(t, "reserve", int64(got["reserve"].(float64)), int64(75000))
 	assertEqual(t, "the closing balance it was advised", int64(got["advised"].(float64)), int64(75000))
@@ -43,7 +43,7 @@ func TestABankReconcilesItsOwnBooksOverHTTP(t *testing.T) {
 	// The statement it checked against, read back. This is where a break naming a
 	// reference sends its reader.
 	var advices []api.SettlementAdviceDTO
-	getJSON(t, bank(h, "BNKADEFFXXX"), "/settlement-advices", &advices)
+	getJSON(t, bankSurface(h, "BNKADEFFXXX"), "/settlement-advices", &advices)
 	if len(advices) != 1 {
 		t.Fatalf("bank A holds %d statements, want the one from the cut-off", len(advices))
 	}
@@ -58,8 +58,8 @@ func TestABankReconcilesItsOwnBooksOverHTTP(t *testing.T) {
 	// The two ageing reports answer, and both are empty for the same reason the
 	// positions above are.
 	var suspense, unclaimed api.AgeingReportDTO
-	getJSON(t, bank(h, "BNKADEFFXXX"), "/clearing-suspense/ageing?asset=EUR", &suspense)
-	getJSON(t, bank(h, "BNKADEFFXXX"), "/unclaimed-balances/ageing?asset=EUR", &unclaimed)
+	getJSON(t, bankSurface(h, "BNKADEFFXXX"), "/clearing-suspense/ageing?asset=EUR", &suspense)
+	getJSON(t, bankSurface(h, "BNKADEFFXXX"), "/unclaimed-balances/ageing?asset=EUR", &unclaimed)
 	assertEqual(t, "suspense balance", suspense.Balance, int64(0))
 	assertEqual(t, "unclaimed balance", unclaimed.Balance, int64(0))
 }
@@ -75,13 +75,13 @@ func TestTheRunIsAnActAndLeavesTheTrailToProveIt(t *testing.T) {
 	settledCycle(t, h)
 
 	var before []api.AuditEventDTO
-	getJSON(t, bank(h, "BNKADEFFXXX"), "/payments/audit?type=reconciliation.run", &before)
+	getJSON(t, bankSurface(h, "BNKADEFFXXX"), "/payments/audit?type=reconciliation.run", &before)
 	assertEqual(t, "runs before anybody has run one", len(before), 0)
 
-	doJSON(t, bank(h, "BNKADEFFXXX"), "POST", "/reconciliation?asset=EUR", "", http.StatusOK)
+	doJSON(t, bankSurface(h, "BNKADEFFXXX"), "POST", "/reconciliation?asset=EUR", "", http.StatusOK)
 
 	var after []api.AuditEventDTO
-	getJSON(t, bank(h, "BNKADEFFXXX"), "/payments/audit?type=reconciliation.run", &after)
+	getJSON(t, bankSurface(h, "BNKADEFFXXX"), "/payments/audit?type=reconciliation.run", &after)
 	if len(after) != 1 {
 		t.Fatalf("one run left %d audit events, want 1", len(after))
 	}
@@ -100,19 +100,19 @@ func TestAnUnclaimedBalanceIsReportedWithItsDeadline(t *testing.T) {
 	h := newServer(t, nil)
 	a := provisionMember(t, h, "BNKADEFFXXX", "Bank A")
 	b := provisionMember(t, h, "BNKBDEFFXXX", "Bank B")
-	alice := doJSON(t, bank(h, a), "POST", "/deposit-accounts",
+	alice := doJSON(t, bankSurface(h, a), "POST", "/deposit-accounts",
 		`{"name":"Alice","asset":"EUR","productId":"`+prdOf(t, h, a)+`"}`,
 		http.StatusCreated)["id"].(string)
 	// Bob is opened and never funded, so his bank can close the account while the
 	// payment to him is in the cut-off — which is the only way a credit reaches
 	// unclaimed balances.
-	bob := doJSON(t, bank(h, b), "POST", "/deposit-accounts",
+	bob := doJSON(t, bankSurface(h, b), "POST", "/deposit-accounts",
 		`{"name":"Bob","asset":"EUR","productId":"`+prdOf(t, h, b)+`"}`,
 		http.StatusCreated)["id"].(string)
 	fundAndLodge(t, h, a, alice, 100000)
 
-	doJSON(t, csm(h), "POST", "/cycles", `{"scheme":"sepa.ct"}`, http.StatusCreated)
-	pay := doJSON(t, bank(h, a), "POST", "/payments", `{
+	doJSON(t, csmSurface(h), "POST", "/cycles", `{"scheme":"sepa.ct"}`, http.StatusCreated)
+	pay := doJSON(t, bankSurface(h, a), "POST", "/payments", `{
 		"scheme":"sepa.ct",
 		"debtor":{"account":"`+alice+`","identifier":{"scheme":"IBAN","value":"`+ibanFor(t, h, a, alice)+`"}},
 		"creditor":{"account":"`+bob+`","identifier":{"scheme":"IBAN","value":"`+ibanFor(t, h, b, bob)+`"}},
@@ -124,14 +124,14 @@ func TestAnUnclaimedBalanceIsReportedWithItsDeadline(t *testing.T) {
 
 	// Bob closes his account after his bank has accepted the credit and before
 	// the cut-off moves the money.
-	assertStatus(t, bank(h, b), "DELETE", "/deposit-accounts/"+bob, "", http.StatusNoContent)
+	assertStatus(t, bankSurface(h, b), "DELETE", "/deposit-accounts/"+bob, "", http.StatusNoContent)
 	var cycles []api.ClearingCycleDTO
-	getJSON(t, csm(h), "/cycles", &cycles)
-	assertStatus(t, csm(h), "POST", "/cycles/"+cycles[0].ID+"/close", "", http.StatusOK)
+	getJSON(t, csmSurface(h), "/cycles", &cycles)
+	assertStatus(t, csmSurface(h), "POST", "/cycles/"+cycles[0].ID+"/close", "", http.StatusOK)
 	drainServer(t, h)
 
 	var rep api.AgeingReportDTO
-	getJSON(t, bank(h, b), "/unclaimed-balances/ageing?asset=EUR", &rep)
+	getJSON(t, bankSurface(h, b), "/unclaimed-balances/ageing?asset=EUR", &rep)
 	assertEqual(t, "balance", rep.Balance, int64(25000))
 	if len(rep.Lots) != 1 {
 		t.Fatalf("the report holds %d lots, want the one payment that could not be applied", len(rep.Lots))
@@ -148,7 +148,7 @@ func TestAnUnclaimedBalanceIsReportedWithItsDeadline(t *testing.T) {
 	// A position and never a break: the money is where it should be, and the run
 	// reporting it as a defect would be a run nobody could make against a network
 	// with an unapplicable credit in it.
-	got := doJSON(t, bank(h, b), "POST", "/reconciliation?asset=EUR", "", http.StatusOK)
+	got := doJSON(t, bankSurface(h, b), "POST", "/reconciliation?asset=EUR", "", http.StatusOK)
 	assertEqual(t, "reconciled", got["reconciled"], any(true))
 }
 
@@ -162,12 +162,12 @@ func TestAnUnclaimedBalanceIsReportedWithItsDeadline(t *testing.T) {
 func TestAClearingSuspenseIsAgedWithNoDeadlineOnIt(t *testing.T) {
 	h := newServer(t, nil)
 	a, b, _ := threeBanks(t, h)
-	doJSON(t, csm(h), "POST", "/cycles", `{"scheme":"sepa.ct"}`, http.StatusCreated)
+	doJSON(t, csmSurface(h), "POST", "/cycles", `{"scheme":"sepa.ct"}`, http.StatusCreated)
 	lodge(t, h, a.pid, "EUR", 100000)
 	sct(t, h, a, b, "in-flight")
 
 	var rep api.AgeingReportDTO
-	getJSON(t, bank(h, a.pid), "/clearing-suspense/ageing?asset=EUR", &rep)
+	getJSON(t, bankSurface(h, a.pid), "/clearing-suspense/ageing?asset=EUR", &rep)
 	assertEqual(t, "balance", rep.Balance, int64(10000))
 	if len(rep.Lots) != 1 {
 		t.Fatalf("the report holds %d lots, want the one payment in flight", len(rep.Lots))
@@ -176,7 +176,7 @@ func TestAClearingSuspenseIsAgedWithNoDeadlineOnIt(t *testing.T) {
 	assertEqual(t, "so it is never overdue", rep.Lots[0].Overdue, false)
 
 	// And the run says the same thing, as a position rather than a break.
-	got := doJSON(t, bank(h, a.pid), "POST", "/reconciliation?asset=EUR", "", http.StatusOK)
+	got := doJSON(t, bankSurface(h, a.pid), "POST", "/reconciliation?asset=EUR", "", http.StatusOK)
 	assertEqual(t, "reconciled", got["reconciled"], any(true))
 	if n := len(got["positions"].([]any)); n != 1 {
 		t.Fatalf("a payment in flight and the run reports %d positions: %v", n, got["positions"])
@@ -193,7 +193,7 @@ func TestAClearingSuspenseIsAgedWithNoDeadlineOnIt(t *testing.T) {
 func TestEveryReportNamesTheAssetItIsAbout(t *testing.T) {
 	h := newServer(t, nil)
 	settledCycle(t, h)
-	ab := bank(h, "BNKADEFFXXX")
+	ab := bankSurface(h, "BNKADEFFXXX")
 
 	assertStatus(t, ab, "POST", "/reconciliation", "", http.StatusBadRequest)
 	assertStatus(t, ab, "GET", "/clearing-suspense/ageing", "", http.StatusBadRequest)
@@ -225,7 +225,7 @@ func TestOnlyABankChecksItsOwnBooks(t *testing.T) {
 		// The clearing house has no ledger at all, and the settlement agent holds
 		// neither of the two accounts aged here — it holds its own reserve
 		// register, which is a different book with a different question over it.
-		assertStatus(t, csm(h), route.method, route.path, "", http.StatusNotFound)
-		assertStatus(t, cb(h), route.method, route.path, "", http.StatusNotFound)
+		assertStatus(t, csmSurface(h), route.method, route.path, "", http.StatusNotFound)
+		assertStatus(t, cbSurface(h), route.method, route.path, "", http.StatusNotFound)
 	}
 }

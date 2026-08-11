@@ -1,4 +1,4 @@
-package api_test
+package main
 
 import (
 	"context"
@@ -310,7 +310,7 @@ func TestABankCannotNameAnotherBank(t *testing.T) {
 	aurora := provisionMember(t, s, "AURODEFFXXX", "Aurora Bank")
 	verde := provisionMember(t, s, "VERDITMMXXX", "Banca Verde")
 
-	h := bank(s, aurora)
+	h := bankSurface(s, aurora)
 	assertStatus(t, h, "GET", "/participants/"+verde+"/deposit-accounts", "", http.StatusNotFound)
 	assertStatus(t, h, "GET", "/participants/"+aurora+"/deposit-accounts", "", http.StatusNotFound)
 
@@ -323,7 +323,7 @@ func TestABankCannotNameAnotherBank(t *testing.T) {
 	if got["id"] != aurora {
 		t.Fatalf("GET /me on Aurora's listener = %v, want %s", got["id"], aurora)
 	}
-	got = doJSON(t, bank(s, verde), "GET", "/me", "", http.StatusOK)
+	got = doJSON(t, bankSurface(s, verde), "GET", "/me", "", http.StatusOK)
 	if got["id"] != verde {
 		t.Fatalf("GET /me on Verde's listener = %v, want %s", got["id"], verde)
 	}
@@ -353,7 +353,7 @@ func TestTheClearingHouseLearnsSettlementFromItsOwnCycle(t *testing.T) {
 	h := newServer(t, nil)
 	cid := settledCycle(t, h)
 
-	got := doJSON(t, csm(h), "GET", "/cycles/"+cid, "", http.StatusOK)
+	got := doJSON(t, csmSurface(h), "GET", "/cycles/"+cid, "", http.StatusOK)
 	if got["status"] != "Settled" {
 		t.Fatalf("cycle status = %v, want Settled", got["status"])
 	}
@@ -361,7 +361,7 @@ func TestTheClearingHouseLearnsSettlementFromItsOwnCycle(t *testing.T) {
 	// than a gap: that row is the agent's record of its own act, and its id was
 	// allocated in the agent's own database. See payment.ClearingCycle, which
 	// carries no settlement id for the same reason.
-	assertStatus(t, csm(h), "GET", "/settlements", "", http.StatusNotFound)
+	assertStatus(t, csmSurface(h), "GET", "/settlements", "", http.StatusNotFound)
 }
 
 // TestTheCentralBankCanReadTheCycleItSettles is the other half: what the central
@@ -386,7 +386,7 @@ func TestTheCentralBankCanReadTheCycleItSettles(t *testing.T) {
 	// finds a refused instruction with is a cut-off with NO SETTLEMENT of its
 	// own against it, which is the read below.
 	var cycles []api.ClearingCycleDTO
-	getJSON(t, csm(h), "/cycles", &cycles)
+	getJSON(t, csmSurface(h), "/cycles", &cycles)
 	if len(cycles) != 1 || cycles[0].ID != cid {
 		t.Fatalf("the clearing house sees %v, want the one cycle %s", cycles, cid)
 	}
@@ -394,25 +394,25 @@ func TestTheCentralBankCanReadTheCycleItSettles(t *testing.T) {
 	// Settled, and by this institution: the clearing house sent a pacs.009 and
 	// this actor discharged it. Before the mesh a cycle sat Closed until a human
 	// pressed a second button on this console.
-	got := doJSON(t, csm(h), "GET", "/cycles/"+cid, "", http.StatusOK)
+	got := doJSON(t, csmSurface(h), "GET", "/cycles/"+cid, "", http.StatusOK)
 	if got["status"] != "Settled" {
 		t.Fatalf("cycle status = %v, want Settled", got["status"])
 	}
-	assertStatus(t, cb(h), "GET", "/cycles/"+cid, "", http.StatusNotFound)
+	assertStatus(t, cbSurface(h), "GET", "/cycles/"+cid, "", http.StatusNotFound)
 
 	sid := settlementOfCycle(t, h, cid)
 
 	// And it can read back what it did, without asking the clearing house.
 	var settlements []api.SettlementDTO
-	getJSON(t, cb(h), "/settlements", &settlements)
+	getJSON(t, cbSurface(h), "/settlements", &settlements)
 	if len(settlements) != 1 {
 		t.Fatalf("the central bank sees %d settlements, want 1", len(settlements))
 	}
-	doJSON(t, cb(h), "GET", "/settlements/"+sid, "", http.StatusOK)
+	doJSON(t, cbSurface(h), "GET", "/settlements/"+sid, "", http.StatusOK)
 
 	// The boundary that matters is untouched: an individual payment is still
 	// the clearing house's, and a central bank does not see one.
-	assertStatus(t, cb(h), "GET", "/payments", "", http.StatusNotFound)
+	assertStatus(t, cbSurface(h), "GET", "/payments", "", http.StatusNotFound)
 }
 
 // settledCycle builds the smallest thing a settlement can come out of: two
@@ -426,19 +426,19 @@ func settledCycle(t *testing.T, h *server) string {
 	t.Helper()
 	a := provisionMember(t, h, "BNKADEFFXXX", "Bank A")
 	b := provisionMember(t, h, "BNKBDEFFXXX", "Bank B")
-	alice := doJSON(t, bank(h, a), "POST", "/deposit-accounts",
+	alice := doJSON(t, bankSurface(h, a), "POST", "/deposit-accounts",
 		`{"name":"Alice","asset":"EUR","productId":"`+prdOf(t, h, a)+`"}`,
 		http.StatusCreated)["id"].(string)
-	bob := doJSON(t, bank(h, b), "POST", "/deposit-accounts",
+	bob := doJSON(t, bankSurface(h, b), "POST", "/deposit-accounts",
 		`{"name":"Bob","asset":"EUR","productId":"`+prdOf(t, h, b)+`"}`,
 		http.StatusCreated)["id"].(string)
 	fundAndLodge(t, h, a, alice, 100000)
 
-	cyc := doJSON(t, csm(h), "POST", "/cycles", `{"scheme":"sepa.ct"}`, http.StatusCreated)["id"].(string)
+	cyc := doJSON(t, csmSurface(h), "POST", "/cycles", `{"scheme":"sepa.ct"}`, http.StatusCreated)["id"].(string)
 	// Both sides quote an ADDRESS and neither names a bank. This is the clearing
 	// house's console, which is no bank, so it reads the submitting bank out of the
 	// payer's address and the payer's bank derives the payee's from theirs.
-	doJSON(t, csm(h), "POST", "/payments", `{
+	doJSON(t, csmSurface(h), "POST", "/payments", `{
 		"scheme":"sepa.ct",
 		"debtor":{"account":"`+alice+`","identifier":{"scheme":"IBAN","value":"`+ibanFor(t, h, a, alice)+`"}},
 		"creditor":{"account":"`+bob+`","identifier":{"scheme":"IBAN","value":"`+ibanFor(t, h, b, bob)+`"}},
@@ -447,7 +447,7 @@ func settledCycle(t *testing.T, h *server) string {
 		"creditorName":"Bob"
 	}`, http.StatusAccepted)
 	drainServer(t, h)
-	assertStatus(t, csm(h), "POST", "/cycles/"+cyc+"/close", "", http.StatusOK)
+	assertStatus(t, csmSurface(h), "POST", "/cycles/"+cyc+"/close", "", http.StatusOK)
 	drainServer(t, h)
 	return cyc
 }
@@ -461,35 +461,35 @@ func settledCycle(t *testing.T, h *server) string {
 func TestABankSeesOnlyItsOwnPayments(t *testing.T) {
 	h := newServer(t, nil)
 	a, b, c := threeBanks(t, h)
-	doJSON(t, csm(h), "POST", "/cycles", `{"scheme":"sepa.ct"}`, http.StatusCreated)
+	doJSON(t, csmSurface(h), "POST", "/cycles", `{"scheme":"sepa.ct"}`, http.StatusCreated)
 
 	mine := sct(t, h, a, b, "own-leg")
 	theirs := sct(t, h, b, c, "not-mine")
 
 	// Aurora is the debtor on one and a party to no other.
 	var list []api.PaymentDTO
-	getJSON(t, bank(h, a.pid), "/payments", &list)
+	getJSON(t, bankSurface(h, a.pid), "/payments", &list)
 	if len(list) != 1 || list[0].ID != mine {
 		t.Fatalf("bank A sees %d payments (%+v), want only its own leg %s", len(list), list, mine)
 	}
 
-	doJSON(t, bank(h, a.pid), "GET", "/payments/"+mine, "", http.StatusOK)
+	doJSON(t, bankSurface(h, a.pid), "GET", "/payments/"+mine, "", http.StatusOK)
 
 	// 404 and not 403: a payment this bank is not party to does not exist as
 	// far as its API is concerned, and a 403 would confirm that the id names
 	// something real.
-	doJSON(t, bank(h, a.pid), "GET", "/payments/"+theirs, "", http.StatusNotFound)
+	doJSON(t, bankSurface(h, a.pid), "GET", "/payments/"+theirs, "", http.StatusNotFound)
 
 	// The creditor sees it too — "its own" is either leg, not just the debit.
 	var bList []api.PaymentDTO
-	getJSON(t, bank(h, b.pid), "/payments", &bList)
+	getJSON(t, bankSurface(h, b.pid), "/payments", &bList)
 	if len(bList) != 2 {
 		t.Fatalf("bank B is a party to both payments but sees %d", len(bList))
 	}
 
 	// The clearing house is the CSM. Seeing every payment is its job, not a leak.
 	var all []api.PaymentDTO
-	getJSON(t, csm(h), "/payments", &all)
+	getJSON(t, csmSurface(h), "/payments", &all)
 	if len(all) != 2 {
 		t.Fatalf("the clearing house sees %d payments, want both", len(all))
 	}
@@ -513,13 +513,13 @@ func threeBanks(t *testing.T, h *server) (a, b, c seededBank) {
 	mk := func(name, bic string) seededBank {
 		pid := provisionMember(t, h, bic, name)
 		accountName := name + " customer"
-		did := doJSON(t, bank(h, pid), "POST", "/deposit-accounts",
+		did := doJSON(t, bankSurface(h, pid), "POST", "/deposit-accounts",
 			`{"name":"`+accountName+`","asset":"EUR","productId":"`+prdOf(t, h, pid)+
 				`"}`,
 			http.StatusCreated)["id"].(string)
 		// Read back rather than chosen: the bank minted it.
 		iban := ibanFor(t, h, pid, did)
-		doJSON(t, bank(h, pid), "POST", "/deposits",
+		doJSON(t, bankSurface(h, pid), "POST", "/deposits",
 			`{"account":"`+did+`","amount":500000,"description":"opening"}`, http.StatusOK)
 		return seededBank{pid: pid, account: did, iban: iban, bic: bic, accountName: accountName}
 	}
@@ -531,7 +531,7 @@ func threeBanks(t *testing.T, h *server) (a, b, c seededBank) {
 // sct initiates a credit transfer between two seeded banks and returns its id.
 func sct(t *testing.T, h *server, from, to seededBank, e2e string) string {
 	t.Helper()
-	id := doJSON(t, csm(h), "POST", "/payments", `{
+	id := doJSON(t, csmSurface(h), "POST", "/payments", `{
 		"scheme":"sepa.ct",
 		"debtor":{"account":"`+from.account+`","identifier":{"scheme":"IBAN","value":"`+from.iban+`"}},
 		"creditor":{"account":"`+to.account+`","identifier":{"scheme":"IBAN","value":"`+to.iban+`"}},
@@ -552,7 +552,7 @@ func sct(t *testing.T, h *server, from, to seededBank, e2e string) string {
 func TestABankAcceptsItsOwnCustomersInstruction(t *testing.T) {
 	h := newServer(t, nil)
 	a, b, _ := threeBanks(t, h)
-	doJSON(t, csm(h), "POST", "/cycles", `{"scheme":"sepa.ct"}`, http.StatusCreated)
+	doJSON(t, csmSurface(h), "POST", "/cycles", `{"scheme":"sepa.ct"}`, http.StatusCreated)
 
 	instruction := `{
 		"scheme":"sepa.ct",
@@ -563,7 +563,7 @@ func TestABankAcceptsItsOwnCustomersInstruction(t *testing.T) {
 		"creditorName":"` + b.accountName + `"
 	}`
 
-	got := doJSON(t, bank(h, a.pid), "POST", "/payments", instruction, http.StatusAccepted)
+	got := doJSON(t, bankSurface(h, a.pid), "POST", "/payments", instruction, http.StatusAccepted)
 	id, ok := got["paymentId"].(string)
 	if !ok || id == "" {
 		t.Fatalf("response = %v, want a paymentId", got)
@@ -573,7 +573,7 @@ func TestABankAcceptsItsOwnCustomersInstruction(t *testing.T) {
 	}
 
 	// The outcome arrives from asking again, which is the shape 7b needs.
-	outcome := doJSON(t, bank(h, a.pid), "GET", "/payments/"+id, "", http.StatusOK)
+	outcome := doJSON(t, bankSurface(h, a.pid), "GET", "/payments/"+id, "", http.StatusOK)
 	if outcome["id"] != id {
 		t.Fatalf("GET /payments/%s returned %v", id, outcome["id"])
 	}
@@ -590,13 +590,13 @@ func TestABankAcceptsItsOwnCustomersInstruction(t *testing.T) {
 func TestTheCreditorsBankSubmitsADirectDebit(t *testing.T) {
 	h := newServer(t, nil)
 	payerBank, payeeBank, _ := threeBanks(t, h)
-	doJSON(t, csm(h), "POST", "/cycles", `{"scheme":"sepa.dd"}`, http.StatusCreated)
+	doJSON(t, csmSurface(h), "POST", "/cycles", `{"scheme":"sepa.dd"}`, http.StatusCreated)
 
 	// Recorded at the CREDITOR's bank, which on a pull is the collecting bank —
 	// the same bank that submits below, and the only one that may hold the row.
 	// The mandate names no bank either: the debtor's is derived from the debtor's
 	// address, once, at signature. See api.CreateMandateRequest.
-	mandate := doJSON(t, bank(h, payeeBank.pid), "POST", "/mandates", `{
+	mandate := doJSON(t, bankSurface(h, payeeBank.pid), "POST", "/mandates", `{
 		"debtor":{"account":"`+payerBank.account+`","identifier":{"scheme":"IBAN","value":"`+payerBank.iban+`"}},
 		"creditor":{"account":"`+payeeBank.account+`"},
 		"maxAmount":0
@@ -613,7 +613,7 @@ func TestTheCreditorsBankSubmitsADirectDebit(t *testing.T) {
 	}`
 
 	// The payee's bank submits it, and is the right bank to.
-	doJSON(t, bank(h, payeeBank.pid), "POST", "/payments", collection, http.StatusAccepted)
+	doJSON(t, bankSurface(h, payeeBank.pid), "POST", "/payments", collection, http.StatusAccepted)
 
 	// The payer's bank submitting the same collection is refused: a bank does
 	// not collect on somebody else's behalf.
@@ -622,7 +622,7 @@ func TestTheCreditorsBankSubmitsADirectDebit(t *testing.T) {
 	// submitting agent, so this listener claims to be the collecting bank; the
 	// creditor account it then has to resolve is the payee bank's, in a register
 	// this bank does not hold, and that is where it stops.
-	doJSON(t, bank(h, payerBank.pid), "POST", "/payments", `{
+	doJSON(t, bankSurface(h, payerBank.pid), "POST", "/payments", `{
 		"scheme":"sepa.dd",
 		"debtor":{"account":"`+payerBank.account+`","identifier":{"scheme":"IBAN","value":"`+payerBank.iban+`"}},
 		"creditor":{"account":"`+payeeBank.account+`"},
@@ -644,7 +644,7 @@ func TestAnUnknownSchemeIsRefusedAsAnUnknownScheme(t *testing.T) {
 
 	// Debtor at the OTHER bank, so the account resolution would refuse this with
 	// 422 if it ran first. It must not run first.
-	doJSON(t, bank(h, a.pid), "POST", "/payments", `{
+	doJSON(t, bankSurface(h, a.pid), "POST", "/payments", `{
 		"scheme":"nope",
 		"debtor":{"account":"`+b.account+`"},
 		"creditor":{"account":"`+a.account+`","identifier":{"scheme":"IBAN","value":"`+a.iban+`"}},
@@ -667,10 +667,10 @@ func TestAnUnknownSchemeIsRefusedAsAnUnknownScheme(t *testing.T) {
 func TestABankRefusesAnInstructionItIsNotTheDebtorFor(t *testing.T) {
 	h := newServer(t, nil)
 	a, b, _ := threeBanks(t, h)
-	doJSON(t, csm(h), "POST", "/cycles", `{"scheme":"sepa.ct"}`, http.StatusCreated)
+	doJSON(t, csmSurface(h), "POST", "/cycles", `{"scheme":"sepa.ct"}`, http.StatusCreated)
 
 	// Bank A's listener, asked to debit Bank B's customer.
-	doJSON(t, bank(h, a.pid), "POST", "/payments", `{
+	doJSON(t, bankSurface(h, a.pid), "POST", "/payments", `{
 		"scheme":"sepa.ct",
 		"debtor":{"account":"`+b.account+`"},
 		"creditor":{"account":"`+a.account+`","identifier":{"scheme":"IBAN","value":"`+a.iban+`"}},
@@ -738,8 +738,8 @@ func TestEachListenerActsAsItsOwnInstitution(t *testing.T) {
 const testBankBIC payment.ParticipantID = "BNKADEFFXXX"
 
 // mustForBank binds one bank out of the deployment, failing the test if its
-// database will not open. See api.Deployment.Bank.
-func mustForBank(t *testing.T, s *server, pid payment.ParticipantID) *api.Bank {
+// database will not open. See Deployment.Bank.
+func mustForBank(t *testing.T, s *server, pid payment.ParticipantID) *Bank {
 	t.Helper()
 	b, err := s.dep.Bank(context.Background(), pid)
 	if err != nil {

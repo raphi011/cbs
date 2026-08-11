@@ -1,4 +1,4 @@
-package api
+package main
 
 import (
 	"context"
@@ -10,17 +10,24 @@ import (
 	"github.com/raphi011/cbs/payment"
 )
 
-// A Deployment is every institution this process holds, and it is the only
-// thing in this package that can see more than one of them.
+// A Deployment is every institution this process holds, and the only thing a
+// surface can be built from.
 //
 // # It is not a request handler and answers nothing
 //
 // The three surfaces are api/bank, api/csm and api/centralbank, each over an
 // interface that package declares. What this type does is hand out the ONE
-// institution a listener is bound to — Bank, ClearingHouse, CentralBank below —
-// and each of those is bound at construction and never rebound. That is the
-// whole shape of the split: a listener holds an institution, not a deployment
-// with a field naming which institution it is currently being.
+// institution a listener is bound to — Bank, ClearingHouse, CentralBank, one
+// file apiece beside this one — and each of those is bound at construction and
+// never rebound. That is the whole shape of the split: a listener holds an
+// institution, not a deployment with a field naming which institution it is
+// currently being.
+//
+// The three satisfy their surface's interface STRUCTURALLY, so the dependency
+// runs one way and none of the three surface packages names anything here. That
+// is what keeps them a library and this an orchestration: api/bank could be
+// driven by some other system's bank, and this one is simply the bank this
+// deployment has.
 //
 // # One network per institution, and never a shared one
 //
@@ -96,7 +103,7 @@ type Deployment struct {
 // than inside a constructor with no error to return.
 func NewDeployment(nets *payment.Networks, msh *mesh.Mesh, populate func(context.Context, *payment.Networks, *mesh.Mesh) error, log *slog.Logger) *Deployment {
 	if msh == nil {
-		panic("api: a Deployment needs a mesh; without one this layer has no way to carry a payment past the bank it was handed to")
+		panic("server: a Deployment needs a mesh; without one nothing here has a way to carry a payment past the bank it was handed to")
 	}
 	if log == nil {
 		log = slog.Default()
@@ -177,10 +184,10 @@ func (d *Deployment) Reset(ctx context.Context) error {
 
 	if err := d.mesh.Drain(ctx); err != nil {
 		d.log.Error("mesh: dead letters collected by a reset", "error", err)
-		return fmt.Errorf("api: the mesh had unanswered work when the reset ran; it has been cleared, so try again: %w", err)
+		return fmt.Errorf("server: the mesh had unanswered work when the reset ran; it has been cleared, so try again: %w", err)
 	}
 	if err := d.mesh.ForgetBanks(ctx); err != nil {
-		return fmt.Errorf("api: the mesh still holds banks the reset is about to delete: %w", err)
+		return fmt.Errorf("server: the mesh still holds banks the reset is about to delete: %w", err)
 	}
 	if err := d.nets.Stores().Reset(ctx); err != nil {
 		return err

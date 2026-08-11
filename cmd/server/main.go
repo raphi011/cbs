@@ -38,7 +38,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/raphi011/cbs/api"
 	"github.com/raphi011/cbs/mesh"
 	"github.com/raphi011/cbs/payment"
 	"github.com/raphi011/cbs/seed"
@@ -115,7 +114,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	dep := api.NewDeployment(nets, msh, data.Populate, log)
+	dep := NewDeployment(nets, msh, data.Populate, log)
 
 	entities, err := plan(context.Background(), stores, nets, *basePort)
 	if err != nil {
