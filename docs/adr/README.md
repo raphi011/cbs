@@ -3,7 +3,7 @@
 One file per decision that shapes more than the code it is written in: numbered,
 dated, and naming the alternative it rejected and what that cost.
 
-**These are not design records.** `specs/` holds one design per sub-project — the
+**These are not design records.** `docs/specs/` holds one design per sub-project — the
 whole plan, its phasing, its testing strategy — and is where a change large
 enough to need phasing is written before it starts. An ADR is narrower and
 outlives the sub-project that produced it: it states a decision, in the present

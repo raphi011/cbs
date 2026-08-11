@@ -2,7 +2,7 @@
 
 **Status:** accepted
 **Date:** 2026-08-11
-**Sub-project:** 21, task 8 — [EBICS and the business day](../../specs/2026-08-11-ebics-and-the-business-day-design.md)
+**Sub-project:** 21, task 8 — [EBICS and the business day](../specs/2026-08-11-ebics-and-the-business-day-design.md)
 
 ## Context
 

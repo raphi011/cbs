@@ -3,7 +3,7 @@
 What is left to build, in the order it should be built.
 
 This file is forward-looking. What each shipped sub-project decided, reversed and
-learned is in its spec under `specs/` and in `git log`; the index at the bottom is
+learned is in its spec under `docs/specs/` and in `git log`; the index at the bottom is
 only enough to resolve a cross-reference by number. A decision that outlives the
 sub-project that produced it — one a later reader has to know about before
 changing the shape of anything near it — is in [`docs/adr/`](adr/).
@@ -162,7 +162,7 @@ proved through the store rather than through a path a caller can reach.
 ### EBICS batches, the institutions in `cmd/server`, and the business day — `done`
 
 Sub-project 21.
-[`2026-08-11-ebics-and-the-business-day-design.md`](../specs/2026-08-11-ebics-and-the-business-day-design.md).
+[`2026-08-11-ebics-and-the-business-day-design.md`](specs/2026-08-11-ebics-and-the-business-day-design.md).
 Nine tasks, and the largest since 8. It deleted `mesh`, which 7b built, the way §9
 deleted the two store backends §8 built.
 
@@ -848,21 +848,21 @@ One line apiece, for resolving a reference by number. The spec is the record.
 
 | # | | Spec |
 |---|---|---|
-| 1 | Multi-asset ledger core | [`2026-07-27-multi-asset-ledger-design.md`](../specs/2026-07-27-multi-asset-ledger-design.md) |
-| 2 | Lending — `interest`, `lending`, three products | [`2026-07-27-lending-design.md`](../specs/2026-07-27-lending-design.md) |
+| 1 | Multi-asset ledger core | [`2026-07-27-multi-asset-ledger-design.md`](specs/2026-07-27-multi-asset-ledger-design.md) |
+| 2 | Lending — `interest`, `lending`, three products | [`2026-07-27-lending-design.md`](specs/2026-07-27-lending-design.md) |
 | 3 | Crypto | *above* |
 | 4 | FX / exchange | *above* |
-| 5 | Account addressing — `(scheme, value)` identifiers | [`2026-07-31-account-addressing-design.md`](../specs/2026-07-31-account-addressing-design.md) |
-| 6a | Operator-split API — one listener per institution | [`2026-07-31-operator-split-api-design.md`](../specs/2026-07-31-operator-split-api-design.md) |
-| 6b | Role-scoped web UI — four personas | [`2026-07-31-role-scoped-web-ui-design.md`](../specs/2026-07-31-role-scoped-web-ui-design.md) |
-| 7a | The `iso20022` package | [`2026-07-31-iso20022-messages-design.md`](../specs/2026-07-31-iso20022-messages-design.md) |
-| 7b | The mesh and its N+2 actors | [`2026-08-01-iso20022-mesh-design.md`](../specs/2026-08-01-iso20022-mesh-design.md) |
+| 5 | Account addressing — `(scheme, value)` identifiers | [`2026-07-31-account-addressing-design.md`](specs/2026-07-31-account-addressing-design.md) |
+| 6a | Operator-split API — one listener per institution | [`2026-07-31-operator-split-api-design.md`](specs/2026-07-31-operator-split-api-design.md) |
+| 6b | Role-scoped web UI — four personas | [`2026-07-31-role-scoped-web-ui-design.md`](specs/2026-07-31-role-scoped-web-ui-design.md) |
+| 7a | The `iso20022` package | [`2026-07-31-iso20022-messages-design.md`](specs/2026-07-31-iso20022-messages-design.md) |
+| 7b | The mesh and its N+2 actors | [`2026-08-01-iso20022-mesh-design.md`](specs/2026-08-01-iso20022-mesh-design.md) |
 | 7c | The message log | *above* |
-| 8 | Per-entity stores — N+2 databases, three shapes | [`2026-08-02-db-per-entity-design.md`](../specs/2026-08-02-db-per-entity-design.md) |
-| 9 | One store, and it is SQLite | [`2026-08-03-sqlite-only-store-design.md`](../specs/2026-08-03-sqlite-only-store-design.md) |
-| 19 | Reconciliation a bank can do for itself | [`2026-08-09-bank-reconciliation-design.md`](../specs/2026-08-09-bank-reconciliation-design.md) |
-| 20 | The subsidiary ledger — customer accounts leave the chart of accounts, and the trial balance that measures it | [`2026-08-10-subsidiary-ledger-design.md`](../specs/2026-08-10-subsidiary-ledger-design.md) |
-| 21 | EBICS batches, the institutions in `cmd/server`, and the business day | [`2026-08-11-ebics-and-the-business-day-design.md`](../specs/2026-08-11-ebics-and-the-business-day-design.md) |
+| 8 | Per-entity stores — N+2 databases, three shapes | [`2026-08-02-db-per-entity-design.md`](specs/2026-08-02-db-per-entity-design.md) |
+| 9 | One store, and it is SQLite | [`2026-08-03-sqlite-only-store-design.md`](specs/2026-08-03-sqlite-only-store-design.md) |
+| 19 | Reconciliation a bank can do for itself | [`2026-08-09-bank-reconciliation-design.md`](specs/2026-08-09-bank-reconciliation-design.md) |
+| 20 | The subsidiary ledger — customer accounts leave the chart of accounts, and the trial balance that measures it | [`2026-08-10-subsidiary-ledger-design.md`](specs/2026-08-10-subsidiary-ledger-design.md) |
+| 21 | EBICS batches, the institutions in `cmd/server`, and the business day | [`2026-08-11-ebics-and-the-business-day-design.md`](specs/2026-08-11-ebics-and-the-business-day-design.md) |
 
 Sub-project 20 shipped the trial balance with it: the report is the acceptance
 test for the third task, and a row count bounded by the institution rather than

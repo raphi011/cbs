@@ -170,7 +170,7 @@ Three things about the store are worth knowing before changing anything near it:
 sequence, the standing catalogue of domain gaps, and structural work — each with a
 status of `todo`, `spec`, `plan` or `wip`.
 
-`specs/` holds one design record per sub-project, named
+`docs/specs/` holds one design record per sub-project, named
 `YYYY-MM-DD-<slug>-design.md` and linked from the roadmap. A decision, the
 alternative it rejected and what that cost live **there**, which is why a comment
 in the code states the rule and not the history. Read the relevant record before

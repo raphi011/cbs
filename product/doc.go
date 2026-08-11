@@ -29,7 +29,7 @@
 // binding beyond the two groups above, no parameter overlays other than the
 // per-account pricing one, no resolution log, and no maker-checker. Publication
 // is forward-only, which is this package's answer to the control problem a
-// retroactive reprice creates. specs/2026-07-30-product-catalogue-design.md
+// retroactive reprice creates. docs/specs/2026-07-30-product-catalogue-design.md
 // argues each of those; docs/expansion-roadmap.md records which stay open and
 // why.
 package product

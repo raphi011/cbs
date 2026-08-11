@@ -838,7 +838,7 @@ So `TestWhichBooksEachBankActuallyReaches`'s receiver assertion moves from
 
 `store/pg` and `store/mem` are both being replaced by one backend,
 `store/sqlite`, on the cgo-free `modernc.org/sqlite`. That is sub-project 9 —
-`specs/2026-08-03-sqlite-only-store-design.md` — landing as Tasks **17.1 / 17.2 /
+`docs/specs/2026-08-03-sqlite-only-store-design.md` — landing as Tasks **17.1 / 17.2 /
 17.3**, after admission and before the split. The numbering was chosen so that
 nothing here renumbers.
 

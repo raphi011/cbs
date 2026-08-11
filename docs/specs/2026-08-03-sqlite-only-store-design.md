@@ -445,7 +445,7 @@ and must stay green — that is the task's entire point.
 **Amended when this spec lands**, because Task 16f and Task 17 execute before the
 swap and would otherwise be written against the Postgres shape:
 
-- **`specs/2026-08-02-db-per-entity-design.md`**, as a dated section rather than
+- **`docs/specs/2026-08-02-db-per-entity-design.md`**, as a dated section rather than
   an edit, per its own convention: Task 18 becomes three shapes × **one**
   backend; "one schema per entity in one database, so `TEST_DATABASE_URL` keeps
   working" (:398-399) becomes one **file** per entity; "`storetest` becomes three
