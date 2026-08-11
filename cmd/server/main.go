@@ -115,7 +115,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	srv := api.NewServer(nets, msh, data.Populate, log)
+	dep := api.NewDeployment(nets, msh, data.Populate, log)
 
 	entities, err := plan(context.Background(), stores, nets, *basePort)
 	if err != nil {
@@ -123,7 +123,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	shutdown, err := serve(context.Background(), entities, srv, log)
+	shutdown, err := serve(context.Background(), entities, dep, log)
 	if err != nil {
 		log.Error("starting the listeners", "error", err)
 		os.Exit(1)

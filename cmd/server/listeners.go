@@ -11,6 +11,9 @@ import (
 	"time"
 
 	"github.com/raphi011/cbs/api"
+	"github.com/raphi011/cbs/api/bank"
+	"github.com/raphi011/cbs/api/centralbank"
+	"github.com/raphi011/cbs/api/csm"
 	"github.com/raphi011/cbs/payment"
 )
 
@@ -98,16 +101,25 @@ func plan(ctx context.Context, stores payment.Stores, nets *payment.Networks, ba
 
 func addrFor(port int) string { return ":" + strconv.Itoa(port) }
 
-// handlerFor picks the surface an entity serves. A bank's needs a context and
-// can fail, because binding it opens that bank's own database.
-func handlerFor(ctx context.Context, srv *api.Server, e entity) (http.Handler, error) {
+// handlerFor picks the surface an entity serves, and builds the institution
+// behind it. A bank's needs a context and can fail, because binding it opens
+// that bank's own database.
+//
+// Each of the three surface packages declares the interface it is driven by and
+// the deployment's institution satisfies it, so this is the one place in the
+// process that knows which of the three a listener is.
+func handlerFor(ctx context.Context, dep *api.Deployment, e entity, log *slog.Logger) (http.Handler, error) {
 	switch e.key {
 	case centralBankKey:
-		return srv.CentralBankRoutes(), nil
+		return centralbank.Routes(dep.CentralBank()).Handler(log), nil
 	case clearingHouseKey:
-		return srv.ClearingHouseRoutes(), nil
+		return csm.Routes(dep.ClearingHouse()).Handler(log), nil
 	default:
-		return srv.BankRoutes(ctx, e.pid)
+		b, err := dep.Bank(ctx, e.pid)
+		if err != nil {
+			return nil, err
+		}
+		return bank.Routes(b).Handler(log), nil
 	}
 }
 
@@ -119,7 +131,7 @@ func handlerFor(ctx context.Context, srv *api.Server, e entity) (http.Handler, e
 // rather than survivable: a network missing one of its banks is not a degraded
 // system but a wrong one, and a payment routed to the missing member would fail
 // somewhere far from the cause.
-func serve(ctx context.Context, entities []entity, srv *api.Server, log *slog.Logger) (func(context.Context) error, error) {
+func serve(ctx context.Context, entities []entity, dep *api.Deployment, log *slog.Logger) (func(context.Context) error, error) {
 	type bound struct {
 		e  entity
 		ln net.Listener
@@ -136,7 +148,7 @@ func serve(ctx context.Context, entities []entity, srv *api.Server, log *slog.Lo
 	for _, e := range entities {
 		// The surface is bound BEFORE the socket, so a bank whose database will
 		// not open costs no listener rather than an open one serving nothing.
-		h, err := handlerFor(ctx, srv, e)
+		h, err := handlerFor(ctx, dep, e, log)
 		if err != nil {
 			closeAll()
 			return nil, fmt.Errorf("binding the surface for %s: %w", e.key, err)

@@ -1,4 +1,4 @@
-package api
+package api_test
 
 import (
 	"context"
@@ -6,6 +6,12 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/raphi011/cbs/api"
+	bankapi "github.com/raphi011/cbs/api/bank"
+	cbapi "github.com/raphi011/cbs/api/centralbank"
+	csmapi "github.com/raphi011/cbs/api/csm"
+	"github.com/raphi011/cbs/iso20022"
 
 	"github.com/raphi011/cbs/payment"
 )
@@ -46,9 +52,9 @@ func surfaces(t *testing.T) map[string][]string {
 	t.Helper()
 	s := newServer(t, nil)
 	return map[string][]string{
-		"central-bank":   s.centralBankRouter().Patterns(),
-		"clearing-house": s.clearingHouseRouter().Patterns(),
-		"bank":           mustForBank(t, s, testBankBIC).bankRouter().Patterns(),
+		"central-bank":   cbapi.Routes(s.dep.CentralBank()).Patterns(),
+		"clearing-house": csmapi.Routes(s.dep.ClearingHouse()).Patterns(),
+		"bank":           bankapi.Routes(mustForBank(t, s, testBankBIC)).Patterns(),
 	}
 }
 
@@ -309,7 +315,7 @@ func TestABankCannotNameAnotherBank(t *testing.T) {
 	assertStatus(t, h, "GET", "/participants/"+aurora+"/deposit-accounts", "", http.StatusNotFound)
 
 	// And its own list is reached by asking for it, with no id anywhere.
-	var mine []depositAccountDTO
+	var mine []api.DepositAccountDTO
 	getJSON(t, h, "/deposit-accounts", &mine)
 
 	// The bank a listener is bound to is the bank it answers as.
@@ -379,7 +385,7 @@ func TestTheCentralBankCanReadTheCycleItSettles(t *testing.T) {
 	// this institution has no cycles table. What the central bank's operator
 	// finds a refused instruction with is a cut-off with NO SETTLEMENT of its
 	// own against it, which is the read below.
-	var cycles []clearingCycleDTO
+	var cycles []api.ClearingCycleDTO
 	getJSON(t, csm(h), "/cycles", &cycles)
 	if len(cycles) != 1 || cycles[0].ID != cid {
 		t.Fatalf("the clearing house sees %v, want the one cycle %s", cycles, cid)
@@ -397,7 +403,7 @@ func TestTheCentralBankCanReadTheCycleItSettles(t *testing.T) {
 	sid := settlementOfCycle(t, h, cid)
 
 	// And it can read back what it did, without asking the clearing house.
-	var settlements []settlementDTO
+	var settlements []api.SettlementDTO
 	getJSON(t, cb(h), "/settlements", &settlements)
 	if len(settlements) != 1 {
 		t.Fatalf("the central bank sees %d settlements, want 1", len(settlements))
@@ -416,7 +422,7 @@ func TestTheCentralBankCanReadTheCycleItSettles(t *testing.T) {
 //
 // After the drain below this cycle is Settled: the cut-off sends the pacs.009,
 // and there is no second console button that discharges it.
-func settledCycle(t *testing.T, h *Server) string {
+func settledCycle(t *testing.T, h *server) string {
 	t.Helper()
 	a := provisionMember(t, h, "BNKADEFFXXX", "Bank A")
 	b := provisionMember(t, h, "BNKBDEFFXXX", "Bank B")
@@ -461,7 +467,7 @@ func TestABankSeesOnlyItsOwnPayments(t *testing.T) {
 	theirs := sct(t, h, b, c, "not-mine")
 
 	// Aurora is the debtor on one and a party to no other.
-	var list []paymentDTO
+	var list []api.PaymentDTO
 	getJSON(t, bank(h, a.pid), "/payments", &list)
 	if len(list) != 1 || list[0].ID != mine {
 		t.Fatalf("bank A sees %d payments (%+v), want only its own leg %s", len(list), list, mine)
@@ -475,14 +481,14 @@ func TestABankSeesOnlyItsOwnPayments(t *testing.T) {
 	doJSON(t, bank(h, a.pid), "GET", "/payments/"+theirs, "", http.StatusNotFound)
 
 	// The creditor sees it too — "its own" is either leg, not just the debit.
-	var bList []paymentDTO
+	var bList []api.PaymentDTO
 	getJSON(t, bank(h, b.pid), "/payments", &bList)
 	if len(bList) != 2 {
 		t.Fatalf("bank B is a party to both payments but sees %d", len(bList))
 	}
 
 	// The clearing house is the CSM. Seeing every payment is its job, not a leak.
-	var all []paymentDTO
+	var all []api.PaymentDTO
 	getJSON(t, csm(h), "/payments", &all)
 	if len(all) != 2 {
 		t.Fatalf("the clearing house sees %d payments, want both", len(all))
@@ -499,7 +505,7 @@ type seededBank struct {
 	accountName string
 }
 
-func threeBanks(t *testing.T, h *Server) (a, b, c seededBank) {
+func threeBanks(t *testing.T, h *server) (a, b, c seededBank) {
 	t.Helper()
 	// A BIC each: the mesh gives every bank an actor keyed by its address and
 	// refuses two on one, so three banks that shared a BIC could not be admitted
@@ -523,7 +529,7 @@ func threeBanks(t *testing.T, h *Server) (a, b, c seededBank) {
 }
 
 // sct initiates a credit transfer between two seeded banks and returns its id.
-func sct(t *testing.T, h *Server, from, to seededBank, e2e string) string {
+func sct(t *testing.T, h *server, from, to seededBank, e2e string) string {
 	t.Helper()
 	id := doJSON(t, csm(h), "POST", "/payments", `{
 		"scheme":"sepa.ct",
@@ -589,7 +595,7 @@ func TestTheCreditorsBankSubmitsADirectDebit(t *testing.T) {
 	// Recorded at the CREDITOR's bank, which on a pull is the collecting bank —
 	// the same bank that submits below, and the only one that may hold the row.
 	// The mandate names no bank either: the debtor's is derived from the debtor's
-	// address, once, at signature. See api.createMandateRequest.
+	// address, once, at signature. See api.CreateMandateRequest.
 	mandate := doJSON(t, bank(h, payeeBank.pid), "POST", "/mandates", `{
 		"debtor":{"account":"`+payerBank.account+`","identifier":{"scheme":"IBAN","value":"`+payerBank.iban+`"}},
 		"creditor":{"account":"`+payeeBank.account+`"},
@@ -674,50 +680,50 @@ func TestABankRefusesAnInstructionItIsNotTheDebtorFor(t *testing.T) {
 }
 
 // TestEachListenerActsAsItsOwnInstitution is the direct statement of the ruling
-// api's per-listener networks turn on.
+// the per-institution networks turn on.
 //
-// One shared *payment.Network has one register, so GET /directory on two banks'
-// ports would resolve in the same one — one bank reading another bank's
-// customers, one layer above where the recorder in mesh/books_test.go can see it,
-// because api is not an actor.
+// One shared *payment.Network has one register, so GET /directory/accounts on
+// two banks' ports would resolve in the same one — one bank reading another
+// bank's customers, one layer above where the recorder in mesh/books_test.go can
+// see it, because this layer is not an actor.
 //
-// So each surface binds its own institution. This reads that back off the
-// Servers the three surface methods build, rather than off a response, because
-// the response is the consequence and this is the cause;
-// TestDirectoryDoesNotAnswerForAnotherBanksCustomer is the consequence, and it
-// is what fails if forBank hands two banks one network.
+// So each institution binds its own network. This reads that back off the three
+// values a deployment hands out, rather than off a response, because the response
+// is the consequence and this is the cause;
+// TestDirectoryDoesNotAnswerForAnotherBanksCustomer is the consequence, and it is
+// what fails if a deployment hands two banks one network.
 func TestEachListenerActsAsItsOwnInstitution(t *testing.T) {
 	srv := newServer(t, nil)
 
 	// The two entities that are not banks: neither has a participant.
 	for _, e := range []struct {
 		who string
-		srv *Server
+		net *payment.Network
 	}{
-		{"the central bank", srv.as(srv.nets.CentralBank())},
-		{"the clearing house", srv.as(srv.nets.ClearingHouse())},
+		{"the central bank", srv.dep.CentralBank().Network()},
+		{"the clearing house", srv.dep.ClearingHouse().Network()},
 	} {
-		if pid, ok := e.srv.network().Identity().Participant(); ok {
+		if pid, ok := e.net.Identity().Participant(); ok {
 			t.Errorf("%s's listener acts as member bank %q; it is not a member bank", e.who, pid)
 		}
 	}
 
-	// And every bank's listener is its own bank, with boundPID agreeing. The two
-	// are set from one value in forBank and this is what says they cannot drift:
-	// boundPID is what the handlers name in URLs and DTOs, the identity is what
-	// the domain acts through, and a listener whose two disagreed would answer
-	// about one bank out of another's register.
+	// And every bank's listener is its own bank, with the address its handlers
+	// name agreeing with the identity the domain acts through. The two come off
+	// one value now — a bank's ParticipantID IS its BIC — and this is what says
+	// the network behind a surface is the one that value names: a listener whose
+	// two disagreed would answer about one bank out of another's register.
 	for _, pid := range []payment.ParticipantID{"BNKADEFFXXX", "BNKBDEFFXXX", "BNKCDEFFXXX"} {
 		b := mustForBank(t, srv, pid)
-		got, ok := b.network().Identity().Participant()
+		got, ok := b.Network().Identity().Participant()
 		if !ok {
 			t.Fatalf("the listener for %s does not act as a member bank at all", pid)
 		}
 		if got != pid {
 			t.Errorf("the listener for %s acts as %s in the domain", pid, got)
 		}
-		if b.boundPID != pid {
-			t.Errorf("the listener for %s names %s in its handlers", pid, b.boundPID)
+		if b.BIC() != iso20022.BIC(pid) {
+			t.Errorf("the listener for %s names %s in its handlers", pid, b.BIC())
 		}
 	}
 }
@@ -731,11 +737,11 @@ func TestEachListenerActsAsItsOwnInstitution(t *testing.T) {
 // well-formed address, because that is what names a file.
 const testBankBIC payment.ParticipantID = "BNKADEFFXXX"
 
-// mustForBank binds a bank's surface, failing the test if its database will not
-// open. See api.Server.forBank.
-func mustForBank(t *testing.T, s *Server, pid payment.ParticipantID) *Server {
+// mustForBank binds one bank out of the deployment, failing the test if its
+// database will not open. See api.Deployment.Bank.
+func mustForBank(t *testing.T, s *server, pid payment.ParticipantID) *api.Bank {
 	t.Helper()
-	b, err := s.forBank(context.Background(), pid)
+	b, err := s.dep.Bank(context.Background(), pid)
 	if err != nil {
 		t.Fatalf("binding %s's surface: %v", pid, err)
 	}

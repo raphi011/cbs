@@ -1,9 +1,11 @@
-package api
+package centralbank
 
 import (
 	"context"
 	"net/http"
 	"time"
+
+	"github.com/raphi011/cbs/api"
 )
 
 // resetTimeout bounds a detached reset. It is generous — clearing and reseeding
@@ -11,7 +13,7 @@ import (
 // a wedged connection holding a goroutine forever, not to police the work.
 const resetTimeout = 30 * time.Second
 
-func (s *Server) registerAdminRoutes(mux *router) {
+func (s *surface) registerAdminRoutes(mux *api.Router) {
 	mux.HandleFunc("POST /admin/reset", s.handleReset)
 }
 
@@ -32,15 +34,15 @@ func (s *Server) registerAdminRoutes(mux *router) {
 // of its own. The client may leave; the reset may not. It is the one handler in
 // this API for which that is true, and it is true because it is the one handler
 // whose work is not scoped to the answer it returns.
-func (s *Server) handleReset(w http.ResponseWriter, r *http.Request) {
+func (s *surface) handleReset(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), resetTimeout)
 	defer cancel()
 
-	if err := s.Reset(ctx); err != nil {
-		s.log.Error("application state reset failed", "error", err)
-		writeError(w, err)
+	if err := s.inst.Reset(ctx); err != nil {
+		s.inst.Log().Error("application state reset failed", "error", err)
+		api.WriteError(w, err)
 		return
 	}
-	s.log.Info("application state reset")
-	writeJSON(w, http.StatusOK, map[string]string{"status": "reset"})
+	s.inst.Log().Info("application state reset")
+	api.WriteJSON(w, http.StatusOK, map[string]string{"status": "reset"})
 }

@@ -1,4 +1,4 @@
-package api
+package api_test
 
 import (
 	"context"
@@ -13,6 +13,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/raphi011/cbs/api"
 
 	"github.com/raphi011/cbs/deposit"
 	"github.com/raphi011/cbs/iban"
@@ -32,7 +34,7 @@ import (
 // afterwards. No test here waits for a duration to find out. mesh.Drain blocks
 // until nothing is in flight, and that is the only way any of them looks.
 
-// newAPIHarness is a seeded Server with a mesh running over the same network.
+// newAPIHarness is a seeded deployment with a mesh running over the same network.
 //
 // Seeded, because the mesh routes by BIC: a payment needs two banks that can
 // address each other, an open cut-off window for its scheme, and a payer with
@@ -52,7 +54,7 @@ import (
 // payer debited and the pacs.002 that would have said so never sent. Both hand
 // back dead letters and both are reported: a shutdown that swallowed a handler's
 // failure would let one of these tests pass over the very thing it asserts.
-func newAPIHarness(t *testing.T) (*Server, *mesh.Mesh) {
+func newAPIHarness(t *testing.T) (*server, *mesh.Mesh) {
 	t.Helper()
 	ctx := context.Background()
 
@@ -96,11 +98,7 @@ func newAPIHarness(t *testing.T) (*Server, *mesh.Mesh) {
 	if err := data.Populate(ctx, nets, msh); err != nil {
 		t.Fatalf("populate: %v", err)
 	}
-	// Bound to the CLEARING HOUSE, which is what makes s.network() answer at all:
-	// NewServer returns an unbound Server, and the reads these tests make of it —
-	// payments, cycles, bank rows — are that institution's. A test that wants a
-	// bank's surface calls s.forBank, exactly as BankRoutes does.
-	return NewServer(nets, msh, data.Populate, log).as(nets.ClearingHouse()), msh
+	return &server{dep: api.NewDeployment(nets, msh, data.Populate, log), nets: nets, mesh: msh}, msh
 }
 
 // The gate: how a test reads the world at a moment the mesh would otherwise
@@ -219,7 +217,7 @@ var testMeshConfig = mesh.Config{
 // (see payment.PartyRef) and every caller here needs both: the account to quote
 // on an instruction, and the address to bind a listener to or to put in an agent
 // field. The sweep already knows which bank answered.
-func seededParty(t *testing.T, s *Server, iban string) (iso20022.BIC, payment.PartyRef) {
+func seededParty(t *testing.T, s *server, iban string) (iso20022.BIC, payment.PartyRef) {
 	t.Helper()
 	ctx := context.Background()
 	ident := deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: iban}
@@ -249,7 +247,7 @@ func seededParty(t *testing.T, s *Server, iban string) (iso20022.BIC, payment.Pa
 
 // payerRoutes is the bank router of whichever bank holds the seed's Alice — the
 // payer every submission below is made by.
-func payerRoutes(t *testing.T, s *Server) http.Handler {
+func payerRoutes(t *testing.T, s *server) http.Handler {
 	t.Helper()
 	bic, _ := seededParty(t, s, aliceIBAN)
 	h, err := s.BankRoutes(context.Background(), payment.ParticipantID(bic))
@@ -298,17 +296,17 @@ func mustMint(c iban.Country, code iban.BankCode, serial uint64) string {
 //
 // The amount is small enough that Alice can afford it whatever else the seeded
 // scenario has already taken out of her account.
-func validSubmission(t *testing.T, s *Server) string {
+func validSubmission(t *testing.T, s *server) string {
 	t.Helper()
 	_, payer := seededParty(t, s, aliceIBAN)
 	_, payee := seededParty(t, s, bellaIBAN)
 	// NO agent on either side, and none to give: the instruction carries an
 	// address and a name, and the payer's bank derives the routing element from
 	// the address through its own copy of the scheme's directory. See api's
-	// initiatePaymentRequest and payment.SubmitPaymentTx.
+	// InitiatePaymentRequest and payment.SubmitPaymentTx.
 	//
 	// A party object carries no "participant" either. Which bank a side is at is
-	// something this request never says; see api.partyRefDTO.
+	// something this request never says; see api.PartyRefDTO.
 	return fmt.Sprintf(`{
 		"scheme":"sepa.ct",
 		"debtor":{"account":%q,"identifier":{"scheme":"IBAN","value":%q}},
@@ -333,10 +331,10 @@ func post(t *testing.T, h http.Handler, path string) *httptest.ResponseRecorder 
 
 // decodePaymentID reads the identifier a 202 answers with. It is the whole of
 // what a submission returns, and the second half of the exchange is asking about
-// it — see submittedPaymentDTO.
+// it — see SubmittedPaymentDTO.
 func decodePaymentID(t *testing.T, rec *httptest.ResponseRecorder) string {
 	t.Helper()
-	var out submittedPaymentDTO
+	var out api.SubmittedPaymentDTO
 	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
 		t.Fatalf("decoding %q: %v", rec.Body.String(), err)
 	}
@@ -348,9 +346,9 @@ func decodePaymentID(t *testing.T, rec *httptest.ResponseRecorder) string {
 
 // getPayment reads a payment back through the clearing house's surface, which is
 // the one operator that can see every payment in the network.
-func getPayment(t *testing.T, s *Server, id string) paymentDTO {
+func getPayment(t *testing.T, s *server, id string) api.PaymentDTO {
 	t.Helper()
-	var out paymentDTO
+	var out api.PaymentDTO
 	getJSON(t, csm(s), "/payments/"+id, &out)
 	return out
 }
@@ -388,7 +386,7 @@ func TestSubmitAnswers202AndThePaymentIsNotYetAccepted(t *testing.T) {
 	// been told it exists and answers 404 rather than "Initiated". Which is the
 	// same claim in a stronger form: the response was written before any other
 	// institution had heard of the payment.
-	var before paymentDTO
+	var before api.PaymentDTO
 	getJSON(t, payerRoutes(t, srv), "/payments/"+id, &before)
 	if before.Status != "Initiated" {
 		t.Errorf("status before draining = %q, want Initiated", before.Status)
@@ -421,7 +419,7 @@ func TestResetDrainsBeforeTruncating(t *testing.T) {
 
 // reserveRows reads the central bank's reserve report: the whole list when pid
 // is empty, one bank's when it is not.
-func reserveRows(t *testing.T, s *Server, pid string) []map[string]any {
+func reserveRows(t *testing.T, s *server, pid string) []map[string]any {
 	t.Helper()
 	path := "/reserves"
 	if pid != "" {
@@ -520,7 +518,7 @@ func TestResetRebuildsTheMeshSoAReadmittedBankCanPay(t *testing.T) {
 
 	assertStatus(t, cb(h), "POST", "/admin/reset", "", http.StatusOK)
 
-	var members []participantDTO
+	var members []api.ParticipantDTO
 	getJSON(t, cb(h), "/members", &members)
 	if len(members) != 0 {
 		t.Fatalf("the roster holds %d banks after a reset with no reseed, want 0", len(members))
@@ -557,7 +555,7 @@ func TestResetRebuildsTheMeshSoAReadmittedBankCanPay(t *testing.T) {
 	// Bank A's own payment survives everything above, which is the half worth
 	// stating separately: a reset that rebuilt the mesh but lost the book would
 	// pass every assertion so far.
-	var after []paymentDTO
+	var after []api.PaymentDTO
 	getJSON(t, bank(h, a), "/payments", &after)
 	if len(after) != 1 {
 		t.Errorf("Bank A sees %d of its own payments, want 1", len(after))
@@ -566,9 +564,9 @@ func TestResetRebuildsTheMeshSoAReadmittedBankCanPay(t *testing.T) {
 
 // participants is every bank this system holds, read through the clearing
 // house's own listing.
-func participants(t *testing.T, h *Server) []participantDTO {
+func participants(t *testing.T, h *server) []api.ParticipantDTO {
 	t.Helper()
-	var out []participantDTO
+	var out []api.ParticipantDTO
 	getJSON(t, cb(h), "/members", &out)
 	return out
 }
@@ -678,7 +676,7 @@ func TestClosingACycleThroughTheAPIInstructsSettlement(t *testing.T) {
 		t.Fatal("the accepted payment is in no cycle; there is nothing to close")
 	}
 
-	var closed clearingCycleDTO
+	var closed api.ClearingCycleDTO
 	crec := post(t, csm(srv), "/cycles/"+cid+"/close")
 	if crec.Code != http.StatusOK {
 		t.Fatalf("close = %d (body: %s)", crec.Code, crec.Body.String())
@@ -694,7 +692,7 @@ func TestClosingACycleThroughTheAPIInstructsSettlement(t *testing.T) {
 	// The cycle is read back from the CLEARING HOUSE, which is the institution
 	// that has one: there is no cycles table in the central bank's schema, and
 	// asking it is not a wrong answer but a missing table.
-	var settled clearingCycleDTO
+	var settled api.ClearingCycleDTO
 	getJSON(t, csm(srv), "/cycles/"+cid, &settled)
 	if settled.Status != "Settled" {
 		t.Fatalf("cycle is %q after draining, want Settled — the pacs.009 is what discharges it", settled.Status)
@@ -708,9 +706,9 @@ func TestClosingACycleThroughTheAPIInstructsSettlement(t *testing.T) {
 	// back to the clearing house is a pacs.002 quoting the CYCLE. So the link is
 	// asserted from the end that can hold it. That closing a cycle does not settle
 	// it is the Status above and the empty listing below.
-	var settlements []settlementDTO
+	var settlements []api.SettlementDTO
 	getJSON(t, cb(srv), "/settlements", &settlements)
-	var found settlementDTO
+	var found api.SettlementDTO
 	for _, st := range settlements {
 		if st.CycleID == cid {
 			found = st
@@ -719,7 +717,7 @@ func TestClosingACycleThroughTheAPIInstructsSettlement(t *testing.T) {
 	if found.ID == "" {
 		t.Fatalf("the settlement agent lists no settlement against cycle %q", cid)
 	}
-	var st settlementDTO
+	var st api.SettlementDTO
 	getJSON(t, cb(srv), "/settlements/"+found.ID, &st)
 	if st.CycleID != cid {
 		t.Errorf("settlement %s is against cycle %q, want %q", st.ID, st.CycleID, cid)
@@ -754,7 +752,7 @@ func TestRejectingThroughTheAPIRefundsThePayerOnlyAfterTheMessageArrives(t *test
 	if rrec.Code != http.StatusAccepted {
 		t.Fatalf("reject = %d (body: %s)", rrec.Code, rrec.Body.String())
 	}
-	var rejected paymentDTO
+	var rejected api.PaymentDTO
 	if err := json.Unmarshal(rrec.Body.Bytes(), &rejected); err != nil {
 		t.Fatalf("decoding the rejected payment: %v", err)
 	}
@@ -786,9 +784,9 @@ func TestRejectingThroughTheAPIRefundsThePayerOnlyAfterTheMessageArrives(t *test
 func TestReturningThroughTheAPIGoesRoundTheMesh(t *testing.T) {
 	srv, msh := newAPIHarness(t)
 
-	var payments []paymentDTO
+	var payments []api.PaymentDTO
 	getJSON(t, csm(srv), "/payments", &payments)
-	var settled paymentDTO
+	var settled api.PaymentDTO
 	for _, p := range payments {
 		if p.Status == "Settled" && p.Scheme == "sepa.ct" {
 			settled = p
@@ -827,7 +825,7 @@ func TestReturningThroughTheAPIGoesRoundTheMesh(t *testing.T) {
 	// carries the code the pacs.004 travelled under beside the operator's text.
 	// A handler that called the domain directly would describe it with the text
 	// alone: there would have been no message to put a code on.
-	var txns []transactionDTO
+	var txns []api.TransactionDTO
 	getJSON(t, bank(srv, settled.DebtorAgent), "/transactions", &txns)
 	want := settled.ID + ":return-refund"
 	for _, tx := range txns {
@@ -843,7 +841,7 @@ func TestReturningThroughTheAPIGoesRoundTheMesh(t *testing.T) {
 }
 
 // aliceBalance is the seeded payer's book balance, read through her own bank.
-func aliceBalance(t *testing.T, s *Server) int64 {
+func aliceBalance(t *testing.T, s *server) int64 {
 	t.Helper()
 	aliceBIC, alice := seededParty(t, s, aliceIBAN)
 	bal := doJSON(t, bank(s, string(aliceBIC)), "GET",

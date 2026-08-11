@@ -1,8 +1,10 @@
-package api
+package api_test
 
 import (
 	"net/http"
 	"testing"
+
+	"github.com/raphi011/cbs/api"
 )
 
 // A bank checking its own books over HTTP.
@@ -40,7 +42,7 @@ func TestABankReconcilesItsOwnBooksOverHTTP(t *testing.T) {
 
 	// The statement it checked against, read back. This is where a break naming a
 	// reference sends its reader.
-	var advices []settlementAdviceDTO
+	var advices []api.SettlementAdviceDTO
 	getJSON(t, bank(h, "BNKADEFFXXX"), "/settlement-advices", &advices)
 	if len(advices) != 1 {
 		t.Fatalf("bank A holds %d statements, want the one from the cut-off", len(advices))
@@ -55,7 +57,7 @@ func TestABankReconcilesItsOwnBooksOverHTTP(t *testing.T) {
 
 	// The two ageing reports answer, and both are empty for the same reason the
 	// positions above are.
-	var suspense, unclaimed ageingReportDTO
+	var suspense, unclaimed api.AgeingReportDTO
 	getJSON(t, bank(h, "BNKADEFFXXX"), "/clearing-suspense/ageing?asset=EUR", &suspense)
 	getJSON(t, bank(h, "BNKADEFFXXX"), "/unclaimed-balances/ageing?asset=EUR", &unclaimed)
 	assertEqual(t, "suspense balance", suspense.Balance, int64(0))
@@ -72,13 +74,13 @@ func TestTheRunIsAnActAndLeavesTheTrailToProveIt(t *testing.T) {
 	h := newServer(t, nil)
 	settledCycle(t, h)
 
-	var before []auditEventDTO
+	var before []api.AuditEventDTO
 	getJSON(t, bank(h, "BNKADEFFXXX"), "/payments/audit?type=reconciliation.run", &before)
 	assertEqual(t, "runs before anybody has run one", len(before), 0)
 
 	doJSON(t, bank(h, "BNKADEFFXXX"), "POST", "/reconciliation?asset=EUR", "", http.StatusOK)
 
-	var after []auditEventDTO
+	var after []api.AuditEventDTO
 	getJSON(t, bank(h, "BNKADEFFXXX"), "/payments/audit?type=reconciliation.run", &after)
 	if len(after) != 1 {
 		t.Fatalf("one run left %d audit events, want 1", len(after))
@@ -123,12 +125,12 @@ func TestAnUnclaimedBalanceIsReportedWithItsDeadline(t *testing.T) {
 	// Bob closes his account after his bank has accepted the credit and before
 	// the cut-off moves the money.
 	assertStatus(t, bank(h, b), "DELETE", "/deposit-accounts/"+bob, "", http.StatusNoContent)
-	var cycles []clearingCycleDTO
+	var cycles []api.ClearingCycleDTO
 	getJSON(t, csm(h), "/cycles", &cycles)
 	assertStatus(t, csm(h), "POST", "/cycles/"+cycles[0].ID+"/close", "", http.StatusOK)
 	drainServer(t, h)
 
-	var rep ageingReportDTO
+	var rep api.AgeingReportDTO
 	getJSON(t, bank(h, b), "/unclaimed-balances/ageing?asset=EUR", &rep)
 	assertEqual(t, "balance", rep.Balance, int64(25000))
 	if len(rep.Lots) != 1 {
@@ -164,7 +166,7 @@ func TestAClearingSuspenseIsAgedWithNoDeadlineOnIt(t *testing.T) {
 	lodge(t, h, a.pid, "EUR", 100000)
 	sct(t, h, a, b, "in-flight")
 
-	var rep ageingReportDTO
+	var rep api.AgeingReportDTO
 	getJSON(t, bank(h, a.pid), "/clearing-suspense/ageing?asset=EUR", &rep)
 	assertEqual(t, "balance", rep.Balance, int64(10000))
 	if len(rep.Lots) != 1 {

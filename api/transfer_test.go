@@ -1,4 +1,4 @@
-package api
+package api_test
 
 import (
 	"context"
@@ -26,7 +26,7 @@ func auroraIBAN(serial uint64) string { return mustMint(iban.DE, "99999999", ser
 // aurora is the bank router of whichever bank holds the seed's Alice, and the
 // port every transfer below is made on. It is payerRoutes under the name this
 // file's tests read by.
-func aurora(t *testing.T, s *Server) http.Handler {
+func aurora(t *testing.T, s *server) http.Handler {
 	t.Helper()
 	bic, _ := seededParty(t, s, aliceIBAN)
 	h, err := s.BankRoutes(context.Background(), payment.ParticipantID(bic))

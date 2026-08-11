@@ -26,7 +26,7 @@ import (
 // future-dated repricing is not visible here until it takes effect, and a past
 // one is not visible here at all. lending.Portfolio.FacilityTermsHistory is what
 // shows the whole timeline; there is no HTTP route onto it yet.
-type facilityDTO struct {
+type FacilityDTO struct {
 	ID    string `json:"id"`
 	Kind  string `json:"kind"`
 	Name  string `json:"name"`
@@ -73,9 +73,9 @@ type facilityDTO struct {
 	MaturityAt time.Time `json:"maturityAt,omitempty"`
 }
 
-// toFacilityDTO renders a facility. t is the terms in force today, and drawn,
+// ToFacilityDTO renders a facility. t is the terms in force today, and drawn,
 // accrued and refund are resolved by the caller so this function does no I/O of
-// its own, the same convention toTransactionDTO follows for entry assets: drawn
+// its own, the same convention ToTransactionDTO follows for entry assets: drawn
 // is the principal GL account's book balance (Portfolio.Drawn), genuinely
 // derived; accrued is f.Accrued.Minor(), the facility's own stored figure, not a
 // GL read — it only agrees with the interest GL account's balance because the
@@ -85,13 +85,13 @@ type facilityDTO struct {
 // Method is rendered only for a term loan: AmortMethod's zero value (Annuity)
 // is indistinguishable from an explicitly-set one, and a revolving line — which
 // has no amortization method — would otherwise render a misleading "Annuity".
-func toFacilityDTO(f lending.Facility, t lending.FacilityTerms, at lending.FacilityPositions, drawn, accrued, refund ledger.Amount) facilityDTO {
+func ToFacilityDTO(f lending.Facility, t lending.FacilityTerms, at lending.FacilityPositions, drawn, accrued, refund ledger.Amount) FacilityDTO {
 	outstanding := drawn
 	if accrued > 0 {
 		outstanding += accrued
 	}
 
-	dto := facilityDTO{
+	dto := FacilityDTO{
 		ID:    string(f.ID),
 		Kind:  f.Kind.String(),
 		Name:  f.Name,
@@ -132,7 +132,7 @@ func toFacilityDTO(f lending.Facility, t lending.FacilityTerms, at lending.Facil
 	return dto
 }
 
-// chargeDTO is the outcome of billing one of a revolving line's cycles, and it
+// ChargeDTO is the outcome of billing one of a revolving line's cycles, and it
 // carries BOTH halves because they are independent — see lending.Charge.
 //
 // A cycle whose accrued interest has not yet reached a whole minor unit posts
@@ -144,30 +144,30 @@ func toFacilityDTO(f lending.Facility, t lending.FacilityTerms, at lending.Facil
 // Both fields are pointers rather than zero values: an absent posting is
 // genuinely absent, and a `transaction` rendered with an empty id would read as
 // a real posting the client failed to parse.
-type chargeDTO struct {
+type ChargeDTO struct {
 	// Transaction is the capitalization posting, absent when nothing posted.
-	Transaction *transactionDTO `json:"transaction,omitempty"`
+	Transaction *TransactionDTO `json:"transaction,omitempty"`
 	// Installment is the cycle that was billed, absent when no cycle was.
-	Installment *installmentDTO `json:"installment,omitempty"`
+	Installment *InstallmentDTO `json:"installment,omitempty"`
 }
 
-// toChargeDTO renders a charge. assets is the pre-resolved account-to-asset map
-// the transaction half needs (see entryAssets), so this does no I/O of its own,
-// the same convention toTransactionDTO and toFacilityDTO follow.
-func toChargeDTO(c lending.Charge, assets map[ledger.AccountID]ledger.AssetCode) chargeDTO {
-	var out chargeDTO
+// ToChargeDTO renders a charge. assets is the pre-resolved account-to-asset map
+// the transaction half needs (see EntryAssets), so this does no I/O of its own,
+// the same convention ToTransactionDTO and ToFacilityDTO follow.
+func ToChargeDTO(c lending.Charge, assets map[ledger.AccountID]ledger.AssetCode) ChargeDTO {
+	var out ChargeDTO
 	if c.Posted() {
-		tx := toTransactionDTO(c.Transaction, assets)
+		tx := ToTransactionDTO(c.Transaction, assets)
 		out.Transaction = &tx
 	}
 	if c.Billed() {
-		inst := toInstallmentDTO(c.Installment)
+		inst := ToInstallmentDTO(c.Installment)
 		out.Installment = &inst
 	}
 	return out
 }
 
-type installmentDTO struct {
+type InstallmentDTO struct {
 	Seq           int       `json:"seq"`
 	DueDate       time.Time `json:"dueDate"`
 	Principal     int64     `json:"principal"`
@@ -177,8 +177,8 @@ type installmentDTO struct {
 	Outstanding   int64     `json:"outstanding"`
 }
 
-func toInstallmentDTO(i lending.Installment) installmentDTO {
-	return installmentDTO{
+func ToInstallmentDTO(i lending.Installment) InstallmentDTO {
+	return InstallmentDTO{
 		Seq:           i.Seq,
 		DueDate:       i.DueDate,
 		Principal:     int64(i.Principal),
@@ -189,18 +189,18 @@ func toInstallmentDTO(i lending.Installment) installmentDTO {
 	}
 }
 
-// totalsDTO is a bank's customer-deposit position split by the sign of each
+// TotalsDTO is a bank's customer-deposit position split by the sign of each
 // balance, per asset. The overdrafts figure is DERIVED — see deposit.Totals —
 // and no posting anywhere produces it.
-type totalsDTO struct {
+type TotalsDTO struct {
 	Asset      string `json:"asset"`
 	Deposits   int64  `json:"deposits"`
 	Overdrafts int64  `json:"overdrafts"`
 }
 
-// toTotalsDTOs renders deposit.Totals sorted by asset code, so the response is
+// ToTotalsDTOs renders deposit.Totals sorted by asset code, so the response is
 // deterministic — a map iteration would reorder it between requests.
-func toTotalsDTOs(t deposit.Totals) []totalsDTO {
+func ToTotalsDTOs(t deposit.Totals) []TotalsDTO {
 	seen := make(map[ledger.AssetCode]bool, len(t.Deposits)+len(t.Overdrafts))
 	for asset := range t.Deposits {
 		seen[asset] = true
@@ -214,10 +214,10 @@ func toTotalsDTOs(t deposit.Totals) []totalsDTO {
 	}
 	sort.Strings(codes)
 
-	out := make([]totalsDTO, len(codes))
+	out := make([]TotalsDTO, len(codes))
 	for i, code := range codes {
 		asset := ledger.AssetCode(code)
-		out[i] = totalsDTO{
+		out[i] = TotalsDTO{
 			Asset:      code,
 			Deposits:   int64(t.Deposits[asset]),
 			Overdrafts: int64(t.Overdrafts[asset]),
@@ -230,13 +230,13 @@ func toTotalsDTOs(t deposit.Totals) []totalsDTO {
 // Requests
 // ---------------------------------------------------------------------------
 
-// openFacilityRequest opens either product behind one route: Kind selects
-// which, the same dispatch-by-field convention statusRequest uses for a
+// OpenFacilityRequest opens either product behind one route: Kind selects
+// which, the same dispatch-by-field convention StatusRequest uses for a
 // deposit account's lifecycle actions. Method and TermMonths apply only to a
 // TermLoan (and Method is required there — the handler parses it exactly as
 // it parses Kind and DayCount, so an unknown or absent value is a 400); a
 // RevolvingLine reads only MinPayment, and neither Method nor TermMonths.
-type openFacilityRequest struct {
+type OpenFacilityRequest struct {
 	Kind       string `json:"kind"`
 	Name       string `json:"name"`
 	Asset      string `json:"asset"`
@@ -248,39 +248,39 @@ type openFacilityRequest struct {
 	MinPayment int64  `json:"minPayment,omitempty"`
 }
 
-type disburseFacilityRequest struct {
+type DisburseFacilityRequest struct {
 	// Counterparty is any account in the facility's asset — the control account
 	// a customer's current account is pooled in, or the vault for a cash
 	// advance — and Subsidiary is which one within it, a deposit account's id on
 	// the first and empty on the second. The two travel together everywhere
-	// money moves; see captureHoldRequest, where the same pair is documented.
+	// money moves; see CaptureHoldRequest, where the same pair is documented.
 	Counterparty string `json:"counterparty"`
 	Subsidiary   string `json:"subsidiary,omitempty"`
 	FirstDue     string `json:"firstDue"`
 	Description  string `json:"description"`
 }
 
-type drawFacilityRequest struct {
+type DrawFacilityRequest struct {
 	Counterparty string `json:"counterparty"`
 	Subsidiary   string `json:"subsidiary,omitempty"`
 	Amount       int64  `json:"amount"`
 	Description  string `json:"description"`
 }
 
-// repayFacilityRequest is a repayment from a customer's deposit account — see
+// RepayFacilityRequest is a repayment from a customer's deposit account — see
 // handleRepay, the one handler that spans the deposit and lending layers.
-type repayFacilityRequest struct {
+type RepayFacilityRequest struct {
 	AccountID   string `json:"accountId"`
 	Amount      int64  `json:"amount"`
 	Date        string `json:"date"`
 	Description string `json:"description"`
 }
 
-type chargeFacilityInterestRequest struct {
+type ChargeFacilityInterestRequest struct {
 	Date string `json:"date"`
 }
 
-// refundPayableDTO is one outstanding interest refund: what the bank owes one
+// RefundPayableDTO is one outstanding interest refund: what the bank owes one
 // borrower back because a backdated correction showed it charged interest the
 // borrower had already paid and never owed. See lending.RefundPayable.
 //
@@ -288,7 +288,7 @@ type chargeFacilityInterestRequest struct {
 // read that as stale data. A refund outlives the lending contract — closing a
 // facility is a statement about what the BORROWER owes — so a settled loan with
 // an outstanding refund is an ordinary row here, not a contradiction.
-type refundPayableDTO struct {
+type RefundPayableDTO struct {
 	FacilityID     string `json:"facilityId"`
 	Name           string `json:"name"`
 	Asset          string `json:"asset"`
@@ -297,8 +297,8 @@ type refundPayableDTO struct {
 	FacilityStatus string `json:"facilityStatus"`
 }
 
-func toRefundPayableDTO(r lending.RefundPayable) refundPayableDTO {
-	return refundPayableDTO{
+func ToRefundPayableDTO(r lending.RefundPayable) RefundPayableDTO {
+	return RefundPayableDTO{
 		FacilityID:     string(r.FacilityID),
 		Name:           r.Name,
 		Asset:          string(r.Asset),
@@ -308,11 +308,11 @@ func toRefundPayableDTO(r lending.RefundPayable) refundPayableDTO {
 	}
 }
 
-// refundFacilityInterestRequest pays an interest refund out to a GL account.
+// RefundFacilityInterestRequest pays an interest refund out to a GL account.
 //
 // Counterparty is a GL account rather than a deposit account id, which is what
-// disburseFacilityRequest and drawFacilityRequest also take and the opposite of
-// repayFacilityRequest. The asymmetry is real: a repayment has to be checked
+// DisburseFacilityRequest and DrawFacilityRequest also take and the opposite of
+// RepayFacilityRequest. The asymmetry is real: a repayment has to be checked
 // against a deposit account's available balance and status before it can post,
 // so that route spans both layers; money going OUT to the customer has no such
 // check to make, and the lending layer does not know what a deposit account is.
@@ -320,7 +320,7 @@ func toRefundPayableDTO(r lending.RefundPayable) refundPayableDTO {
 // Amount is required and bounded by what is owed — a partial refund is fine, an
 // over-refund is a 400. There is no "pay it all" default: an amount the caller
 // did not state is an amount the caller did not check.
-type refundFacilityInterestRequest struct {
+type RefundFacilityInterestRequest struct {
 	Counterparty string `json:"counterparty"`
 	Subsidiary   string `json:"subsidiary,omitempty"`
 	Amount       int64  `json:"amount"`
@@ -328,8 +328,8 @@ type refundFacilityInterestRequest struct {
 	Description  string `json:"description"`
 }
 
-// endOfDayRequest is shared by POST /participants/{pid}/end-of-day.
-type endOfDayRequest struct {
+// EndOfDayRequest is shared by POST /participants/{pid}/end-of-day.
+type EndOfDayRequest struct {
 	Date string `json:"date"`
 }
 
@@ -337,7 +337,7 @@ type endOfDayRequest struct {
 // Enum parsing
 // ---------------------------------------------------------------------------
 
-func facilityKindFromString(s string) (lending.FacilityKind, error) {
+func FacilityKindFromString(s string) (lending.FacilityKind, error) {
 	switch s {
 	case "TermLoan":
 		return lending.TermLoan, nil
@@ -348,7 +348,7 @@ func facilityKindFromString(s string) (lending.FacilityKind, error) {
 	}
 }
 
-func amortMethodFromString(s string) (lending.AmortMethod, error) {
+func AmortMethodFromString(s string) (lending.AmortMethod, error) {
 	switch s {
 	case "Annuity":
 		return lending.Annuity, nil
@@ -359,9 +359,9 @@ func amortMethodFromString(s string) (lending.AmortMethod, error) {
 	}
 }
 
-// dayCountFromString is shared by the lending and deposit handlers: both
+// DayCountFromString is shared by the lending and deposit handlers: both
 // products are priced under the same DayCount conventions.
-func dayCountFromString(s string) (interest.DayCount, error) {
+func DayCountFromString(s string) (interest.DayCount, error) {
 	switch s {
 	case "ACT/365":
 		return interest.ACT365, nil

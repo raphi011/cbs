@@ -9,7 +9,7 @@ import (
 // http.ServeMux cannot be asked what is registered on it, so registration goes
 // through a wrapper that remembers.
 func TestRouterRecordsEveryPattern(t *testing.T) {
-	r := newRouter()
+	r := NewRouter()
 	r.HandleFunc("GET /b", func(http.ResponseWriter, *http.Request) {})
 	r.HandleFunc("GET /a", func(http.ResponseWriter, *http.Request) {})
 

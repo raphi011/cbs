@@ -1,13 +1,14 @@
-package api
+package bank
 
 import (
 	"net/http"
 	"time"
 
+	"github.com/raphi011/cbs/api"
 	"github.com/raphi011/cbs/ledger"
 )
 
-func (s *Server) registerLedgerRoutes(mux *router) {
+func (s *surface) registerLedgerRoutes(mux *api.Router) {
 	mux.HandleFunc("POST /ledgers", s.handleCreateLedger)
 	mux.HandleFunc("GET /ledgers", s.handleListLedgers)
 	mux.HandleFunc("GET /ledgers/{lid}", s.handleGetLedger)
@@ -28,160 +29,160 @@ func (s *Server) registerLedgerRoutes(mux *router) {
 	mux.HandleFunc("POST /transactions/{tid}/reversal", s.handleReverseTransaction)
 }
 
-func (s *Server) handleCreateLedger(w http.ResponseWriter, r *http.Request) {
+func (s *surface) handleCreateLedger(w http.ResponseWriter, r *http.Request) {
 	p, ok := s.participant(w, r)
 	if !ok {
 		return
 	}
-	var req nameRequest
-	if err := decodeJSON(r, &req); err != nil {
-		writeBadRequest(w, err.Error())
+	var req api.NameRequest
+	if err := api.DecodeJSON(r, &req); err != nil {
+		api.WriteBadRequest(w, err.Error())
 		return
 	}
 	l, err := p.Ledger.CreateLedger(r.Context(), req.Name)
 	if err != nil {
-		writeError(w, err)
+		api.WriteError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusCreated, toLedgerDTO(l))
+	api.WriteJSON(w, http.StatusCreated, api.ToLedgerDTO(l))
 }
 
-func (s *Server) handleListLedgers(w http.ResponseWriter, r *http.Request) {
+func (s *surface) handleListLedgers(w http.ResponseWriter, r *http.Request) {
 	p, ok := s.participant(w, r)
 	if !ok {
 		return
 	}
 	ledgers, err := p.Ledger.ListLedgers(r.Context())
 	if err != nil {
-		writeError(w, err)
+		api.WriteError(w, err)
 		return
 	}
-	out := make([]ledgerDTO, len(ledgers))
+	out := make([]api.LedgerDTO, len(ledgers))
 	for i, l := range ledgers {
-		out[i] = toLedgerDTO(l)
+		out[i] = api.ToLedgerDTO(l)
 	}
-	writeJSON(w, http.StatusOK, out)
+	api.WriteJSON(w, http.StatusOK, out)
 }
 
-func (s *Server) handleGetLedger(w http.ResponseWriter, r *http.Request) {
+func (s *surface) handleGetLedger(w http.ResponseWriter, r *http.Request) {
 	p, ok := s.participant(w, r)
 	if !ok {
 		return
 	}
 	l, err := p.Ledger.GetLedger(r.Context(), ledger.LedgerID(r.PathValue("lid")))
 	if err != nil {
-		writeError(w, err)
+		api.WriteError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, toLedgerDTO(l))
+	api.WriteJSON(w, http.StatusOK, api.ToLedgerDTO(l))
 }
 
-func (s *Server) handleCreateSubledger(w http.ResponseWriter, r *http.Request) {
+func (s *surface) handleCreateSubledger(w http.ResponseWriter, r *http.Request) {
 	p, ok := s.participant(w, r)
 	if !ok {
 		return
 	}
-	var req nameRequest
-	if err := decodeJSON(r, &req); err != nil {
-		writeBadRequest(w, err.Error())
+	var req api.NameRequest
+	if err := api.DecodeJSON(r, &req); err != nil {
+		api.WriteBadRequest(w, err.Error())
 		return
 	}
 	sl, err := p.Ledger.CreateSubledger(r.Context(), ledger.LedgerID(r.PathValue("lid")), req.Name)
 	if err != nil {
-		writeError(w, err)
+		api.WriteError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusCreated, toSubledgerDTO(sl))
+	api.WriteJSON(w, http.StatusCreated, api.ToSubledgerDTO(sl))
 }
 
-func (s *Server) handleListSubledgers(w http.ResponseWriter, r *http.Request) {
+func (s *surface) handleListSubledgers(w http.ResponseWriter, r *http.Request) {
 	p, ok := s.participant(w, r)
 	if !ok {
 		return
 	}
 	subs, err := p.Ledger.ListSubledgers(r.Context(), ledger.LedgerID(r.PathValue("lid")))
 	if err != nil {
-		writeError(w, err)
+		api.WriteError(w, err)
 		return
 	}
-	out := make([]subledgerDTO, len(subs))
+	out := make([]api.SubledgerDTO, len(subs))
 	for i, sl := range subs {
-		out[i] = toSubledgerDTO(sl)
+		out[i] = api.ToSubledgerDTO(sl)
 	}
-	writeJSON(w, http.StatusOK, out)
+	api.WriteJSON(w, http.StatusOK, out)
 }
 
-func (s *Server) handleGetSubledger(w http.ResponseWriter, r *http.Request) {
+func (s *surface) handleGetSubledger(w http.ResponseWriter, r *http.Request) {
 	p, ok := s.participant(w, r)
 	if !ok {
 		return
 	}
 	sl, err := p.Ledger.GetSubledger(r.Context(), ledger.SubledgerID(r.PathValue("sid")))
 	if err != nil {
-		writeError(w, err)
+		api.WriteError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, toSubledgerDTO(sl))
+	api.WriteJSON(w, http.StatusOK, api.ToSubledgerDTO(sl))
 }
 
-func (s *Server) handleCreateAccount(w http.ResponseWriter, r *http.Request) {
+func (s *surface) handleCreateAccount(w http.ResponseWriter, r *http.Request) {
 	p, ok := s.participant(w, r)
 	if !ok {
 		return
 	}
-	var req createAccountRequest
-	if err := decodeJSON(r, &req); err != nil {
-		writeBadRequest(w, err.Error())
+	var req api.CreateAccountRequest
+	if err := api.DecodeJSON(r, &req); err != nil {
+		api.WriteBadRequest(w, err.Error())
 		return
 	}
-	acctType, err := accountTypeFromString(req.Type)
+	acctType, err := api.AccountTypeFromString(req.Type)
 	if err != nil {
-		writeBadRequest(w, err.Error())
+		api.WriteBadRequest(w, err.Error())
 		return
 	}
 	if req.Asset == "" {
-		writeBadRequest(w, "asset is required")
+		api.WriteBadRequest(w, "asset is required")
 		return
 	}
 	acct, err := p.Ledger.CreateAccount(r.Context(), ledger.SubledgerID(r.PathValue("sid")), req.Name, acctType, ledger.AssetCode(req.Asset))
 	if err != nil {
-		writeError(w, err)
+		api.WriteError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusCreated, toAccountDTO(acct))
+	api.WriteJSON(w, http.StatusCreated, api.ToAccountDTO(acct))
 }
 
-func (s *Server) handleListAccounts(w http.ResponseWriter, r *http.Request) {
+func (s *surface) handleListAccounts(w http.ResponseWriter, r *http.Request) {
 	p, ok := s.participant(w, r)
 	if !ok {
 		return
 	}
 	accts, err := p.Ledger.ListAccounts(r.Context(), ledger.SubledgerID(r.PathValue("sid")))
 	if err != nil {
-		writeError(w, err)
+		api.WriteError(w, err)
 		return
 	}
-	out := make([]accountDTO, len(accts))
+	out := make([]api.AccountDTO, len(accts))
 	for i, a := range accts {
-		out[i] = toAccountDTO(a)
+		out[i] = api.ToAccountDTO(a)
 	}
-	writeJSON(w, http.StatusOK, out)
+	api.WriteJSON(w, http.StatusOK, out)
 }
 
-func (s *Server) handleGetAccount(w http.ResponseWriter, r *http.Request) {
+func (s *surface) handleGetAccount(w http.ResponseWriter, r *http.Request) {
 	p, ok := s.participant(w, r)
 	if !ok {
 		return
 	}
 	acct, err := p.Ledger.GetAccount(r.Context(), ledger.AccountID(r.PathValue("aid")))
 	if err != nil {
-		writeError(w, err)
+		api.WriteError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, toAccountDTO(acct))
+	api.WriteJSON(w, http.StatusOK, api.ToAccountDTO(acct))
 }
 
-func (s *Server) handleBookBalance(w http.ResponseWriter, r *http.Request) {
+func (s *surface) handleBookBalance(w http.ResponseWriter, r *http.Request) {
 	p, ok := s.participant(w, r)
 	if !ok {
 		return
@@ -196,7 +197,7 @@ func (s *Server) handleBookBalance(w http.ResponseWriter, r *http.Request) {
 	if raw := r.URL.Query().Get("asOf"); raw != "" {
 		parsed, err := time.Parse(time.RFC3339, raw)
 		if err != nil {
-			writeBadRequest(w, "asOf must be an RFC 3339 timestamp")
+			api.WriteBadRequest(w, "asOf must be an RFC 3339 timestamp")
 			return
 		}
 		asOf = parsed
@@ -208,7 +209,7 @@ func (s *Server) handleBookBalance(w http.ResponseWriter, r *http.Request) {
 	// magnitude.
 	acct, err := p.Ledger.GetAccount(r.Context(), aid)
 	if err != nil {
-		writeError(w, err)
+		api.WriteError(w, err)
 		return
 	}
 	// A subsidiary's balance, or the whole account's when none is named. On a
@@ -217,15 +218,15 @@ func (s *Server) handleBookBalance(w http.ResponseWriter, r *http.Request) {
 	pos := aid.For(r.URL.Query().Get("subsidiary"))
 	bal, err := p.Ledger.BookBalance(r.Context(), pos)
 	if err != nil {
-		writeError(w, err)
+		api.WriteError(w, err)
 		return
 	}
 	valueDated, err := p.Ledger.ValueDateBalance(r.Context(), pos, asOf)
 	if err != nil {
-		writeError(w, err)
+		api.WriteError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, accountBalanceDTO{
+	api.WriteJSON(w, http.StatusOK, api.AccountBalanceDTO{
 		AccountID:        string(aid),
 		Subsidiary:       pos.Subsidiary,
 		Asset:            string(acct.Asset),
@@ -240,7 +241,7 @@ func (s *Server) handleBookBalance(w http.ResponseWriter, r *http.Request) {
 // A plain account answers with an empty list rather than a 404 or an error. It
 // pools nobody, so there is no detail under it — and a client rendering an
 // account page should not have to know which kind it is before it asks.
-func (s *Server) handleAccountSubsidiaries(w http.ResponseWriter, r *http.Request) {
+func (s *surface) handleAccountSubsidiaries(w http.ResponseWriter, r *http.Request) {
 	p, ok := s.participant(w, r)
 	if !ok {
 		return
@@ -248,54 +249,54 @@ func (s *Server) handleAccountSubsidiaries(w http.ResponseWriter, r *http.Reques
 	aid := ledger.AccountID(r.PathValue("aid"))
 	acct, err := p.Ledger.GetAccount(r.Context(), aid)
 	if err != nil {
-		writeError(w, err)
+		api.WriteError(w, err)
 		return
 	}
 	rows, err := p.Ledger.SubsidiaryBalances(r.Context(), aid)
 	if err != nil {
-		writeError(w, err)
+		api.WriteError(w, err)
 		return
 	}
-	out := make([]subsidiaryBalanceDTO, len(rows))
+	out := make([]api.SubsidiaryBalanceDTO, len(rows))
 	for i, row := range rows {
-		out[i] = subsidiaryBalanceDTO{
+		out[i] = api.SubsidiaryBalanceDTO{
 			Subsidiary: row.Subsidiary,
 			Asset:      string(acct.Asset),
 			Balance:    int64(row.Balance),
 		}
 	}
-	writeJSON(w, http.StatusOK, out)
+	api.WriteJSON(w, http.StatusOK, out)
 }
 
-func (s *Server) handlePostTransaction(w http.ResponseWriter, r *http.Request) {
+func (s *surface) handlePostTransaction(w http.ResponseWriter, r *http.Request) {
 	p, ok := s.participant(w, r)
 	if !ok {
 		return
 	}
-	var req postTransactionRequest
-	if err := decodeJSON(r, &req); err != nil {
-		writeBadRequest(w, err.Error())
+	var req api.PostTransactionRequest
+	if err := api.DecodeJSON(r, &req); err != nil {
+		api.WriteBadRequest(w, err.Error())
 		return
 	}
-	domainReq, err := req.toDomain()
+	domainReq, err := req.ToDomain()
 	if err != nil {
-		writeBadRequest(w, err.Error())
+		api.WriteBadRequest(w, err.Error())
 		return
 	}
 	tx, err := p.Ledger.PostTransaction(r.Context(), domainReq)
 	if err != nil {
-		writeError(w, err)
+		api.WriteError(w, err)
 		return
 	}
-	assets, err := entryAssets(r.Context(), p.Ledger, []ledger.Transaction{tx})
+	assets, err := api.EntryAssets(r.Context(), p.Ledger, []ledger.Transaction{tx})
 	if err != nil {
-		writeError(w, err)
+		api.WriteError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusCreated, toTransactionDTO(tx, assets))
+	api.WriteJSON(w, http.StatusCreated, api.ToTransactionDTO(tx, assets))
 }
 
-func (s *Server) handleListTransactions(w http.ResponseWriter, r *http.Request) {
+func (s *surface) handleListTransactions(w http.ResponseWriter, r *http.Request) {
 	p, ok := s.participant(w, r)
 	if !ok {
 		return
@@ -313,58 +314,58 @@ func (s *Server) handleListTransactions(w http.ResponseWriter, r *http.Request) 
 		txs, err = p.Ledger.ListTransactions(r.Context())
 	}
 	if err != nil {
-		writeError(w, err)
+		api.WriteError(w, err)
 		return
 	}
-	assets, err := entryAssets(r.Context(), p.Ledger, txs)
+	assets, err := api.EntryAssets(r.Context(), p.Ledger, txs)
 	if err != nil {
-		writeError(w, err)
+		api.WriteError(w, err)
 		return
 	}
-	out := make([]transactionDTO, len(txs))
+	out := make([]api.TransactionDTO, len(txs))
 	for i, tx := range txs {
-		out[i] = toTransactionDTO(tx, assets)
+		out[i] = api.ToTransactionDTO(tx, assets)
 	}
-	writeJSON(w, http.StatusOK, out)
+	api.WriteJSON(w, http.StatusOK, out)
 }
 
-func (s *Server) handleGetTransaction(w http.ResponseWriter, r *http.Request) {
+func (s *surface) handleGetTransaction(w http.ResponseWriter, r *http.Request) {
 	p, ok := s.participant(w, r)
 	if !ok {
 		return
 	}
 	tx, err := p.Ledger.GetTransaction(r.Context(), ledger.TransactionID(r.PathValue("tid")))
 	if err != nil {
-		writeError(w, err)
+		api.WriteError(w, err)
 		return
 	}
-	assets, err := entryAssets(r.Context(), p.Ledger, []ledger.Transaction{tx})
+	assets, err := api.EntryAssets(r.Context(), p.Ledger, []ledger.Transaction{tx})
 	if err != nil {
-		writeError(w, err)
+		api.WriteError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, toTransactionDTO(tx, assets))
+	api.WriteJSON(w, http.StatusOK, api.ToTransactionDTO(tx, assets))
 }
 
-func (s *Server) handleReverseTransaction(w http.ResponseWriter, r *http.Request) {
+func (s *surface) handleReverseTransaction(w http.ResponseWriter, r *http.Request) {
 	p, ok := s.participant(w, r)
 	if !ok {
 		return
 	}
-	var req descriptionRequest
-	if err := decodeJSON(r, &req); err != nil {
-		writeBadRequest(w, err.Error())
+	var req api.DescriptionRequest
+	if err := api.DecodeJSON(r, &req); err != nil {
+		api.WriteBadRequest(w, err.Error())
 		return
 	}
 	tx, err := p.Ledger.ReverseTransaction(r.Context(), ledger.TransactionID(r.PathValue("tid")), req.Description)
 	if err != nil {
-		writeError(w, err)
+		api.WriteError(w, err)
 		return
 	}
-	assets, err := entryAssets(r.Context(), p.Ledger, []ledger.Transaction{tx})
+	assets, err := api.EntryAssets(r.Context(), p.Ledger, []ledger.Transaction{tx})
 	if err != nil {
-		writeError(w, err)
+		api.WriteError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusCreated, toTransactionDTO(tx, assets))
+	api.WriteJSON(w, http.StatusCreated, api.ToTransactionDTO(tx, assets))
 }

@@ -1,8 +1,9 @@
-package api
+package bank
 
 import (
 	"net/http"
 
+	"github.com/raphi011/cbs/api"
 	"github.com/raphi011/cbs/ledger"
 )
 
@@ -19,7 +20,7 @@ import (
 // house has no ledger at all; the settlement agent holds neither of the two
 // accounts aged here and holds its own reserve register rather than a member's
 // claim on it. See payment.Network.ReconcileTx, which refuses both by name.
-func (s *Server) registerReconciliationRoutes(mux *router) {
+func (s *surface) registerReconciliationRoutes(mux *api.Router) {
 	// A POST, and it is the one act among the four. Reconcile appends
 	// reconciliation.run and one reconciliation.break per finding to this bank's
 	// own audit log, in the same unit of work as the read — which is what makes a
@@ -52,7 +53,7 @@ func (s *Server) registerReconciliationRoutes(mux *router) {
 func assetParam(w http.ResponseWriter, r *http.Request) (ledger.AssetCode, bool) {
 	code := r.URL.Query().Get("asset")
 	if code == "" {
-		writeBadRequest(w, "asset is required: a bank holds one reserve and one clearing suspense per asset, and a report over all of them at once would add one money to another")
+		api.WriteBadRequest(w, "asset is required: a bank holds one reserve and one clearing suspense per asset, and a report over all of them at once would add one money to another")
 		return "", false
 	}
 	return ledger.AssetCode(code), true
@@ -67,17 +68,17 @@ func assetParam(w http.ResponseWriter, r *http.Request) (ledger.AssetCode, bool)
 // with how long it has been: a clearing suspense has no closed-form identity from
 // inside one bank, because the mirror leg is netted and names no payment, so it
 // is reported with an age and never as a break.
-func (s *Server) handleReconcile(w http.ResponseWriter, r *http.Request) {
+func (s *surface) handleReconcile(w http.ResponseWriter, r *http.Request) {
 	asset, ok := assetParam(w, r)
 	if !ok {
 		return
 	}
 	rec, err := s.network().Reconcile(r.Context(), asset)
 	if err != nil {
-		writeError(w, err)
+		api.WriteError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, toReconciliationDTO(rec))
+	api.WriteJSON(w, http.StatusOK, api.ToReconciliationDTO(rec))
 }
 
 // handleListSettlementAdvices answers every statement this bank has been sent,
@@ -89,17 +90,17 @@ func (s *Server) handleReconcile(w http.ResponseWriter, r *http.Request) {
 // carries its own asset. A client wanting one asset's statements has the field to
 // filter on; a client wanting all of them cannot assemble the list from a route
 // that demands an asset it does not know the bank operates in.
-func (s *Server) handleListSettlementAdvices(w http.ResponseWriter, r *http.Request) {
+func (s *surface) handleListSettlementAdvices(w http.ResponseWriter, r *http.Request) {
 	advices, err := s.network().ListSettlementAdvices(r.Context())
 	if err != nil {
-		writeError(w, err)
+		api.WriteError(w, err)
 		return
 	}
-	out := make([]settlementAdviceDTO, 0, len(advices))
+	out := make([]api.SettlementAdviceDTO, 0, len(advices))
 	for _, a := range advices {
-		out = append(out, toSettlementAdviceDTO(a))
+		out = append(out, api.ToSettlementAdviceDTO(a))
 	}
-	writeJSON(w, http.StatusOK, out)
+	api.WriteJSON(w, http.StatusOK, out)
 }
 
 // handleAgeClearingSuspense decomposes this bank's clearing suspense by age.
@@ -108,17 +109,17 @@ func (s *Server) handleListSettlementAdvices(w http.ResponseWriter, r *http.Requ
 // what discharges it is a conversation — so no lot here carries a deadline and
 // none is ever overdue, however old it is. What the report gives an operator is
 // the age; what counts as too long is their judgement.
-func (s *Server) handleAgeClearingSuspense(w http.ResponseWriter, r *http.Request) {
+func (s *surface) handleAgeClearingSuspense(w http.ResponseWriter, r *http.Request) {
 	asset, ok := assetParam(w, r)
 	if !ok {
 		return
 	}
 	rep, err := s.network().AgeClearingSuspense(r.Context(), asset)
 	if err != nil {
-		writeError(w, err)
+		api.WriteError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, toAgeingReportDTO(rep))
+	api.WriteJSON(w, http.StatusOK, api.ToAgeingReportDTO(rep))
 }
 
 // handleAgeUnclaimedBalances decomposes this bank's unclaimed balances by age
@@ -130,15 +131,15 @@ func (s *Server) handleAgeClearingSuspense(w http.ResponseWriter, r *http.Reques
 // reason this bank cannot clear it — a pull whose return is the other bank's to
 // send, a refund whose payer has already been sent it back once. See
 // payment.AgeUnclaimedBalances.
-func (s *Server) handleAgeUnclaimedBalances(w http.ResponseWriter, r *http.Request) {
+func (s *surface) handleAgeUnclaimedBalances(w http.ResponseWriter, r *http.Request) {
 	asset, ok := assetParam(w, r)
 	if !ok {
 		return
 	}
 	rep, err := s.network().AgeUnclaimedBalances(r.Context(), asset)
 	if err != nil {
-		writeError(w, err)
+		api.WriteError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, toAgeingReportDTO(rep))
+	api.WriteJSON(w, http.StatusOK, api.ToAgeingReportDTO(rep))
 }

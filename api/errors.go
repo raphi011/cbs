@@ -104,7 +104,7 @@ func errorStatus(err error) int {
 		// It does not reach a settlement route, because there is none: settling is
 		// performed on instruction (mesh.centralBank), so that refusal goes back to
 		// the clearing house as a pacs.002. Nor the reserve routes, which report a
-		// missing account as a missing row (see Server.reserveRows).
+		// missing account as a missing row (see api/centralbank.reserveRows).
 		errors.Is(err, payment.ErrParticipantAssetNotFound),
 		// A bank the settlement agent holds no account for is a bank that has
 		// founded itself and not yet joined — a legitimate state since admission
@@ -122,7 +122,7 @@ func errorStatus(err error) int {
 		// INSTRUCTED, so their refusal leaves as a pacs.002 and never as a status
 		// code. But they are not only reached that way: seed.builder calls
 		// Network.Deposit, SettleReturnTx and SettleCycleTx directly, and
-		// seed.Populate runs inside POST /admin/reset (see Server.Reset), whose
+		// seed.Populate runs inside POST /admin/reset (see api.Deployment.Reset), whose
 		// error is written by this same function — so a seed that could produce
 		// this sentinel would produce a 422 from the reset route too. It cannot,
 		// and that is a property of the seed rather than of the code's shape:
