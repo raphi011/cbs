@@ -255,9 +255,9 @@ func (h *meshHarness) directoryEvents(t *testing.T, bic iso20022.BIC) []ledger.A
 // This is the door decision 11 keeps open, and it is not hypothetical: a card
 // PAN is issued by a scheme elsewhere and quoted, a proxy alias is resolved by a
 // central service this system does not have, and a cross-border transfer's BIC
-// genuinely is the payer's to supply. What changed is the SCOPE of the sentinel —
-// it used to mean "this system has nowhere to get an agent from" and now means
-// "not for this address".
+// genuinely is the payer's to supply. The SCOPE of the sentinel is the narrow
+// one: it means "not for this address", and not "this system has nowhere to get
+// an agent from".
 //
 // The refusal is asserted and the success is not: nothing in this mesh routes a
 // PAN, so an instruction quoting one is refused a step later for a reason that

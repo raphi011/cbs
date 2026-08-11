@@ -1014,7 +1014,7 @@ func TestCreditTransferRequestRefusesAnAccountThatIsNotAnIBAN(t *testing.T) {
 //
 // Resolution is narrowed to the receiving bank's own register, so a third bank
 // holding the same IBAN is invisible — see
-// TestACrossBankCollisionIsNoLongerObservable, which records that loss where the
+// TestACrossBankCollisionTakesADuplicateAllocation, which records that loss where the
 // resolution lives.
 //
 // What survives, and what this provokes now, is the collision a register CAN

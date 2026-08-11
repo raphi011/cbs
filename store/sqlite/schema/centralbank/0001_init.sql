@@ -110,18 +110,17 @@ CREATE TABLE ledgers (
     -- The counter serializes the whole operation, not just the number it hands
     -- out.
     --
-    -- THE COUNTER FOLLOWS THE ROW, and this table is why that ruling had to be
-    -- made before the stores could be split. Every read-then-write ordering in
-    -- this system used to allocate from ledger.NetworkBook — one counter, in
-    -- the one database that held everything — and that book has been deleted.
-    -- The ordering survives here unchanged because opening a settlement account
-    -- is the settlement agent's OWN act: it allocates from id_sequences in this
-    -- database and reads this table in the same database and the same
-    -- transaction. Had the allocation landed anywhere else, nothing would span
-    -- the two — two databases is two transactions, and no retry can make one of
-    -- them see the other, so the guard would have had to become a message.
+    -- THE COUNTER FOLLOWS THE ROW, and this table is why that rule has to hold
+    -- for a store split to be possible at all. The ordering works here because
+    -- opening a settlement account is the settlement agent's OWN act: it
+    -- allocates from id_sequences in this database and reads this table in the
+    -- same database and the same transaction. A counter every institution shared
+    -- would put the allocation somewhere else, and nothing would span the two —
+    -- two databases is two transactions, no retry can make one of them see the
+    -- other, and the guard would have to become a message.
     --
-    -- What that ordering is worth is measured, and it is less than it was. With
+    -- What that ordering is worth on SQLite is measured, and it is less than the
+    -- rule above implies. With
     -- payment.admissionSequenceTx made to return nil, the concurrent-admissions
     -- race passes ten runs out of ten, on the ephemeral store and on a WAL file
     -- alike: SQLite admits one writer, so a loser is refused at its first write
@@ -500,15 +499,13 @@ CREATE TABLE settlements (
 CREATE TABLE settlement_positions (
     -- What each member owed or was owed at this cut-off, one row apiece.
     --
-    -- THIS IS THE CENTRAL BANK'S ROW AND A BANK HAS NO COPY OF IT. That was an
-    -- open question when the split was planned, because the design's paragraph
-    -- on the bank shape says a bank holds "a settlement-position row per cycle"
-    -- and this table is a child of settlements, which is plainly this
-    -- institution's. It was settled by asking what reads it: every reader is
-    -- this institution's or the operator console's, and nothing in mesh/bank.go
-    -- names a position at all. What a bank holds is a settlement_advices row —
-    -- its own record of the movement it was told about — and that is what the
-    -- design's sentence meant.
+    -- THIS IS THE CENTRAL BANK'S ROW AND A BANK HAS NO COPY OF IT. The question
+    -- looks open — this table is a child of settlements, plainly this
+    -- institution's, and a bank plausibly wants a settlement-position row per
+    -- cycle — and what settles it is asking what reads one: every reader is this
+    -- institution's or the operator console's, and nothing in mesh/bank.go names
+    -- a position at all. What a bank holds is a settlement_advices row, its own
+    -- record of the movement it was told about.
     --
     -- The member is named by BIC, which is what settlement_members is keyed on
     -- and the only identifier this institution is ever told. A bank id would be

@@ -3210,7 +3210,7 @@ func TestResolveIdentifierNotFound(t *testing.T) {
 	}
 }
 
-// TestACrossBankCollisionIsNoLongerObservable records a guarantee this system
+// TestACrossBankCollisionTakesADuplicateAllocation records a guarantee this system
 // does not have, which is why it is a test rather than a deletion.
 //
 // Uniqueness is enforced per bank, which is the widest scope a register can see,
@@ -3228,11 +3228,10 @@ func TestResolveIdentifierNotFound(t *testing.T) {
 // is why neither register can see it and why the instrument that catches it has
 // to open every institution's database at once.
 //
-// So the collision has moved rather than gone. What used to require nothing at
-// all now requires a duplicate allocation, and nothing here refuses one — this
-// network has no registry of who issued what. The within-bank half below is
+// So the collision takes a DUPLICATE ALLOCATION and nothing less, and nothing
+// here refuses one — this network has no registry of who issued what. The within-bank half below is
 // what a register can police, and it is all it can police.
-func TestACrossBankCollisionIsNoLongerObservable(t *testing.T) {
+func TestACrossBankCollisionTakesADuplicateAllocation(t *testing.T) {
 	ctx := context.Background()
 	net := testNetwork(t)
 	aurora := addParticipant(t, ctx, net, "Aurora Bank", auroraBIC)

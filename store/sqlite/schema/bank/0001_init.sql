@@ -124,10 +124,6 @@ CREATE TABLE ledgers (
     -- So a constraint asserting that a name is an identity would refuse a write
     -- the domain has already decided to allow.
     --
-    -- This used to be argued as a divergence — a constraint one store could hold
-    -- and a Go map could not — and that reading expired with the second store.
-    -- What is left is the reason underneath it, which never needed one.
-    --
     -- What is NOT the reason, in this shape, is a race. Nothing in a bank's book
     -- is resolved by find-or-create on a name: a bank's chart of accounts is
     -- built once, by payment.FoundBankTx, in the act that creates the bank, and
@@ -186,17 +182,11 @@ CREATE TABLE subledgers (
     -- constraint fires first, and it fires as a foreign-key violation where the
     -- domain would have said ErrLedgerNotFound.
     --
-    -- This one used to be a composite FK, and while there were two stores what
-    -- it cost was visible as a disagreement:
-    --
-    --   PutSubledger{ID: "100", LedgerID: "ldg_nope"}
-    --     store/mem = nil
-    --     store/pg  = a foreign-key violation
-    --
-    -- and this store, with foreign_keys on in the DSN, answers as store/pg did.
-    -- There is no second store to disagree with now, so what keeps the FK out is
-    -- the rule above and storetest/ParentReferencesAreNotEnforced, which writes
-    -- a dangling LedgerID and requires the store to take it.
+    -- A composite FK here would be enforced, foreign_keys being on in the DSN:
+    -- PutSubledger{ID: "100", LedgerID: "ldg_nope"} would answer a foreign-key
+    -- violation where the store's contract says it takes the row. What keeps it
+    -- out is the rule above and storetest/ParentReferencesAreNotEnforced, which
+    -- writes exactly that dangling LedgerID and requires the store to take it.
     --
     -- The child-table FKs are a different case and stay: the store writes both
     -- sides of those itself, within one statement sequence, so there is no
@@ -259,18 +249,11 @@ CREATE TABLE accounts (
     -- which is a one-line change to a Go slice, a MIGRATION: the set would live
     -- in two places, and the database's copy would be the one that decided.
     --
-    -- The first reason used to be argued the other way round — a SQL store could
-    -- express the rule and a Go map could not, so neither did, because two
-    -- implementations accepting and refusing different writes was the one thing
-    -- store/storetest existed to forbid. That argument had a second store inside
-    -- it and expired with it. The second never mentioned one, which is why it is
-    -- the one left standing.
-    --
-    -- What holds the decision is still a test: ParentReferencesAreNotEnforced in
+    -- What holds the decision is a test: ParentReferencesAreNotEnforced in
     -- store/storetest/storetest.go writes accounts with no asset set at all, so
-    -- a CHECK added here fails it. An earlier composite FK on
-    -- subledgers (book_id, ledger_id) broke that same subtest and was removed for
-    -- the same reason.
+    -- a CHECK added here fails it. A composite FK on subledgers
+    -- (book_id, ledger_id) breaks that same subtest, and is absent for the same
+    -- reason.
     asset        TEXT NOT NULL,
     -- Whether this account pools subsidiaries: one chart-of-accounts line standing
     -- for many customers, with entries.subsidiary_id saying which. Fixed at
@@ -656,17 +639,17 @@ CREATE TABLE overdraft_terms (
     -- A second row for the SAME effective day does replace the first — the day
     -- is part of the primary key below, and day_key's comment says why.
     --
-    -- These four values used to be mutable columns on deposit_accounts, and that
-    -- is the one place this schema broke its own rule. Every financial
-    -- calculation here is a function of account state, event history and
-    -- configuration; the first two are immutable and replayable, and a
-    -- configuration that could be edited in place undermined that entirely,
-    -- because "what did this account's product say on 15 July 2027?" had no
-    -- stable answer. It also bounded the interest recompute window at the last
-    -- repricing: a repricing closed the old window out and opened a new one at
-    -- itself, so a backdated posting landing behind it was trued up only from
-    -- the repricing forward, and the days between where it took effect and the
-    -- repricing kept the interest computed without it, permanently.
+    -- Mutable columns on deposit_accounts are the arrangement this replaces, and
+    -- they break this schema's own rule. Every financial calculation here is a
+    -- function of account state, event history and configuration; the first two
+    -- are immutable and replayable, and a configuration that can be edited in
+    -- place undermines that entirely, because "what did this account's product
+    -- say on 15 July 2027?" then has no stable answer. It also bounds the
+    -- interest recompute window at the last repricing: a repricing closes the old
+    -- window out and opens a new one at itself, so a backdated posting landing
+    -- behind it is trued up only from the repricing forward, and the days between
+    -- where it took effect and the repricing keep the interest computed without
+    -- it, permanently.
     --
     -- These are PER-INSTANCE terms: one timeline per account, not a catalogue
     -- shared across them. There is no product/product_version table, no content
@@ -792,12 +775,9 @@ CREATE TABLE product_versions (
     -- The primary key is (book_id, product_id, day_key), which is where the
     -- book's non-overlapping-interval exclusion constraint went. Keying by DAY
     -- makes "the version in force on D" unique by construction, so there is no
-    -- interval to exclude. That decision was originally defended by saying a Go
-    -- map could hold the same rule where a range type and an exclusion
-    -- constraint could not; the reason has got stronger rather than weaker,
-    -- because SQLite has no range exclusion either, so it is no longer "one
-    -- backend could not" but "no backend can". It is the discipline
-    -- overdraft_terms and snapshots already follow.
+    -- interval to exclude at all. SQLite has no range exclusion to reach for
+    -- either, so this is not "one backend cannot express the rule" but "no
+    -- backend can". It is the discipline overdraft_terms and snapshots follow.
     book_id         TEXT NOT NULL REFERENCES books (id) ON DELETE CASCADE,
     product_id      TEXT NOT NULL,
     day_key         TEXT NOT NULL,
@@ -1243,10 +1223,10 @@ CREATE TABLE bank_assets (
     -- in.
     --
     -- These rows are written when the bank is FOUNDED, and the set is never
-    -- extended afterwards. That is the reason the asset registry which used to
-    -- sit beside this table is gone: an asset the bank was not founded in has no
-    -- row here at all, so registering one afterwards produced customer accounts
-    -- that could never settle. What a bank operates in is these rows; what an
+    -- extended afterwards. That is why there is no asset registry beside this
+    -- table: an asset the bank was not founded in has no row here at all, so
+    -- registering one afterwards produces customer accounts that can never
+    -- settle. What a bank operates in is these rows; what an
     -- asset *is* is code.
     --
     -- Only one column arrives later. Every account named here but settlement is
@@ -1317,15 +1297,15 @@ CREATE TABLE bank_assets (
     -- number — a customer knows their IBAN without holding the bank's ledger —
     -- and it is not the record a settlement agent reads: that one is
     -- settlement_members, in the central bank's own database, which nothing in
-    -- this shape can reach — so the two copies are no longer a duplication one
-    -- reader could resolve by picking the other, which is what they were while
-    -- both tables sat in one file. What quotes this one is a
-    -- LODGEMENT, which is the account holder asking for a credit to its own
-    -- account and is the honest reader to leave behind. Taking a DEPOSIT used to
-    -- quote it too and no longer does — cash in reaches vault_cash and no
-    -- institution but this one — so the readers left here are the two acts that
-    -- genuinely address the central bank: asking it for a reserve credit, and
-    -- checking that an arriving statement is about the account this bank holds.
+    -- this shape can reach. Two tables in one file would make the copies a
+    -- duplication a reader could resolve by picking either; here there is one
+    -- reachable copy per institution and each is that institution's own. What
+    -- quotes this one is a LODGEMENT, the account holder asking for a credit to
+    -- its own account. Taking a DEPOSIT does NOT quote it — cash in reaches
+    -- vault_cash and no institution but this one — so the readers here are the
+    -- two acts that genuinely address the central bank: asking it for a reserve
+    -- credit, and checking that an arriving statement is about the account this
+    -- bank holds.
     settlement         TEXT NOT NULL,
     seq                INTEGER NOT NULL,
     PRIMARY KEY (bank_id, asset)
@@ -1453,11 +1433,11 @@ CREATE TABLE mandates (
     -- What max_amount is denominated in, and the CREDITOR's account's asset
     -- because this row is the creditor's bank's.
     --
-    -- Stored rather than joined, and the join it replaces is the argument. It
-    -- used to be read at display time off the DEBTOR's deposit account, which
-    -- is a row in another bank's book: no table here can reach it once each
-    -- institution keeps its own database, and even within one bank a later read
-    -- reports today's asset for an authorisation granted under a different one.
+    -- Stored rather than joined, and the join it replaces is the argument.
+    -- Reading it at display time off the DEBTOR's deposit account reaches a row
+    -- in another bank's book, which no table here can do; and even within one
+    -- bank a later read reports today's asset for an authorisation granted under
+    -- a different one.
     -- Same stance as payments.debtor_name and the four identifier columns above
     -- — a row records what it was granted with.
     --
@@ -1515,13 +1495,11 @@ CREATE TABLE payments (
     -- why payment.PartyRef carries no Participant field.
     --
     -- One consequence is worth naming rather than discovering: a WRONG
-    -- counterparty agent and a wrong counterparty are no longer distinguishable,
-    -- because there is one value to be wrong. That does not weaken anything —
-    -- the payment is still delivered to the bank the instruction names, which
-    -- resolves the address in its own register and answers AC01 — but
-    -- mesh/books_test.go's TestAWrongCounterpartyAgentIsRefusedByTheBankItNames
-    -- is about a disagreement between the two, and there is no longer one to
-    -- construct.
+    -- counterparty agent and a wrong counterparty are the same defect, there
+    -- being one value to be wrong. That weakens nothing — the payment is
+    -- delivered to the bank the instruction names, which resolves the address in
+    -- its own register and answers AC01 — but a test wanting the two to DISAGREE
+    -- has nothing to construct.
     --
     -- The primary key is the payment id alone and not (book_id, id), unlike
     -- every ledger table above. A payment id is minted by the bank that submits
@@ -1699,13 +1677,11 @@ CREATE TABLE payments (
     -- been posted has no transaction, and an absent id and an empty one are the
     -- same fact.
     --
-    -- Still no foreign key to transactions, and the reason has had to change.
-    -- It used to be that the two ids were in DIFFERENT BOOKS, so a constraint
-    -- across them could not be written at all. The id this bank fills in now IS
-    -- a transaction in this bank's own book in this same database, so the
-    -- constraint has become writable — and it stays out for the reason the agent
-    -- columns give, which never depended on the other one: this row records what
-    -- WAS done, not a view onto the ledger as it stands now.
+    -- No foreign key to transactions, and it is a decision rather than an
+    -- impossibility: the id this bank fills in IS a transaction in this bank's
+    -- own book in this same database, so the constraint is writable. It stays out
+    -- for the reason the agent columns give — this row records what WAS done, not
+    -- a view onto the ledger as it stands now.
     return_refund_tx           TEXT NOT NULL DEFAULT '',
     seq                        INTEGER NOT NULL
 ) STRICT;
@@ -1866,10 +1842,9 @@ CREATE TABLE audit_events (
     --
     -- seq is a total order over the WHOLE store, not per book and not per scope,
     -- which is what makes AuditFilter.Before a global cursor that every other
-    -- predicate is applied alongside. "The whole store" is now one
-    -- institution's, so the cursor no longer interleaves three institutions'
-    -- events and a page of it is one actor's history rather than a slice
-    -- through everybody's.
+    -- predicate is applied alongside. "The whole store" is one institution's, so
+    -- the cursor interleaves nobody else's events and a page of it is one
+    -- actor's history rather than a slice through everybody's.
     --
     -- It has no foreign key to books: an audit event must be appendable whatever
     -- else is or is not in the database, and a log that can be blocked by a

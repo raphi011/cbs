@@ -945,16 +945,15 @@ func settlementOfCycle(t *testing.T, h *Server, cid string) string {
 // It is worth a test of its own because nothing else would notice: a console
 // addresses a path built from a STRING, so deleting a route leaves every compiler
 // and linter on both sides of the wire perfectly happy and the screen 404ing at
-// runtime. A status code asserted here is what makes a deletion a decision rather
-// than an accident, on the surface that used to serve it and on the two that
-// never did.
+// runtime. A status code asserted here is what makes an absent route a decision
+// rather than an accident, on the surface a reader would look for it on and on
+// the two that never had it.
 //
-// It was TestSettlementIsNoLongerAnHTTPAction, and the rename is the finding.
-// There IS a POST that leads to a settlement again — POST /cycles/{cid}/settle
-// on the clearing house, which re-sends the pacs.009 for a cycle the central
-// bank refused, because without it a refusal was terminal. What is still true,
-// and is the whole claim, is that no HTTP handler SETTLES: that route moves
-// nothing and instructs the one institution that may.
+// The claim is NOT that no POST leads to a settlement. One does — POST
+// /cycles/{cid}/settle on the clearing house, which re-sends the pacs.009 for a
+// cycle the central bank refused, because without it a refusal is terminal. The
+// claim is that no HTTP handler SETTLES: that route moves nothing and instructs
+// the one institution that may.
 func TestNoRouteSettlesACycle(t *testing.T) {
 	h := newServer(t, nil)
 	cid := settledCycle(t, h)
@@ -3224,7 +3223,7 @@ func TestAddAndRemoveIdentifierEndpoints(t *testing.T) {
 // cannot see across banks and the sweep refused rather than picking. The sweep
 // is gone (payment.ResolveIdentifier), so each bank now answers about its own
 // and neither can see the other's — see
-// payment's TestACrossBankCollisionIsNoLongerObservable, which records that loss.
+// payment's TestACrossBankCollisionTakesADuplicateAllocation, which records that loss.
 //
 // What still reaches 409 is the collision a register CAN see: two accounts at
 // ONE bank. It arises from a race between two AddIdentifier calls that both read

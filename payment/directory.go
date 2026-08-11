@@ -146,9 +146,8 @@ func (s *Network) ListDirectory(ctx context.Context) ([]DirectoryEntry, error) {
 // A scheme with no directory here — a card PAN, a proxy alias, an address in a
 // country this system issues none in — falls back to the BIC the instruction
 // asserted, and refuses with ErrCounterpartyAgentNotNamed if there is none. That
-// sentinel used to mean "this system has nowhere to get an agent from"; it now
-// means "not for THIS address", which is a much narrower claim and the one a real
-// scheme makes. Proxy aliases are resolved by a separate central service in the
+// sentinel means "not for THIS address" and not "this system has nowhere to get
+// an agent from" — a much narrower claim, and the one a real scheme makes. Proxy aliases are resolved by a separate central service in the
 // real world (the EPC's Proxy Lookup Service, UPI) precisely because no bank can
 // guarantee they are unique, and this system has no such service.
 func (s *Network) routeTx(ctx context.Context, tx Tx, ident deposit.Identifier, asserted iso20022.BIC) (iso20022.BIC, error) {

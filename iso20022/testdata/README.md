@@ -60,12 +60,13 @@ using the file names the test expects:
     testdata/xsd/camt.050.001.05.xsd
     testdata/xsd/camt.025.001.05.xsd
 
-The list above must match the `files` map in `xmllint_test.go`, and it did not:
-`camt.053.001.08.xsd` was missing here from the day the statement landed, so
-anybody following these instructions downloaded six schemas for seven checks.
-Under `ISO20022_REQUIRE_SCHEMAS` that is a failure rather than a silent skip,
-which is the whole reason that switch exists — but the instructions were still
-wrong. **A message added to that map is a line added here.**
+The list above must match the `files` map in `xmllint_test.go` exactly, and
+nothing checks that it does. A schema named in the map and missing here sends
+anybody following these instructions away with fewer files than there are checks;
+under `ISO20022_REQUIRE_SCHEMAS` the missing one is a failure rather than a silent
+skip, which is the whole reason that switch exists, but the failure names the
+schema and not the instructions that omitted it. **A message added to that map is
+a line added here.**
 
 The directory is not committed: the schemas are redistributed under ISO's terms
 and are not this repository's to vendor. The test skips when they are absent, and
@@ -92,9 +93,8 @@ them in `camt053.go` and therefore in **every camt.053 this system had ever
 emitted**. `AddtlNtryInf` was in the wrong position — it is the last element of
 `ReportEntry10`, and the struct emitted it six elements early, under a comment
 saying the field order was the schema's — and `BkTxCd`, the one child of an entry
-the schema makes mandatory, was missing entirely. Both shipped with Task 15 and
-survived a per-task review, a documentation sweep and a whole-branch review with
-probes.
+the schema makes mandatory, was missing entirely. Both survived a per-change
+review, a documentation sweep and a whole-branch review with probes.
 
 Nothing in the repository could have caught either. That is the argument for
 this file, made by the thing it warns about: `ISO20022_REQUIRE_SCHEMAS` exists so
@@ -129,9 +129,8 @@ passes a value whose check digits are wrong, which is what lets a receiver read
 a mistyped address before refusing it.
 
 `pacs009.xml` uses a different, narrower cast, because it is not a customer
-message: both parties are financial institutions, and one of them is the
-central bank sub-project 7a introduced as an actor with nothing it could
-receive until this message existed.
+message: both parties are financial institutions, and one of them is the central
+bank, which is an actor in this system with exactly one thing addressed to it.
 
 | Entity | BIC |
 | --- | --- |

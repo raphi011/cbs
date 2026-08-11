@@ -5,14 +5,13 @@
 -- accounts, no transactions, no entries, no deposit register, no products, no
 -- lending. It holds no money and posts nothing, so it has nowhere to post.
 --
--- That was true before this file existed and it was invisible. One database
--- held every table, every institution's payment.Network reached all of them,
--- and the only thing asserting that the clearing house stayed out of the books
--- was a test — TestTheCSMTouchesOnlyTheNetworkBook, one measurement in
--- mesh/books_test.go, which would have gone on passing if the assertion had
--- been deleted. Now it is a fact about the schema: a statement naming accounts
--- in this database is not a policy violation, it is a syntax error against a
--- table that does not exist.
+-- One database holding every table makes that claim invisible: every
+-- institution's payment.Network reaches every book, and the only thing asserting
+-- that the clearing house stays out of them is a measurement in
+-- mesh/books_test.go, which goes on passing if the assertion is deleted. Here it
+-- is a fact about the schema — a statement naming accounts in this database is
+-- not a policy violation, it is a syntax error against a table that does not
+-- exist.
 --
 -- WHAT IT DOES HOLD is a routing table and a batch. roster_entries says who is
 -- a member and in which assets, which is what lets it refuse to clear for
@@ -60,13 +59,13 @@ CREATE TABLE roster_entries (
     -- no product, no book. A clearing house holding one would be holding the
     -- means to reach into a bank's ledger, and under one shared store nothing
     -- but a test would notice it doing so. That is not hypothetical: the row
-    -- this table replaced carried the central bank's account ids, and four
+    -- this table replaces carried the central bank's account ids, and four
     -- readers in three institutions resolved their postings through it.
     --
-    -- What has changed since that argument was written is that it is no longer
-    -- the argument doing the work. An account id here would name an account in
-    -- a database this institution cannot open. The rule and its enforcement have
-    -- stopped being the same sentence, which is what the split was for.
+    -- It is not that argument doing the work here, though. An account id in this
+    -- table would name an account in a database this institution cannot open, so
+    -- the rule and its enforcement are two different things — which is what the
+    -- split was for.
     --
     -- Keyed by BIC, and it is the only key this institution has. A clearing
     -- house routes what a message addresses, and a message addresses a BIC.
@@ -82,17 +81,14 @@ CREATE TABLE roster_entries (
     -- here is answered ErrBICAlreadyAdmitted rather than extending the entry,
     -- unless it quotes the same admission_ref. See that column.
     --
-    -- It carries no NAME either, and that is the newer half of the same
-    -- principle. The row had one until the message that writes it was read:
-    -- AccountRequestAcknowledgementV03 identifies the account owner with an
-    -- OrganisationIdentification29 — a BIC, an LEI, generic identifiers — and
-    -- has no legal name, country or address anywhere on it. So a name here could
-    -- only be filled by the clearing house remembering the application across
-    -- the relay, and nothing read it: every reader of this row in mesh takes the
-    -- BIC and touches nothing else, and the operator console lists banks from
-    -- their own rows. A member's legal name lives where a message delivered
-    -- one — on the bank's row, and on settlement_members, which is told it by the
-    -- application and names the reserve account after it.
+    -- It carries no NAME either, and that is the same principle one step on.
+    -- What writes this row identifies the account owner by BIC and delivers no
+    -- legal name, so a name here could only be the clearing house remembering
+    -- something nobody told it — and nothing would read it: every reader of this
+    -- row in mesh takes the BIC and touches nothing else, and the operator
+    -- console lists banks from their own rows. A member's legal name lives where
+    -- it was actually given: on the bank's row, and on settlement_members, which
+    -- is told it by the application and names the reserve account after it.
     bic           TEXT PRIMARY KEY,
     -- The allocation this member issues its customers' addresses under, learned
     -- from the same acknowledgement that writes this row and published to every
@@ -196,12 +192,9 @@ CREATE TABLE roster_entry_assets (
     -- cycle_payments made for ClearingCycle.PaymentIDs and is made here for the
     -- same two reasons. RosterEntry.Assets is an ordered slice, so the position
     -- is data rather than a surrogate; and a slice can repeat a value, so a key
-    -- on (bic, asset) would REFUSE a row the Go type can hold. This table had
-    -- that key, and while there were two stores it showed up as one refusing
-    -- what the other stored — which is how it was found. What makes it wrong now
-    -- is the same fact without the comparison: a store's contract is with the
-    -- TYPE it is handed. storetest's RosterEntryAssetsAreAnOrderedList is what
-    -- holds it to that.
+    -- on (bic, asset) would REFUSE a row the Go type can hold, and a store's
+    -- contract is with the TYPE it is handed. storetest's
+    -- RosterEntryAssetsAreAnOrderedList is what holds it to that.
     --
     -- What this constraint is NOT about is any writer's behaviour. The one writer
     -- there is, payment's AdmitMemberTx, cannot produce a repeat from either end:
@@ -442,10 +435,10 @@ CREATE TABLE audit_events (
     -- are written against ledger.BookID in all three shapes, and this
     -- institution answers for exactly one value of it — the clearing house's own
     -- — which store/sqlite is opened with and refuses to see any other value of
-    -- (sqlite.ErrNotThisStoresBook). It used to be ledger.NetworkBook, a
-    -- sentinel meaning "belongs to no single bank", and there is no network left
-    -- for anything to belong to: the rows here belong to this institution, the
-    -- way a bank's belong to it.
+    -- (sqlite.ErrNotThisStoresBook). A sentinel meaning "belongs to no single
+    -- bank" is what the value would otherwise be, and there is no network for
+    -- anything to belong to: the rows here belong to this institution, the way a
+    -- bank's belong to it.
     --
     -- It has no foreign key to books, which in the other two schemas is a
     -- decision — a log that can be blocked by a constraint is not a log — and

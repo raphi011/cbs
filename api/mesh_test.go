@@ -202,13 +202,12 @@ var testMeshConfig = mesh.Config{
 // seededParty is the participant and account behind one of the seed's IBANs.
 //
 // The ids are not written down. Every id in a book comes from one counter, so an
-// act that allocates one more than it used to moves every id after it — and the
-// seed builds the same things in the same order only for as long as nobody adds
-// an act.
+// act that allocates one more id moves every id after it — and the seed builds
+// the same things in the same order only for as long as nobody adds an act.
 //
 // An IBAN is the seed's own stable name for a customer and is what these tests
-// ask by. It is stable for a reason that will outlast this task: the seed CHOSE
-// it, where an id is whatever the counter had reached.
+// ask by. It is stable for a durable reason: the seed CHOSE it, where an id is
+// whatever the counter had reached.
 //
 // It SWEEPS, and it has to do the sweeping itself: no bank can answer "whose
 // IBAN is this" (payment.ResolveIdentifier), so this helper asks each bank about
