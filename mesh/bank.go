@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
 
 	"github.com/raphi011/cbs/iso20022"
 	"github.com/raphi011/cbs/ledger"
@@ -153,10 +152,6 @@ func (b *bank) handle(ctx context.Context, from iso20022.BIC, raw []byte) error 
 		return b.receiveStatement(ctx, from, doc)
 	case *iso20022.Camt025:
 		return b.receiveLodgementReceipt(from, doc)
-	case *iso20022.Acmt010:
-		return b.receiveAdmission(ctx, from, doc)
-	case *iso20022.Acmt011:
-		return b.receiveAdmissionRejection(from, doc)
 	default:
 		return fmt.Errorf("mesh: %s has no handler for %s", b.bic, env.AppHdr.MsgDefIdr)
 	}
@@ -775,78 +770,6 @@ func (b *bank) receiveStatement(ctx context.Context, from iso20022.BIC, doc *iso
 	if _, err := b.ops.PostSettlementAdvice(ctx, moves[0]); err != nil {
 		return fmt.Errorf("mesh: %s could not book the settlement of %s: %w", b.bic, moves[0].Reference, err)
 	}
-	return nil
-}
-
-// receiveAdmission is the joining bank learning that it is a member, and writing
-// down the settlement account numbers it has just been told.
-//
-// It is the last hop of the only flow in this system that BRINGS AN ACTOR INTO
-// EXISTENCE, and the only one whose first message was sent by a party nothing
-// could address a moment earlier. Mesh.Admit founded this bank, registered it
-// and sent the acmt.007; everything since has happened at two other institutions.
-//
-// # It answers nothing, and that is receiveStatement's reason again
-//
-// An acknowledgement is not an instruction: the account has been opened and the
-// routing entry written before this message exists, so a bank answering "no"
-// would be refusing something that has happened. A failure is an ERROR, which
-// this transport turns into a dead letter, and the state it leaves is a real
-// one rather than a corruption — a bank the scheme has admitted that has not
-// recorded its own membership, which is what an operator re-drives.
-//
-// # The settlement account numbers arrive HERE and nowhere else
-//
-// They are the central bank's own account ids, and this is the account holder's
-// note of them — the way a customer knows their IBAN without holding the bank's
-// ledger. payment.DepositTx is what reads them back, and that read is legitimate
-// for exactly this reason. See payment.RecordMembershipTx.
-//
-// # Which bank it is, is this actor's own identity and not the message's
-//
-// This actor's own payment.Network, as everywhere else in this type. That says
-// which member is recording; it says nothing about which member the MESSAGE
-// names, so the domain still checks that the address on the acknowledgement is
-// this bank's own (payment.ErrNotThisBanksAdmission) — ErrStatementNotForThisBank's
-// argument one flow over.
-//
-// A SECOND acknowledgement of one admission is ordinary rather than exceptional:
-// one acmt.007 asks for one currency, so a bank joining in two assets is
-// answered twice and the second answer is what tells it its second settlement
-// account. The domain records or extends and refuses neither.
-func (b *bank) receiveAdmission(ctx context.Context, from iso20022.BIC, doc *iso20022.Acmt010) error {
-	ack, err := payment.ReadAdmissionAcknowledgement(doc)
-	if err != nil {
-		return fmt.Errorf("mesh: %s could not read the admission acknowledgement %s sent it: %w", b.bic, from, err)
-	}
-	if _, err := b.ops.RecordMembership(ctx, ack); err != nil {
-		return fmt.Errorf("mesh: %s could not record its own admission: %w", b.bic, err)
-	}
-	return nil
-}
-
-// receiveAdmissionRejection is the joining bank being told its application was
-// refused.
-//
-// There is nothing to write. The bank stays Founded — which is a working bank
-// that can open customer accounts and take cash in, and cannot lodge it — and that is already what
-// it is, because nothing about a bank changes when it applies. The
-// state an operator re-drives is exactly the state this message leaves.
-//
-// So the refusal is LOGGED and nothing else, for the reason
-// receiveReturnStatus logs a refused return's code: the reason is the one thing
-// that arrives on the wire and is nowhere in the store. It is prose rather than
-// a code, because References6 makes RjctnRsn a Max350Text and an
-// account-management refusal is free text where a payment rejection is a code
-// set (see iso20022.AccountRejectionReferences).
-//
-// It is emphatically not a dead letter. A dead letter is for what nobody could
-// be told, and this bank has been told.
-func (b *bank) receiveAdmissionRejection(from iso20022.BIC, doc *iso20022.Acmt011) error {
-	b.m.log.Error("mesh: admission refused",
-		"bank", b.bic, "from", from,
-		"admission", doc.AcctReqRjctn.Refs.PrcId.Id,
-		"reason", strings.Join(doc.AcctReqRjctn.Refs.RjctnRsn, "; "))
 	return nil
 }
 

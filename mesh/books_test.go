@@ -28,7 +28,6 @@ import (
 	"github.com/raphi011/cbs/payment"
 	"github.com/raphi011/cbs/product"
 	"github.com/raphi011/cbs/store/sqlite"
-	"github.com/raphi011/cbs/store/storetest"
 	"github.com/raphi011/cbs/store/testenv"
 )
 
@@ -77,6 +76,15 @@ type recordingStores struct {
 	// right default: attributing it to an institution would put work no actor did
 	// into that actor's ledger of crossings.
 	byActor map[iso20022.BIC]map[ledger.BookID]bool
+	// units is one entry per WRITING unit of work opened since the last reset,
+	// each holding the books that unit reached.
+	//
+	// It answers the question no set-of-actors can: whether a single Update
+	// touched two books. That is the claim the N+2 split rests on — two entities
+	// with a database each cannot commit as one — and it needs no actor identity
+	// at all, which is what makes it askable of work no actor did. See
+	// bookNoter, and TestWhichBooksProvisioningReaches.
+	units []map[ledger.BookID]bool
 	// updates counts the WRITING units of work opened since the last reset.
 	//
 	// It is what lets a test say "both books moved together" rather than "both
@@ -134,17 +142,19 @@ type recordingStore struct {
 }
 
 func (s *recordingStore) Update(ctx context.Context, fn func(context.Context, payment.Tx) error) error {
+	unit := map[ledger.BookID]bool{}
 	s.rec.mu.Lock()
 	s.rec.updates++
+	s.rec.units = append(s.rec.units, unit)
 	s.rec.mu.Unlock()
 	return s.inner.Update(ctx, func(ctx context.Context, tx payment.Tx) error {
-		return fn(ctx, &recordingTx{Tx: tx, rec: s.rec.noterFor(ctx)})
+		return fn(ctx, &recordingTx{Tx: tx, rec: s.rec.noterFor(ctx, unit)})
 	})
 }
 
 func (s *recordingStore) View(ctx context.Context, fn func(context.Context, payment.Tx) error) error {
 	return s.inner.View(ctx, func(ctx context.Context, tx payment.Tx) error {
-		return fn(ctx, &recordingTx{Tx: tx, rec: s.rec.noterFor(ctx)})
+		return fn(ctx, &recordingTx{Tx: tx, rec: s.rec.noterFor(ctx, nil)})
 	})
 }
 
@@ -162,15 +172,19 @@ func (s *recordingStore) Close() error                    { return s.inner.Close
 type bookNoter struct {
 	store *recordingStores
 	actor iso20022.BIC
+	// unit is the set this unit of work's own books go into, or nil for a View.
+	// A read crosses nothing that has to commit, so only writes are units here.
+	unit map[ledger.BookID]bool
 }
 
-func (n bookNoter) note(book ledger.BookID) { n.store.note(n.actor, book) }
+func (n bookNoter) note(book ledger.BookID) { n.store.note(n.actor, n.unit, book) }
 
 // noterFor reads the acting institution off the context the unit of work was
-// opened with.
-func (s *recordingStores) noterFor(ctx context.Context) bookNoter {
+// opened with. A unit of work opened by nobody in particular has no actor, and
+// its books still land in the whole-store set and in its own unit.
+func (s *recordingStores) noterFor(ctx context.Context, unit map[ledger.BookID]bool) bookNoter {
 	who, _ := wire.ActorOf(ctx)
-	return bookNoter{store: s, actor: who}
+	return bookNoter{store: s, actor: who, unit: unit}
 }
 
 // note records one book access, against the whole store and against the actor
@@ -182,9 +196,12 @@ func (s *recordingStores) noterFor(ctx context.Context) bookNoter {
 // handler that read another bank's book and then failed still read it, and a
 // recorder that forgot such a read on rollback would hide exactly the crossings
 // that go wrong.
-func (s *recordingStores) note(actor iso20022.BIC, book ledger.BookID) {
+func (s *recordingStores) note(actor iso20022.BIC, unit map[ledger.BookID]bool, book ledger.BookID) {
 	s.mu.Lock()
 	s.books[book] = true
+	if unit != nil {
+		unit[book] = true
+	}
 	if actor != "" {
 		if s.byActor[actor] == nil {
 			s.byActor[actor] = map[ledger.BookID]bool{}
@@ -231,7 +248,25 @@ func (s *recordingStores) reset() {
 	s.books = map[ledger.BookID]bool{}
 	s.byActor = map[iso20022.BIC]map[ledger.BookID]bool{}
 	s.updates = 0
+	s.units = nil
 	s.mu.Unlock()
+}
+
+// crossings is every writing unit of work since the last reset that reached more
+// than one book, each as its own sorted set.
+//
+// An empty answer is the claim the N+2 split makes: no statement spans two
+// databases, so no unit of work can have reached two books.
+func (s *recordingStores) crossings() [][]ledger.BookID {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out [][]ledger.BookID
+	for _, u := range s.units {
+		if len(u) > 1 {
+			out = append(out, sortedBooks(u))
+		}
+	}
+	return out
 }
 
 // everyBook is what an access records when its book is EMPTY.
@@ -1241,82 +1276,75 @@ func TestEachBankBooksItsOwnReturnAndNoOtherBooks(t *testing.T) {
 		h.booksTouchedBy(h.debtorBIC), []ledger.BookID{h.debtorBook})
 }
 
-// TestWhichBooksAdmissionReaches is the one measurement in this file whose
+// TestWhichBooksProvisioningReaches is the one measurement in this file whose
 // subject is not a payment.
 //
-// Three institutions reach three sets, and the point is not the total: it is
-// that no actor is in more than one bank's book, and that the two institutions
-// that would otherwise be reached INTO reach their own.
+// Provisioning a bank is four units of work at three institutions, and the claim
+// is that no one of them reached two books:
 //
-//	the joining bank    [its own book]
-//	the central bank    [CentralBankBook]
-//	the clearing house  [ClearingHouseBook]
+//	founding                  the joining bank's own book
+//	the settlement account    CentralBankBook
+//	the roster entry          ClearingHouseBook
+//	the membership            the joining bank's own book again
 //
-// Each set names one institution and nothing beside it. The id and the audit
-// event an act draws come from the store that act is about to write, which is
-// its own institution's (payment.Network.book). The mechanism the note above the
-// tests describes is unchanged and still the only way a row-write is visible
-// here: an act that stopped appending its audit event would vanish from this
-// measurement entirely.
+// # It counts units of work rather than actors, and that is the point
 //
-// The central bank's list is [CentralBankBook] and not that by accident:
+// A provisioner is nobody: it opens its units of work outside every actor, so
+// recordingStores attributes them to no institution — deliberately, since
+// attributing work no actor did would put it in that actor's ledger of
+// crossings. What is left is the sharper claim anyway. "Institution X reached
+// only its own book" is a fact about who ran; "no single unit of work reached
+// two books" is a fact about what can COMMIT, and that is what the N+2 split
+// actually rests on. Two entities with a database each cannot commit as one, so
+// an act that reached two books inside one Update is an act that has to become a
+// message before they split.
+//
+// The mechanism the note above the tests describes is unchanged and still the
+// only way a row-write is visible here: an act that stopped appending its audit
+// event would vanish from this measurement entirely.
+//
+// The central bank's book is reached and not by accident:
 // OpenSettlementAccountTx draws an id before the read its idempotency is decided
 // from (payment.admissionSequenceTx) and appends settlement_account.opened
 // afterwards. Neither half is optional — drop the event and the settlement
 // account exists in no immutable record; drop the id and the act loses the
 // ordering that made its idempotency its own rather than the store's.
 //
-// # What each set says
+// # What it also rules out
 //
-// The JOINING BANK reaches its own book: founding builds a chart of accounts,
-// four internal accounts per asset and a product, and the bank's id and two
-// audit events are drawn there too. That is Mesh.Admit's synchronous half plus
-// the handler that records the acknowledgement, and the two are the same actor.
-//
-// The CENTRAL BANK reaches CentralBankBook and never a bank's. It opens a
-// Liability in its own book and writes its own member row; the settlement
-// reference it produces reaches the bank as a MESSAGE.
-//
-// The CLEARING HOUSE reaches ClearingHouseBook alone: one roster row, no
-// posting.
-//
-// That no institution reaches another bank's book is asserted separately,
-// because the set equalities above do not state it in a form that survives a
-// third bank in the fixture.
-func TestWhichBooksAdmissionReaches(t *testing.T) {
+// That the two INCUMBENT banks are touched at all. They are in the fixture and
+// are not party to this bank's arrival, so their books are the sharpest form of
+// "nobody wrote where they had no business writing" — and unlike the set
+// equalities, it survives a third bank being added to the fixture.
+func TestWhichBooksProvisioningReaches(t *testing.T) {
+	// After the fixture's own two banks, so what is measured is one arrival and
+	// not three.
 	h := newMeshHarness(t)
-
-	// After the fixture's own two admissions, so what is measured is one
-	// admission and not three.
 	h.rec.reset()
-	joiner, err := h.mesh.Admit(context.Background(), "Nordhaven Bank", joinerBIC, storetest.FixtureCountry, euroOnly)
-	if err != nil {
-		t.Fatalf("Admit: %v", err)
-	}
-	h.drain(t)
-	if got := h.getBank(t, joiner.ID); got.Status != payment.BankMember {
-		t.Fatalf("the bank is %q; this test measures an admission that finished", got.Status)
+
+	joiner := h.provision(t, "Nordhaven Bank", "NORDSESSXXX", euroOnly)
+
+	// Every book the four units of work went near, and no more.
+	assertBooksTouched(t, "provisioning one bank", h.rec.touched(),
+		[]ledger.BookID{joiner.BookID, payment.CentralBankBook, payment.ClearingHouseBook})
+
+	// The claim the split rests on: each unit of work committed against one
+	// database, so none of them reached two books.
+	if crossed := h.rec.crossings(); len(crossed) != 0 {
+		t.Errorf("%d unit(s) of work reached two books: %v; no statement may span two databases", len(crossed), crossed)
 	}
 
-	assertBooksTouched(t, "the joining bank, founding itself and recording what it was told",
-		h.booksTouchedBy(joinerBIC), []ledger.BookID{joiner.BookID})
-	assertBooksTouched(t, "the central bank, opening a settlement account in its own book",
-		h.booksTouchedBy(h.cfg.CentralBankBIC), []ledger.BookID{payment.CentralBankBook})
-	assertBooksTouched(t, "the clearing house, writing a routing entry",
-		h.booksTouchedBy(h.cfg.ClearingHouseBIC), []ledger.BookID{payment.ClearingHouseBook})
+	// Four of them, one per act. A fifth would mean an act had split, and three
+	// would mean two had merged — either way the composition above is stale.
+	if n := h.rec.unitsOfWork(); n != 4 {
+		t.Errorf("provisioning opened %d writing units of work, want 4 — one per act", n)
+	}
 
-	// No institution went near a bank's book but that bank itself. The two
-	// incumbents are in the fixture and are not party to this admission at all,
-	// so their books are the sharpest form of the claim.
-	for _, who := range []iso20022.BIC{h.cfg.CentralBankBIC, h.cfg.ClearingHouseBIC, joinerBIC} {
-		for _, book := range []ledger.BookID{h.debtorBook, h.creditorBook} {
-			if slices.Contains(h.booksTouchedBy(who), book) {
-				t.Errorf("%s reached %s during an admission it is not a party to", who, book)
-			}
+	// And nobody went near the incumbents.
+	for _, book := range []ledger.BookID{h.debtorBook, h.creditorBook} {
+		if slices.Contains(h.rec.touched(), book) {
+			t.Errorf("provisioning a bank reached %s, which is not a party to it", book)
 		}
-	}
-	if slices.Contains(h.booksTouchedBy(joinerBIC), payment.CentralBankBook) {
-		t.Error("the joining bank reached the central bank's book; the settlement account is opened for it, not by it")
 	}
 }
 
@@ -2174,7 +2202,7 @@ func TestTheRecorderIsSafeForConcurrentActorsAndSortsWhatItSaw(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			rec.note(w.actor, w.book)
+			rec.note(w.actor, nil, w.book)
 		}()
 	}
 	// A reader beside the writers: a test that asserts on books while actors are

@@ -21,64 +21,19 @@ import (
 // it by. See wire.ErrUnknownBIC.
 var ErrUnknownBIC = wire.ErrUnknownBIC
 
-// ErrAddressTaken is a claim on a BIC some other actor already answers to, or
-// that another admission has already reserved.
+// ErrAddressTaken is a claim on a BIC some other actor on this bus already
+// answers to.
 //
-// It is a sentinel and not just a message because the layer above has a REMEDY
-// for it and none for the mesh's other refusals: a clashing address is fixed by
-// admitting the bank on an address of its own, and an operator told that during
-// a SHUTDOWN — the other way Admit can fail — would be sent to retry something
-// that will fail the same way whatever address they choose. Telling the two
-// apart is what api's handleAddParticipant uses it for.
-//
-// It is a statement about CONNECTIVITY and not about membership. The clearing
+// It is a statement about CONNECTIVITY and not about membership: it says an
+// inbox is spoken for, not that a scheme has admitted anybody. The clearing
 // house's roster answers the second question, one institution over and keyed on
-// the admission rather than on the address; see payment.ErrBICAlreadyAdmitted
-// and csm.relayAdmission. The refusal itself is wire.ErrAddressTaken.
+// the admission rather than on the address — see payment.ErrBICAlreadyAdmitted.
+//
+// What reaches it is AddBank, giving a provisioned bank its actor. Two banks
+// listed on one address in a deployment is the case it exists for, and the
+// remedy is to give each an address of its own. The refusal itself is
+// wire.ErrAddressTaken.
 var ErrAddressTaken = wire.ErrAddressTaken
-
-// ErrAdmissionInFlight is the one case of ErrAddressTaken where nobody answers
-// to the address yet: a second admission on a BIC whose first is still between
-// claiming it and registering its actor.
-//
-// It WRAPS ErrAddressTaken, so every caller that asks "was this address refused"
-// keeps its answer, and a caller that has different advice for the two can tell
-// them apart. api's handleAddParticipant is that caller, and the difference is
-// the whole reason this exists: the advice for a taken address is to admit the
-// bank somewhere else, and the advice here is to wait — the address is not
-// another institution's, it is this bank's own, a moment early.
-//
-// It is a value ErrAddressTaken does not cover on its own, and it is stated as
-// its own sentinel rather than matched on the message so the distinction cannot
-// be lost to a rewording. See Mesh.claimAddress, which is where the reservation
-// is made and where this is returned from.
-//
-// It is the MESH's and not the transport's, because "admission" is a domain
-// word: what wire reports is that another claim holds the address
-// (wire.HeldByAnotherClaim), and what that means is decided here.
-//
-// # It is a TYPE, and not fmt.Errorf("%w: …", ErrAddressTaken)
-//
-// That is the obvious spelling and it was the first one, and it puts the parent's
-// text into the child's message: the operator was told "another actor already
-// answers to this BIC" — the exact false statement this sentinel exists to
-// replace — because Error() on a wrapped error is the wrapper's text followed by
-// the wrapped one's. Wrapping is about the ERROR CHAIN and inheriting the
-// sentence is a side effect of the standard formatting, so the sentence is
-// declared here and the chain is left to Unwrap.
-var ErrAdmissionInFlight error = admissionInFlight{}
-
-// admissionInFlight is ErrAdmissionInFlight's type: its own sentence, and
-// ErrAddressTaken underneath it.
-//
-// An empty struct, so it is comparable and errors.Is finds it by equality the
-// way it finds any sentinel. Unwrap is what keeps every caller that only asks
-// "was the address refused" answered — mesh's own tests, and api's second
-// branch, which is the one this must not fall through to.
-type admissionInFlight struct{}
-
-func (admissionInFlight) Error() string { return "mesh: an admission on this BIC is already under way" }
-func (admissionInFlight) Unwrap() error { return ErrAddressTaken }
 
 // ErrOnUsPayment is a submission whose payer and payee bank at the SAME
 // institution.

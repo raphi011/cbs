@@ -4,7 +4,6 @@ import (
 	"context"
 
 	"github.com/raphi011/cbs/deposit"
-	"github.com/raphi011/cbs/iban"
 	"github.com/raphi011/cbs/iso20022"
 	"github.com/raphi011/cbs/ledger"
 	"github.com/raphi011/cbs/payment"
@@ -34,13 +33,6 @@ import (
 // They grew method by method as each handler discovered what it needs. An
 // interface written ahead of its callers is a guess, and a guess here is a wrong
 // boundary that then looks authoritative.
-//
-// Admission's four acts land three-and-one, and the one that is missing says
-// something about the flow. RecordMembership is on bankOps, AdmitMember and
-// GetRosterEntryByBIC on csmOps, OpenSettlementAccount on settlementOps —
-// and FoundBankTx is on none of them, because it runs before the joining bank
-// has an actor to hold an interface. It is reached through Mesh.Admit instead,
-// on the caller's goroutine, exactly as the submitting half of a payment is.
 //
 // What all of that is worth is stated exactly, in each interface's own note and
 // nowhere more widely: a handler cannot NAME a method its interface does not
@@ -222,22 +214,6 @@ type bankOps interface {
 	// name its own reserve account (payment.ErrSettlementMemberNotFound).
 	LodgeReserves(ctx context.Context, asset ledger.AssetCode,
 		amount ledger.Amount, mc payment.MessageContext) (payment.LodgementInstruction, iso20022.Envelope, error)
-
-	// The bank's second act of its own admission: writing down the settlement
-	// account numbers the acknowledgement told it, and becoming a Member.
-	//
-	// It is the only method here a bank calls about ITSELF rather than about a
-	// payment, and the bank it is about is the network's own identity. The domain
-	// still refuses an acknowledgement addressed to anybody else
-	// (payment.ErrNotThisBanksAdmission): which member is acting says nothing
-	// about which member the MESSAGE names, and the two disagreeing is exactly
-	// the misrouting that guard exists for.
-	//
-	// The bank's FIRST act is not here and cannot be. FoundBankTx runs before
-	// this bank has an actor at all — there is nothing to hold an interface — so
-	// it is reached through mesh.Mesh.Admit, on the caller's goroutine, exactly
-	// as the submitting half of a payment is.
-	RecordMembership(ctx context.Context, in payment.AdmissionAcknowledgement) (*payment.Bank, error)
 }
 
 // csmOps is the clearing house's view: what a CSM handler may reach.
@@ -318,21 +294,12 @@ type csmOps interface {
 	GetCycle(ctx context.Context, id payment.CycleID) (payment.ClearingCycle, error)
 	GetPayment(ctx context.Context, id payment.PaymentID) (payment.Payment, error)
 
-	// Admission's two, and they are the first methods here whose subject is a
-	// MEMBER rather than a payment.
-	//
-	// AdmitMember writes the routing entry from an acknowledgement this
-	// institution did not originate, which is the ordering the domain has: scheme
-	// membership follows the settlement account, so a bank the settlement agent
-	// will not open an account for is not one this clearing house can route for.
-	//
-	// GetRosterEntryByBIC is the refusal's read, and it is the one lookup on any
-	// of these three interfaces that crosses nothing. Every other roster read here
-	// starts from a ParticipantID and has to go through the bank's own row to
-	// reach an address (see payment.Network.GetRosterEntry); this one starts from
-	// the BIC, because that is what an acmt.007 carries and the only identifier an
-	// applicant has told this institution. See csm.relayAdmission.
-	AdmitMember(ctx context.Context, in payment.AdmissionAcknowledgement) (payment.RosterEntry, error)
+	// GetRosterEntryByBIC is the one lookup on any of these three interfaces
+	// that crosses nothing. Every other roster read here starts from a
+	// ParticipantID and has to go through the bank's own row to reach an address
+	// (see payment.Network.GetRosterEntry); this one starts from the BIC,
+	// because an instruction names a counterparty's agent by address and by
+	// nothing else. See Mesh.instruct, which asks it before either leg posts.
 	GetRosterEntryByBIC(ctx context.Context, bic iso20022.BIC) (payment.RosterEntry, error)
 }
 
@@ -389,24 +356,6 @@ type settlementOps interface {
 	// agent holds no payment rows and never saw the payment clear. Nothing on
 	// this interface turns a payment id into a payment, here or at a cut-off.
 	SettleReturn(ctx context.Context, in payment.ReturnInstruction) ([]payment.SettlementStatement, error)
-
-	// OpenSettlementAccount is the third thing this institution does, and the
-	// first that is not a movement: an account holder has asked it to open an
-	// account, and it opens one in its own book and records that it holds it.
-	//
-	// It takes the REQUEST rather than a bank, and that is the same property
-	// SettleReturn has for the same reason: everything it acts on came off the
-	// acmt.007 (payment.ReadAdmissionRequest), because a settlement agent holds
-	// no roster and has never heard of this system's bank ids. What it is told is
-	// a BIC, a name, a country and one currency, and a BIC is what it keys its
-	// own row by.
-	//
-	// It answers with TWO things because it keeps two registers and the request
-	// asked of both: the account it holds, and the bank code it allocated in the
-	// country the request named. The second is not derivable from the first and
-	// nothing on this hop could compute it — see payment.allocateBankCodeTx — so
-	// it is returned rather than looked up afterwards.
-	OpenSettlementAccount(ctx context.Context, in payment.AdmissionRequest) (payment.SettlementMember, iban.Issuer, error)
 
 	// ReceiveLodgement is the fourth: a member has asked this institution to
 	// credit the member's own reserve account, and this institution posts Debit

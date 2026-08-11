@@ -33,6 +33,8 @@ package provision
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"maps"
 	"slices"
 
@@ -102,6 +104,9 @@ func Bank(ctx context.Context, nets *payment.Networks, spec BankSpec) (*payment.
 	if err != nil {
 		return nil, err
 	}
+	if err := refuseAnotherBankOnThisAddress(ctx, applicant, spec); err != nil {
+		return nil, err
+	}
 	bank, err := applicant.FoundBank(ctx, spec.Name, spec.BIC, spec.Country, spec.Assets)
 	if err != nil {
 		return nil, err
@@ -158,12 +163,52 @@ func Subscribe(ctx context.Context, nets *payment.Networks) error {
 	return nil
 }
 
+// ErrAddressTaken is a spec whose BIC already belongs to a different bank.
+//
+// It is the provisioner's own refusal and not a domain one, because the domain
+// cannot make it. A bank's id is its BIC, so founding at a taken address is a
+// SECOND founding of the bank already there: it opens no new book and writes no
+// new row, and what it does do is rename the bank that holds the address. The
+// acts underneath cannot tell that apart from a deployment being run again,
+// which is a thing a provisioner must stay safe under.
+//
+// So the two are separated here, where the spec — the deployment's own
+// statement of what it wants — is still in hand. Same address and same name is a
+// re-run and goes through. Same address and a different name is two banks listed
+// on one address, and the remedy is to give each an address of its own.
+var ErrAddressTaken = errors.New("provision: another bank already holds this address")
+
+// refuseAnotherBankOnThisAddress is ErrAddressTaken's read: the bank already at
+// this address, out of its own book, or nothing.
+//
+// A miss is the ordinary case and not a failure — asking nets.Bank for an
+// address is what CREATES that database, so the first read of a new bank's own
+// row is a read of an empty one. See payment.Stores.
+func refuseAnotherBankOnThisAddress(ctx context.Context, applicant *payment.Network, spec BankSpec) error {
+	held, err := applicant.GetBank(ctx, payment.ParticipantID(spec.BIC))
+	if errors.Is(err, payment.ErrParticipantNotFound) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if held.Name != spec.Name {
+		return fmt.Errorf("%w: %s is %s, and this deployment lists %s on it",
+			ErrAddressTaken, spec.BIC, held.Name, spec.Name)
+	}
+	return nil
+}
+
 // Ref is the admission reference a provisioned bank is recorded under.
 //
-// It is derived from the BIC rather than left empty. There is no process id
-// because there is no process, and a value unique per bank is still what the
-// clearing house's refusal compares — an empty one on every bank would make two
-// banks on one address look like one admission, which is exactly the case
-// payment.ErrBICAlreadyAdmitted exists for. A deployment that lists two banks on
-// one address gets the refusal, which is the truth about that deployment.
+// It is derived from the BIC rather than left empty, and that makes it stable
+// across runs: provisioning the same deployment twice quotes the same reference,
+// so the clearing house reads the second pass as the admission it already holds
+// and writes nothing new. An empty reference on every bank would collapse every
+// bank into one admission instead, which is the case payment.ErrBICAlreadyAdmitted
+// exists for.
+//
+// What it therefore does NOT do is refuse two different banks listed on one
+// address — same address, same reference, and the roster cannot tell them apart.
+// That refusal is ErrAddressTaken, made here against the spec.
 func Ref(bic iso20022.BIC) string { return "admitted-" + string(bic) }

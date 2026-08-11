@@ -84,8 +84,6 @@ func (cb *centralBank) handle(ctx context.Context, from iso20022.BIC, raw []byte
 		return cb.receiveReturn(ctx, from, env.AppHdr, doc)
 	case *iso20022.Camt050:
 		return cb.receiveLodgement(ctx, from, env.AppHdr, doc)
-	case *iso20022.Acmt007:
-		return cb.receiveAdmission(ctx, from, doc)
 	default:
 		return fmt.Errorf("mesh: %s has no handler for %s", cb.bic, env.AppHdr.MsgDefIdr)
 	}
@@ -392,81 +390,6 @@ func (cb *centralBank) receiveReturn(ctx context.Context, from iso20022.BIC, hdr
 	return cb.answer(from, orig, returnedEndToEnd(first), string(id), iso20022.TransactionStatusSettlementCompleted, nil)
 }
 
-// receiveAdmission is the central bank opening a settlement account for a bank
-// applying to the scheme: the third thing this actor does, and the only one that
-// moves no money at all.
-//
-// It has receiveReturn's shape — read the message, run the domain act in one
-// unit of work, answer — and the same reason for it: what it acts on came off
-// the message, because a settlement agent holds no roster and has never been
-// told this system's bank ids. What an acmt.007 tells it is a BIC, a legal name
-// and ONE currency, and the BIC is what it keys its own member row by. See
-// payment.ReadAdmissionRequest, where the address is validated.
-//
-// # It answers for two registers, and the second is not a book
-//
-// One request, two acts. The settlement account is opened in this institution's
-// own ledger; the BANK CODE is allocated in a register that has nothing to do
-// with books, and this institution keeps it because it is standing in for four
-// national registries as well as for one settlement agent. The applicant asks for
-// both in one message — the register by naming its country of operation, the
-// account by naming a currency — and one acknowledgement carries both answers
-// back. See payment.allocateBankCodeTx, and the bank_codes statement in
-// store/sqlite/schema/centralbank/0001_init.sql for where the fudge is named.
-//
-// # It answers acmt.011 and NOT pacs.002
-//
-// A status report is about a payment transaction, and this is not one: no
-// payment exists, no cycle exists, and OrgnlTxId would have nothing to quote.
-// The consequence is that the reason travels as PROSE rather than as a code —
-// References6 makes RjctnRsn a repeated Max350Text — which is the standard's
-// decision and not this system's, and it is why reasonTable gives the admission
-// sentinels the empty code.
-//
-// # One request, one currency, one answer that names every account
-//
-// The asymmetry is the schema's. Acct/Ccy is minOccurs="1" maxOccurs="1", so a
-// bank joining in two assets sends two requests; AccountForAction1 is unbounded,
-// so the answer to each lists the member's WHOLE account set as this act has
-// just left it. That is what lets one acknowledgement serve both readers on the
-// far side of the relay.
-//
-// It answers per request rather than once per admission, and could not do
-// otherwise: nothing on an acmt.007 says how many an admission is made of, so
-// this actor cannot know when the last has arrived. A two-asset bank is told
-// twice; what that buys is that neither answer waits on a message that may never
-// come.
-//
-// Refs/PrcId is the conversation's only correlator — the acknowledgement carries
-// no back-reference to the request — so the answer's process id is the
-// request's, and this handler is where the two are held at once.
-func (cb *centralBank) receiveAdmission(ctx context.Context, from iso20022.BIC, doc *iso20022.Acmt007) error {
-	in, err := payment.ReadAdmissionRequest(doc)
-	if err != nil {
-		return cb.refuseAdmission(from, doc, fmt.Errorf(
-			"mesh: %s could not read the admission request %s sent it: %w", cb.bic, from, err))
-	}
-	member, issuer, err := cb.ops.OpenSettlementAccount(ctx, in)
-	if err != nil {
-		return cb.refuseAdmission(from, doc, err)
-	}
-	env, err := payment.AdmissionAcknowledgementMessage(payment.AdmissionAcknowledgement{
-		BIC:      in.BIC,
-		Issuer:   issuer,
-		Accounts: member.Accounts,
-		Ref:      in.Ref,
-	}, payment.MessageContext{
-		From:  cb.bic,
-		To:    from,
-		MsgID: cb.m.nextMsgID(cb.bic),
-		Now:   cb.m.now(),
-	})
-	if err != nil {
-		return fmt.Errorf("mesh: %s opened %s's settlement account and could not say so: %w", cb.bic, in.BIC, err)
-	}
-	return cb.m.send(cb.bic, from, env)
-}
-
 // receiveLodgement is the central bank crediting a member's reserve account
 // because the member asked it to: the fourth thing this actor does.
 //
@@ -621,39 +544,6 @@ func (cb *centralBank) acknowledgeLodgement(to iso20022.BIC, r payment.Lodgement
 	})
 	if err != nil {
 		return fmt.Errorf("mesh: %s could not build its camt.025 for %s: %w", cb.bic, to, err)
-	}
-	return cb.m.send(cb.bic, to, env)
-}
-
-// refuseAdmission answers an acmt.007 this actor will not act on, back to
-// whoever handed it over.
-//
-// It reads the two elements the ANSWER needs straight off the document rather
-// than taking them from the reader's output, because the commonest reason to be
-// here is that the reader refused. What an acmt.011 must name is the applicant
-// (OrgId/AnyBIC) and the admission (Refs/PrcId), plus the request it refuses
-// (Refs/RjctdReqId) — and a message missing either of the first two is one this
-// actor cannot address or correlate, so it becomes a dead letter instead. That
-// is answerUnreadable's shape for a family with no FF01 in it.
-//
-// The cause is NOT returned once it has been answered, for bank.answer's reason:
-// a refusal the applicant was told about is completed work.
-func (cb *centralBank) refuseAdmission(to iso20022.BIC, doc *iso20022.Acmt007, cause error) error {
-	req := doc.AcctOpngReq
-	env, err := payment.AdmissionRejectionMessage(
-		payment.AdmissionRequest{BIC: req.Org.OrgId.AnyBIC, Ref: req.Refs.PrcId.Id},
-		req.Refs.MsgId,
-		cause.Error(),
-		payment.MessageContext{
-			From:  cb.bic,
-			To:    to,
-			MsgID: cb.m.nextMsgID(cb.bic),
-			Now:   cb.m.now(),
-		})
-	if err != nil {
-		return errors.Join(
-			fmt.Errorf("mesh: %s could not build its acmt.011 for %s: %w", cb.bic, to, err),
-			cause)
 	}
 	return cb.m.send(cb.bic, to, env)
 }

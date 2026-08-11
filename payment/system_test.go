@@ -2748,7 +2748,7 @@ func TestPaymentRejectsDebtorAccountNotInSchemeAsset(t *testing.T) {
 
 	alpha, err := storetest.Admit(ctx, sys.nets, "Alpha", testBIC, euroOnly)
 	assertNoError(t, err)
-	beta, err := storetest.Admit(ctx, sys.nets, "Beta", testBIC, euroOnly)
+	beta, err := storetest.Admit(ctx, sys.nets, "Beta", testBIC2, euroOnly)
 	assertNoError(t, err)
 
 	// Both accounts are addressable, so the only thing wrong with this payment
@@ -2785,7 +2785,7 @@ func TestSDDPaymentRejectsAccountNotInSchemeAsset(t *testing.T) {
 
 	alpha, err := storetest.Admit(ctx, sys.nets, "Alpha", testBIC, euroOnly)
 	assertNoError(t, err)
-	beta, err := storetest.Admit(ctx, sys.nets, "Beta", testBIC, euroOnly)
+	beta, err := storetest.Admit(ctx, sys.nets, "Beta", testBIC2, euroOnly)
 	assertNoError(t, err)
 
 	// Both ends in BTC: a mandate's two accounts have to agree (see

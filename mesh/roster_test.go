@@ -94,33 +94,35 @@ func TestStartGivesEveryParticipantAnActor(t *testing.T) {
 	}
 }
 
-// A bank that has been founded and never admitted gets no actor at startup.
+// A bank whose provisioning stopped halfway gets no actor at startup.
 //
-// The roster is what says who is a member, and this bank is in no roster: the
-// settlement agent holds no account for it and the clearing house routes nothing
-// to it. So it cannot pay and cannot be paid, which is the truth about it rather
-// than a limitation — it has a licence, a book, a product and customers, and no
-// scheme has admitted it.
+// The ROSTER is what says who is a member, and this bank is in none: it has a
+// licence, a book, a product and customers, and neither the settlement agent nor
+// the clearing house has heard of it. So it cannot pay and cannot be paid, which
+// is the truth about it rather than a limitation.
 //
-// It is a behaviour change and it is measured rather than asserted: while
-// founding and joining were one call there was no such bank to have, so joining
-// the roster and listing the banks were the same list.
-func TestStartGivesAFoundedBankNoActor(t *testing.T) {
+// It is the state a crash between the acts leaves — provisioning is four units
+// of work at three institutions and no transaction spans them — and it is a
+// provisioning failure to retry rather than a state the domain names. What this
+// pins is that the mesh does not paper over it: an actor answering for a bank
+// with no settlement account would let a payment reach a bank that cannot settle.
+func TestStartGivesAHalfProvisionedBankNoActor(t *testing.T) {
 	clock := func() time.Time { return testTime }
 	nets := payment.NewNetworks(testenv.NewSet(t, clock), clock)
 	ctx := context.Background()
 	if _, err := storetest.Admit(ctx, nets, "Aurora Bank", "AURODEFFXXX", euroOnly); err != nil {
-		t.Fatalf("admitting Aurora: %v", err)
+		t.Fatalf("provisioning Aurora: %v", err)
 	}
-	// Founded through its OWN network, over its own database, because founding
-	// is a member bank's own act — payment.ErrNotThisInstitutionsAct is what a
-	// clearing house asking for it gets. Asking nets.Bank for the address is
-	// what creates that database; see payment.Stores.
-	nordhaven, err := nets.Bank(ctx, "NORDSESSXXX")
+	// Founded and no further, through its OWN network, over its own database,
+	// because founding is a member bank's own act — payment.ErrNotThisInstitutionsAct
+	// is what a clearing house asking for it gets. Asking nets.Bank for the
+	// address is what creates that database; see payment.Stores.
+	nordhavenNet, err := nets.Bank(ctx, "NORDSESSXXX")
 	if err != nil {
 		t.Fatalf("Nordhaven's own network: %v", err)
 	}
-	if _, err := nordhaven.FoundBank(ctx, "Nordhaven Bank", "NORDSESSXXX", storetest.FixtureCountry, euroOnly); err != nil {
+	nordhaven, err := nordhavenNet.FoundBank(ctx, "Nordhaven Bank", "NORDSESSXXX", storetest.FixtureCountry, euroOnly)
+	if err != nil {
 		t.Fatalf("FoundBank Nordhaven: %v", err)
 	}
 
@@ -134,15 +136,15 @@ func TestStartGivesAFoundedBankNoActor(t *testing.T) {
 	t.Cleanup(func() { _ = m.Stop(context.Background()) })
 
 	if !m.bus.Has("AURODEFFXXX") {
-		t.Error("the admitted bank has no actor")
+		t.Error("the provisioned bank has no actor")
 	}
 	if m.bus.Has("NORDSESSXXX") {
-		t.Error("a founded, unadmitted bank was given an actor; the roster is what says who is a member")
+		t.Error("a half-provisioned bank was given an actor; the roster is what says who is a member")
 	}
 	// And its address is free, which is what makes the state recoverable: an
-	// actor answering to it would make the admission that finishes it
+	// actor already answering to it would make the retry that finishes the job
 	// unroutable for the life of the process.
-	if _, err := m.Admit(ctx, "Nordhaven Bank", "NORDSESSXXX", storetest.FixtureCountry, euroOnly); err != nil {
-		t.Errorf("re-driving the founded bank's admission: %v", err)
+	if err := m.AddBank(ctx, nordhaven); err != nil {
+		t.Errorf("the half-provisioned bank's address is not free: %v", err)
 	}
 }
