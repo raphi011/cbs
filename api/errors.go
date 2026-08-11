@@ -21,12 +21,18 @@ import (
 //   - 422 Unprocessable Entity: a well-formed request that violates business
 //     state (insufficient funds, frozen account, invalid state transition).
 //   - 400 Bad Request: malformed input (unbalanced/empty transaction, non-
-//     positive amounts, text carrying a control character). JSON-decode and
-//     enum-parse failures are reported as 400 directly by the handlers before
-//     the core is ever called, as is a control character in the request target
-//     (see screenRequestTarget).
+//     positive amounts, text carrying a control character), and everything a
+//     handler refuses before the core is ever called — a body that will not
+//     decode, an enum naming nothing, a required parameter that is absent — each
+//     of which arrives here as a BadRequest. A control character in the request
+//     target is refused earlier still, by the middleware (see
+//     screenRequestTarget).
 func errorStatus(err error) int {
+	var refused badRequest
 	switch {
+	case errors.As(err, &refused):
+		return http.StatusBadRequest
+
 	case errors.Is(err, ledger.ErrLedgerNotFound),
 		errors.Is(err, ledger.ErrSubledgerNotFound),
 		errors.Is(err, ledger.ErrAccountNotFound),

@@ -1,8 +1,6 @@
 package api
 
 import (
-	"context"
-	"fmt"
 	"time"
 
 	"github.com/raphi011/cbs/ledger"
@@ -145,48 +143,14 @@ type TransactionDTO struct {
 	CreatedAt      time.Time         `json:"createdAt"`
 }
 
-// entryAccountIDs collects the distinct account IDs referenced by any entry
-// across one or more transactions, in first-seen order. It is the input to
-// EntryAssets, kept separate so a caller with just one transaction can build
-// it without allocating a slice of transactions.
-func entryAccountIDs(txs []ledger.Transaction) []ledger.AccountID {
-	seen := make(map[ledger.AccountID]bool)
-	var ids []ledger.AccountID
-	for _, tx := range txs {
-		for _, e := range tx.Entries {
-			if !seen[e.AccountID] {
-				seen[e.AccountID] = true
-				ids = append(ids, e.AccountID)
-			}
-		}
-	}
-	return ids
-}
-
-// EntryAssets resolves the asset of every account referenced by any entry across
-// txs, in one Book.GetAccounts call. One Book.GetAccount per entry would be one
-// BEGIN…COMMIT each, making a listing's cost scale with how many transactions it
-// renders rather than with how much work it does.
-func EntryAssets(ctx context.Context, lb *ledger.Book, txs []ledger.Transaction) (map[ledger.AccountID]ledger.AssetCode, error) {
-	ids := entryAccountIDs(txs)
-	accts, err := lb.GetAccounts(ctx, ids)
-	if err != nil {
-		return nil, err
-	}
-	out := make(map[ledger.AccountID]ledger.AssetCode, len(accts))
-	for id, a := range accts {
-		out[id] = a.Asset
-	}
-	return out, nil
-}
-
 // ToTransactionDTO renders a transaction, including each entry's asset. An
 // entry carries no asset of its own — Amount balances per asset precisely
 // because the asset is a property of the account it posts to — so rendering
 // it means resolving each entry's account. assets is the pre-resolved
-// account-to-asset map (see EntryAssets); ToTransactionDTO does no I/O of its
-// own, so a caller rendering several transactions can resolve the whole
-// batch's accounts once and reuse the map across every call.
+// account-to-asset map; ToTransactionDTO does no I/O of its own, so a caller
+// rendering several transactions can resolve the whole batch's accounts once
+// and reuse the map across every call. The resolving is in transaction.go,
+// which is where every file in this package that reads a store lives.
 func ToTransactionDTO(tx ledger.Transaction, assets map[ledger.AccountID]ledger.AssetCode) TransactionDTO {
 	entries := make([]EntryDTO, len(tx.Entries))
 	for i, e := range tx.Entries {
@@ -304,7 +268,7 @@ func AccountTypeFromString(s string) (ledger.AccountType, error) {
 	case "Expense":
 		return ledger.Expense, nil
 	default:
-		return 0, fmt.Errorf("invalid account type %q (want Asset, Liability, Equity, Revenue, or Expense)", s)
+		return 0, BadRequest("invalid account type %q (want Asset, Liability, Equity, Revenue, or Expense)", s)
 	}
 }
 
@@ -315,6 +279,6 @@ func DirectionFromString(s string) (ledger.Direction, error) {
 	case "Credit":
 		return ledger.Credit, nil
 	default:
-		return 0, fmt.Errorf("invalid direction %q (want Debit or Credit)", s)
+		return 0, BadRequest("invalid direction %q (want Debit or Credit)", s)
 	}
 }

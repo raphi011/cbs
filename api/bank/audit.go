@@ -5,25 +5,18 @@ import (
 
 	"github.com/raphi011/cbs/api"
 	"github.com/raphi011/cbs/ledger"
+	"github.com/raphi011/cbs/payment"
 )
 
 // handleLedgerAudit serves one bank's general-ledger audit trail.
-func (s *surface) handleLedgerAudit(w http.ResponseWriter, r *http.Request) {
-	p, ok := s.participant(w, r)
-	if !ok {
-		return
-	}
-	api.WriteAudit(w, r, s.network(), api.AuditFilterFrom(r, p.BookID, ledger.ScopeLedger))
+func (s *surface) handleLedgerAudit(r *http.Request, p *payment.Bank) ([]api.AuditEventDTO, error) {
+	return api.AuditPage(r.Context(), s.network(), api.AuditFilterFrom(r, p.BookID, ledger.ScopeLedger))
 }
 
 // handleDepositAudit serves one bank's deposit-layer audit trail. Same book as
 // the ledger trail above; only the scope differs.
-func (s *surface) handleDepositAudit(w http.ResponseWriter, r *http.Request) {
-	p, ok := s.participant(w, r)
-	if !ok {
-		return
-	}
-	api.WriteAudit(w, r, s.network(), api.AuditFilterFrom(r, p.BookID, ledger.ScopeDeposit))
+func (s *surface) handleDepositAudit(r *http.Request, p *payment.Bank) ([]api.AuditEventDTO, error) {
+	return api.AuditPage(r.Context(), s.network(), api.AuditFilterFrom(r, p.BookID, ledger.ScopeDeposit))
 }
 
 // handleBankPaymentAudit serves ONE bank's payment-scope trail, in its own book:
@@ -33,10 +26,6 @@ func (s *surface) handleDepositAudit(w http.ResponseWriter, r *http.Request) {
 // It is on the bank's surface because those events are in the bank's database
 // and in no other. A bank asking the clearing house's route above gets the
 // clearing house's log, which does not mention its mandates at all.
-func (s *surface) handleBankPaymentAudit(w http.ResponseWriter, r *http.Request) {
-	p, ok := s.participant(w, r)
-	if !ok {
-		return
-	}
-	api.WriteAudit(w, r, s.network(), api.AuditFilterFrom(r, p.BookID, ledger.ScopePayment))
+func (s *surface) handleBankPaymentAudit(r *http.Request, p *payment.Bank) ([]api.AuditEventDTO, error) {
+	return api.AuditPage(r.Context(), s.network(), api.AuditFilterFrom(r, p.BookID, ledger.ScopePayment))
 }

@@ -19,9 +19,7 @@ package bank
 import (
 	"context"
 	"log/slog"
-	"net/http"
 
-	"github.com/raphi011/cbs/api"
 	"github.com/raphi011/cbs/iso20022"
 	"github.com/raphi011/cbs/ledger"
 	"github.com/raphi011/cbs/payment"
@@ -90,18 +88,12 @@ func (s *surface) network() *payment.Network { return s.inst.Network() }
 // boundBIC is this listener's bank as an address. See Institution.BIC.
 func (s *surface) boundBIC() iso20022.BIC { return s.inst.BIC() }
 
-// participant resolves the listener's own bank. On failure it writes the
-// appropriate error response and returns false, so callers can simply `return`
-// when ok is false.
+// participant resolves the listener's own bank.
 //
 // It reads the identity off the Institution and never out of the path: this
 // port already names the bank, so a bank's routes have nowhere to put another
-// bank's id.
-func (s *surface) participant(w http.ResponseWriter, r *http.Request) (*payment.Bank, bool) {
-	p, err := s.network().GetBank(r.Context(), payment.ParticipantID(s.boundBIC()))
-	if err != nil {
-		api.WriteError(w, err)
-		return nil, false
-	}
-	return p, true
+// bank's id. handle and handleBody are what call it, once per request, so no
+// handler on this surface asks the question itself.
+func (s *surface) participant(ctx context.Context) (*payment.Bank, error) {
+	return s.network().GetBank(ctx, payment.ParticipantID(s.boundBIC()))
 }

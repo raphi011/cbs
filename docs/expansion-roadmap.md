@@ -570,21 +570,28 @@ A day-granular, UTC-normalised-at-construction type with `Start()`, `NextDay()`,
 `Key()` and value equality. Thread the type, not the instant, and a missing date
 becomes a compile error. Cheaper today than at any later point.
 
-### Deepen the transport module
+### Deepen the transport module — `done`
 
-65% of `api`'s handler lines are the same five steps — participant guard,
-`decodeJSON`, domain call, `writeError`, `writeJSON` — and 28 of 70 handlers are
-nothing else. The same six-line transaction tail appears nine times and the same
-`YYYY-MM-DD` parse seven.
+Done between §21's tasks 4 and 5, against the three surface packages the split
+had just produced rather than against one large one.
 
-The DTO layer is not purely mapping either: `toFacilityDTO` re-implements
-`lending.Outstanding`, the wire number comes from the `api` copy, and nothing
-asserts the two agree; `entryAssets` does I/O from `dto_ledger.go`, contradicting
-`api/doc.go`.
+A handler RETURNS its response and its error; `api.Handle` and `api.HandleBody`
+decode the body, map the error, choose the status and encode, and `api/bank`'s
+pair resolve the listener's own bank in front of them. The five steps are one
+function instead of seventy call sites, `api/bank` lost a quarter of its lines,
+and the writers are unexported — so "every response carries the JSON content
+type and every error goes through the mapping" is enforced rather than kept.
+`api.ParseDay` and `api.ResolveTransactionDTO` absorbed the repeated parse and
+the repeated transaction tail; a 400 a handler decides is now
+`api.BadRequest`, mapped like any other sentinel.
 
-One typed handler adapter absorbing guard/decode/status/encode, plus
-`writeTransaction` and `parseDate` absorbing the nine and seven copies, plus
-`toFacilityDTO` calling `Outstanding` instead of redefining it.
+The two DTO-layer complaints are closed with it. `lending.OutstandingOf` is the
+one place drawn-plus-receivable is written, called by `Portfolio.Outstanding` and
+by the wire renderer, so there is nothing left for a test to hold together; the
+asset resolution moved out of `dto_ledger.go` into `transaction.go` and is
+unexported, leaving the DTO files free of I/O as `api/doc.go` claims.
+
+The 99-route table was dumped before and after and is byte-identical.
 
 ### Move the derived balances off the store seam
 

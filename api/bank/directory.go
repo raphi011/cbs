@@ -6,6 +6,7 @@ import (
 	"github.com/raphi011/cbs/api"
 	"github.com/raphi011/cbs/deposit"
 	"github.com/raphi011/cbs/iban"
+	"github.com/raphi011/cbs/payment"
 )
 
 // A bank's two directories, and the per-account identifier endpoints that
@@ -24,16 +25,15 @@ import (
 // because the acknowledgement it is written from delivers none. That absence
 // arrives where a payer most expects a name.
 func (s *surface) registerBankIdentifierRoutes(mux *api.Router) {
-	mux.HandleFunc("POST /deposit-accounts/{did}/identifiers", s.handleAddIdentifier)
-	mux.HandleFunc("DELETE /deposit-accounts/{did}/identifiers/{scheme}/{value}", s.handleRemoveIdentifier)
+	mux.HandleFunc("POST /deposit-accounts/{did}/identifiers", handleBody(s, http.StatusNoContent, s.handleAddIdentifier))
+	mux.HandleFunc("DELETE /deposit-accounts/{did}/identifiers/{scheme}/{value}", handle(s, http.StatusNoContent, s.handleRemoveIdentifier))
 }
 
-func (s *surface) handleResolveIdentifier(w http.ResponseWriter, r *http.Request) {
+func (s *surface) handleResolveIdentifier(r *http.Request) (api.AccountDirectoryEntryDTO, error) {
 	scheme := r.URL.Query().Get("scheme")
 	value := r.URL.Query().Get("value")
 	if scheme == "" || value == "" {
-		api.WriteBadRequest(w, "scheme and value are both required")
-		return
+		return api.AccountDirectoryEntryDTO{}, api.BadRequest("scheme and value are both required")
 	}
 	ident := deposit.Identifier{Scheme: deposit.IdentifierScheme(scheme), Value: value}
 	// The listener's own bank, and it is the whole of the scope. It is not passed:
@@ -42,14 +42,13 @@ func (s *surface) handleResolveIdentifier(w http.ResponseWriter, r *http.Request
 	// answers payment.ErrNotThisInstitutionsAct.
 	ref, err := s.network().ResolveIdentifier(r.Context(), ident)
 	if err != nil {
-		api.WriteError(w, err)
-		return
+		return api.AccountDirectoryEntryDTO{}, err
 	}
-	api.WriteJSON(w, http.StatusOK, api.AccountDirectoryEntryDTO{
+	return api.AccountDirectoryEntryDTO{
 		Agent:      string(s.boundBIC()),
 		Account:    string(ref.Account),
 		Identifier: api.IdentifierDTO{Scheme: scheme, Value: value},
-	})
+	}, nil
 }
 
 // handleResolveBankCode answers GET /directory/banks, and how it is narrowed
@@ -78,50 +77,39 @@ func (s *surface) handleResolveIdentifier(w http.ResponseWriter, r *http.Request
 // read submission makes, so what a form shows and where the payment goes cannot
 // disagree. A miss is payment.ErrBankCodeUnknown and 422, and it cannot say
 // whether no such bank is in the scheme or this copy is simply behind.
-func (s *surface) handleResolveBankCode(w http.ResponseWriter, r *http.Request) {
+func (s *surface) handleResolveBankCode(r *http.Request) (any, error) {
 	q := r.URL.Query()
 	country, bankCode, address := q.Get("country"), q.Get("bankCode"), q.Get("iban")
 	if address != "" && (country != "" || bankCode != "") {
-		api.WriteBadRequest(w, "iban names an allocation, so it is not given with country and bankCode")
-		return
+		return nil, api.BadRequest("iban names an allocation, so it is not given with country and bankCode")
 	}
 	if (country == "") != (bankCode == "") {
-		api.WriteBadRequest(w, "country and bankCode are given together or not at all")
-		return
+		return nil, api.BadRequest("country and bankCode are given together or not at all")
 	}
 	if country == "" && address == "" {
 		entries, err := s.network().ListDirectory(r.Context())
 		if err != nil {
-			api.WriteError(w, err)
-			return
+			return nil, err
 		}
-		out := make([]api.RoutingEntryDTO, len(entries))
-		for i, e := range entries {
-			out[i] = api.RoutingEntryOf(e)
-		}
-		api.WriteJSON(w, http.StatusOK, out)
-		return
+		return routingEntryDTOs(entries), nil
 	}
 	issuer := iban.Issuer{Country: iban.Country(country), BankCode: iban.BankCode(bankCode)}
 	if address != "" {
 		parsed, err := iban.Parse(address)
 		if err != nil {
-			api.WriteError(w, err)
-			return
+			return nil, err
 		}
 		code, err := parsed.BankCode()
 		if err != nil {
-			api.WriteError(w, err)
-			return
+			return nil, err
 		}
 		issuer = iban.Issuer{Country: parsed.Country(), BankCode: code}
 	}
 	e, err := s.network().ResolveBankCode(r.Context(), issuer)
 	if err != nil {
-		api.WriteError(w, err)
-		return
+		return nil, err
 	}
-	api.WriteJSON(w, http.StatusOK, api.RoutingEntryOf(e))
+	return api.RoutingEntryOf(e), nil
 }
 
 // handleRefreshDirectory is this bank subscribing: pull the scheme's published
@@ -136,51 +124,31 @@ func (s *surface) handleResolveBankCode(w http.ResponseWriter, r *http.Request) 
 // between this and every other route here that reaches two institutions. A
 // refresh is not a conversation: nothing is sent, nobody answers later, and by
 // the time this returns the copy is the one the next payment will route from.
-func (s *surface) handleRefreshDirectory(w http.ResponseWriter, r *http.Request) {
+func (s *surface) handleRefreshDirectory(r *http.Request) ([]api.RoutingEntryDTO, error) {
 	entries, err := s.inst.RefreshDirectory(r.Context())
 	if err != nil {
-		api.WriteError(w, err)
-		return
+		return nil, err
 	}
+	return routingEntryDTOs(entries), nil
+}
+
+func routingEntryDTOs(entries []payment.DirectoryEntry) []api.RoutingEntryDTO {
 	out := make([]api.RoutingEntryDTO, len(entries))
 	for i, e := range entries {
 		out[i] = api.RoutingEntryOf(e)
 	}
-	api.WriteJSON(w, http.StatusOK, out)
+	return out
 }
 
-func (s *surface) handleAddIdentifier(w http.ResponseWriter, r *http.Request) {
-	p, ok := s.participant(w, r)
-	if !ok {
-		return
-	}
-	var req api.IdentifierDTO
-	if err := api.DecodeJSON(r, &req); err != nil {
-		api.WriteBadRequest(w, err.Error())
-		return
-	}
-	err := p.Deposit.AddIdentifier(r.Context(), deposit.AccountID(r.PathValue("did")),
+func (s *surface) handleAddIdentifier(r *http.Request, p *payment.Bank, req api.IdentifierDTO) (any, error) {
+	return nil, p.Deposit.AddIdentifier(r.Context(), deposit.AccountID(r.PathValue("did")),
 		deposit.Identifier{Scheme: deposit.IdentifierScheme(req.Scheme), Value: req.Value})
-	if err != nil {
-		api.WriteError(w, err)
-		return
-	}
-	w.WriteHeader(http.StatusNoContent)
 }
 
-func (s *surface) handleRemoveIdentifier(w http.ResponseWriter, r *http.Request) {
-	p, ok := s.participant(w, r)
-	if !ok {
-		return
-	}
-	err := p.Deposit.RemoveIdentifier(r.Context(), deposit.AccountID(r.PathValue("did")),
+func (s *surface) handleRemoveIdentifier(r *http.Request, p *payment.Bank) (any, error) {
+	return nil, p.Deposit.RemoveIdentifier(r.Context(), deposit.AccountID(r.PathValue("did")),
 		deposit.Identifier{
 			Scheme: deposit.IdentifierScheme(r.PathValue("scheme")),
 			Value:  r.PathValue("value"),
 		})
-	if err != nil {
-		api.WriteError(w, err)
-		return
-	}
-	w.WriteHeader(http.StatusNoContent)
 }

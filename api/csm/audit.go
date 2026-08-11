@@ -17,6 +17,6 @@ import (
 // reader who wants the whole picture reads several and matches them up by the
 // MESSAGES, which is what an auditor holding four banks' logs actually does —
 // there is no cross-institution order for a route to serve.
-func (s *surface) handlePaymentAudit(w http.ResponseWriter, r *http.Request) {
-	api.WriteAudit(w, r, s.network(), api.AuditFilterFrom(r, payment.ClearingHouseBook, ledger.ScopePayment))
+func (s *surface) handlePaymentAudit(r *http.Request) ([]api.AuditEventDTO, error) {
+	return api.AuditPage(r.Context(), s.network(), api.AuditFilterFrom(r, payment.ClearingHouseBook, ledger.ScopePayment))
 }

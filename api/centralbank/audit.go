@@ -10,6 +10,6 @@ import (
 
 // handleCentralBankAudit serves the central bank's own book — a real chart of
 // accounts, so its events are ledger-scoped like any other bank's.
-func (s *surface) handleCentralBankAudit(w http.ResponseWriter, r *http.Request) {
-	api.WriteAudit(w, r, s.network(), api.AuditFilterFrom(r, payment.CentralBankBook, ledger.ScopeLedger))
+func (s *surface) handleCentralBankAudit(r *http.Request) ([]api.AuditEventDTO, error) {
+	return api.AuditPage(r.Context(), s.network(), api.AuditFilterFrom(r, payment.CentralBankBook, ledger.ScopeLedger))
 }

@@ -1,6 +1,8 @@
 package centralbank
 
 import (
+	"net/http"
+
 	"github.com/raphi011/cbs/api"
 )
 
@@ -13,9 +15,9 @@ import (
 func Routes(inst Institution) *api.Router {
 	s := &surface{inst: inst}
 	mux := api.NewRouter()
-	mux.HandleFunc("GET /reserves", s.handleListReserves)
-	mux.HandleFunc("GET /reserves/{bic}", s.handleGetReserve)
-	mux.HandleFunc("GET /audit", s.handleCentralBankAudit)
+	mux.HandleFunc("GET /reserves", api.Handle(http.StatusOK, s.handleListReserves))
+	mux.HandleFunc("GET /reserves/{bic}", api.Handle(http.StatusOK, s.handleGetReserve))
+	mux.HandleFunc("GET /audit", api.Handle(http.StatusOK, s.handleCentralBankAudit))
 	// Every bank this deployment holds a database for. It is here rather than at
 	// the clearing house because the clearing house has no banks table — the csm shape
 	// holds a roster and nothing else, and a roster deliberately omits the founded
@@ -30,7 +32,7 @@ func Routes(inst Institution) *api.Router {
 	// operator's acts over a DEPLOYMENT, and a deployment is not an institution.
 	// The listener is where the operator's console is served; it is not the claim
 	// that the settlement agent is performing them.
-	mux.HandleFunc("GET /members", s.handleListParticipants)
+	mux.HandleFunc("GET /members", api.Handle(http.StatusOK, s.handleListParticipants))
 	// There is no POST here, and its absence is the shape of what the mesh
 	// changed. A settlement is performed on INSTRUCTION: the clearing house reaches
 	// a cut-off, sends a pacs.009, and the central bank's actor answers ACSC or
@@ -56,8 +58,8 @@ func Routes(inst Institution) *api.Router {
 	//
 	// What it still cannot reach is an individual payment: GET /payments is the
 	// clearing house's, and a real central bank does not see one.
-	mux.HandleFunc("GET /settlements", s.handleListSettlements)
-	mux.HandleFunc("GET /settlements/{sid}", s.handleGetSettlement)
+	mux.HandleFunc("GET /settlements", api.Handle(http.StatusOK, s.handleListSettlements))
+	mux.HandleFunc("GET /settlements/{sid}", api.Handle(http.StatusOK, s.handleGetSettlement))
 	mux.HandleFunc("GET /assets", api.HandleListAssets)
 	// Reset clears the store and reseeds it. It belongs to one operator because
 	// the deployment behind every listener serializes it per process, and the

@@ -6,45 +6,31 @@ import (
 	"github.com/raphi011/cbs/api"
 	"github.com/raphi011/cbs/deposit"
 	"github.com/raphi011/cbs/ledger"
+	"github.com/raphi011/cbs/payment"
 )
 
-func (s *surface) handleGetParticipant(w http.ResponseWriter, r *http.Request) {
-	p, ok := s.participant(w, r)
-	if !ok {
-		return
-	}
-	api.WriteJSON(w, http.StatusOK, api.ToParticipantDTO(p))
+func (s *surface) handleGetParticipant(r *http.Request, p *payment.Bank) (api.ParticipantDTO, error) {
+	return api.ToParticipantDTO(p), nil
 }
 
-func (s *surface) handleFundDeposit(w http.ResponseWriter, r *http.Request) {
-	p, ok := s.participant(w, r)
-	if !ok {
-		return
-	}
-	var req api.FundRequest
-	if err := api.DecodeJSON(r, &req); err != nil {
-		api.WriteBadRequest(w, err.Error())
-		return
-	}
+func (s *surface) handleFundDeposit(r *http.Request, p *payment.Bank, req api.FundRequest) (api.BalanceDTO, error) {
 	// No asset on the wire: the cash lands in the vault of whichever asset the
 	// funded account is denominated in, which the network reads for itself. A
 	// LODGEMENT does name one, because it is about the bank rather than about an
 	// account — see handleLodgeReserves.
-	if err := s.network().Deposit(r.Context(), p.ID, deposit.AccountID(req.Account), ledger.Amount(req.Amount), req.Description); err != nil {
-		api.WriteError(w, err)
-		return
+	did := deposit.AccountID(req.Account)
+	if err := s.network().Deposit(r.Context(), p.ID, did, ledger.Amount(req.Amount), req.Description); err != nil {
+		return api.BalanceDTO{}, err
 	}
-	acct, err := p.Deposit.GetAccount(r.Context(), deposit.AccountID(req.Account))
+	acct, err := p.Deposit.GetAccount(r.Context(), did)
 	if err != nil {
-		api.WriteError(w, err)
-		return
+		return api.BalanceDTO{}, err
 	}
-	bal, err := p.Deposit.GetBalance(r.Context(), deposit.AccountID(req.Account))
+	bal, err := p.Deposit.GetBalance(r.Context(), did)
 	if err != nil {
-		api.WriteError(w, err)
-		return
+		return api.BalanceDTO{}, err
 	}
-	api.WriteJSON(w, http.StatusOK, api.ToBalanceDTO(bal, acct.Asset))
+	return api.ToBalanceDTO(bal, acct.Asset), nil
 }
 
 // handleLodgeReserves is a bank placing its own vault cash on reserve at the
@@ -77,19 +63,9 @@ func (s *surface) handleFundDeposit(w http.ResponseWriter, r *http.Request) {
 // has no reserve to lodge into. Taking cash in is not refused the same way —
 // cash over the counter is the bank's own money in its own book, and
 // mesh.TestTakingCashInReachesNoOtherInstitution is where that is held.
-func (s *surface) handleLodgeReserves(w http.ResponseWriter, r *http.Request) {
-	p, ok := s.participant(w, r)
-	if !ok {
-		return
-	}
-	var req api.LodgementRequest
-	if err := api.DecodeJSON(r, &req); err != nil {
-		api.WriteBadRequest(w, err.Error())
-		return
-	}
+func (s *surface) handleLodgeReserves(r *http.Request, p *payment.Bank, req api.LodgementRequest) (api.LodgementDTO, error) {
 	if req.Asset == "" {
-		api.WriteBadRequest(w, "asset is required: a bank holds one pot of vault cash per asset and nothing else in this request says which")
-		return
+		return api.LodgementDTO{}, api.BadRequest("asset is required: a bank holds one pot of vault cash per asset and nothing else in this request says which")
 	}
 	in, err := s.inst.Lodge(r.Context(), ledger.AssetCode(req.Asset), ledger.Amount(req.Amount))
 	if err != nil {
@@ -102,8 +78,7 @@ func (s *surface) handleLodgeReserves(w http.ResponseWriter, r *http.Request) {
 			s.inst.Log().Error("api: a lodgement committed and its instruction did not go out",
 				"bank", p.BIC, "lodgement", in.Ref, "asset", in.Asset, "amount", in.Amount, "err", err)
 		}
-		api.WriteError(w, err)
-		return
+		return api.LodgementDTO{}, err
 	}
-	api.WriteJSON(w, http.StatusAccepted, api.ToLodgementDTO(in))
+	return api.ToLodgementDTO(in), nil
 }

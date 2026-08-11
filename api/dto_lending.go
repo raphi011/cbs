@@ -1,7 +1,6 @@
 package api
 
 import (
-	"fmt"
 	"sort"
 	"time"
 
@@ -86,11 +85,6 @@ type FacilityDTO struct {
 // is indistinguishable from an explicitly-set one, and a revolving line — which
 // has no amortization method — would otherwise render a misleading "Annuity".
 func ToFacilityDTO(f lending.Facility, t lending.FacilityTerms, at lending.FacilityPositions, drawn, accrued, refund ledger.Amount) FacilityDTO {
-	outstanding := drawn
-	if accrued > 0 {
-		outstanding += accrued
-	}
-
 	dto := FacilityDTO{
 		ID:    string(f.ID),
 		Kind:  f.Kind.String(),
@@ -105,7 +99,7 @@ func ToFacilityDTO(f lending.Facility, t lending.FacilityTerms, at lending.Facil
 
 		Drawn:           int64(drawn),
 		AccruedInterest: int64(accrued),
-		Outstanding:     int64(outstanding),
+		Outstanding:     int64(lending.OutstandingOf(drawn, accrued)),
 		RefundPayable:   int64(refund),
 
 		Rate:      int64(t.Rate),
@@ -344,7 +338,7 @@ func FacilityKindFromString(s string) (lending.FacilityKind, error) {
 	case "RevolvingLine":
 		return lending.RevolvingLine, nil
 	default:
-		return 0, fmt.Errorf("invalid facility kind %q (want TermLoan or RevolvingLine)", s)
+		return 0, BadRequest("invalid facility kind %q (want TermLoan or RevolvingLine)", s)
 	}
 }
 
@@ -355,7 +349,7 @@ func AmortMethodFromString(s string) (lending.AmortMethod, error) {
 	case "EqualPrincipal":
 		return lending.EqualPrincipal, nil
 	default:
-		return 0, fmt.Errorf("invalid amortization method %q (want Annuity or EqualPrincipal)", s)
+		return 0, BadRequest("invalid amortization method %q (want Annuity or EqualPrincipal)", s)
 	}
 }
 
@@ -370,6 +364,6 @@ func DayCountFromString(s string) (interest.DayCount, error) {
 	case "30/360":
 		return interest.Thirty360, nil
 	default:
-		return 0, fmt.Errorf("invalid day-count convention %q (want ACT/365, ACT/360, or 30/360)", s)
+		return 0, BadRequest("invalid day-count convention %q (want ACT/365, ACT/360, or 30/360)", s)
 	}
 }

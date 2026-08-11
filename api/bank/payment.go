@@ -24,11 +24,10 @@ func (s *surface) isParty(p payment.Payment) bool {
 	return p.DebtorDetails.Agent == s.boundBIC() || p.CreditorDetails.Agent == s.boundBIC()
 }
 
-func (s *surface) handleListBankPayments(w http.ResponseWriter, r *http.Request) {
+func (s *surface) handleListBankPayments(r *http.Request) ([]api.PaymentDTO, error) {
 	payments, err := s.network().ListPayments(r.Context())
 	if err != nil {
-		api.WriteError(w, err)
-		return
+		return nil, err
 	}
 	schemes := s.network().ListSchemes()
 	// Built with a zero length rather than len(payments) so a bank that is party
@@ -39,23 +38,21 @@ func (s *surface) handleListBankPayments(w http.ResponseWriter, r *http.Request)
 			out = append(out, api.ToPaymentDTO(p, schemes))
 		}
 	}
-	api.WriteJSON(w, http.StatusOK, out)
+	return out, nil
 }
 
 // handleGetBankPayment answers 404 — not 403 — for a payment this bank is not
 // party to. A payment it cannot see does not exist as far as its API is
 // concerned, and a 403 would confirm that the id names something real.
-func (s *surface) handleGetBankPayment(w http.ResponseWriter, r *http.Request) {
+func (s *surface) handleGetBankPayment(r *http.Request) (api.PaymentDTO, error) {
 	p, err := s.network().GetPayment(r.Context(), payment.PaymentID(r.PathValue("payid")))
 	if err != nil {
-		api.WriteError(w, err)
-		return
+		return api.PaymentDTO{}, err
 	}
 	if !s.isParty(p) {
-		api.WriteError(w, payment.ErrPaymentNotFound)
-		return
+		return api.PaymentDTO{}, payment.ErrPaymentNotFound
 	}
-	api.WriteJSON(w, http.StatusOK, api.ToPaymentDTO(p, s.network().ListSchemes()))
+	return api.ToPaymentDTO(p, s.network().ListSchemes()), nil
 }
 
 // handleSubmitPayment accepts a payment instruction from this bank's own
@@ -83,12 +80,7 @@ func (s *surface) handleGetBankPayment(w http.ResponseWriter, r *http.Request) {
 // message, long after this response was written, and each lands on the payment's
 // own row instead. A failure that reached nobody at all is a mesh dead letter,
 // which is the point of Drain returning them.
-func (s *surface) handleSubmitPayment(w http.ResponseWriter, r *http.Request) {
-	var req api.InitiatePaymentRequest
-	if err := api.DecodeJSON(r, &req); err != nil {
-		api.WriteBadRequest(w, err.Error())
-		return
-	}
+func (s *surface) handleSubmitPayment(r *http.Request, req api.InitiatePaymentRequest) (api.SubmittedPaymentDTO, error) {
 	dom := req.ToDomain()
 	// A bank submits on behalf of its own customer and nobody else's, and this
 	// listener IS that bank. This is scoping, not authorization: it says which
@@ -106,8 +98,7 @@ func (s *surface) handleSubmitPayment(w http.ResponseWriter, r *http.Request) {
 	// reason.
 	sc, ok := s.network().Scheme(dom.Scheme)
 	if !ok {
-		api.WriteError(w, payment.ErrSchemeNotFound)
-		return
+		return api.SubmittedPaymentDTO{}, payment.ErrSchemeNotFound
 	}
 	// The submitting side's agent comes from the PORT and from nowhere else.
 	//
@@ -139,8 +130,7 @@ func (s *surface) handleSubmitPayment(w http.ResponseWriter, r *http.Request) {
 			s.inst.Log().Error("api: a submission committed and its instruction did not go out",
 				"payment", p.ID, "status", p.Status, "error", err)
 		}
-		api.WriteError(w, err)
-		return
+		return api.SubmittedPaymentDTO{}, err
 	}
-	api.WriteJSON(w, http.StatusAccepted, api.SubmittedPaymentDTO{PaymentID: string(p.ID)})
+	return api.SubmittedPaymentDTO{PaymentID: string(p.ID)}, nil
 }

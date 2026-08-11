@@ -1,6 +1,8 @@
 package csm
 
 import (
+	"net/http"
+
 	"github.com/raphi011/cbs/api"
 )
 
@@ -29,7 +31,7 @@ func Routes(inst Institution) *api.Router {
 	// This institution's share of admission is one act: refuse an address it has
 	// already admitted somebody else to, and write the routing entry from the
 	// settlement agent's answer (payment.AdmitMemberTx).
-	mux.HandleFunc("GET /schemes", s.handleListSchemes)
+	mux.HandleFunc("GET /schemes", api.Handle(http.StatusOK, s.handleListSchemes))
 	// The ROUTING directory, and it is the one the paragraph above says this
 	// institution genuinely owns: roster_entries, written by payment.AdmitMemberTx
 	// from the settlement agent's acknowledgement. It answers "where may a message
@@ -42,9 +44,9 @@ func Routes(inst Institution) *api.Router {
 	// shape has no deposit register, not a thing it could reach. The bank's port
 	// has a lookup in that bank's own register (api/bank); what a clearing house
 	// has always actually had is the roster.
-	mux.HandleFunc("GET /roster", s.handleListRoster)
+	mux.HandleFunc("GET /roster", api.Handle(http.StatusOK, s.handleListRoster))
 	mux.HandleFunc("GET /assets", api.HandleListAssets)
-	mux.HandleFunc("GET /payments/audit", s.handlePaymentAudit)
+	mux.HandleFunc("GET /payments/audit", api.Handle(http.StatusOK, s.handlePaymentAudit))
 	// The MANDATES are not here. A mandate is the creditor bank's own row — in
 	// SEPA the creditor holds it, and the bank that checks one at submission is the
 	// creditor's (payment.SDD.ValidateMandate) — so this console would hold every

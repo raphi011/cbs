@@ -7,24 +7,22 @@ import (
 	"github.com/raphi011/cbs/payment"
 )
 
-func (s *surface) handleListSettlements(w http.ResponseWriter, r *http.Request) {
+func (s *surface) handleListSettlements(r *http.Request) ([]api.SettlementDTO, error) {
 	settlements, err := s.network().ListSettlements(r.Context())
 	if err != nil {
-		api.WriteError(w, err)
-		return
+		return nil, err
 	}
 	out := make([]api.SettlementDTO, len(settlements))
 	for i, st := range settlements {
 		out[i] = api.ToSettlementDTO(st)
 	}
-	api.WriteJSON(w, http.StatusOK, out)
+	return out, nil
 }
 
-func (s *surface) handleGetSettlement(w http.ResponseWriter, r *http.Request) {
+func (s *surface) handleGetSettlement(r *http.Request) (api.SettlementDTO, error) {
 	st, err := s.network().GetSettlement(r.Context(), payment.SettlementID(r.PathValue("sid")))
 	if err != nil {
-		api.WriteError(w, err)
-		return
+		return api.SettlementDTO{}, err
 	}
-	api.WriteJSON(w, http.StatusOK, api.ToSettlementDTO(st))
+	return api.ToSettlementDTO(st), nil
 }

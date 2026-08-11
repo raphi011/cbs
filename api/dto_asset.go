@@ -37,5 +37,5 @@ func HandleListAssets(w http.ResponseWriter, r *http.Request) {
 	for i, a := range defs {
 		out[i] = ToAssetDTO(a)
 	}
-	WriteJSON(w, http.StatusOK, out)
+	writeJSON(w, http.StatusOK, out)
 }

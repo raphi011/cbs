@@ -32,14 +32,14 @@ func (s *surface) registerReconciliationRoutes(mux *api.Router) {
 	// deliberately, because a finding is a pure function of the books at a moment
 	// and a stored one is a cache that can disagree with them. What comes back is
 	// the report, and it names no resource to go and fetch.
-	mux.HandleFunc("POST /reconciliation", s.handleReconcile)
+	mux.HandleFunc("POST /reconciliation", api.Handle(http.StatusOK, s.handleReconcile))
 	// The stored camt.053s, read back. This is where a break naming a reference
 	// sends its reader.
-	mux.HandleFunc("GET /settlement-advices", s.handleListSettlementAdvices)
+	mux.HandleFunc("GET /settlement-advices", api.Handle(http.StatusOK, s.handleListSettlementAdvices))
 	// The two in-transit accounts, aged. Reads, and they judge nothing that
 	// running them again would change.
-	mux.HandleFunc("GET /clearing-suspense/ageing", s.handleAgeClearingSuspense)
-	mux.HandleFunc("GET /unclaimed-balances/ageing", s.handleAgeUnclaimedBalances)
+	mux.HandleFunc("GET /clearing-suspense/ageing", api.Handle(http.StatusOK, s.handleAgeClearingSuspense))
+	mux.HandleFunc("GET /unclaimed-balances/ageing", api.Handle(http.StatusOK, s.handleAgeUnclaimedBalances))
 }
 
 // assetParam reads the asset a report is about off the query string.
@@ -50,13 +50,12 @@ func (s *surface) registerReconciliationRoutes(mux *api.Router) {
 // which is why payment.BankAccounts is resolved per asset and why nothing in the
 // domain will take the question without one. Defaulting it to EUR would answer
 // confidently about an asset the caller did not ask about.
-func assetParam(w http.ResponseWriter, r *http.Request) (ledger.AssetCode, bool) {
+func assetParam(r *http.Request) (ledger.AssetCode, error) {
 	code := r.URL.Query().Get("asset")
 	if code == "" {
-		api.WriteBadRequest(w, "asset is required: a bank holds one reserve and one clearing suspense per asset, and a report over all of them at once would add one money to another")
-		return "", false
+		return "", api.BadRequest("asset is required: a bank holds one reserve and one clearing suspense per asset, and a report over all of them at once would add one money to another")
 	}
-	return ledger.AssetCode(code), true
+	return ledger.AssetCode(code), nil
 }
 
 // handleReconcile runs this bank's own reconciliation for one asset.
@@ -68,17 +67,16 @@ func assetParam(w http.ResponseWriter, r *http.Request) (ledger.AssetCode, bool)
 // with how long it has been: a clearing suspense has no closed-form identity from
 // inside one bank, because the mirror leg is netted and names no payment, so it
 // is reported with an age and never as a break.
-func (s *surface) handleReconcile(w http.ResponseWriter, r *http.Request) {
-	asset, ok := assetParam(w, r)
-	if !ok {
-		return
+func (s *surface) handleReconcile(r *http.Request) (api.ReconciliationDTO, error) {
+	asset, err := assetParam(r)
+	if err != nil {
+		return api.ReconciliationDTO{}, err
 	}
 	rec, err := s.network().Reconcile(r.Context(), asset)
 	if err != nil {
-		api.WriteError(w, err)
-		return
+		return api.ReconciliationDTO{}, err
 	}
-	api.WriteJSON(w, http.StatusOK, api.ToReconciliationDTO(rec))
+	return api.ToReconciliationDTO(rec), nil
 }
 
 // handleListSettlementAdvices answers every statement this bank has been sent,
@@ -90,17 +88,16 @@ func (s *surface) handleReconcile(w http.ResponseWriter, r *http.Request) {
 // carries its own asset. A client wanting one asset's statements has the field to
 // filter on; a client wanting all of them cannot assemble the list from a route
 // that demands an asset it does not know the bank operates in.
-func (s *surface) handleListSettlementAdvices(w http.ResponseWriter, r *http.Request) {
+func (s *surface) handleListSettlementAdvices(r *http.Request) ([]api.SettlementAdviceDTO, error) {
 	advices, err := s.network().ListSettlementAdvices(r.Context())
 	if err != nil {
-		api.WriteError(w, err)
-		return
+		return nil, err
 	}
 	out := make([]api.SettlementAdviceDTO, 0, len(advices))
 	for _, a := range advices {
 		out = append(out, api.ToSettlementAdviceDTO(a))
 	}
-	api.WriteJSON(w, http.StatusOK, out)
+	return out, nil
 }
 
 // handleAgeClearingSuspense decomposes this bank's clearing suspense by age.
@@ -109,17 +106,16 @@ func (s *surface) handleListSettlementAdvices(w http.ResponseWriter, r *http.Req
 // what discharges it is a conversation — so no lot here carries a deadline and
 // none is ever overdue, however old it is. What the report gives an operator is
 // the age; what counts as too long is their judgement.
-func (s *surface) handleAgeClearingSuspense(w http.ResponseWriter, r *http.Request) {
-	asset, ok := assetParam(w, r)
-	if !ok {
-		return
+func (s *surface) handleAgeClearingSuspense(r *http.Request) (api.AgeingReportDTO, error) {
+	asset, err := assetParam(r)
+	if err != nil {
+		return api.AgeingReportDTO{}, err
 	}
 	rep, err := s.network().AgeClearingSuspense(r.Context(), asset)
 	if err != nil {
-		api.WriteError(w, err)
-		return
+		return api.AgeingReportDTO{}, err
 	}
-	api.WriteJSON(w, http.StatusOK, api.ToAgeingReportDTO(rep))
+	return api.ToAgeingReportDTO(rep), nil
 }
 
 // handleAgeUnclaimedBalances decomposes this bank's unclaimed balances by age
@@ -131,15 +127,14 @@ func (s *surface) handleAgeClearingSuspense(w http.ResponseWriter, r *http.Reque
 // reason this bank cannot clear it — a pull whose return is the other bank's to
 // send, a refund whose payer has already been sent it back once. See
 // payment.AgeUnclaimedBalances.
-func (s *surface) handleAgeUnclaimedBalances(w http.ResponseWriter, r *http.Request) {
-	asset, ok := assetParam(w, r)
-	if !ok {
-		return
+func (s *surface) handleAgeUnclaimedBalances(r *http.Request) (api.AgeingReportDTO, error) {
+	asset, err := assetParam(r)
+	if err != nil {
+		return api.AgeingReportDTO{}, err
 	}
 	rep, err := s.network().AgeUnclaimedBalances(r.Context(), asset)
 	if err != nil {
-		api.WriteError(w, err)
-		return
+		return api.AgeingReportDTO{}, err
 	}
-	api.WriteJSON(w, http.StatusOK, api.ToAgeingReportDTO(rep))
+	return api.ToAgeingReportDTO(rep), nil
 }

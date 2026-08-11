@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"net/http"
 	"strconv"
 
@@ -49,18 +50,17 @@ func AuditFilterFrom(r *http.Request, book ledger.BookID, scope ledger.Scope) le
 	return f
 }
 
-// WriteAudit runs one filter against one institution's network and renders the
+// AuditPage runs one filter against one institution's network and renders the
 // page. Every audit route on every surface ends here, so all of them share the
 // ordering, the DTO and the empty-page shape.
-func WriteAudit(w http.ResponseWriter, r *http.Request, net *payment.Network, f ledger.AuditFilter) {
-	events, err := net.ListAudit(r.Context(), f)
+func AuditPage(ctx context.Context, net *payment.Network, f ledger.AuditFilter) ([]AuditEventDTO, error) {
+	events, err := net.ListAudit(ctx, f)
 	if err != nil {
-		WriteError(w, err)
-		return
+		return nil, err
 	}
 	out := make([]AuditEventDTO, len(events))
 	for i, e := range events {
 		out[i] = ToAuditDTO(e)
 	}
-	WriteJSON(w, http.StatusOK, out)
+	return out, nil
 }

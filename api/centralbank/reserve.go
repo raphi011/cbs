@@ -18,17 +18,16 @@ import (
 // on this listener: it reaches past this institution to databases that are not
 // the settlement agent's, and the router below is where that exception is
 // written down.
-func (s *surface) handleListParticipants(w http.ResponseWriter, r *http.Request) {
+func (s *surface) handleListParticipants(r *http.Request) ([]api.ParticipantDTO, error) {
 	banks, err := s.inst.Members(r.Context())
 	if err != nil {
-		api.WriteError(w, err)
-		return
+		return nil, err
 	}
 	out := make([]api.ParticipantDTO, 0, len(banks))
 	for _, p := range banks {
 		out = append(out, api.ToParticipantDTO(p))
 	}
-	api.WriteJSON(w, http.StatusOK, out)
+	return out, nil
 }
 
 // handleListReserves reports every reserve this central bank holds — one row per
@@ -36,22 +35,20 @@ func (s *surface) handleListParticipants(w http.ResponseWriter, r *http.Request)
 // in another and the two must not be added up.
 //
 // The list is the settlement agent's OWN register. See reserveRows.
-func (s *surface) handleListReserves(w http.ResponseWriter, r *http.Request) {
+func (s *surface) handleListReserves(r *http.Request) ([]api.ReserveDTO, error) {
 	members, err := s.network().ListSettlementMembers(r.Context())
 	if err != nil {
-		api.WriteError(w, err)
-		return
+		return nil, err
 	}
 	out := make([]api.ReserveDTO, 0, len(members))
 	for _, m := range members {
 		rows, err := s.reserveRows(r, m)
 		if err != nil {
-			api.WriteError(w, err)
-			return
+			return nil, err
 		}
 		out = append(out, rows...)
 	}
-	api.WriteJSON(w, http.StatusOK, out)
+	return out, nil
 }
 
 // handleGetReserve reports one member's reserves, one row per asset, for the
@@ -61,18 +58,12 @@ func (s *surface) handleListReserves(w http.ResponseWriter, r *http.Request) {
 // keyed by and the only name for a bank it is ever told. A bank it holds no
 // account for is the 422 the sentinel already mapped to rather than a 404 about
 // a bank row this institution has no table for.
-func (s *surface) handleGetReserve(w http.ResponseWriter, r *http.Request) {
+func (s *surface) handleGetReserve(r *http.Request) ([]api.ReserveDTO, error) {
 	m, err := s.network().GetSettlementMember(r.Context(), iso20022.BIC(r.PathValue("bic")))
 	if err != nil {
-		api.WriteError(w, err)
-		return
+		return nil, err
 	}
-	out, err := s.reserveRows(r, m)
-	if err != nil {
-		api.WriteError(w, err)
-		return
-	}
-	api.WriteJSON(w, http.StatusOK, out)
+	return s.reserveRows(r, m)
 }
 
 // reserveRows reads one member's reserve in each asset the settlement agent

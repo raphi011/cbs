@@ -30,12 +30,18 @@
 // ability to reach another operator's data by editing a URL, because that URL
 // does not exist on the port you are talking to.
 //
-// # No business logic anywhere in the three
+// # No business logic anywhere in the three, and no writing either
 //
-// Handlers decode request DTOs, call the domain methods, and encode response
-// DTOs; the DTO layer renders the domain's integer enums as strings and keeps
-// monetary amounts as integer minor units. Domain sentinel errors are mapped to
-// HTTP status codes by errorStatus, here, once.
+// A handler calls the domain methods and RETURNS a response DTO and an error;
+// Handle is what decodes, maps the error, chooses the status and encodes. The
+// writers are unexported, so that is not a convention the three keep — it is the
+// only way they can answer at all. Domain sentinel errors become HTTP status
+// codes in errorStatus, here, once.
+//
+// The DTO layer renders the domain's integer enums as strings and keeps monetary
+// amounts as integer minor units, and it does no I/O: a To…DTO is a pure
+// function of the values handed to it. What a response needs a read for is in
+// transaction.go and audit.go.
 //
 // It is built entirely on the standard library (net/http with the Go 1.22+
 // method+path ServeMux patterns), keeping the module dependency-free.

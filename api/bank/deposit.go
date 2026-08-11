@@ -13,30 +13,30 @@ import (
 )
 
 func (s *surface) registerDepositRoutes(mux *api.Router) {
-	mux.HandleFunc("POST /deposit-accounts", s.handleOpenDepositAccount)
-	mux.HandleFunc("GET /deposit-accounts", s.handleListDepositAccounts)
-	mux.HandleFunc("GET /deposit-accounts/{did}", s.handleGetDepositAccount)
-	mux.HandleFunc("GET /deposit-accounts/{did}/balance", s.handleDepositBalance)
-	mux.HandleFunc("POST /deposit-accounts/{did}/status", s.handleDepositStatus)
-	mux.HandleFunc("DELETE /deposit-accounts/{did}", s.handleCloseDepositAccount)
+	mux.HandleFunc("POST /deposit-accounts", handleBody(s, http.StatusCreated, s.handleOpenDepositAccount))
+	mux.HandleFunc("GET /deposit-accounts", handle(s, http.StatusOK, s.handleListDepositAccounts))
+	mux.HandleFunc("GET /deposit-accounts/{did}", handle(s, http.StatusOK, s.handleGetDepositAccount))
+	mux.HandleFunc("GET /deposit-accounts/{did}/balance", handle(s, http.StatusOK, s.handleDepositBalance))
+	mux.HandleFunc("POST /deposit-accounts/{did}/status", handleBody(s, http.StatusOK, s.handleDepositStatus))
+	mux.HandleFunc("DELETE /deposit-accounts/{did}", handle(s, http.StatusNoContent, s.handleCloseDepositAccount))
 
 	// The three writes the old overdraft-terms POST conflated, split along the
 	// pinned/floating seam: a limit is an underwriting decision about one
 	// customer, a price is the product's, and a migration is neither.
-	mux.HandleFunc("POST /deposit-accounts/{did}/overdraft-limit", s.handleSetOverdraftLimit)
-	mux.HandleFunc("POST /deposit-accounts/{did}/overdraft-pricing", s.handleSetOverdraftPricing)
-	mux.HandleFunc("POST /deposit-accounts/{did}/product", s.handleChangeProduct)
-	mux.HandleFunc("GET /deposit-accounts/{did}/overdraft-terms", s.handleListOverdraftTerms)
-	mux.HandleFunc("POST /deposit-accounts/{did}/interest-charge", s.handleChargeOverdraftInterest)
+	mux.HandleFunc("POST /deposit-accounts/{did}/overdraft-limit", handleBody(s, http.StatusOK, s.handleSetOverdraftLimit))
+	mux.HandleFunc("POST /deposit-accounts/{did}/overdraft-pricing", handleBody(s, http.StatusOK, s.handleSetOverdraftPricing))
+	mux.HandleFunc("POST /deposit-accounts/{did}/product", handleBody(s, http.StatusOK, s.handleChangeProduct))
+	mux.HandleFunc("GET /deposit-accounts/{did}/overdraft-terms", handle(s, http.StatusOK, s.handleListOverdraftTerms))
+	mux.HandleFunc("POST /deposit-accounts/{did}/interest-charge", handleBody(s, http.StatusOK, s.handleChargeOverdraftInterest))
 
-	mux.HandleFunc("POST /deposit-accounts/{did}/holds", s.handleCreateHold)
-	mux.HandleFunc("GET /deposit-accounts/{did}/holds", s.handleListHolds)
-	mux.HandleFunc("GET /holds/{hid}", s.handleGetHold)
-	mux.HandleFunc("POST /holds/{hid}/release", s.handleReleaseHold)
-	mux.HandleFunc("POST /holds/{hid}/capture", s.handleCaptureHold)
+	mux.HandleFunc("POST /deposit-accounts/{did}/holds", handleBody(s, http.StatusCreated, s.handleCreateHold))
+	mux.HandleFunc("GET /deposit-accounts/{did}/holds", handle(s, http.StatusOK, s.handleListHolds))
+	mux.HandleFunc("GET /holds/{hid}", handle(s, http.StatusOK, s.handleGetHold))
+	mux.HandleFunc("POST /holds/{hid}/release", handle(s, http.StatusNoContent, s.handleReleaseHold))
+	mux.HandleFunc("POST /holds/{hid}/capture", handleBody(s, http.StatusCreated, s.handleCaptureHold))
 
-	mux.HandleFunc("POST /deposit-accounts/{did}/snapshots", s.handleTakeSnapshot)
-	mux.HandleFunc("GET /deposit-accounts/{did}/snapshots", s.handleGetSnapshots)
+	mux.HandleFunc("POST /deposit-accounts/{did}/snapshots", handleBody(s, http.StatusCreated, s.handleTakeSnapshot))
+	mux.HandleFunc("GET /deposit-accounts/{did}/snapshots", handle(s, http.StatusOK, s.handleGetSnapshots))
 }
 
 // handleTransfer moves money between two of this bank's own deposit accounts.
@@ -54,16 +54,7 @@ func (s *surface) registerDepositRoutes(mux *api.Router) {
 // payment, and POST /payments is where it goes. The two routes state one rule
 // from opposite sides: this one refuses an address that is not here, and
 // submission refuses one that is (payment.ErrOnUsPayment).
-func (s *surface) handleTransfer(w http.ResponseWriter, r *http.Request) {
-	p, ok := s.participant(w, r)
-	if !ok {
-		return
-	}
-	var req api.TransferRequest
-	if err := api.DecodeJSON(r, &req); err != nil {
-		api.WriteBadRequest(w, err.Error())
-		return
-	}
+func (s *surface) handleTransfer(r *http.Request, p *payment.Bank, req api.TransferRequest) (api.TransferDTO, error) {
 	// The address is resolved BEFORE the transfer's unit of work, and it cannot
 	// go stale in between: an IBAN at this bank never moves between accounts.
 	// Reissuing gives one account a fresh address rather than handing an old one
@@ -74,50 +65,35 @@ func (s *surface) handleTransfer(w http.ResponseWriter, r *http.Request) {
 		Value:  req.To,
 	})
 	if err != nil {
-		api.WriteError(w, err)
-		return
+		return api.TransferDTO{}, err
 	}
 	from := deposit.AccountID(req.From)
 	glTx, err := p.Deposit.Transfer(r.Context(), from, payee.ID, ledger.Amount(req.Amount), req.Description)
 	if err != nil {
-		api.WriteError(w, err)
-		return
+		return api.TransferDTO{}, err
 	}
 	payer, err := p.Deposit.GetAccount(r.Context(), from)
 	if err != nil {
-		api.WriteError(w, err)
-		return
+		return api.TransferDTO{}, err
 	}
 	bal, err := p.Deposit.GetBalance(r.Context(), from)
 	if err != nil {
-		api.WriteError(w, err)
-		return
+		return api.TransferDTO{}, err
 	}
-	api.WriteJSON(w, http.StatusOK, api.TransferDTO{
+	return api.TransferDTO{
 		TransactionID: string(glTx.ID),
 		From:          string(from),
 		To:            string(payee.ID),
 		Balance:       api.ToBalanceDTO(bal, payer.Asset),
-	})
+	}, nil
 }
 
-func (s *surface) handleOpenDepositAccount(w http.ResponseWriter, r *http.Request) {
-	p, ok := s.participant(w, r)
-	if !ok {
-		return
-	}
-	var req api.OpenDepositAccountRequest
-	if err := api.DecodeJSON(r, &req); err != nil {
-		api.WriteBadRequest(w, err.Error())
-		return
-	}
+func (s *surface) handleOpenDepositAccount(r *http.Request, p *payment.Bank, req api.OpenDepositAccountRequest) (api.DepositAccountDTO, error) {
 	if req.Asset == "" {
-		api.WriteBadRequest(w, "asset is required")
-		return
+		return api.DepositAccountDTO{}, api.BadRequest("asset is required")
 	}
 	if req.ProductID == "" {
-		api.WriteBadRequest(w, "productId is required")
-		return
+		return api.DepositAccountDTO{}, api.BadRequest("productId is required")
 	}
 	idents := make([]deposit.Identifier, len(req.Identifiers))
 	for i, ident := range req.Identifiers {
@@ -126,35 +102,19 @@ func (s *surface) handleOpenDepositAccount(w http.ResponseWriter, r *http.Reques
 	acct, err := p.Deposit.OpenAccount(r.Context(), req.Name,
 		ledger.AssetCode(req.Asset), product.ID(req.ProductID), ledger.Amount(req.OverdraftLimit), idents...)
 	if err != nil {
-		api.WriteError(w, err)
-		return
+		return api.DepositAccountDTO{}, err
 	}
 	// The limit reaches the response through the account's opening terms row
 	// rather than through the value returned above: it is a terms field now,
 	// and reading it back is what keeps the created body and a later GET the
 	// same shape.
-	withTerms, err := p.Deposit.GetAccountWithTerms(r.Context(), acct.ID)
-	if err != nil {
-		api.WriteError(w, err)
-		return
-	}
-	control, err := p.Deposit.ControlAccount(r.Context(), withTerms.Account.Asset)
-	if err != nil {
-		api.WriteError(w, err)
-		return
-	}
-	api.WriteJSON(w, http.StatusCreated, api.ToDepositAccountDTO(withTerms.Account, withTerms.Terms, control))
+	return accountWithTermsDTO(r, p, acct.ID)
 }
 
-func (s *surface) handleListDepositAccounts(w http.ResponseWriter, r *http.Request) {
-	p, ok := s.participant(w, r)
-	if !ok {
-		return
-	}
+func (s *surface) handleListDepositAccounts(r *http.Request, p *payment.Bank) ([]api.DepositAccountDTO, error) {
 	accts, err := p.Deposit.ListAccountsWithTerms(r.Context())
 	if err != nil {
-		api.WriteError(w, err)
-		return
+		return nil, err
 	}
 	// One resolution per ASSET rather than per account: the line is the same
 	// for every customer holding that currency, and a listing that asked the
@@ -167,61 +127,36 @@ func (s *surface) handleListDepositAccounts(w http.ResponseWriter, r *http.Reque
 		if !ok {
 			control, err = p.Deposit.ControlAccount(r.Context(), a.Account.Asset)
 			if err != nil {
-				api.WriteError(w, err)
-				return
+				return nil, err
 			}
 			controls[a.Account.Asset] = control
 		}
 		out[i] = api.ToDepositAccountDTO(a.Account, a.Terms, control)
 	}
-	api.WriteJSON(w, http.StatusOK, out)
+	return out, nil
 }
 
-func (s *surface) handleGetDepositAccount(w http.ResponseWriter, r *http.Request) {
-	p, ok := s.participant(w, r)
-	if !ok {
-		return
-	}
-	acct, err := p.Deposit.GetAccountWithTerms(r.Context(), deposit.AccountID(r.PathValue("did")))
-	if err != nil {
-		api.WriteError(w, err)
-		return
-	}
-	writeAccountDTO(w, r, p, acct)
+func (s *surface) handleGetDepositAccount(r *http.Request, p *payment.Bank) (api.DepositAccountDTO, error) {
+	return accountWithTermsDTO(r, p, deposit.AccountID(r.PathValue("did")))
 }
 
-func (s *surface) handleDepositBalance(w http.ResponseWriter, r *http.Request) {
-	p, ok := s.participant(w, r)
-	if !ok {
-		return
-	}
+func (s *surface) handleDepositBalance(r *http.Request, p *payment.Bank) (api.BalanceDTO, error) {
 	did := deposit.AccountID(r.PathValue("did"))
 	acct, err := p.Deposit.GetAccount(r.Context(), did)
 	if err != nil {
-		api.WriteError(w, err)
-		return
+		return api.BalanceDTO{}, err
 	}
 	bal, err := p.Deposit.GetBalance(r.Context(), did)
 	if err != nil {
-		api.WriteError(w, err)
-		return
+		return api.BalanceDTO{}, err
 	}
-	api.WriteJSON(w, http.StatusOK, api.ToBalanceDTO(bal, acct.Asset))
+	return api.ToBalanceDTO(bal, acct.Asset), nil
 }
 
 // handleDepositStatus dispatches a lifecycle transition based on the request's
 // "action" field. This keeps the four transitions behind one URL, which suits a
 // frontend status dropdown.
-func (s *surface) handleDepositStatus(w http.ResponseWriter, r *http.Request) {
-	p, ok := s.participant(w, r)
-	if !ok {
-		return
-	}
-	var req api.StatusRequest
-	if err := api.DecodeJSON(r, &req); err != nil {
-		api.WriteBadRequest(w, err.Error())
-		return
-	}
+func (s *surface) handleDepositStatus(r *http.Request, p *payment.Bank, req api.StatusRequest) (api.DepositAccountDTO, error) {
 	did := deposit.AccountID(r.PathValue("did"))
 	var err error
 	switch req.Action {
@@ -234,31 +169,16 @@ func (s *surface) handleDepositStatus(w http.ResponseWriter, r *http.Request) {
 	case "reactivate":
 		err = p.Deposit.Reactivate(r.Context(), did)
 	default:
-		api.WriteBadRequest(w, "invalid action (want freeze, unfreeze, markDormant, or reactivate)")
-		return
+		err = api.BadRequest("invalid action (want freeze, unfreeze, markDormant, or reactivate)")
 	}
 	if err != nil {
-		api.WriteError(w, err)
-		return
+		return api.DepositAccountDTO{}, err
 	}
-	acct, err := p.Deposit.GetAccountWithTerms(r.Context(), did)
-	if err != nil {
-		api.WriteError(w, err)
-		return
-	}
-	writeAccountDTO(w, r, p, acct)
+	return accountWithTermsDTO(r, p, did)
 }
 
-func (s *surface) handleCloseDepositAccount(w http.ResponseWriter, r *http.Request) {
-	p, ok := s.participant(w, r)
-	if !ok {
-		return
-	}
-	if err := p.Deposit.Close(r.Context(), deposit.AccountID(r.PathValue("did"))); err != nil {
-		api.WriteError(w, err)
-		return
-	}
-	w.WriteHeader(http.StatusNoContent)
+func (s *surface) handleCloseDepositAccount(r *http.Request, p *payment.Bank) (any, error) {
+	return nil, p.Deposit.Close(r.Context(), deposit.AccountID(r.PathValue("did")))
 }
 
 // The three handlers that replaced handleSetOverdraftTerms.
@@ -268,35 +188,16 @@ func (s *surface) handleCloseDepositAccount(w http.ResponseWriter, r *http.Reque
 // deposit endpoint returns — and so a future-dated change does not come back as
 // though it were already in force.
 
-func (s *surface) handleSetOverdraftLimit(w http.ResponseWriter, r *http.Request) {
-	p, ok := s.participant(w, r)
-	if !ok {
-		return
-	}
-	var req api.SetOverdraftLimitRequest
-	if err := api.DecodeJSON(r, &req); err != nil {
-		api.WriteBadRequest(w, err.Error())
-		return
-	}
+func (s *surface) handleSetOverdraftLimit(r *http.Request, p *payment.Bank, req api.SetOverdraftLimitRequest) (api.DepositAccountDTO, error) {
 	did := deposit.AccountID(r.PathValue("did"))
 	if _, err := p.Deposit.SetOverdraftLimit(r.Context(), did,
 		ledger.Amount(req.Limit), effectiveFromOrToday(req.EffectiveFrom)); err != nil {
-		api.WriteError(w, err)
-		return
+		return api.DepositAccountDTO{}, err
 	}
-	writeAccountWithTerms(w, r, p, did)
+	return accountWithTermsDTO(r, p, did)
 }
 
-func (s *surface) handleSetOverdraftPricing(w http.ResponseWriter, r *http.Request) {
-	p, ok := s.participant(w, r)
-	if !ok {
-		return
-	}
-	var req api.SetOverdraftPricingRequest
-	if err := api.DecodeJSON(r, &req); err != nil {
-		api.WriteBadRequest(w, err.Error())
-		return
-	}
+func (s *surface) handleSetOverdraftPricing(r *http.Request, p *payment.Bank, req api.SetOverdraftPricingRequest) (api.DepositAccountDTO, error) {
 	// A null pricing CLEARS the overlay, which is why this is a pointer all the
 	// way down rather than a zero value: a zero-rate overlay is a real
 	// interest-free product and must not be reachable by omission.
@@ -304,8 +205,7 @@ func (s *surface) handleSetOverdraftPricing(w http.ResponseWriter, r *http.Reque
 	if req.Pricing != nil {
 		dc, err := api.DayCountFromString(req.Pricing.DayCount)
 		if err != nil {
-			api.WriteBadRequest(w, err.Error())
-			return
+			return api.DepositAccountDTO{}, err
 		}
 		pricing = &product.OverdraftPricing{
 			Rate:           interest.Rate(req.Pricing.Rate),
@@ -316,33 +216,21 @@ func (s *surface) handleSetOverdraftPricing(w http.ResponseWriter, r *http.Reque
 	did := deposit.AccountID(r.PathValue("did"))
 	if _, err := p.Deposit.SetOverdraftPricingOverlay(r.Context(), did,
 		pricing, effectiveFromOrToday(req.EffectiveFrom)); err != nil {
-		api.WriteError(w, err)
-		return
+		return api.DepositAccountDTO{}, err
 	}
-	writeAccountWithTerms(w, r, p, did)
+	return accountWithTermsDTO(r, p, did)
 }
 
-func (s *surface) handleChangeProduct(w http.ResponseWriter, r *http.Request) {
-	p, ok := s.participant(w, r)
-	if !ok {
-		return
-	}
-	var req api.ChangeProductRequest
-	if err := api.DecodeJSON(r, &req); err != nil {
-		api.WriteBadRequest(w, err.Error())
-		return
-	}
+func (s *surface) handleChangeProduct(r *http.Request, p *payment.Bank, req api.ChangeProductRequest) (api.DepositAccountDTO, error) {
 	if req.ProductID == "" {
-		api.WriteBadRequest(w, "productId is required")
-		return
+		return api.DepositAccountDTO{}, api.BadRequest("productId is required")
 	}
 	did := deposit.AccountID(r.PathValue("did"))
 	if _, err := p.Deposit.ChangeProduct(r.Context(), did,
 		product.ID(req.ProductID), effectiveFromOrToday(req.EffectiveFrom)); err != nil {
-		api.WriteError(w, err)
-		return
+		return api.DepositAccountDTO{}, err
 	}
-	writeAccountWithTerms(w, r, p, did)
+	return accountWithTermsDTO(r, p, did)
 }
 
 // effectiveFromOrToday maps an absent date to the zero time, which every
@@ -357,46 +245,34 @@ func effectiveFromOrToday(t *time.Time) time.Time {
 	return *t
 }
 
-// writeAccountWithTerms is the response the three terms writes share.
-func writeAccountWithTerms(w http.ResponseWriter, r *http.Request, p *payment.Bank, did deposit.AccountID) {
+// accountWithTermsDTO renders one account, resolving the terms in force and the
+// control line its money is pooled in. Every single-account response goes
+// through here so that none of them can answer with the pair half-formed.
+func accountWithTermsDTO(r *http.Request, p *payment.Bank, did deposit.AccountID) (api.DepositAccountDTO, error) {
 	acct, err := p.Deposit.GetAccountWithTerms(r.Context(), did)
 	if err != nil {
-		api.WriteError(w, err)
-		return
+		return api.DepositAccountDTO{}, err
 	}
-	writeAccountDTO(w, r, p, acct)
-}
-
-// writeAccountDTO renders one account, resolving the control line its money is
-// pooled in. Every single-account response goes through here so that none of
-// them can answer with the pair half-formed.
-func writeAccountDTO(w http.ResponseWriter, r *http.Request, p *payment.Bank, acct deposit.AccountWithTerms) {
 	control, err := p.Deposit.ControlAccount(r.Context(), acct.Account.Asset)
 	if err != nil {
-		api.WriteError(w, err)
-		return
+		return api.DepositAccountDTO{}, err
 	}
-	api.WriteJSON(w, http.StatusOK, api.ToDepositAccountDTO(acct.Account, acct.Terms, control))
+	return api.ToDepositAccountDTO(acct.Account, acct.Terms, control), nil
 }
 
 // handleListOverdraftTerms returns an account's whole effective-dated terms
 // timeline, oldest first — including the opening row every account gets at
 // OpenAccount, which carries the limit it was opened with and zero rates.
-func (s *surface) handleListOverdraftTerms(w http.ResponseWriter, r *http.Request) {
-	p, ok := s.participant(w, r)
-	if !ok {
-		return
-	}
+func (s *surface) handleListOverdraftTerms(r *http.Request, p *payment.Bank) ([]api.OverdraftTermsDTO, error) {
 	rows, err := p.Deposit.OverdraftTermsHistory(r.Context(), deposit.AccountID(r.PathValue("did")))
 	if err != nil {
-		api.WriteError(w, err)
-		return
+		return nil, err
 	}
 	out := make([]api.OverdraftTermsDTO, len(rows))
 	for i, t := range rows {
 		out[i] = api.ToOverdraftTermsDTO(t)
 	}
-	api.WriteJSON(w, http.StatusOK, out)
+	return out, nil
 }
 
 // handleChargeOverdraftInterest capitalizes an account's accrued overdraft
@@ -409,49 +285,22 @@ func (s *surface) handleListOverdraftTerms(w http.ResponseWriter, r *http.Reques
 // fine and there is nothing to say" — rather than a 200 whose empty body a
 // client has to guess at, or a Transaction with an empty ID rendered as though
 // it were a real posting.
-func (s *surface) handleChargeOverdraftInterest(w http.ResponseWriter, r *http.Request) {
-	p, ok := s.participant(w, r)
-	if !ok {
-		return
-	}
-	var req api.ChargeOverdraftInterestRequest
-	if err := api.DecodeJSON(r, &req); err != nil {
-		api.WriteBadRequest(w, err.Error())
-		return
-	}
-	date, err := time.Parse("2006-01-02", req.Date)
+func (s *surface) handleChargeOverdraftInterest(r *http.Request, p *payment.Bank, req api.ChargeOverdraftInterestRequest) (any, error) {
+	date, err := api.ParseDay("date", req.Date)
 	if err != nil {
-		api.WriteBadRequest(w, "invalid date (want YYYY-MM-DD)")
-		return
+		return nil, err
 	}
-	did := deposit.AccountID(r.PathValue("did"))
-	tx, err := p.Deposit.ChargeOverdraftInterest(r.Context(), did, date)
+	tx, err := p.Deposit.ChargeOverdraftInterest(r.Context(), deposit.AccountID(r.PathValue("did")), date)
 	if err != nil {
-		api.WriteError(w, err)
-		return
+		return nil, err
 	}
 	if tx.ID == "" {
-		w.WriteHeader(http.StatusNoContent)
-		return
+		return nil, nil
 	}
-	assets, err := api.EntryAssets(r.Context(), p.Ledger, []ledger.Transaction{tx})
-	if err != nil {
-		api.WriteError(w, err)
-		return
-	}
-	api.WriteJSON(w, http.StatusOK, api.ToTransactionDTO(tx, assets))
+	return api.ResolveTransactionDTO(r.Context(), p.Ledger, tx)
 }
 
-func (s *surface) handleCreateHold(w http.ResponseWriter, r *http.Request) {
-	p, ok := s.participant(w, r)
-	if !ok {
-		return
-	}
-	var req api.CreateHoldRequest
-	if err := api.DecodeJSON(r, &req); err != nil {
-		api.WriteBadRequest(w, err.Error())
-		return
-	}
+func (s *surface) handleCreateHold(r *http.Request, p *payment.Bank, req api.CreateHoldRequest) (api.HoldDTO, error) {
 	holdReq := deposit.CreateHoldRequest{
 		AccountID:   deposit.AccountID(r.PathValue("did")),
 		Amount:      ledger.Amount(req.Amount),
@@ -462,64 +311,36 @@ func (s *surface) handleCreateHold(w http.ResponseWriter, r *http.Request) {
 	}
 	hold, err := p.Deposit.CreateHold(r.Context(), holdReq)
 	if err != nil {
-		api.WriteError(w, err)
-		return
+		return api.HoldDTO{}, err
 	}
-	api.WriteJSON(w, http.StatusCreated, api.ToHoldDTO(hold))
+	return api.ToHoldDTO(hold), nil
 }
 
-func (s *surface) handleListHolds(w http.ResponseWriter, r *http.Request) {
-	p, ok := s.participant(w, r)
-	if !ok {
-		return
-	}
+func (s *surface) handleListHolds(r *http.Request, p *payment.Bank) ([]api.HoldDTO, error) {
 	holds, err := p.Deposit.ListHolds(r.Context(), deposit.AccountID(r.PathValue("did")))
 	if err != nil {
-		api.WriteError(w, err)
-		return
+		return nil, err
 	}
 	out := make([]api.HoldDTO, len(holds))
 	for i, h := range holds {
 		out[i] = api.ToHoldDTO(h)
 	}
-	api.WriteJSON(w, http.StatusOK, out)
+	return out, nil
 }
 
-func (s *surface) handleGetHold(w http.ResponseWriter, r *http.Request) {
-	p, ok := s.participant(w, r)
-	if !ok {
-		return
-	}
+func (s *surface) handleGetHold(r *http.Request, p *payment.Bank) (api.HoldDTO, error) {
 	hold, err := p.Deposit.GetHold(r.Context(), deposit.HoldID(r.PathValue("hid")))
 	if err != nil {
-		api.WriteError(w, err)
-		return
+		return api.HoldDTO{}, err
 	}
-	api.WriteJSON(w, http.StatusOK, api.ToHoldDTO(hold))
+	return api.ToHoldDTO(hold), nil
 }
 
-func (s *surface) handleReleaseHold(w http.ResponseWriter, r *http.Request) {
-	p, ok := s.participant(w, r)
-	if !ok {
-		return
-	}
-	if err := p.Deposit.ReleaseHold(r.Context(), deposit.HoldID(r.PathValue("hid"))); err != nil {
-		api.WriteError(w, err)
-		return
-	}
-	w.WriteHeader(http.StatusNoContent)
+func (s *surface) handleReleaseHold(r *http.Request, p *payment.Bank) (any, error) {
+	return nil, p.Deposit.ReleaseHold(r.Context(), deposit.HoldID(r.PathValue("hid")))
 }
 
-func (s *surface) handleCaptureHold(w http.ResponseWriter, r *http.Request) {
-	p, ok := s.participant(w, r)
-	if !ok {
-		return
-	}
-	var req api.CaptureHoldRequest
-	if err := api.DecodeJSON(r, &req); err != nil {
-		api.WriteBadRequest(w, err.Error())
-		return
-	}
+func (s *surface) handleCaptureHold(r *http.Request, p *payment.Bank, req api.CaptureHoldRequest) (api.TransactionDTO, error) {
 	tx, err := p.Deposit.CaptureHold(
 		r.Context(),
 		deposit.HoldID(r.PathValue("hid")),
@@ -528,84 +349,57 @@ func (s *surface) handleCaptureHold(w http.ResponseWriter, r *http.Request) {
 		req.Description,
 	)
 	if err != nil {
-		api.WriteError(w, err)
-		return
+		return api.TransactionDTO{}, err
 	}
-	assets, err := api.EntryAssets(r.Context(), p.Ledger, []ledger.Transaction{tx})
-	if err != nil {
-		api.WriteError(w, err)
-		return
-	}
-	api.WriteJSON(w, http.StatusCreated, api.ToTransactionDTO(tx, assets))
+	return api.ResolveTransactionDTO(r.Context(), p.Ledger, tx)
 }
 
-func (s *surface) handleTakeSnapshot(w http.ResponseWriter, r *http.Request) {
-	p, ok := s.participant(w, r)
-	if !ok {
-		return
-	}
-	var req api.SnapshotRequest
-	if err := api.DecodeJSON(r, &req); err != nil {
-		api.WriteBadRequest(w, err.Error())
-		return
-	}
-	date, err := time.Parse("2006-01-02", req.Date)
+func (s *surface) handleTakeSnapshot(r *http.Request, p *payment.Bank, req api.SnapshotRequest) (api.SnapshotDTO, error) {
+	date, err := api.ParseDay("date", req.Date)
 	if err != nil {
-		api.WriteBadRequest(w, "invalid date (want YYYY-MM-DD)")
-		return
+		return api.SnapshotDTO{}, err
 	}
 	did := deposit.AccountID(r.PathValue("did"))
 	acct, err := p.Deposit.GetAccount(r.Context(), did)
 	if err != nil {
-		api.WriteError(w, err)
-		return
+		return api.SnapshotDTO{}, err
 	}
 	snap, err := p.Deposit.TakeEndOfDaySnapshot(r.Context(), did, date)
 	if err != nil {
-		api.WriteError(w, err)
-		return
+		return api.SnapshotDTO{}, err
 	}
-	api.WriteJSON(w, http.StatusCreated, api.ToSnapshotDTO(snap, acct.Asset))
+	return api.ToSnapshotDTO(snap, acct.Asset), nil
 }
 
 // handleGetSnapshots returns one snapshot when ?date=YYYY-MM-DD is given, or all
 // snapshots for the account otherwise.
-func (s *surface) handleGetSnapshots(w http.ResponseWriter, r *http.Request) {
-	p, ok := s.participant(w, r)
-	if !ok {
-		return
-	}
+func (s *surface) handleGetSnapshots(r *http.Request, p *payment.Bank) (any, error) {
 	did := deposit.AccountID(r.PathValue("did"))
 	// Every snapshot of one account is in that account's asset — an account's
 	// asset is fixed at creation — so it is resolved once here rather than per
 	// row below.
 	acct, err := p.Deposit.GetAccount(r.Context(), did)
 	if err != nil {
-		api.WriteError(w, err)
-		return
+		return nil, err
 	}
 	if dateStr := r.URL.Query().Get("date"); dateStr != "" {
-		date, err := time.Parse("2006-01-02", dateStr)
+		date, err := api.ParseDay("date", dateStr)
 		if err != nil {
-			api.WriteBadRequest(w, "invalid date (want YYYY-MM-DD)")
-			return
+			return nil, err
 		}
 		snap, err := p.Deposit.GetSnapshot(r.Context(), did, date)
 		if err != nil {
-			api.WriteError(w, err)
-			return
+			return nil, err
 		}
-		api.WriteJSON(w, http.StatusOK, api.ToSnapshotDTO(snap, acct.Asset))
-		return
+		return api.ToSnapshotDTO(snap, acct.Asset), nil
 	}
 	snaps, err := p.Deposit.ListSnapshots(r.Context(), did)
 	if err != nil {
-		api.WriteError(w, err)
-		return
+		return nil, err
 	}
 	out := make([]api.SnapshotDTO, len(snaps))
 	for i, snap := range snaps {
 		out[i] = api.ToSnapshotDTO(snap, acct.Asset)
 	}
-	api.WriteJSON(w, http.StatusOK, out)
+	return out, nil
 }

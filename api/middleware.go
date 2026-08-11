@@ -38,22 +38,22 @@ func screenRequestTarget(next http.Handler) http.Handler {
 		// r.URL.Path is already percent-decoded, which is the form the handlers
 		// and the store see.
 		if err := ledger.ValidateText("path", r.URL.Path); err != nil {
-			WriteBadRequest(w, err.Error())
+			writeBadRequest(w, err.Error())
 			return
 		}
 		query, err := url.ParseQuery(r.URL.RawQuery)
 		if err != nil {
-			WriteBadRequest(w, "malformed query string")
+			writeBadRequest(w, "malformed query string")
 			return
 		}
 		for key, values := range query {
 			if err := ledger.ValidateText("query parameter name", key); err != nil {
-				WriteBadRequest(w, err.Error())
+				writeBadRequest(w, err.Error())
 				return
 			}
 			for _, v := range values {
 				if err := ledger.ValidateText(key, v); err != nil {
-					WriteBadRequest(w, err.Error())
+					writeBadRequest(w, err.Error())
 					return
 				}
 			}
@@ -100,7 +100,7 @@ func recoverPanic(log *slog.Logger, next http.Handler) http.Handler {
 		defer func() {
 			if rec := recover(); rec != nil {
 				log.Error("panic recovered", "error", rec, "path", r.URL.Path)
-				WriteJSON(w, http.StatusInternalServerError, errorBody{Error: "internal server error"})
+				writeJSON(w, http.StatusInternalServerError, errorBody{Error: "internal server error"})
 			}
 		}()
 		next.ServeHTTP(w, r)

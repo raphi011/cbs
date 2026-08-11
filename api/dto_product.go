@@ -1,7 +1,6 @@
 package api
 
 import (
-	"fmt"
 	"time"
 
 	"github.com/raphi011/cbs/interest"
@@ -110,6 +109,6 @@ func KindFromString(s string) (product.Kind, error) {
 	case "CurrentAccount":
 		return product.CurrentAccount, nil
 	default:
-		return 0, fmt.Errorf("invalid product kind %q (want CurrentAccount)", s)
+		return 0, BadRequest("invalid product kind %q (want CurrentAccount)", s)
 	}
 }

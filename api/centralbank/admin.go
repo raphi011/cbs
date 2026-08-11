@@ -14,7 +14,7 @@ import (
 const resetTimeout = 30 * time.Second
 
 func (s *surface) registerAdminRoutes(mux *api.Router) {
-	mux.HandleFunc("POST /admin/reset", s.handleReset)
+	mux.HandleFunc("POST /admin/reset", api.Handle(http.StatusOK, s.handleReset))
 }
 
 // handleReset clears the store and rebuilds the sample dataset. The request
@@ -34,15 +34,14 @@ func (s *surface) registerAdminRoutes(mux *api.Router) {
 // of its own. The client may leave; the reset may not. It is the one handler in
 // this API for which that is true, and it is true because it is the one handler
 // whose work is not scoped to the answer it returns.
-func (s *surface) handleReset(w http.ResponseWriter, r *http.Request) {
+func (s *surface) handleReset(r *http.Request) (map[string]string, error) {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), resetTimeout)
 	defer cancel()
 
 	if err := s.inst.Reset(ctx); err != nil {
 		s.inst.Log().Error("application state reset failed", "error", err)
-		api.WriteError(w, err)
-		return
+		return nil, err
 	}
 	s.inst.Log().Info("application state reset")
-	api.WriteJSON(w, http.StatusOK, map[string]string{"status": "reset"})
+	return map[string]string{"status": "reset"}, nil
 }

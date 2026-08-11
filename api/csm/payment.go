@@ -19,17 +19,17 @@ import (
 // written by the institution that always knew it, so the question is answered by
 // the row and no register is opened by anybody.
 func (s *surface) registerPaymentRoutes(mux *api.Router) {
-	mux.HandleFunc("POST /payments", s.handleInitiatePayment)
-	mux.HandleFunc("GET /payments", s.handleListPayments)
-	mux.HandleFunc("GET /payments/{payid}", s.handleGetPayment)
-	mux.HandleFunc("POST /payments/{payid}/reject", s.handleRejectPayment)
-	mux.HandleFunc("POST /payments/{payid}/return", s.handleReturnPayment)
+	mux.HandleFunc("POST /payments", api.HandleBody(http.StatusAccepted, s.handleInitiatePayment))
+	mux.HandleFunc("GET /payments", api.Handle(http.StatusOK, s.handleListPayments))
+	mux.HandleFunc("GET /payments/{payid}", api.Handle(http.StatusOK, s.handleGetPayment))
+	mux.HandleFunc("POST /payments/{payid}/reject", api.HandleBody(http.StatusAccepted, s.handleRejectPayment))
+	mux.HandleFunc("POST /payments/{payid}/return", api.HandleBody(http.StatusAccepted, s.handleReturnPayment))
 
-	mux.HandleFunc("POST /cycles", s.handleOpenCycle)
-	mux.HandleFunc("GET /cycles", s.handleListCycles)
-	mux.HandleFunc("GET /cycles/{cid}", s.handleGetCycle)
-	mux.HandleFunc("POST /cycles/{cid}/close", s.handleCloseCycle)
-	mux.HandleFunc("POST /cycles/{cid}/settle", s.handleSettleCycle)
+	mux.HandleFunc("POST /cycles", api.HandleBody(http.StatusCreated, s.handleOpenCycle))
+	mux.HandleFunc("GET /cycles", api.Handle(http.StatusOK, s.handleListCycles))
+	mux.HandleFunc("GET /cycles/{cid}", api.Handle(http.StatusOK, s.handleGetCycle))
+	mux.HandleFunc("POST /cycles/{cid}/close", api.Handle(http.StatusOK, s.handleCloseCycle))
+	mux.HandleFunc("POST /cycles/{cid}/settle", api.Handle(http.StatusAccepted, s.handleSettleCycle))
 
 	// GET /settlements is NOT here: this function is the clearing house's router,
 	// and a settlement is the SETTLEMENT AGENT's row. The csm shape has no
@@ -81,12 +81,7 @@ func (s *surface) registerPaymentRoutes(mux *api.Router) {
 // payer's bank on a push and the payee's on a pull. A customer's own instruction
 // goes to their bank's own POST /payments (see handleSubmitPayment), which is
 // the only door a retail client has.
-func (s *surface) handleInitiatePayment(w http.ResponseWriter, r *http.Request) {
-	var req api.InitiatePaymentRequest
-	if err := api.DecodeJSON(r, &req); err != nil {
-		api.WriteBadRequest(w, err.Error())
-		return
-	}
+func (s *surface) handleInitiatePayment(r *http.Request, req api.InitiatePaymentRequest) (api.PaymentDTO, error) {
 	dom := req.ToDomain()
 	// Which bank's act this is, read out of the SUBMITTING side's address.
 	//
@@ -101,8 +96,7 @@ func (s *surface) handleInitiatePayment(w http.ResponseWriter, r *http.Request) 
 	// the same rule Mesh.Submit applies a moment later to pick the actor.
 	sc, ok := s.network().Scheme(dom.Scheme)
 	if !ok {
-		api.WriteError(w, payment.ErrSchemeNotFound)
-		return
+		return api.PaymentDTO{}, payment.ErrSchemeNotFound
 	}
 	submitting := &dom.DebtorDetails
 	address := dom.Debtor.Identifier
@@ -112,8 +106,7 @@ func (s *surface) handleInitiatePayment(w http.ResponseWriter, r *http.Request) 
 	if submitting.Agent == "" {
 		agent, err := s.network().RosterAgentFor(r.Context(), address)
 		if err != nil {
-			api.WriteError(w, err)
-			return
+			return api.PaymentDTO{}, err
 		}
 		submitting.Agent = agent
 	}
@@ -128,33 +121,30 @@ func (s *surface) handleInitiatePayment(w http.ResponseWriter, r *http.Request) 
 			s.inst.Log().Error("api: a submission committed and its instruction did not go out",
 				"payment", p.ID, "status", p.Status, "error", err)
 		}
-		api.WriteError(w, err)
-		return
+		return api.PaymentDTO{}, err
 	}
-	api.WriteJSON(w, http.StatusAccepted, api.ToPaymentDTO(p, s.network().ListSchemes()))
+	return api.ToPaymentDTO(p, s.network().ListSchemes()), nil
 }
 
-func (s *surface) handleListPayments(w http.ResponseWriter, r *http.Request) {
+func (s *surface) handleListPayments(r *http.Request) ([]api.PaymentDTO, error) {
 	payments, err := s.network().ListPayments(r.Context())
 	if err != nil {
-		api.WriteError(w, err)
-		return
+		return nil, err
 	}
 	schemes := s.network().ListSchemes()
 	out := make([]api.PaymentDTO, len(payments))
 	for i, p := range payments {
 		out[i] = api.ToPaymentDTO(p, schemes)
 	}
-	api.WriteJSON(w, http.StatusOK, out)
+	return out, nil
 }
 
-func (s *surface) handleGetPayment(w http.ResponseWriter, r *http.Request) {
+func (s *surface) handleGetPayment(r *http.Request) (api.PaymentDTO, error) {
 	p, err := s.network().GetPayment(r.Context(), payment.PaymentID(r.PathValue("payid")))
 	if err != nil {
-		api.WriteError(w, err)
-		return
+		return api.PaymentDTO{}, err
 	}
-	api.WriteJSON(w, http.StatusOK, api.ToPaymentDTO(p, s.network().ListSchemes()))
+	return api.ToPaymentDTO(p, s.network().ListSchemes()), nil
 }
 
 // handleRejectPayment declines an in-flight payment on the operator's say-so.
@@ -174,12 +164,7 @@ func (s *surface) handleGetPayment(w http.ResponseWriter, r *http.Request) {
 // comes back here as a 4xx. A refund that then fails at the payer's bank cannot:
 // nobody is left to tell, so it becomes a mesh dead letter and the payment's own
 // row is where it shows, Rejected with the money still in suspense.
-func (s *surface) handleRejectPayment(w http.ResponseWriter, r *http.Request) {
-	var req api.ReasonRequest
-	if err := api.DecodeJSON(r, &req); err != nil {
-		api.WriteBadRequest(w, err.Error())
-		return
-	}
+func (s *surface) handleRejectPayment(r *http.Request, req api.ReasonRequest) (api.PaymentDTO, error) {
 	// An operator-initiated rejection carries no more specific external status
 	// reason than MS03: the API exposes no way for a caller to name a code, so
 	// there is no more honest choice than the one that says exactly that.
@@ -195,10 +180,9 @@ func (s *surface) handleRejectPayment(w http.ResponseWriter, r *http.Request) {
 			s.inst.Log().Error("api: a rejection committed and the bank that has to refund was not told",
 				"payment", p.ID, "status", p.Status, "error", err)
 		}
-		api.WriteError(w, err)
-		return
+		return api.PaymentDTO{}, err
 	}
-	api.WriteJSON(w, http.StatusAccepted, api.ToPaymentDTO(p, s.network().ListSchemes()))
+	return api.ToPaymentDTO(p, s.network().ListSchemes()), nil
 }
 
 // handleReturnPayment sends a settled payment back.
@@ -217,8 +201,9 @@ func (s *surface) handleRejectPayment(w http.ResponseWriter, r *http.Request) {
 // for beyond "no such payment". On a PUSH the returning bank holds the CLAWBACK,
 // so a payee who has already spent the money stops the return dead: nothing is
 // posted, no message is sent, and what comes back is AM04 — a beneficiary who
-// cannot repay. WriteError maps it like any other domain refusal. On a pull the
-// returning bank holds the refund, which is unconditional, so this cannot arise.
+// cannot repay. The error mapping treats it like any other domain refusal. On a
+// pull the returning bank holds the refund, which is unconditional, so this
+// cannot arise.
 //
 // # It answers with an identifier and no payment
 //
@@ -234,55 +219,41 @@ func (s *surface) handleRejectPayment(w http.ResponseWriter, r *http.Request) {
 // The two code sets are different — a return reason answers "why is this money
 // coming back" and a status reason answers "why was this refused" — which is why
 // iso20022 keeps them apart and why this names the return one.
-func (s *surface) handleReturnPayment(w http.ResponseWriter, r *http.Request) {
-	var req api.ReasonRequest
-	if err := api.DecodeJSON(r, &req); err != nil {
-		api.WriteBadRequest(w, err.Error())
-		return
-	}
+func (s *surface) handleReturnPayment(r *http.Request, req api.ReasonRequest) (api.SubmittedPaymentDTO, error) {
 	id := payment.PaymentID(r.PathValue("payid"))
 	if err := s.inst.Return(r.Context(), id, iso20022.ReturnReasonNotSpecifiedAgentGenerated, req.Reason); err != nil {
-		api.WriteError(w, err)
-		return
+		return api.SubmittedPaymentDTO{}, err
 	}
-	api.WriteJSON(w, http.StatusAccepted, api.SubmittedPaymentDTO{PaymentID: string(id)})
+	return api.SubmittedPaymentDTO{PaymentID: string(id)}, nil
 }
 
-func (s *surface) handleOpenCycle(w http.ResponseWriter, r *http.Request) {
-	var req api.OpenCycleRequest
-	if err := api.DecodeJSON(r, &req); err != nil {
-		api.WriteBadRequest(w, err.Error())
-		return
-	}
+func (s *surface) handleOpenCycle(r *http.Request, req api.OpenCycleRequest) (api.ClearingCycleDTO, error) {
 	c, err := s.network().OpenCycle(r.Context(), payment.SchemeID(req.Scheme))
 	if err != nil {
-		api.WriteError(w, err)
-		return
+		return api.ClearingCycleDTO{}, err
 	}
-	api.WriteJSON(w, http.StatusCreated, api.ToClearingCycleDTO(c, s.network().ListSchemes()))
+	return api.ToClearingCycleDTO(c, s.network().ListSchemes()), nil
 }
 
-func (s *surface) handleListCycles(w http.ResponseWriter, r *http.Request) {
+func (s *surface) handleListCycles(r *http.Request) ([]api.ClearingCycleDTO, error) {
 	cycles, err := s.network().ListCycles(r.Context())
 	if err != nil {
-		api.WriteError(w, err)
-		return
+		return nil, err
 	}
 	schemes := s.network().ListSchemes()
 	out := make([]api.ClearingCycleDTO, len(cycles))
 	for i, c := range cycles {
 		out[i] = api.ToClearingCycleDTO(c, schemes)
 	}
-	api.WriteJSON(w, http.StatusOK, out)
+	return out, nil
 }
 
-func (s *surface) handleGetCycle(w http.ResponseWriter, r *http.Request) {
+func (s *surface) handleGetCycle(r *http.Request) (api.ClearingCycleDTO, error) {
 	c, err := s.network().GetCycle(r.Context(), payment.CycleID(r.PathValue("cid")))
 	if err != nil {
-		api.WriteError(w, err)
-		return
+		return api.ClearingCycleDTO{}, err
 	}
-	api.WriteJSON(w, http.StatusOK, api.ToClearingCycleDTO(c, s.network().ListSchemes()))
+	return api.ToClearingCycleDTO(c, s.network().ListSchemes()), nil
 }
 
 // handleCloseCycle reaches the cut-off, and is the only way a settlement is
@@ -303,7 +274,7 @@ func (s *surface) handleGetCycle(w http.ResponseWriter, r *http.Request) {
 // caller that wants to know reads the cycle again. A cycle that is Closed with no
 // settlement against it is an instruction the central bank refused, and
 // POST /cycles/{cid}/settle below is what the operator does about it.
-func (s *surface) handleCloseCycle(w http.ResponseWriter, r *http.Request) {
+func (s *surface) handleCloseCycle(r *http.Request) (api.ClearingCycleDTO, error) {
 	c, err := s.inst.CloseCycle(r.Context(), payment.CycleID(r.PathValue("cid")))
 	if err != nil {
 		// The cycle comes back beside the error when the cut-off committed and
@@ -316,10 +287,9 @@ func (s *surface) handleCloseCycle(w http.ResponseWriter, r *http.Request) {
 			s.inst.Log().Error("api: a cut-off committed and its settlement instruction did not go out",
 				"cycle", c.ID, "status", c.Status, "error", err)
 		}
-		api.WriteError(w, err)
-		return
+		return api.ClearingCycleDTO{}, err
 	}
-	api.WriteJSON(w, http.StatusOK, api.ToClearingCycleDTO(c, s.network().ListSchemes()))
+	return api.ToClearingCycleDTO(c, s.network().ListSchemes()), nil
 }
 
 // handleSettleCycle asks the clearing house to instruct settlement of a closed
@@ -354,15 +324,14 @@ func (s *surface) handleCloseCycle(w http.ResponseWriter, r *http.Request) {
 // later, at another actor, and a caller that wants to know reads the cycle
 // again. A cycle that is not Closed — still open, or already settled — is 422
 // and no message is sent at all.
-func (s *surface) handleSettleCycle(w http.ResponseWriter, r *http.Request) {
+func (s *surface) handleSettleCycle(r *http.Request) (api.ClearingCycleDTO, error) {
 	c, err := s.inst.Settle(r.Context(), payment.CycleID(r.PathValue("cid")))
 	if err != nil {
 		if c.ID != "" {
 			s.inst.Log().Error("api: a settlement instruction could not be re-sent",
 				"cycle", c.ID, "status", c.Status, "error", err)
 		}
-		api.WriteError(w, err)
-		return
+		return api.ClearingCycleDTO{}, err
 	}
-	api.WriteJSON(w, http.StatusAccepted, api.ToClearingCycleDTO(c, s.network().ListSchemes()))
+	return api.ToClearingCycleDTO(c, s.network().ListSchemes()), nil
 }

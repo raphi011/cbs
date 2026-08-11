@@ -15,15 +15,14 @@ import (
 // absent from this list exists perfectly well; it is simply not somewhere this
 // scheme will send anything. A bank present in it may be addressed and nothing
 // about its customers is knowable from here.
-func (s *surface) handleListRoster(w http.ResponseWriter, r *http.Request) {
+func (s *surface) handleListRoster(r *http.Request) ([]api.RosterEntryDTO, error) {
 	entries, err := s.network().ListRosterEntries(r.Context())
 	if err != nil {
-		api.WriteError(w, err)
-		return
+		return nil, err
 	}
 	out := make([]api.RosterEntryDTO, len(entries))
 	for i, e := range entries {
 		out[i] = api.ToRosterEntryDTO(e)
 	}
-	api.WriteJSON(w, http.StatusOK, out)
+	return out, nil
 }
