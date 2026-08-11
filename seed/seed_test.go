@@ -3,59 +3,105 @@ package seed
 import (
 	"context"
 	"errors"
-	"log/slog"
+	"fmt"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/raphi011/cbs/deposit"
 	"github.com/raphi011/cbs/iso20022"
 	"github.com/raphi011/cbs/ledger"
-	"github.com/raphi011/cbs/mesh"
 	"github.com/raphi011/cbs/payment"
 	"github.com/raphi011/cbs/payment/recon"
 	"github.com/raphi011/cbs/store/testenv"
 )
 
-// testMeshConfig names the two institutions that answer this scenario's
-// admissions. Both addresses are real-shaped and neither is a bank's: one BIC is
-// one actor, so an institution sharing an address with a seeded bank would be a
-// routing table with an entry missing, which mesh.Config.validate refuses.
-var testMeshConfig = mesh.Config{
-	CentralBankBIC:   "CBSEDEFFXXX",
-	ClearingHouseBIC: "CSMXFRPPXXX",
+// testCentralBankBIC is the settlement agent every scenario here lodges cash
+// with. It is real-shaped and is no bank's: an institution sharing an address
+// with a seeded bank would be two institutions at one address.
+const testCentralBankBIC iso20022.BIC = "CBSEDEFFXXX"
+
+// testDeployment is the running system a scenario is built into, composed
+// directly instead of carried.
+//
+// Populate's five acts are the ones needing more than one institution (see
+// Deployment). Three of them need nothing else at all here: an admission writes
+// no row, so it is the network's own to make; nothing is ever in flight, so
+// there is nothing to drain; and the settlement agent's address is
+// configuration. The two that move rows are composed the way every other
+// composite in this package is — one institution's half, then the other's, each
+// through its own network — which is why Populate's own doc calls the
+// deployment a thing that must be RUNNING rather than a transport.
+//
+// What it leaves out is the hop. The instruction and the receipt are domain
+// values on both sides of it, so nothing here marshals or parses an envelope,
+// and a lodgement whose camt.050 could not be read is therefore not a failure
+// this fixture can reach. That is the transport's own to prove, and it does.
+type testDeployment struct {
+	nets *payment.Networks
+	now  func() time.Time
+	seq  atomic.Uint64
 }
 
-// testMesh starts a mesh over a network and stops it when the test ends.
-//
-// Every seed test needs one, because Populate gives each provisioned bank an
-// actor and the scenario it goes on to build is payments between them.
-//
-// Drain FIRST, then Stop. Stop closes every inbox in one step before it joins
-// anybody, so a conversation still in flight when it runs is cut; draining
-// leaves Stop nothing to do but join. Both return dead letters and both are
-// reported — a build that swallowed a handler's failure would leave a test
-// asserting on a scenario that had not finished being built.
-func testMesh(t *testing.T, nets *payment.Networks) *mesh.Mesh {
-	t.Helper()
-	msh, err := mesh.New(nets, testMeshConfig, slog.New(slog.DiscardHandler))
+func newTestDeployment(nets *payment.Networks, now func() time.Time) *testDeployment {
+	return &testDeployment{nets: nets, now: now}
+}
+
+// AddBank writes nothing. A bank's rows are provision.Bank's and are already
+// written by the time this is called; what a deployment adds on top is
+// reachability, and everything below reaches a bank through its own network.
+func (d *testDeployment) AddBank(context.Context, *payment.Bank) error { return nil }
+
+// Drain has nothing to wait for: every act here finishes before it returns.
+func (d *testDeployment) Drain(context.Context) error { return nil }
+
+func (d *testDeployment) CentralBankBIC() iso20022.BIC { return testCentralBankBIC }
+
+// RefreshDirectory reads the roster at the clearing house and writes the copy at
+// the subscriber, in that order and in two units of work — which is the whole of
+// what the real one does, because a directory is a file delivered and not a
+// message.
+func (d *testDeployment) RefreshDirectory(ctx context.Context, bic iso20022.BIC) ([]payment.DirectoryEntry, error) {
+	published, err := d.nets.ClearingHouse().ListRosterEntries(ctx)
 	if err != nil {
-		t.Fatalf("mesh.New: %v", err)
+		return nil, err
 	}
-	if err := msh.Start(context.Background()); err != nil {
-		t.Fatalf("mesh.Start: %v", err)
+	subscriber, err := d.nets.Bank(ctx, payment.ParticipantID(bic))
+	if err != nil {
+		return nil, err
 	}
-	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		if err := msh.Drain(ctx); err != nil {
-			t.Errorf("draining at shutdown: %v", err)
-		}
-		if err := msh.Stop(ctx); err != nil {
-			t.Errorf("stopping: %v", err)
-		}
+	return subscriber.RefreshDirectory(ctx, published)
+}
+
+// Lodge is the member's half and then the settlement agent's, each in its own
+// unit of work, which is the property TestALodgementIsTwoBooksInTwoUnitsOfWork
+// holds the real one to.
+//
+// The receipt is discarded because accepting one costs the member nothing: the
+// mirror leg was posted by the first half, and the second half either credits
+// the reserve or refuses — and a refusal comes back as an error here rather
+// than as a receipt nobody reads.
+func (d *testDeployment) Lodge(ctx context.Context, bic iso20022.BIC, asset ledger.AssetCode,
+	amount ledger.Amount) (payment.LodgementInstruction, error) {
+
+	member, err := d.nets.Bank(ctx, payment.ParticipantID(bic))
+	if err != nil {
+		return payment.LodgementInstruction{}, err
+	}
+	in, _, err := member.LodgeReserves(ctx, asset, amount, payment.MessageContext{
+		From:  bic,
+		To:    testCentralBankBIC,
+		MsgID: fmt.Sprintf("%s-%d", bic, d.seq.Add(1)),
+		Now:   d.now(),
 	})
-	return msh
+	if err != nil {
+		return payment.LodgementInstruction{}, err
+	}
+	if _, err := d.nets.CentralBank().ReceiveLodgement(ctx, in); err != nil {
+		return in, err
+	}
+	return in, nil
 }
 
 // testNetwork builds the sample scenario over the store testenv hands it.
@@ -63,10 +109,10 @@ func testMesh(t *testing.T, nets *payment.Networks) *mesh.Mesh {
 // It is what makes the seed assertions (deterministic IDs, conserved reserves,
 // status coverage) claims about the seed rather than about a store, and it is
 // the whole of what a caller of this package assembles for itself: a store, a
-// network, a running mesh, and Populate over the three.
+// set of networks, a deployment, and Populate over the three.
 //
 // testNets is what a seed fixture holds: the clearing house's view for the reads
-// these tests make, plus the factory Populate and the mesh both take. See
+// these tests make, plus the factory Populate and the deployment both take. See
 // payment.Networks.
 type testNets struct {
 	*payment.Network
@@ -106,7 +152,7 @@ func testNetworkAndClock(t *testing.T) (testNets, *Dataset) {
 	d := New()
 	stores := testenv.NewSet(t, d.Now)
 	nets := payment.NewNetworks(stores, d.Now)
-	if err := d.Populate(context.Background(), nets, testMesh(t, nets)); err != nil {
+	if err := d.Populate(context.Background(), nets, newTestDeployment(nets, d.Now)); err != nil {
 		t.Fatalf("populate: %v", err)
 	}
 	return testNets{Network: nets.ClearingHouse(), nets: nets, stores: stores}, d
@@ -758,14 +804,14 @@ func TestPopulateIsIdempotent(t *testing.T) {
 	stores := testenv.NewSet(t, d.Now)
 	nets := payment.NewNetworks(stores, d.Now)
 	net := testNets{Network: nets.ClearingHouse(), nets: nets, stores: stores}
-	msh := testMesh(t, nets)
+	dep := newTestDeployment(nets, d.Now)
 
-	if err := d.Populate(ctx, nets, msh); err != nil {
+	if err := d.Populate(ctx, nets, dep); err != nil {
 		t.Fatalf("first Populate: %v", err)
 	}
 	participants, payments := listParticipants(t, ctx, net), listPayments(t, ctx, net)
 
-	if err := d.Populate(ctx, nets, msh); err != nil {
+	if err := d.Populate(ctx, nets, dep); err != nil {
 		t.Fatalf("second Populate: %v", err)
 	}
 	if got := len(listParticipants(t, ctx, net)); got != len(participants) {
@@ -784,7 +830,7 @@ func TestPopulateIsIdempotent(t *testing.T) {
 	second := New()
 	secondNets := payment.NewNetworks(stores, second.Now)
 	secondNet := testNets{Network: secondNets.ClearingHouse(), nets: secondNets, stores: stores}
-	if err := second.Populate(ctx, secondNets, msh); err != nil {
+	if err := second.Populate(ctx, secondNets, newTestDeployment(secondNets, second.Now)); err != nil {
 		t.Fatalf("Populate from a second process: %v", err)
 	}
 	if got := len(listParticipants(t, ctx, secondNet)); got != len(participants) {
@@ -885,9 +931,9 @@ func TestPopulateAfterResetRebuildsTheSameDataset(t *testing.T) {
 	stores := testenv.NewSet(t, d.Now)
 	nets := payment.NewNetworks(stores, d.Now)
 	net := testNets{Network: nets.ClearingHouse(), nets: nets, stores: stores}
-	msh := testMesh(t, nets)
+	dep := newTestDeployment(nets, d.Now)
 
-	if err := d.Populate(ctx, nets, msh); err != nil {
+	if err := d.Populate(ctx, nets, dep); err != nil {
 		t.Fatalf("Populate: %v", err)
 	}
 	before := listPayments(t, ctx, net)
@@ -898,16 +944,12 @@ func TestPopulateAfterResetRebuildsTheSameDataset(t *testing.T) {
 	if got := len(listParticipants(t, ctx, net)); got != 0 {
 		t.Fatalf("participants after reset = %d, want 0", got)
 	}
-	// The mesh outlives the truncate, so the actors of the banks it just deleted
-	// are still answering to their addresses — and the reseed admits those same
-	// addresses again. Forgetting them is what api.Server.Reset does between the
-	// two for exactly this reason; without it the second Populate is refused the
-	// first bank's BIC.
-	if err := msh.ForgetBanks(ctx); err != nil {
-		t.Fatalf("ForgetBanks: %v", err)
-	}
-
-	if err := d.Populate(ctx, nets, msh); err != nil {
+	// Nothing is reconciled between the truncate and the reseed, and the reseed
+	// admits the same addresses again. That works here because an admission
+	// writes no row this fixture holds; a deployment that had given each bank a
+	// place would have to give the old ones up first, which is the deployment's
+	// own act and is proved where it lives.
+	if err := d.Populate(ctx, nets, dep); err != nil {
 		t.Fatalf("Populate after reset: %v", err)
 	}
 	after := listPayments(t, ctx, net)
