@@ -6,6 +6,8 @@ import { request, qs } from "./client";
 import { bank, cb, csm } from "./operator";
 import type { OperatorStatus } from "./backend-url";
 import type {
+  BusinessDate,
+  DayReport,
   Account,
   AcceptedPayment,
   Asset,
@@ -776,6 +778,24 @@ export type { OperatorStatus } from "./backend-url";
 // names no operator — it is the question "which of them are there?".
 export function listOperators(): Promise<OperatorStatus[]> {
   return request("GET", "/operators");
+}
+
+// --- The business day -------------------------------------------------------
+
+// getClock reads which day the deployment is on. advanceDay runs one business
+// day and moves it to the next, answering with what that day did.
+//
+// Both are on the SETTLEMENT AGENT's listener, and both are one operator's acts
+// over a DEPLOYMENT rather than over an institution — the same argument that
+// puts GET /members and POST /admin/reset there. Spreading the clock across all
+// N+2 surfaces would buy nothing once the button beside it is dialling the
+// settlement agent anyway.
+export function getClock(): Promise<BusinessDate> {
+  return request("GET", cb("/clock"));
+}
+
+export function advanceDay(): Promise<DayReport> {
+  return request("POST", cb("/clock/day"));
 }
 
 // --- Admin ----------------------------------------------------------------

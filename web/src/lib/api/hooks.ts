@@ -966,6 +966,27 @@ export function useIdentityDirectory(): {
   };
 }
 
+// Which day the deployment is on.
+//
+// Every shell reads it, so it is cached like any other query and refetched when
+// a day is advanced or the data is reset — both of which move it.
+export function useClock() {
+  return useQuery({ queryKey: qk.clock(), queryFn: api.getClock });
+}
+
+// Advance the deployment by one business day, then invalidate every query.
+//
+// Every query, because a day moves almost everything: payments clear and settle,
+// reserves move, statements are booked, interest accrues, and the date itself
+// changes. Naming the subset would be naming the whole of the domain.
+export function useAdvanceDay() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: api.advanceDay,
+    onSuccess: () => qc.invalidateQueries(),
+  });
+}
+
 // Reset the whole backend to the sample dataset, then invalidate every query so
 // the UI refetches the fresh state.
 export function useResetState() {

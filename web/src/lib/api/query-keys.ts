@@ -36,6 +36,11 @@ export const qk = {
   // Network-wide: assets are defined in code, not per book.
   assets: () => ["assets"] as const,
 
+  // The deployment's business date. Not keyed under the central bank although
+  // it is read from that listener: the clock belongs to no institution, and a
+  // key that said otherwise would invite a second one per operator.
+  clock: () => ["clock"] as const,
+
   // Next-side, not a backend area: which listeners are actually there.
   operators: () => ["operators"] as const,
 

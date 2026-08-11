@@ -554,6 +554,73 @@ export interface Reserve {
   reserve: number;
 }
 
+// --- The business day -------------------------------------------------------
+
+// BusinessDate is what day the deployment is on, and whether anything clears on
+// it. It belongs to no institution: a business date is a fact about the whole
+// deployment, and each bank's books are dated FROM it rather than holding one.
+//
+// `date` is a plain calendar date ("2025-09-15") and deliberately not an
+// instant: rendering one in the reader's own timezone would show a day the
+// deployment is not on.
+//
+// Two fields for closed, because there are two kinds. `settlementDay: false`
+// with no `closure` is a weekend — shut, and for no reason that has a name. A
+// `closure` names a TARGET holiday, which is what lets the readout say "TARGET
+// closed, Easter Monday" instead of only "closed".
+export interface BusinessDate {
+  date: string;
+  settlementDay: boolean;
+  closure?: string;
+}
+
+// FileMoved is one file that left one institution for another: uploaded to a
+// host, or put in a subscriber's download queue. The order id is what its host
+// minted for it, and is what the sender would ask about.
+export interface FileMoved {
+  from: string;
+  to: string;
+  orderType: string;
+  orderId: string;
+}
+
+// TransactionOutcome is one institution's decision about one payment.
+//
+// `decidedBy` is the institution that MADE the decision and never one that
+// carried it, so an ordinary payment produces three: the bank that received the
+// instruction accepts it, the clearing house clears it, and the clearing house
+// reports it settled once the reserves have moved.
+export interface TransactionOutcome {
+  decidedBy: string;
+  payment: string;
+  status: string;
+  code?: string;
+  text?: string;
+}
+
+// DayProblem is a file an institution could not process. There is nobody to
+// answer — the sender was told its file arrived and went away — so the day's
+// report is where it goes. `orderId` is absent where the failure was not about
+// one file.
+export interface DayProblem {
+  institution: string;
+  orderId?: string;
+  detail: string;
+}
+
+// DayReport is what one business day did: the day it ran on, the day it left the
+// deployment on, and everything that moved in between.
+//
+// `ran` and `next` can differ in the way that matters — a Friday clears and
+// leaves the deployment on a Saturday that will not.
+export interface DayReport {
+  ran: BusinessDate;
+  next: BusinessDate;
+  files: FileMoved[];
+  outcomes: TransactionOutcome[];
+  problems: DayProblem[];
+}
+
 // --- Lending layer ----------------------------------------------------------
 
 // Facility mirrors facilityDTO. A facility is not a line in the chart of
