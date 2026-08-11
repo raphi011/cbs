@@ -100,18 +100,15 @@ export const chapter: Chapter = {
       explore: { label: "Browse payment schemes", href: "/clearing-house/schemes" },
     },
     {
-      kind: "numeric",
+      kind: "truefalse",
       id: "ch11-q7",
       difficulty: "core",
-      concept: "netting",
+      concept: "target-calendar",
       prompt:
-        "In one clearing cycle, Bank A submits 4 outgoing payments of $75 each to Bank B, and Bank B submits 3 outgoing payments of $40 each to Bank A. How many dollars of central-bank reserves move at settlement?",
-      answer: 180,
-      unit: { asset: "USD", in: "major" },
-      tolerance: 0,
+        "A scheme's settlement delay of T+1 means the payment settles 24 hours later.",
+      answer: false,
       explanation:
-        "[[netting]] aggregates all payments before computing net positions. Bank A's gross outflow = 4 × $75 = $300; Bank A's gross inflow = 3 × $40 = $120; net[A] = −$300 + $120 = −$180. Bank B's net = +$180. Only **$180** of reserves transfers — netting collapses the $420 gross total into a single $180 net flow.",
-      explore: { label: "See settlement cycles", href: "/clearing-house/cycles" },
+        "T+1 is one **business day**, not one calendar day, and which days count is the settlement agent's [[target-calendar|calendar]] — in the euro area TARGET, shut at weekends and on six named days. A Friday transfer at T+1 settles on Monday; one submitted before a holiday weekend settles later still.\n\nThis is not pedantry about a date. A rule book's deadlines are stated in banking business days throughout — SEPA gives a receiving bank **three** of them to return a credit it cannot apply — and counted in calendar days instead, a balance arriving on a Thursday is overdue on Sunday where the rule book would say Tuesday. See [[settlement-delay]].",
     },
     {
       kind: "mc",
@@ -330,16 +327,16 @@ export const chapter: Chapter = {
       difficulty: "core",
       concept: "unclaimed-balances",
       prompt:
-        "A payee closes their account after their bank has accepted an inbound payment but before the cut-off settles. The cycle settles anyway. Where does the money go?",
+        "A payee closes their account while the credit transfer to it is in an open cycle. The cycle settles, and the clearing house releases the instruction to the payee's bank. Where does the money go?",
       options: [
         "Into the closed account, which reopens to receive it",
-        "Back to the payer, as an automatic return",
-        "To the receiving bank's Unclaimed Balances account, a liability it still owes",
+        "Back to the payer, as an automatic return the clearing house sends on the bank's behalf",
+        "To the receiving bank's Unclaimed Balances account, a liability it still owes — and its bank then asks for a return",
         "It stays in the receiving bank's clearing suspense indefinitely",
       ],
       answer: 2,
       explanation:
-        "[[account-status|Closed]] is the one status that refuses a credit, so the payee's bank posts its [[creditor-leg]] to its **[[unclaimed-balances|Unclaimed Balances]]** account instead — a liability, because the bank still owes the money to whoever eventually claims it. The payment still reaches Settled, because it did: the reserves moved and the payee's bank has been paid. It is *not* clearing suspense (option D): that account means \"a leg in flight\", and pooling unapplicable credits there would make one balance answer two questions. What made the check affordable was having somewhere for the money to go, plus the fact that a creditor leg is now the payee's bank's own unit of work — so one payment at one bank fails without taking the cut-off down with it.",
+        "[[account-status|Closed]] is the one status that refuses a credit. But the payee's bank sees this payment for the first time **after** the cycle is final — the reserves have moved and the money is already in its [[clearing-suspense|clearing suspense]] — so there is no answer of *no* left to give. It takes the money on, into its **[[unclaimed-balances|Unclaimed Balances]]** account (a liability, because it still owes it to whoever eventually claims it), and then asks for a [[allows-return|return]] to send it back.\n\nThat is the shape [[business-day|settling before releasing]] forces everywhere: a receiving bank's objection is a return and never a rejection. It is *not* clearing suspense (option D) — that account means \"a leg in flight\", and pooling unapplicable credits there would make one balance answer two questions. And no institution returns on a bank's behalf: the leg belongs to the bank that holds it.",
     },
     {
       kind: "truefalse",

@@ -106,7 +106,7 @@ export const chapter: Chapter = {
       ],
       answer: 1,
       explanation:
-        "The [[debtor-leg]] — the entry debiting the payer's deposit account and crediting the bank's clearing suspense — posts at **initiation**, in the payer's own bank, when it submits the credit transfer. Note that the payment is *Initiated* at that point, not Accepted: acceptance is the clearing house's separate act, later. Its two sides value-date differently: the customer's debit value-dates to itself (PSD2 Art. 87(2) forbids dating it any earlier), while the clearing-suspense side value-dates to the settlement date. Clearing later computes net positions; the [[creditor-leg]] is posted at the receiving bank, once settlement has moved the reserves and it has been told so. No debit to the customer's account occurs at clearing itself.",
+        "The [[debtor-leg]] — the entry debiting the payer's deposit account and crediting the bank's clearing suspense — posts at **initiation**, in the payer's own bank, the moment it takes the instruction in. Nothing has been sent at that point: the payment waits in that bank's [[payment-hub|hub]] until its cut-off. It is *Initiated* and not Accepted, because acceptance is the clearing house's separate act on a [[bulk-file|file]] that does not exist yet. Its two sides value-date differently: the customer's debit value-dates to itself (PSD2 Art. 87(2) forbids dating it any earlier), while the clearing-suspense side value-dates to the settlement date. Clearing later computes net positions; the [[creditor-leg]] is posted at the receiving bank, once settlement has moved the reserves and it has been told so. No debit to the customer's account occurs at clearing itself.",
       explore: { label: "View payments", href: "/clearing-house/payments" },
     },
     {
@@ -120,11 +120,11 @@ export const chapter: Chapter = {
         "At initiation, alongside the debtor leg",
         "At clearing, when the net position is finalised",
         "At settlement, after central-bank reserves have moved",
-        "Immediately on receipt of the pacs.008 or pacs.003 message",
+        "As soon as the payer's bank sends the pacs.008, since the money has already left the payer",
       ],
       answer: 2,
       explanation:
-        "The [[creditor-leg]] posts at **settlement**: only after central-bank reserves have moved from the debtor's bank to the creditor's bank does the creditor's bank credit the payee's deposit account out of its [[clearing-suspense]]. Its reserve asset rises in a *separate* posting, booked from the central bank's `camt.053` and arriving first — two units of work from two institutions' messages, not one four-entry posting. The [[debtor-leg]] posts earlier, and always into the *payer's own bank's* clearing suspense — at initiation for a credit transfer, which the payer's bank submits, and when the collection arrives for a direct debit, which the *payee's* bank submits and whose submission posts nothing.",
+        "The [[creditor-leg]] posts at **settlement**, and the ordering is structural rather than a matter of timing: the clearing house holds each receiving bank's file until the cycle is final, so that bank is handed the instruction only once the reserves behind it have moved. It then credits the payee out of its [[clearing-suspense]]. Its reserve asset rose in a *separate* posting, booked from the central bank's `camt.053`, which it [[download-queue|collects first]] — two units of work from two institutions' queues, not one four-entry posting. The [[debtor-leg]] posts earlier, and always into the *payer's own bank's* clearing suspense — at initiation for a credit transfer, which the payer's bank submits, and when the collection arrives for a direct debit, which the *payee's* bank submits and whose submission posts nothing.",
     },
     {
       kind: "mc",
@@ -312,17 +312,22 @@ export const chapter: Chapter = {
         "[[settlement-delay]] — each SEPA scheme has its own settlement schedule. The SCT (a push) settles at T+1: **€60** of reserves move between banks by end of T+1. The SDD (a pull) doesn't settle until T+2, so its €40 has not yet moved. By T+1, only **€60** of interbank reserves have settled.",
     },
     {
-      kind: "numeric",
+      kind: "multi",
       id: "ch12-q20",
       difficulty: "challenge",
-      concept: "allows-return",
+      concept: "bulk-file",
       prompt:
-        "A $200 SDD settles successfully. The debtor then triggers a return. After the compensating return transactions post, by how many dollars does the creditor's book balance decrease? (Enter a number.)",
-      answer: 200,
-      unit: { asset: "USD", in: "major" },
-      tolerance: 0,
+        "Aurora Bank reaches its cut-off holding 900 SEPA Credit Transfers for customers at three other banks. Select ALL true statements about what happens next.",
+      options: [
+        "Aurora uploads one pacs.008 carrying all 900 transactions",
+        "The clearing house answers with one pacs.002 carrying a decision per transaction",
+        "That answer's group status is PART if some transactions were accepted and some rejected",
+        "The clearing house builds three output files, one per receiving bank, by sorting on the creditor agent",
+        "Each of the three receiving banks answers Aurora directly to confirm it can apply its share",
+      ],
+      answers: [0, 1, 2, 3],
       explanation:
-        "[[allows-return]] — the creditor received $200 when the [[creditor-leg]] posted at settlement, and the clawback takes exactly that back out, reducing the balance by **$200**. The original entries remain in the ledger; only new offsetting entries are added. On a *direct debit* this clawback is the leg the creditor's bank posts **after** the reserves have already moved, so it is forced rather than optional — the biller goes overdrawn if it cannot cover it, since the ledger does not refuse a liability going negative, and if the account has closed the bank funds it out of its own [[returns-receivable|Returns Receivable]] instead. The amount comes out either way; what differs is whose balance sheet absorbs it.",
+        "One file in, one answer back, M files out — and none of the institutions in the chain sees the same file. The [[bulk-file|fan-out by creditor agent]] is what a clearing house is *for*, and it is invisible in any system where a message carries one payment.\n\nThe last option is the one worth being sure about: a receiving bank **never answers**. Nothing reaches it until the cycle has settled ([[business-day|settle, then release]]), by which point the money is already in its [[clearing-suspense|clearing suspense]] and there is no *no* left to give. What it cannot apply it takes on and sends back as a [[allows-return|return]].\n\nThe clearing house also sorts **without reading any record of its own** — a clearing house that had to look a payment up to route it could not route a file about a payment it does not hold, which in a real network is most of them.",
     },
     {
       kind: "truefalse",
