@@ -10,9 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
-	"sync"
 	"testing"
-	"time"
 
 	"github.com/raphi011/cbs/api"
 	"github.com/raphi011/cbs/calendar"
@@ -25,177 +23,64 @@ import (
 	"github.com/raphi011/cbs/store/testenv"
 )
 
-// What this file is for: the seam between HTTP and the mesh.
+// What this file is for: the seam between HTTP and the business day.
 //
-// Every other file here drives the three surfaces over a store. These tests drive
-// one over a store AND a running mesh, because what they are about is the thing
-// that is not synchronous: a request returns while three other actors are still
-// working, and the answer to "what happened" arrives at a different actor
-// afterwards. No test here waits for a duration to find out. Mesh.Drain blocks
-// until nothing is in flight, and that is the only way any of them looks.
+// Every other file here drives the three surfaces over a store. These tests
+// drive one over a store AND the real transport, because what they are about is
+// the thing that is not answered synchronously: a request returns while the file
+// it produced is still sitting in another institution's order log, and the answer
+// arrives at a different institution later. No test here waits for a duration to
+// find out — nothing runs in the background, so "later" means "the next time the
+// day is carried".
 
-// newAPIHarness is a seeded deployment with a mesh running over the same network.
+// newAPIHarness is a seeded deployment with both hosts really listening.
 //
-// Seeded, because the mesh routes by BIC: a payment needs two banks that can
-// address each other, an open cut-off window for its scheme, and a payer with
-// money. seed.Populate is the dataset the running system serves, so these tests
-// exercise the same rows a reader will see in the app. They name them by IBAN
-// rather than by id — see seededParty.
+// Seeded, because a payment needs two banks that can address each other, an open
+// cut-off window for its scheme, and a payer with money. seed.Populate is the
+// dataset the running system serves, so these tests exercise the same rows a
+// reader will see in the app. They name them by IBAN rather than by id — see
+// seededParty.
 //
-// The mesh is started BEFORE the seed, which is the order cmd/server uses and
-// for the same reason: the seed gives each bank it provisions an actor and pulls
-// each one's routing directory, both through the mesh's own doors, so the
-// transport has to be running first. Mesh.Start's roster read finds nothing here
-// — the banks it would have registered are the ones Populate is about to
-// provision, and each of those gets its actor from Mesh.AddBank as it is built.
+// The listeners are bound BEFORE the seed, which is the order cmd/server uses:
+// the seed admits its banks through this deployment's own doors.
 //
-// Drain FIRST, then Stop, at cleanup. Stop closes every inbox in one step before
-// it joins anybody, so a conversation still in flight when it runs is cut — the
-// payer debited and the pacs.002 that would have said so never sent. Both hand
-// back dead letters and both are reported: a shutdown that swallowed a handler's
-// failure would let one of these tests pass over the very thing it asserts.
-func newAPIHarness(t *testing.T) (*server, *Mesh) {
+// There is no gate and nothing to hold still. Under a synchronous day a payment
+// submitted and not yet carried is PROVABLY still Initiated — the file is in the
+// clearing house's order log and no goroutine will touch it — so the test that
+// used to need an observer installed in the transport now needs nothing at all.
+func newAPIHarness(t *testing.T) *server {
 	t.Helper()
 	ctx := context.Background()
 
 	clock := calendar.NewClock(seed.BaseDate)
 	data := seed.New(clock)
 	nets := payment.NewNetworks(testenv.NewSet(t, clock.Now), clock.Now)
-
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	cfg := testMeshConfig
-	gate := newMeshGate()
-	cfg.Observe = gate.observe
-	msh, err := NewMesh(nets, cfg, log)
-	if err != nil {
-		t.Fatalf("NewMesh: %v", err)
-	}
-	if err := msh.Start(ctx); err != nil {
-		t.Fatalf("Mesh.Start: %v", err)
-	}
-	gates.Store(msh, gate)
-	// Registered FIRST so it runs LAST, because t.Cleanup is LIFO: the drain
-	// below must not be the thing that discovers a gate a test forgot to open.
-	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		if err := msh.Drain(ctx); err != nil {
-			t.Errorf("draining at shutdown: %v", err)
-		}
-		if err := msh.Stop(ctx); err != nil {
-			t.Errorf("stopping: %v", err)
-		}
-	})
-	t.Cleanup(func() {
-		gate.openAll()
-		gates.Delete(msh)
-	})
 
-	// Seeded LAST, and after both cleanups are registered: the seed's four
-	// admissions are conversations through this mesh, so a Populate that failed
-	// halfway would otherwise leave actor goroutines nobody joins. They pass the
-	// gate like every other message and go straight through, because no test has
-	// run yet and so no gate is held.
-	if err := data.Populate(ctx, nets, msh); err != nil {
+	s := &server{nets: nets, clock: clock}
+	csmHost := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		s.dep.ClearingHouse().EBICS().ServeHTTP(w, r)
+	}))
+	cbHost := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		s.dep.CentralBank().EBICS().ServeHTTP(w, r)
+	}))
+	t.Cleanup(csmHost.Close)
+	t.Cleanup(cbHost.Close)
+
+	cfg := testConfig
+	cfg.ClearingHouseURL = csmHost.URL
+	cfg.CentralBankURL = cbHost.URL
+
+	dep, err := NewDeployment(ctx, nets, clock, cfg, data.Populate, log)
+	if err != nil {
+		t.Fatalf("NewDeployment: %v", err)
+	}
+	s.dep = dep
+
+	if err := data.Populate(ctx, nets, dep); err != nil {
 		t.Fatalf("populate: %v", err)
 	}
-	return &server{dep: NewDeployment(nets, msh, data.Populate, log), nets: nets, mesh: msh}, msh
-}
-
-// The gate: how a test reads the world at a moment the mesh would otherwise
-// have run past.
-//
-// Every assertion in this file about what has NOT happened yet needs one, and
-// the reason is that draining is the only other tool available. Drain waits for
-// a conversation to FINISH; nothing in the mesh's own API can hold one still.
-// Reading the store while four actor goroutines run is a race, and a race that
-// mostly wins — TestSubmitAnswers202AndThePaymentIsNotYetAccepted passed 300
-// runs in a quiet process and failed 4 of 480 under contention, which is exactly
-// the shape of a test that will fail on a busy machine and nowhere else. Worse,
-// its failure message was byte-identical to the one a real regression produces,
-// so the flake and the bug were indistinguishable.
-//
-// MeshConfig.Observe runs on the receiving actor's goroutine before its
-// handler, so an Observe that blocks holds that actor. Hold the clearing house
-// and a submitted payment provably cannot leave Initiated, whatever the
-// scheduler does.
-//
-// # The one rule
-//
-// Open the gate before anything waits on the mesh. A gate held while the
-// goroutine that would open it is inside Drain — or inside an HTTP handler that
-// drains — deadlocks, and the test dies by timeout rather than by assertion.
-// That is a real property rather than a hazard to route around: an api handler
-// that invented a synchronous wait would deadlock here, which is one of the ways
-// this file refuses to let one exist.
-type meshGate struct {
-	mu   sync.Mutex
-	held map[iso20022.BIC]chan struct{}
-}
-
-// gates maps a mesh to the gate installed in front of it. A registry rather than
-// a return value, because the brief's test bodies call newAPIHarness(t) and take
-// two values, and the seam must not change what they say.
-var gates sync.Map
-
-func newMeshGate() *meshGate {
-	return &meshGate{held: map[iso20022.BIC]chan struct{}{}}
-}
-
-func (g *meshGate) observe(to, from iso20022.BIC, raw []byte) {
-	g.mu.Lock()
-	ch := g.held[to]
-	g.mu.Unlock()
-	if ch != nil {
-		<-ch
-	}
-}
-
-func (g *meshGate) openAll() {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	for bic, ch := range g.held {
-		close(ch)
-		delete(g.held, bic)
-	}
-}
-
-// holdMessagesTo shuts one actor's door and returns the function that opens it.
-// Everything addressed to that actor waits, unhandled, until it is called.
-func holdMessagesTo(t *testing.T, msh *Mesh, bic iso20022.BIC) func() {
-	t.Helper()
-	v, ok := gates.Load(msh)
-	if !ok {
-		t.Fatal("this mesh has no gate; it was not built by newAPIHarness")
-	}
-	g := v.(*meshGate)
-
-	ch := make(chan struct{})
-	g.mu.Lock()
-	if _, already := g.held[bic]; already {
-		g.mu.Unlock()
-		t.Fatalf("%s is already held", bic)
-	}
-	g.held[bic] = ch
-	g.mu.Unlock()
-
-	var once sync.Once
-	return func() {
-		once.Do(func() {
-			g.mu.Lock()
-			delete(g.held, bic)
-			g.mu.Unlock()
-			close(ch)
-		})
-	}
-}
-
-// testMeshConfig names the two institutions, exactly as cmd/server's meshConfig
-// does. They have no participant row — they ARE the configuration — and they are
-// different from each other and from every seeded bank's BIC.
-var testMeshConfig = MeshConfig{
-	CentralBankBIC:   "CBSEDEFFXXX",
-	ClearingHouseBIC: "CSMXFRPPXXX",
+	return s
 }
 
 // seededParty is the participant and account behind one of the seed's IBANs.
@@ -346,81 +231,63 @@ func getPayment(t *testing.T, s *server, id string) api.PaymentDTO {
 	return out
 }
 
-// drain waits for every message in flight to be handled and fails on a dead
-// letter. No sleep, no polling: Drain blocks until nothing is in flight.
-func drain(t *testing.T, msh *Mesh) {
-	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	if err := msh.Drain(ctx); err != nil {
-		t.Fatalf("Drain: %v", err)
-	}
-}
-
 // 202 was already the shape 6a chose, because a real CSM answers later. Now it
 // is true rather than anticipatory: the payment really is Initiated when the
 // response is written.
 func TestSubmitAnswers202AndThePaymentIsNotYetAccepted(t *testing.T) {
-	srv, msh := newAPIHarness(t)
-	// The clearing house's door is shut before the instruction is sent, so the
-	// payment CANNOT be carried past Initiated while the read below happens. See
-	// meshGate: without it this assertion was true by scheduling luck, and its
-	// failure was indistinguishable from a regression's.
-	open := holdMessagesTo(t, msh, testMeshConfig.ClearingHouseBIC)
+	srv := newAPIHarness(t)
+	// Nothing holds the clearing house still, and nothing needs to: the file is
+	// in its order log and no goroutine exists that could work through it. The
+	// payment is Initiated because the only thing that would change that is the
+	// call this test has not made yet.
 	rec := postJSON(t, payerRoutes(t, srv), "/payments", validSubmission(t, srv))
 	if rec.Code != http.StatusAccepted {
 		t.Fatalf("status = %d, want 202", rec.Code)
 	}
 	id := decodePaymentID(t, rec)
 
-	// Read on the PAYER'S BANK's surface, because with the clearing house's door
-	// shut that bank is the only institution that has a row for this payment at
-	// all — the instruction has not been relayed, so the clearing house has not
-	// been told it exists and answers 404 rather than "Initiated". Which is the
-	// same claim in a stronger form: the response was written before any other
-	// institution had heard of the payment.
+	// Read on the PAYER'S BANK's surface, because until the file is carried that
+	// bank is the only institution with a row for this payment at all — the
+	// instruction has not been routed, so the clearing house has not been told it
+	// exists and answers 404 rather than "Initiated". Which is the same claim in
+	// a stronger form: the response was written before any other institution had
+	// heard of the payment.
 	var before api.PaymentDTO
 	getJSON(t, payerRoutes(t, srv), "/payments/"+id, &before)
 	if before.Status != "Initiated" {
-		t.Errorf("status before draining = %q, want Initiated", before.Status)
+		t.Errorf("status before the file is carried = %q, want Initiated", before.Status)
 	}
 	assertStatus(t, csmSurface(srv), "GET", "/payments/"+id, "", http.StatusNotFound)
 
-	open()
-	drain(t, msh)
+	carry(t, srv)
 
 	after := getPayment(t, srv, id)
 	if after.Status != "Accepted" {
-		t.Errorf("status after draining = %q, want Accepted", after.Status)
+		t.Errorf("status after the file is carried = %q, want Accepted", after.Status)
 	}
 }
 
-// Reset drains first. Truncating with messages in flight would leave handlers
-// writing into a store the reset had already emptied, and the seed would race
-// its own leftovers.
-func TestResetDrainsBeforeTruncating(t *testing.T) {
-	srv, msh := newAPIHarness(t)
+// A reset throws the queues away with the rows, and the file a submission left
+// behind is one of them.
+//
+// There is nothing to drain: no goroutine is carrying anything, so the only way
+// a file survives a reset is if the reset left the queue standing — and a file
+// about a payment no institution now holds a row for would be worked through on
+// the first day after it, against tables the reset has emptied. Both hosts are
+// therefore rebuilt, which is what this measures.
+func TestResetThrowsTheQueuesAwayWithTheRows(t *testing.T) {
+	srv := newAPIHarness(t)
 	postJSON(t, payerRoutes(t, srv), "/payments", validSubmission(t, srv))
+	if pending := len(srv.dep.ClearingHouse().host.Pending()); pending == 0 {
+		t.Fatal("the submission left no file at the clearing house, so this test would pass on nothing")
+	}
 	rec := post(t, srv.CentralBankRoutes(), "/admin/reset")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("reset = %d", rec.Code)
 	}
-	if err := msh.Drain(context.Background()); err != nil {
-		t.Fatalf("messages were still in flight after reset returned: %v", err)
+	if pending := len(srv.dep.ClearingHouse().host.Pending()); pending != 0 {
+		t.Fatalf("%d files survived the reset; each describes a payment no institution now holds", pending)
 	}
-}
-
-// reserveRows reads the central bank's reserve report: the whole list when pid
-// is empty, one bank's when it is not.
-func reserveRows(t *testing.T, s *server, pid string) []map[string]any {
-	t.Helper()
-	path := "/reserves"
-	if pid != "" {
-		path += "/" + pid
-	}
-	var out []map[string]any
-	getJSON(t, cbSurface(s), path, &out)
-	return out
 }
 
 // TestAnAddressNoMemberIsPublishedUnderIsUnprocessable is the clearing house's
@@ -445,7 +312,7 @@ func reserveRows(t *testing.T, s *server, pid string) []map[string]any {
 // bank's own POST /payments is bound to one bank and takes the submitting side
 // from that binding, so it has no way to name a stranger as the payer.
 func TestAnAddressNoMemberIsPublishedUnderIsUnprocessable(t *testing.T) {
-	srv, _ := newAPIHarness(t)
+	srv := newAPIHarness(t)
 	// A well-formed German address under a code this scheme has allocated to
 	// nobody. It passes mod-97, so what refuses it is the roster and not the
 	// check digits.
@@ -471,7 +338,7 @@ func TestAnAddressNoMemberIsPublishedUnderIsUnprocessable(t *testing.T) {
 // payment, and it has to be carried to Accepted, because that is the state only
 // the PAYEE's bank can put it in.
 func TestAReseededNetworkCanStillBePaidThrough(t *testing.T) {
-	srv, _ := newAPIHarness(t)
+	srv := newAPIHarness(t)
 
 	rec := post(t, srv.CentralBankRoutes(), "/admin/reset")
 	if rec.Code != http.StatusOK {
@@ -485,7 +352,7 @@ func TestAReseededNetworkCanStillBePaidThrough(t *testing.T) {
 		t.Fatalf("submitting after a reset = %d (body: %s)", pay.Code, pay.Body)
 	}
 	id := decodePaymentID(t, pay)
-	drain(t, srv.mesh)
+	carry(t, srv)
 	if got := getPayment(t, srv, id); got.Status != "Accepted" {
 		t.Fatalf("a payment through a reseeded network is %q, want Accepted", got.Status)
 	}
@@ -540,7 +407,7 @@ func TestResetRebuildsTheMeshSoAReadmittedBankCanPay(t *testing.T) {
 		"amount":25000,
 		"creditorName":"Bob"
 	}`, http.StatusAccepted)["paymentId"].(string)
-	drainServer(t, h)
+	carry(t, h)
 	if got := doJSON(t, csmSurface(h), "GET", "/payments/"+pay, "", http.StatusOK); got["status"].(string) != "Accepted" {
 		t.Fatalf("a payment between two re-admitted banks is %q, want Accepted", got["status"])
 	}
@@ -555,15 +422,6 @@ func TestResetRebuildsTheMeshSoAReadmittedBankCanPay(t *testing.T) {
 	}
 }
 
-// participants is every bank this system holds, read through the clearing
-// house's own listing.
-func participants(t *testing.T, h *server) []api.ParticipantDTO {
-	t.Helper()
-	var out []api.ParticipantDTO
-	getJSON(t, cbSurface(h), "/members", &out)
-	return out
-}
-
 // The reseeded banks are rejoined, not just recreated.
 //
 // The sample dataset is rebuilt by seed.Populate, which drives payment.Network
@@ -572,7 +430,7 @@ func participants(t *testing.T, h *server) []api.ParticipantDTO {
 // system that answers every read and cannot carry a payment, which is the worst
 // shape a demo can be in: nothing looks broken until somebody tries to pay.
 func TestPayingAfterAResetGoesThroughTheReseededBanks(t *testing.T) {
-	srv, msh := newAPIHarness(t)
+	srv := newAPIHarness(t)
 
 	rec := post(t, srv.CentralBankRoutes(), "/admin/reset")
 	if rec.Code != http.StatusOK {
@@ -584,7 +442,7 @@ func TestPayingAfterAResetGoesThroughTheReseededBanks(t *testing.T) {
 		t.Fatalf("submitting after a reset = %d (body: %s)", rec.Code, rec.Body.String())
 	}
 	id := decodePaymentID(t, rec)
-	drain(t, msh)
+	carry(t, srv)
 	if got := getPayment(t, srv, id); got.Status != "Accepted" {
 		t.Fatalf("a payment submitted after a reset is %q, want Accepted", got.Status)
 	}
@@ -603,7 +461,7 @@ func TestPayingAfterAResetGoesThroughTheReseededBanks(t *testing.T) {
 // is about, and either half alone would be satisfied by a system that had got the
 // other one wrong.
 func TestWhichRefusalsReachTheCallerAndWhichDoNot(t *testing.T) {
-	srv, msh := newAPIHarness(t)
+	srv := newAPIHarness(t)
 
 	// Answerable: Alice cannot pay a hundred million. Her own bank says so,
 	// inside Submit's unit of work, and nothing is sent.
@@ -626,7 +484,7 @@ func TestWhichRefusalsReachTheCallerAndWhichDoNot(t *testing.T) {
 	}
 	id := decodePaymentID(t, rec)
 
-	drain(t, msh)
+	carry(t, srv)
 
 	got := getPayment(t, srv, id)
 	if got.Status != "Rejected" {
@@ -655,14 +513,14 @@ func TestWhichRefusalsReachTheCallerAndWhichDoNot(t *testing.T) {
 // house's side of the same settlement. This test is about the INSTRUCTION, not
 // about who may read what.
 func TestClosingACycleThroughTheAPIInstructsSettlement(t *testing.T) {
-	srv, msh := newAPIHarness(t)
+	srv := newAPIHarness(t)
 
 	rec := postJSON(t, payerRoutes(t, srv), "/payments", validSubmission(t, srv))
 	if rec.Code != http.StatusAccepted {
 		t.Fatalf("submit = %d (body: %s)", rec.Code, rec.Body.String())
 	}
 	id := decodePaymentID(t, rec)
-	drain(t, msh)
+	carry(t, srv)
 
 	cid := getPayment(t, srv, id).CycleID
 	if cid == "" {
@@ -680,7 +538,7 @@ func TestClosingACycleThroughTheAPIInstructsSettlement(t *testing.T) {
 	if closed.Status != "Closed" {
 		t.Errorf("cycle status in the response = %q, want Closed", closed.Status)
 	}
-	drain(t, msh)
+	carry(t, srv)
 
 	// The cycle is read back from the CLEARING HOUSE, which is the institution
 	// that has one: there is no cycles table in the central bank's schema, and
@@ -731,14 +589,14 @@ func TestClosingACycleThroughTheAPIInstructsSettlement(t *testing.T) {
 // up as an assertion. mesh's own
 // TestAnOperatorRejectionRefundsThePayerOnlyOnceTheMessageArrives measures which
 // actor posted the refund, without a clock, and
-// TestARejectionWhoseRefundFailsStandsAndIsDeadLettered pins that the two halves
+// TestARejectionWhoseRefundFailsStandsAndIsReported pins that the two halves
 // are not one unit of work.
 func TestRejectingThroughTheAPIRefundsThePayerOnlyAfterTheMessageArrives(t *testing.T) {
-	srv, msh := newAPIHarness(t)
+	srv := newAPIHarness(t)
 
 	rec := postJSON(t, payerRoutes(t, srv), "/payments", validSubmission(t, srv))
 	id := decodePaymentID(t, rec)
-	drain(t, msh)
+	carry(t, srv)
 	before := aliceBalance(t, srv)
 
 	rrec := postJSON(t, csmSurface(srv), "/payments/"+id+"/reject", `{"reason":"card lost"}`)
@@ -752,7 +610,7 @@ func TestRejectingThroughTheAPIRefundsThePayerOnlyAfterTheMessageArrives(t *test
 	if rejected.Status != "Rejected" {
 		t.Errorf("the rejection answered with status %q, want Rejected", rejected.Status)
 	}
-	drain(t, msh)
+	carry(t, srv)
 
 	if got := aliceBalance(t, srv); got != before+1000 {
 		t.Errorf("payer's balance after draining = %d, want %d — the pacs.002 is what gives the money back", got, before+1000)
@@ -775,7 +633,7 @@ func TestRejectingThroughTheAPIRefundsThePayerOnlyAfterTheMessageArrives(t *test
 // return's precondition: PostReturnLegTx refuses anything else, and the
 // returning bank checks it again before any message exists.
 func TestReturningThroughTheAPIGoesRoundTheMesh(t *testing.T) {
-	srv, msh := newAPIHarness(t)
+	srv := newAPIHarness(t)
 
 	var payments []api.PaymentDTO
 	getJSON(t, csmSurface(srv), "/payments", &payments)
@@ -809,7 +667,7 @@ func TestReturningThroughTheAPIGoesRoundTheMesh(t *testing.T) {
 		t.Errorf("the return carries a status: %v — its outcome is decided four hops away", body)
 	}
 
-	drain(t, msh)
+	carry(t, srv)
 
 	if got := getPayment(t, srv, settled.ID); got.Status != "Returned" {
 		t.Fatalf("payment is %q after draining, want Returned", got.Status)

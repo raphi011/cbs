@@ -428,8 +428,8 @@ func (b *builder) fund(p *payment.Bank, acct deposit.Account, amount ledger.Amou
 	check(b.bank(p.BIC).Deposit(b.ctx, p.ID, acct.ID, amount, "Opening deposit"))
 }
 
-// lodge moves one bank's vault cash onto its reserve at the central bank, and
-// drains the mesh so that the receipt has arrived before the seed goes on.
+// lodge moves one bank's vault cash onto its reserve at the central bank: the
+// member's own swap, and the settlement agent's credit that matches it.
 //
 // # Why the seed has to do this at all
 //
@@ -437,30 +437,32 @@ func (b *builder) fund(p *payment.Bank, acct deposit.Account, amount ledger.Amou
 // would reach the first cut-off with a zero reserve and settlement would fail
 // for all of them.
 //
-// # It goes through the MESH and not through the domain
+// # Both halves, composed, exactly as initiate composes three
 //
-// a bank's own LodgeReserves would post the bank's own leg and hand back a camt.050 that
-// nobody sends, which is exactly half a lodgement: the bank's reserve mirror would
-// rise and the central bank's book would never hear about it. So this uses the
-// mesh's door, and the seed plays the operator asking for it.
+// A member cannot credit its own reserve account at the central bank; it asks,
+// in a camt.050, and the answer arrives on a later download. Going through the
+// deployment's door would therefore leave the file waiting in the settlement
+// agent's queue until a business day ran through it — and this scenario settles
+// a cycle several steps further down, against a reserve the agent would not yet
+// have credited.
 //
-// That makes it the one place in this file where the seed does NOT compose the
-// halves itself. initiate composes three, and its doc explains why — the seed runs
-// before any actor exists. By the time funding happens the actors DO exist: every
-// bank in this scenario has been provisioned and given one already, and
-// provisioning is what gave it the settlement account this lodgement quotes. So
-// there is a real conversation available and the seed uses it.
+// So the seed plays both institutions, which is what it does for an initiation,
+// a rejection, a return and a cut-off. What it gives up is that no camt.050 and
+// no camt.025 exist in the built scenario; what it keeps is a fixed dataset that
+// does not depend on when a day is advanced.
 //
-// # It drains
-//
-// The camt.025 is what confirms the central bank posted its half, and a scenario
-// that left it queued would hand the API a mesh with messages in flight — which
-// is the state Populate's own contract says it does not leave. Draining here also
-// means a failure in the central bank's half surfaces as this seed failing rather
-// than as a dead letter discovered later.
+// The instruction the member's half renders is what the agent's half is handed,
+// rather than one the seed assembles: the two must agree about the account
+// number and the reference, and a second rendering is a second thing that can
+// drift. See payment.LodgeReservesTx and payment.ReceiveLodgementTx.
 func (b *builder) lodge(p *payment.Bank, amount ledger.Amount) {
-	must(b.dep.Lodge(b.ctx, p.BIC, "EUR", amount))
-	check(b.dep.Drain(b.ctx))
+	in, _ := must2(b.bank(p.BIC).LodgeReserves(b.ctx, seedAsset, amount, payment.MessageContext{
+		From:  p.BIC,
+		To:    b.dep.CentralBankBIC(),
+		MsgID: fmt.Sprintf("seed-lodge-%s-%s", p.BIC, seedAsset),
+		Now:   b.clock.Now(),
+	}))
+	must(b.cb().ReceiveLodgement(b.ctx, in))
 }
 
 // initiate runs all three halves of an initiation — the submitting bank's, the

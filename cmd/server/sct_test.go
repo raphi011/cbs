@@ -14,14 +14,14 @@ import (
 // assert. No sleeps, no Eventually, no retry — if any of those is needed, the
 // Drain design has failed and that is the bug.
 func TestCreditTransferReachesAcceptedThroughTheCSM(t *testing.T) {
-	h := newMeshHarness(t)
+	h := newHarness(t)
 
 	p := h.submitCreditTransfer(t)
 	if p.Status != payment.Initiated {
 		t.Fatalf("submit returned %v, want Initiated — the creditor's bank has not answered yet", p.Status)
 	}
 
-	h.drain(t)
+	h.work(t)
 
 	got := h.payment(t, p.ID)
 	if got.Status != payment.Accepted {
@@ -41,9 +41,9 @@ func TestCreditTransferReachesAcceptedThroughTheCSM(t *testing.T) {
 // because the identifiers each hop assigns are the sender's own and pinning them
 // would be pinning the id scheme, not the flow.
 func TestTheCreditTransferChainIsFourMessages(t *testing.T) {
-	h := newMeshHarness(t)
+	h := newHarness(t)
 	h.submitCreditTransfer(t)
-	h.drain(t)
+	h.work(t)
 
 	want := []struct {
 		from, to iso20022.BIC
@@ -74,9 +74,9 @@ func TestTheCreditTransferChainIsFourMessages(t *testing.T) {
 }
 
 func TestCreditTransferToAnUnknownAccountComesBackAsAC01(t *testing.T) {
-	h := newMeshHarness(t)
+	h := newHarness(t)
 	p := h.submitCreditTransferTo(t, unknownIBANAt(h.creditor))
-	h.drain(t)
+	h.work(t)
 
 	got := h.payment(t, p.ID)
 	if got.Status != payment.Rejected {
@@ -96,17 +96,17 @@ func TestCreditTransferToAnUnknownAccountComesBackAsAC01(t *testing.T) {
 // It is the pacs.002 that makes the money come back, so the payer's bank has to
 // receive one carrying the code.
 func TestARejectedCreditTransferIsAnsweredToThePayersBank(t *testing.T) {
-	h := newMeshHarness(t)
+	h := newHarness(t)
 	h.submitCreditTransferTo(t, unknownIBANAt(h.creditor))
-	h.drain(t)
+	h.work(t)
 
 	h.assertLastStatusTo(t, h.debtorBIC, iso20022.StatusReasonIncorrectAccountNumber)
 }
 
 func TestCreditTransferWithNoOpenCycleIsTM01(t *testing.T) {
-	h := newMeshHarnessWithNoOpenCycle(t)
+	h := newHarnessWithNoOpenCycle(t)
 	p := h.submitCreditTransfer(t)
-	h.drain(t)
+	h.work(t)
 
 	got := h.payment(t, p.ID)
 	if got.RejectCode != iso20022.StatusReasonInvalidCutOffTime {
@@ -124,9 +124,9 @@ func TestCreditTransferWithNoOpenCycleIsTM01(t *testing.T) {
 // header, but the queue carries the sender beside the bytes, so the receiver
 // can still reply.
 func TestAMalformedEnvelopeIsAnsweredWithFF01(t *testing.T) {
-	h := newMeshHarness(t)
+	h := newHarness(t)
 	h.injectRaw(t, h.debtorBIC, h.cfg.ClearingHouseBIC, []byte("<Envelope><nonsense/>"))
-	h.drain(t)
+	h.work(t)
 	// The CSM could not parse it, so there is no payment to reject; what it
 	// can do is tell the sender the file was invalid. Assert the debtor bank
 	// received a pacs.002 carrying FF01.
@@ -137,14 +137,14 @@ func TestAMalformedEnvelopeIsAnsweredWithFF01(t *testing.T) {
 // fails inside its unit of work fails at the caller — and, because the send
 // happens after the commit, it sends nothing.
 func TestARolledBackSubmitSendsNothing(t *testing.T) {
-	h := newMeshHarness(t)
+	h := newHarness(t)
 	// A submission that fails inside its unit of work — an amount of zero.
 	req := h.creditTransferRequest(t)
 	req.Amount = 0
-	if _, err := h.mesh.Submit(context.Background(), req); err == nil {
+	if _, err := h.dep.Submit(context.Background(), req); err == nil {
 		t.Fatal("Submit accepted a zero amount")
 	}
-	h.drain(t)
+	h.work(t)
 	if got := h.messagesSeen(); got != 0 {
 		t.Fatalf("a rolled-back submission sent %d messages, want 0", got)
 	}
@@ -167,8 +167,8 @@ func TestARolledBackSubmitSendsNothing(t *testing.T) {
 // bank except this one, which is why it is the last example available. A future
 // task that gives banks a pacs.009 arm has to find another — or conclude that
 // this assertion has run out of subject and say so.
-func TestAMessageAnActorHasNoHandlerForIsADeadLetter(t *testing.T) {
-	h := newMeshHarness(t)
+func TestAFileAnInstitutionHasNoHandlerForIsReported(t *testing.T) {
+	h := newHarness(t)
 	env, err := payment.SettlementMessage(
 		[]payment.SettlementLeg{{
 			From: h.debtorBIC, To: h.cfg.CentralBankBIC,
@@ -178,11 +178,9 @@ func TestAMessageAnActorHasNoHandlerForIsADeadLetter(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SettlementMessage: %v", err)
 	}
-	if err := h.mesh.send(h.cfg.ClearingHouseBIC, h.debtorBIC, env); err != nil {
-		t.Fatalf("send: %v", err)
-	}
+	h.upload(t, h.cfg.ClearingHouseBIC, h.debtorBIC, env)
 
-	err = h.drainErr(t)
+	err = h.workErr(t)
 	if err == nil {
 		t.Fatal("Drain was clean; the bank swallowed a message it has no handler for")
 	}
@@ -204,9 +202,9 @@ func TestAMessageAnActorHasNoHandlerForIsADeadLetter(t *testing.T) {
 // a bank reverses only what this network's record calls rejected — cannot be
 // what refuses it. See TestABankRefusesToReverseAPaymentThatIsNotRejected.
 func TestABankRefusesAStatusAboutAnotherBanksPayment(t *testing.T) {
-	h := newMeshHarness(t)
+	h := newHarness(t)
 	p := h.submitCreditTransferTo(t, unknownIBANAt(h.creditor))
-	h.drain(t)
+	h.work(t)
 	if got := h.payment(t, p.ID); got.Status != payment.Rejected {
 		t.Fatalf("the fixture payment is %v, want Rejected", got.Status)
 	}
@@ -226,11 +224,9 @@ func TestABankRefusesAStatusAboutAnotherBanksPayment(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StatusMessage: %v", err)
 	}
-	if err := h.mesh.send(h.cfg.ClearingHouseBIC, h.creditorBIC, env); err != nil {
-		t.Fatalf("send: %v", err)
-	}
+	h.upload(t, h.cfg.ClearingHouseBIC, h.creditorBIC, env)
 
-	err = h.drainErr(t)
+	err = h.workErr(t)
 	if err == nil {
 		t.Fatal("Drain was clean; the payee's bank acted on a rejection of somebody else's customer's debit")
 	}
@@ -278,7 +274,7 @@ func TestABankRefusesAStatusAboutAnotherBanksPayment(t *testing.T) {
 // not rejected. See csm.relayRecorded and csm.refuseBulk, and the two tests that
 // hold them to it.
 func TestABankRefusesToReverseAPaymentThatIsNotRejected(t *testing.T) {
-	h := newMeshHarness(t)
+	h := newHarness(t)
 	p := h.settledPayment(t)
 	h.rec.reset()
 
@@ -294,11 +290,9 @@ func TestABankRefusesToReverseAPaymentThatIsNotRejected(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StatusMessage: %v", err)
 	}
-	if err := h.mesh.send(h.cfg.ClearingHouseBIC, h.debtorBIC, env); err != nil {
-		t.Fatalf("send: %v", err)
-	}
+	h.upload(t, h.cfg.ClearingHouseBIC, h.debtorBIC, env)
 
-	err = h.drainErr(t)
+	err = h.workErr(t)
 	if err == nil {
 		t.Fatal("Drain was clean; the payer's bank reversed the debit of a payment that has settled")
 	}
@@ -326,10 +320,10 @@ func TestABankRefusesToReverseAPaymentThatIsNotRejected(t *testing.T) {
 // tried an illegal transition, which is a defect here and not a judgement about
 // anyone's instruction. Handing it to ReasonFor would turn it into MS03 and
 // reject, on the wire, a payment that was in fact accepted.
-func TestARedeliveredAcceptanceIsDeadLetteredAndNotRejected(t *testing.T) {
-	h := newMeshHarness(t)
+func TestARedeliveredAcceptanceIsReportedAndNotRejected(t *testing.T) {
+	h := newHarness(t)
 	p := h.submitCreditTransfer(t)
-	h.drain(t)
+	h.work(t)
 
 	env, err := payment.StatusMessage(
 		payment.OriginalMessage{MsgID: "orig-1", MsgDefIdr: "pacs.008.001.08"},
@@ -338,13 +332,13 @@ func TestARedeliveredAcceptanceIsDeadLetteredAndNotRejected(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StatusMessage: %v", err)
 	}
-	if err := h.mesh.send(h.creditorBIC, h.cfg.ClearingHouseBIC, env); err != nil {
-		t.Fatalf("send: %v", err)
-	}
+	h.upload(t, h.creditorBIC, h.cfg.ClearingHouseBIC, env)
 
-	err = h.drainErr(t)
-	if !errors.Is(err, payment.ErrInvalidStateTransition) {
-		t.Fatalf("Drain = %v, want the illegal transition as a dead letter", err)
+	err = h.workErr(t)
+	// Matched on the TEXT and not with errors.Is: a day's report is prose an
+	// operator reads, and Problem.Detail does not wrap the sentinel.
+	if err == nil || !strings.Contains(err.Error(), payment.ErrInvalidStateTransition.Error()) {
+		t.Fatalf("the day reported %v, want the illegal transition as a problem", err)
 	}
 	if got := h.payment(t, p.ID); got.Status != payment.Accepted {
 		t.Errorf("the duplicate moved the payment to %v; it was already Accepted", got.Status)
@@ -378,9 +372,9 @@ func TestARedeliveredAcceptanceIsDeadLetteredAndNotRejected(t *testing.T) {
 // row for. It is asserted rather than discarded so that a failure anywhere else
 // in the chain cannot hide underneath the assertions below.
 func TestACreditTransferForABankTheMeshCannotRouteToIsRC01(t *testing.T) {
-	h := newMeshHarness(t)
+	h := newHarness(t)
 	p := h.submitCreditTransfer(t)
-	h.drain(t)
+	h.work(t)
 
 	env, err := h.net.CreditTransferMessage([]payment.Payment{p},
 		payment.MessageContext{From: h.debtorBIC, To: h.cfg.ClearingHouseBIC, MsgID: "ct-x", Now: testTime})
@@ -393,10 +387,8 @@ func TestACreditTransferForABankTheMeshCannotRouteToIsRC01(t *testing.T) {
 	// A BIC no actor answers to.
 	tx.CdtrAgt = iso20022.BranchAndFinancialInstitution{
 		FinInstnId: iso20022.FinancialInstitutionIdentification{BICFI: "NOSUCHFFXXX"}}
-	if err := h.mesh.send(h.debtorBIC, h.cfg.ClearingHouseBIC, env); err != nil {
-		t.Fatalf("send: %v", err)
-	}
-	err = h.drainErr(t)
+	h.upload(t, h.debtorBIC, h.cfg.ClearingHouseBIC, env)
+	err = h.workErr(t)
 	if err == nil {
 		t.Fatal("Drain was clean; the payer's bank acted on a rejection of a payment it never sent")
 	}
@@ -427,10 +419,10 @@ func TestACreditTransferForABankTheMeshCannotRouteToIsRC01(t *testing.T) {
 // turning that into a pacs.002 would reject on the wire a payment this bank
 // accepted. What the bank must not do is answer twice with two different
 // answers.
-func TestARedeliveredCreditTransferIsDeadLetteredAtThePayeesBank(t *testing.T) {
-	h := newMeshHarness(t)
+func TestARedeliveredCreditTransferIsReportedAtThePayeesBank(t *testing.T) {
+	h := newHarness(t)
 	p := h.submitCreditTransfer(t)
-	h.drain(t)
+	h.work(t)
 
 	// The pacs.008 the clearing house relayed, sent a second time.
 	var relayed []byte
@@ -446,9 +438,11 @@ func TestARedeliveredCreditTransferIsDeadLetteredAtThePayeesBank(t *testing.T) {
 	}
 	h.injectRaw(t, h.cfg.ClearingHouseBIC, h.creditorBIC, relayed)
 
-	err := h.drainErr(t)
-	if !errors.Is(err, payment.ErrInvalidStateTransition) {
-		t.Fatalf("Drain = %v, want the illegal transition as a dead letter", err)
+	err := h.workErr(t)
+	// Matched on the TEXT and not with errors.Is: a day's report is prose an
+	// operator reads, and Problem.Detail does not wrap the sentinel.
+	if err == nil || !strings.Contains(err.Error(), payment.ErrInvalidStateTransition.Error()) {
+		t.Fatalf("the day reported %v, want the illegal transition as a problem", err)
 	}
 	if got := h.payment(t, p.ID); got.Status != payment.Accepted {
 		t.Errorf("the redelivery moved the payment to %v; it was already Accepted", got.Status)
@@ -472,9 +466,9 @@ func TestARedeliveredCreditTransferIsDeadLetteredAtThePayeesBank(t *testing.T) {
 // how many. The count is what a sender has to see to fix its file, and the
 // element is what says whether it was a push or a pull that was refused.
 func TestABulkCreditTransferIsRefusedByTheClearingHouse(t *testing.T) {
-	h := newMeshHarness(t)
+	h := newHarness(t)
 	p := h.submitCreditTransfer(t)
-	h.drain(t)
+	h.work(t)
 
 	env, err := h.net.CreditTransferMessage([]payment.Payment{p},
 		payment.MessageContext{From: h.debtorBIC, To: h.cfg.ClearingHouseBIC, MsgID: "ct-bulk", Now: testTime})
@@ -486,10 +480,8 @@ func TestABulkCreditTransferIsRefusedByTheClearingHouse(t *testing.T) {
 	body.GrpHdr.NbOfTxs = "2"
 
 	relayedBefore := h.messagesSentTo(h.creditorBIC, "pacs.008.001.08")
-	if err := h.mesh.send(h.debtorBIC, h.cfg.ClearingHouseBIC, env); err != nil {
-		t.Fatalf("send: %v", err)
-	}
-	h.drain(t)
+	h.upload(t, h.debtorBIC, h.cfg.ClearingHouseBIC, env)
+	h.work(t)
 
 	// Answered, not dropped, and the answer says why.
 	status := h.lastStatusTo(t, h.debtorBIC)
@@ -538,9 +530,9 @@ func TestABulkCreditTransferIsRefusedByTheClearingHouse(t *testing.T) {
 // house that named CdtTrfTxInf in a collection's refusal would be telling the
 // sender to look at a field its message does not have.
 func TestABulkCollectionIsRefusedByTheClearingHouse(t *testing.T) {
-	h := newMeshHarness(t)
+	h := newHarness(t)
 	p := h.submitDirectDebit(t)
-	h.drain(t)
+	h.work(t)
 
 	mandate, err := h.bank(h.creditor.BIC).GetMandate(context.Background(), p.MandateID)
 	if err != nil {
@@ -556,10 +548,8 @@ func TestABulkCollectionIsRefusedByTheClearingHouse(t *testing.T) {
 	body.GrpHdr.NbOfTxs = "2"
 
 	relayedBefore := h.messagesSentTo(h.debtorBIC, "pacs.003.001.08")
-	if err := h.mesh.send(h.creditorBIC, h.cfg.ClearingHouseBIC, env); err != nil {
-		t.Fatalf("send: %v", err)
-	}
-	h.drain(t)
+	h.upload(t, h.creditorBIC, h.cfg.ClearingHouseBIC, env)
+	h.work(t)
 
 	status := h.lastStatusTo(t, h.creditorBIC)
 	_, reports := payment.ReadStatus(status)
@@ -635,7 +625,7 @@ func TestAnOnUsPaymentIsRefusedBeforeItReachesAClearingHouse(t *testing.T) {
 		{"a collection", payment.SchemeSEPADD},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			h := newMeshHarness(t)
+			h := newHarness(t)
 			ctx := context.Background()
 			// A second customer at the PAYER's bank, so both parties are that
 			// bank's.
@@ -652,7 +642,7 @@ func TestAnOnUsPaymentIsRefusedBeforeItReachesAClearingHouse(t *testing.T) {
 			}
 
 			before := h.messagesSeen()
-			_, err = h.mesh.Submit(ctx, payment.InitiatePaymentRequest{
+			_, err = h.dep.Submit(ctx, payment.InitiatePaymentRequest{
 				Scheme:          tc.scheme,
 				MandateID:       mandate.ID,
 				Debtor:          h.debtorRef(),

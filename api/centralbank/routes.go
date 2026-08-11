@@ -66,5 +66,10 @@ func Routes(inst Institution) *api.Router {
 	// central bank is the operator whose act "the system starts with these banks
 	// in it" is.
 	s.registerAdminRoutes(mux)
+	// The business date, and the button that advances it. Both are the
+	// deployment's acts and neither is the settlement agent's; see
+	// handleAdvanceDay for why they are served here and why POST /end-of-day on a
+	// bank's own port survives beside them.
+	s.registerClockRoutes(mux)
 	return mux
 }

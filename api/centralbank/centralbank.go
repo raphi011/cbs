@@ -1,14 +1,16 @@
 // Package centralbank is the settlement agent's HTTP surface: the reserves it
 // holds, the settlements it discharged, and its own book's audit trail.
 //
-// # Two routes here are the OPERATOR's, not this institution's
+// # Four routes here are the OPERATOR's, not this institution's
 //
-// GET /members lists every bank the deployment holds a database for, and
-// POST /admin/reset rebuilds them. Both reach past this institution to
-// databases that are not the settlement agent's. They are one operator's acts
-// over a DEPLOYMENT, and a deployment is not an institution; this listener is
-// where the operator's console is served, and serving them here is not the claim
-// that the settlement agent performs them.
+// GET /members lists every bank the deployment holds a database for,
+// POST /admin/reset rebuilds them, and GET /clock and POST /clock/day read and
+// advance the business date every institution reads. All four reach past this
+// institution — to databases that are not the settlement agent's, and to a
+// clock that is in none of them. They are one operator's acts over a
+// DEPLOYMENT, and a deployment is not an institution; this listener is where
+// the operator's console is served, and serving them here is not the claim that
+// the settlement agent performs them.
 //
 // Institution below is declared here, by the package that needs it, so this
 // package knows nothing about a mesh or a store set.
@@ -18,6 +20,7 @@ import (
 	"context"
 	"log/slog"
 
+	"github.com/raphi011/cbs/api"
 	"github.com/raphi011/cbs/payment"
 )
 
@@ -44,6 +47,19 @@ type Institution interface {
 	// Reset clears the store and rebuilds the sample dataset. The deployment's
 	// act, served here for the reason the package doc gives.
 	Reset(ctx context.Context) error
+
+	// BusinessDate is what day the deployment is on, and AdvanceDay runs one
+	// business day and moves it to the next. Both are the deployment's acts, for
+	// the reason Reset is, and both are served here because this is where the
+	// operator's console stands.
+	//
+	// They are the only two methods on this interface that answer in a DTO rather
+	// than in a domain type, and the reason is that the value has no domain type:
+	// a business date belongs to no institution and is in none of the N+2
+	// databases, so what holds it is a composition root that no surface package
+	// may import. See api.DayReportDTO.
+	BusinessDate() api.BusinessDateDTO
+	AdvanceDay(ctx context.Context) (api.DayReportDTO, error)
 
 	// Log is what the middleware chain and the reset route write through.
 	Log() *slog.Logger

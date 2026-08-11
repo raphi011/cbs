@@ -22,12 +22,12 @@ import (
 // StsRsnInf only when something was refused, so "no code" is the observable form
 // of "nothing went wrong". See assertLastStatusTo.
 func TestClosingACycleSettlesItThroughTheCentralBank(t *testing.T) {
-	h := newMeshHarness(t)
+	h := newHarness(t)
 	p := h.submitCreditTransfer(t)
-	h.drain(t)
+	h.work(t)
 
 	h.closeCycle(t)
-	h.drain(t)
+	h.work(t)
 
 	got := h.payment(t, p.ID)
 	if got.Status != payment.Settled {
@@ -41,12 +41,12 @@ func TestClosingACycleSettlesItThroughTheCentralBank(t *testing.T) {
 // instruction. Before the mesh this was a Go error returned to whoever clicked
 // settle, which is not something a clearing house can act on.
 func TestANetPayerWhoCannotCoverIsRejectedOnTheInstruction(t *testing.T) {
-	h := newMeshHarnessWithAnUnfundedReserve(t)
+	h := newHarnessWithAnUnfundedReserve(t)
 	h.submitCreditTransfer(t)
-	h.drain(t)
+	h.work(t)
 
 	h.closeCycle(t)
-	h.drain(t)
+	h.work(t)
 
 	h.assertLastTxStatusTo(t, h.cfg.ClearingHouseBIC, iso20022.TransactionStatusRejected)
 	h.assertLastStatusTo(t, h.cfg.ClearingHouseBIC, iso20022.StatusReasonInsufficientFunds)
@@ -70,11 +70,11 @@ func TestANetPayerWhoCannotCoverIsRejectedOnTheInstruction(t *testing.T) {
 // end, which is the only assertion that says the money actually arrived rather
 // than that a status changed.
 func TestARefusedSettlementCanBeInstructedAgain(t *testing.T) {
-	h := newMeshHarnessWithAnUnfundedReserve(t)
+	h := newHarnessWithAnUnfundedReserve(t)
 	p := h.submitCreditTransfer(t)
-	h.drain(t)
+	h.work(t)
 	h.closeCycle(t)
-	h.drain(t)
+	h.work(t)
 
 	// The stuck state, in the four places it shows.
 	//
@@ -115,10 +115,10 @@ func TestARefusedSettlementCanBeInstructedAgain(t *testing.T) {
 	h.lodge(t, h.debtorBIC, "EUR", harnessAmount)
 
 	// And ask again. This is the route POST /cycles/{cid}/settle reaches.
-	if _, err := h.mesh.Settle(context.Background(), stuck.ID); err != nil {
+	if _, err := h.dep.ClearingHouse().Settle(context.Background(), stuck.ID); err != nil {
 		t.Fatalf("Settle %s: %v", stuck.ID, err)
 	}
-	h.drain(t)
+	h.work(t)
 
 	settled := h.creditTransferCycle(t)
 	if settled.Status != payment.CycleSettled {
@@ -152,11 +152,11 @@ func TestARefusedSettlementCanBeInstructedAgain(t *testing.T) {
 // settlement count is what says no second discharge happened. A guard that only
 // changed the error text would pass an assertion on the error alone.
 func TestReSettlingASettledCycleIsRefused(t *testing.T) {
-	h := newMeshHarness(t)
+	h := newHarness(t)
 	h.submitCreditTransfer(t)
-	h.drain(t)
+	h.work(t)
 	h.closeCycle(t)
-	h.drain(t)
+	h.work(t)
 
 	cyc := h.creditTransferCycle(t)
 	if cyc.Status != payment.CycleSettled {
@@ -164,7 +164,7 @@ func TestReSettlingASettledCycleIsRefused(t *testing.T) {
 	}
 	instructionsBefore := h.instructionsSentTo(h.cfg.CentralBankBIC)
 
-	_, err := h.mesh.Settle(context.Background(), cyc.ID)
+	_, err := h.dep.ClearingHouse().Settle(context.Background(), cyc.ID)
 	if !errors.Is(err, payment.ErrCycleNotClosed) {
 		t.Fatalf("Settle on a settled cycle = %v, want ErrCycleNotClosed", err)
 	}
@@ -197,11 +197,11 @@ func TestReSettlingASettledCycleIsRefused(t *testing.T) {
 // "<cycle>:settle", so even a defect that got past the guard could not post
 // twice.
 func TestASecondSettlementInstructionPostsNothing(t *testing.T) {
-	h := newMeshHarness(t)
+	h := newHarness(t)
 	h.submitCreditTransfer(t)
-	h.drain(t)
+	h.work(t)
 	h.closeCycle(t)
-	h.drain(t)
+	h.work(t)
 
 	cyc := h.creditTransferCycle(t)
 	payeeBefore := h.balance(t, h.creditorPID, h.creditorAcct.ID)
@@ -212,7 +212,7 @@ func TestASecondSettlementInstructionPostsNothing(t *testing.T) {
 	raw := h.lastMessageOfTypeTo(t, h.cfg.CentralBankBIC, "pacs.009.001.08")
 	h.injectRaw(t, h.cfg.ClearingHouseBIC, h.cfg.CentralBankBIC, raw)
 
-	err := h.drainErr(t)
+	err := h.workErr(t)
 	if err == nil || !strings.Contains(err.Error(), "was told to settle") {
 		t.Fatalf("draining after a replayed instruction = %v, want a dead letter naming the repeat", err)
 	}
@@ -241,7 +241,7 @@ func TestASecondSettlementInstructionPostsNothing(t *testing.T) {
 // By scheme rather than by index: every fixture here opens a direct-debit cycle
 // beside it, and which one ListCycles puts first is not something these tests
 // should depend on.
-func (h *meshHarness) creditTransferCycle(t *testing.T) payment.ClearingCycle {
+func (h *harness) creditTransferCycle(t *testing.T) payment.ClearingCycle {
 	t.Helper()
 	for _, c := range h.cycles(t) {
 		if c.Scheme == payment.SchemeSEPACT {
@@ -276,11 +276,11 @@ func (h *meshHarness) creditTransferCycle(t *testing.T) payment.ClearingCycle {
 //     precisely because it carries a balance to check a posting against, and a
 //     statement quoting the wrong one would be worse than none.
 func TestEachMemberBooksTheStatementItWasSent(t *testing.T) {
-	h := newMeshHarness(t)
+	h := newHarness(t)
 	h.submitCreditTransfer(t)
-	h.drain(t)
+	h.work(t)
 	h.closeCycle(t)
-	h.drain(t)
+	h.work(t)
 
 	cyc := h.creditTransferCycle(t)
 	if cyc.Status != payment.CycleSettled {
@@ -325,7 +325,7 @@ func TestEachMemberBooksTheStatementItWasSent(t *testing.T) {
 // (store/sqlite/schema/csm/0001_init.sql). The unit of work is opened on a bare
 // context, so the recorder attributes the read to no actor and it cannot spoil a
 // per-actor set.
-func (h *meshHarness) advice(t *testing.T, id payment.ParticipantID, reference string) payment.SettlementAdvice {
+func (h *harness) advice(t *testing.T, id payment.ParticipantID, reference string) payment.SettlementAdvice {
 	t.Helper()
 	ctx := context.Background()
 	member := h.bank(iso20022.BIC(id))
@@ -346,12 +346,12 @@ func (h *meshHarness) advice(t *testing.T, id payment.ParticipantID, reference s
 // One instruction per asset. SettleCycleTx settles per asset, and a message
 // mixing currencies in one IntrBkSttlmAmt would not be expressible.
 func TestOneSettlementInstructionPerAsset(t *testing.T) {
-	h := newMeshHarnessWithTwoAssets(t)
+	h := newHarnessWithTwoAssets(t)
 	h.submitCreditTransfer(t)
 	h.submitCreditTransferInUSD(t)
-	h.drain(t)
+	h.work(t)
 	h.closeCycle(t)
-	h.drain(t)
+	h.work(t)
 
 	if got := h.instructionsSentTo(h.cfg.CentralBankBIC); got != 2 {
 		t.Fatalf("sent %d settlement instructions, want one per asset", got)
@@ -389,16 +389,16 @@ func TestOneSettlementInstructionPerAsset(t *testing.T) {
 // be right and only the conversation wrong — and they are ONE EACH rather than
 // one and none. See csm.tellSettled.
 func TestASettledCollectionIsAnnouncedToThePayeesBank(t *testing.T) {
-	h := newMeshHarness(t)
+	h := newHarness(t)
 	p := h.submitDirectDebit(t)
-	h.drain(t)
+	h.work(t)
 
 	// Counted from here, so the ACCP this bank was already sent when it
 	// submitted is not in the total.
 	before := h.statusesSentTo(h.creditorBIC)
 	debtorBefore := h.statusesSentTo(h.debtorBIC)
 	h.closeCycle(t)
-	h.drain(t)
+	h.work(t)
 
 	if got := h.payment(t, p.ID); got.Status != payment.Settled {
 		t.Fatalf("status = %v, want Settled", got.Status)
@@ -431,12 +431,12 @@ func TestASettledCollectionIsAnnouncedToThePayeesBank(t *testing.T) {
 // leg's own currency, deliberately) and which would net a euro position against
 // a dollar one at the settlement agent.
 func TestEachSettlementInstructionCarriesOneAssetsLegs(t *testing.T) {
-	h := newMeshHarnessWithTwoAssets(t)
+	h := newHarnessWithTwoAssets(t)
 	h.submitCreditTransfer(t)
 	h.submitCreditTransferInUSD(t)
-	h.drain(t)
+	h.work(t)
 	h.closeCycle(t)
-	h.drain(t)
+	h.work(t)
 
 	var assets []ledger.AssetCode
 	for _, doc := range h.instructionsTo(t, h.cfg.CentralBankBIC) {
@@ -467,11 +467,11 @@ func TestEachSettlementInstructionCarriesOneAssetsLegs(t *testing.T) {
 // a set of bilateral instructions, and getting the direction backwards would
 // settle the cycle the wrong way round while every total still balanced.
 func TestASettlementInstructionRunsBetweenBanksAndTheCentralBank(t *testing.T) {
-	h := newMeshHarness(t)
+	h := newHarness(t)
 	h.submitCreditTransfer(t)
-	h.drain(t)
+	h.work(t)
 	h.closeCycle(t)
-	h.drain(t)
+	h.work(t)
 
 	docs := h.instructionsTo(t, h.cfg.CentralBankBIC)
 	if len(docs) != 1 {
@@ -514,9 +514,9 @@ func TestASettlementInstructionRunsBetweenBanksAndTheCentralBank(t *testing.T) {
 // that are all zero, and stays Closed for ever, because there is no settlement
 // for it to reach.
 func TestAnEmptyCycleInstructsNothing(t *testing.T) {
-	h := newMeshHarness(t)
+	h := newHarness(t)
 	h.closeCycle(t) // both windows are open and neither has a payment in it
-	h.drain(t)
+	h.work(t)
 
 	if got := h.instructionsSentTo(h.cfg.CentralBankBIC); got != 0 {
 		t.Errorf("closing two empty cycles sent %d settlement instructions, want none", got)
@@ -546,12 +546,12 @@ func TestAnEmptyCycleInstructsNothing(t *testing.T) {
 // rejection of a payment this network records as Cleared, so a fan-out here
 // would come back as a dead letter at both banks rather than as a quiet mistake.
 func TestARefusedSettlementLeavesTheCycleClosedAndThePaymentsCleared(t *testing.T) {
-	h := newMeshHarnessWithAnUnfundedReserve(t)
+	h := newHarnessWithAnUnfundedReserve(t)
 	p := h.submitCreditTransfer(t)
-	h.drain(t)
+	h.work(t)
 
 	h.closeCycle(t)
-	h.drain(t)
+	h.work(t)
 
 	if got := h.payment(t, p.ID); got.Status != payment.Cleared {
 		t.Errorf("after a refused settlement the payment is %v, want Cleared", got.Status)
@@ -633,14 +633,14 @@ func TestARefusedSettlementLeavesTheCycleClosedAndThePaymentsCleared(t *testing.
 // asserted because it has no leg to post from the ACSC. What remains genuinely
 // undetermined is the INTERLEAVING across actors.
 func TestTheMessagesACutOffPutsOnTheWire(t *testing.T) {
-	h := newMeshHarness(t)
+	h := newHarness(t)
 	h.submitCreditTransfer(t)
-	h.drain(t)
+	h.work(t)
 
 	h.rec.reset()
 	before := h.messagesSeen()
 	h.closeCycle(t)
-	h.drain(t)
+	h.work(t)
 
 	type hop struct {
 		from, to iso20022.BIC
@@ -720,7 +720,7 @@ func TestTheMessagesACutOffPutsOnTheWire(t *testing.T) {
 // Injected rather than provoked, because no actor in this mesh emits this
 // message. That is what injectRaw is for.
 func TestASettlementInstructionNamingTwoCyclesIsRefused(t *testing.T) {
-	h := newMeshHarness(t)
+	h := newHarness(t)
 	env, err := payment.SettlementMessage([]payment.SettlementLeg{
 		{From: h.debtorBIC, To: h.cfg.CentralBankBIC, Amount: harnessAmount, Asset: "EUR", Reference: "cyc_one"},
 		{From: h.cfg.CentralBankBIC, To: h.creditorBIC, Amount: harnessAmount, Asset: "EUR", Reference: "cyc_two"},
@@ -736,7 +736,7 @@ func TestASettlementInstructionNamingTwoCyclesIsRefused(t *testing.T) {
 	}
 
 	h.injectRaw(t, h.cfg.ClearingHouseBIC, h.cfg.CentralBankBIC, raw)
-	h.drain(t)
+	h.work(t)
 
 	h.assertLastTxStatusTo(t, h.cfg.ClearingHouseBIC, iso20022.TransactionStatusRejected)
 	if got := h.lastStatusTo(t, h.cfg.ClearingHouseBIC); !strings.Contains(statusText(got), "cyc_two") {
@@ -780,11 +780,11 @@ func TestASettlementInstructionNamingTwoCyclesIsRefused(t *testing.T) {
 // payment holds no row for it. That is stronger than the comparison it replaces,
 // because it cannot be got past by a bank that knows the id.
 func TestOnlyThePayeesBankPaysThePayee(t *testing.T) {
-	h := newMeshHarness(t)
+	h := newHarness(t)
 	p := h.submitCreditTransfer(t)
-	h.drain(t)
+	h.work(t)
 	h.closeCycle(t)
-	h.drain(t)
+	h.work(t)
 
 	// The payee was paid, by its own bank, and the leg is named on that bank's
 	// own copy.

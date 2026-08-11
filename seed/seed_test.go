@@ -3,9 +3,7 @@ package seed
 import (
 	"context"
 	"errors"
-	"fmt"
 	"strings"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -26,23 +24,20 @@ const testCentralBankBIC iso20022.BIC = "CBSEDEFFXXX"
 // testDeployment is the running system a scenario is built into, composed
 // directly instead of carried.
 //
-// Populate's five acts are the ones needing more than one institution (see
-// Deployment). Three of them need nothing else at all here: an admission writes
-// no row, so it is the network's own to make; nothing is ever in flight, so
-// there is nothing to drain; and the settlement agent's address is
-// configuration. The two that move rows are composed the way every other
-// composite in this package is — one institution's half, then the other's, each
-// through its own network — which is why Populate's own doc calls the
-// deployment a thing that must be RUNNING rather than a transport.
+// Populate's three acts are the ones needing a table no single institution owns
+// (see Deployment). Two of them need nothing else at all here: an admission
+// writes no row, so it is the network's own to make, and the settlement agent's
+// address is configuration. The third reads one institution's table and writes
+// another's, which is exactly what the real one does.
 //
-// What it leaves out is the hop. The instruction and the receipt are domain
-// values on both sides of it, so nothing here marshals or parses an envelope,
-// and a lodgement whose camt.050 could not be read is therefore not a failure
-// this fixture can reach. That is the transport's own to prove, and it does.
+// What it leaves out is the hop, and nothing here has one to leave out: the seed
+// composes both halves of every conversation itself, so no envelope is marshalled
+// on either side. A lodgement whose camt.050 could not be read is therefore not a
+// failure this fixture can reach. That is the transport's own to prove, and it
+// does.
 type testDeployment struct {
 	nets *payment.Networks
 	now  func() time.Time
-	seq  atomic.Uint64
 }
 
 func newTestDeployment(nets *payment.Networks, now func() time.Time) *testDeployment {
@@ -53,9 +48,6 @@ func newTestDeployment(nets *payment.Networks, now func() time.Time) *testDeploy
 // written by the time this is called; what a deployment adds on top is
 // reachability, and everything below reaches a bank through its own network.
 func (d *testDeployment) AddBank(context.Context, *payment.Bank) error { return nil }
-
-// Drain has nothing to wait for: every act here finishes before it returns.
-func (d *testDeployment) Drain(context.Context) error { return nil }
 
 func (d *testDeployment) CentralBankBIC() iso20022.BIC { return testCentralBankBIC }
 
@@ -73,36 +65,6 @@ func (d *testDeployment) RefreshDirectory(ctx context.Context, bic iso20022.BIC)
 		return nil, err
 	}
 	return subscriber.RefreshDirectory(ctx, published)
-}
-
-// Lodge is the member's half and then the settlement agent's, each in its own
-// unit of work, which is the property TestALodgementIsTwoBooksInTwoUnitsOfWork
-// holds the real one to.
-//
-// The receipt is discarded because accepting one costs the member nothing: the
-// mirror leg was posted by the first half, and the second half either credits
-// the reserve or refuses — and a refusal comes back as an error here rather
-// than as a receipt nobody reads.
-func (d *testDeployment) Lodge(ctx context.Context, bic iso20022.BIC, asset ledger.AssetCode,
-	amount ledger.Amount) (payment.LodgementInstruction, error) {
-
-	member, err := d.nets.Bank(ctx, payment.ParticipantID(bic))
-	if err != nil {
-		return payment.LodgementInstruction{}, err
-	}
-	in, _, err := member.LodgeReserves(ctx, asset, amount, payment.MessageContext{
-		From:  bic,
-		To:    testCentralBankBIC,
-		MsgID: fmt.Sprintf("%s-%d", bic, d.seq.Add(1)),
-		Now:   d.now(),
-	})
-	if err != nil {
-		return payment.LodgementInstruction{}, err
-	}
-	if _, err := d.nets.CentralBank().ReceiveLodgement(ctx, in); err != nil {
-		return in, err
-	}
-	return in, nil
 }
 
 // testNetwork builds the sample scenario over the store testenv hands it.

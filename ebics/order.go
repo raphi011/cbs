@@ -24,6 +24,16 @@ const (
 	C53 OrderType = "C53" // camt.053 statements
 	HAC OrderType = "HAC" // the acknowledgement file: what became of each order
 	BTD OrderType = "BTD" // everything else waiting in the queue, in order
+
+	// C25 is a camt.025 receipt waiting in a queue. It is a LABEL and never a
+	// selector: BTD is what collects it, and asking for it by name is refused
+	// like any other type this host does not offer.
+	//
+	// The types above are what a subscriber may NAME. A file already in a queue
+	// still has to say what it is, because a subscriber that collected a mixed
+	// download reads each file by what it carries — and camt.025 is the one
+	// document this deployment enqueues that no named type covers.
+	C25 OrderType = "C25"
 )
 
 // uploads is every order type a subscriber may send. A type that is in neither

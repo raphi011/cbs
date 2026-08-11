@@ -2,8 +2,6 @@ package main
 
 import (
 	"context"
-	"errors"
-	"slices"
 	"strings"
 	"testing"
 
@@ -14,13 +12,15 @@ import (
 	"github.com/raphi011/cbs/store/storetest"
 )
 
-// The two entry points no message provokes: an operator rejecting a payment the
-// clearing house is holding, and a bank joining a mesh that is already running.
+// The two entry points no file provokes: an operator rejecting a payment the
+// clearing house is holding, and a bank joining a deployment that is already
+// running.
 //
-// Both are the shape Mesh.Submit, Mesh.CloseCycle and Mesh.Return already have —
-// synchronous, on the caller's goroutine, an error the caller can be answered
-// with — because an instruction from outside the mesh is not a message arriving
-// in an inbox, and the layer that instructs has somebody to tell.
+// Both are the shape Deployment.Submit, ClearingHouse.CloseCycle and
+// Deployment.Return already have — synchronous, on the caller's goroutine, an
+// error the caller can be answered with — because an instruction from outside a
+// business day is not a file collected from a queue, and the layer that
+// instructs has somebody to tell.
 
 // An operator's rejection is TWO halves in two actors, and only the first one
 // has anybody to answer.
@@ -33,10 +33,10 @@ import (
 //
 // # How that is measured, and how it deliberately is not
 //
-// Not by reading the suspense between the two calls, which is what a first draft
-// did: the payer's bank actor runs concurrently with this goroutine, so
-// "unchanged the moment Reject returned" is a race that happens to pass rather
-// than an assertion. Nothing in this package may be timed.
+// Not by reading the suspense between the two calls. Nothing races here — the
+// pacs.002 sits in the payer's bank's download queue until that bank collects —
+// so "unchanged the moment Reject returned" would be true and would say nothing
+// about who is entitled to change it.
 //
 // It is measured by WHICH BOOKS each actor's units of work reached, which the
 // recording store answers exactly and without a clock. A clearing house that
@@ -44,18 +44,18 @@ import (
 // and its set would say so. This is the rejection-shaped case of
 // TestTheCSMTouchesOnlyItsOwnBook.
 func TestAnOperatorRejectionRefundsThePayerOnlyOnceTheMessageArrives(t *testing.T) {
-	h := newMeshHarness(t)
+	h := newHarness(t)
 	p := h.submitCreditTransfer(t)
-	h.drain(t)
+	h.work(t)
 
-	rejected, err := h.mesh.Reject(context.Background(), p.ID, iso20022.StatusReasonNotSpecifiedAgentGenerated, "card lost")
+	rejected, err := h.dep.ClearingHouse().Reject(context.Background(), p.ID, iso20022.StatusReasonNotSpecifiedAgentGenerated, "card lost")
 	if err != nil {
 		t.Fatalf("Reject: %v", err)
 	}
 	if rejected.Status != payment.Rejected {
 		t.Fatalf("Reject returned %v, want Rejected", rejected.Status)
 	}
-	h.drain(t)
+	h.work(t)
 
 	if bal := h.suspense(t, h.debtorPID); bal != 0 {
 		t.Errorf("clearing suspense = %d after draining, want 0 — the pacs.002 is what tells the payer's bank to give the money back", bal)
@@ -92,15 +92,15 @@ func TestAnOperatorRejectionRefundsThePayerOnlyOnceTheMessageArrives(t *testing.
 // their request. What cannot come back that way is anything a counterparty
 // decides — which for a rejection is the refund, three hops and one actor later.
 func TestAnOperatorRejectionOfASettledPaymentIsRefusedAndSendsNothing(t *testing.T) {
-	h := newMeshHarness(t)
+	h := newHarness(t)
 	p := h.settledPayment(t)
 	before := h.messagesSeen()
 
-	if _, err := h.mesh.Reject(context.Background(), p.ID, iso20022.StatusReasonNotSpecifiedAgentGenerated, "too late"); err == nil {
+	if _, err := h.dep.ClearingHouse().Reject(context.Background(), p.ID, iso20022.StatusReasonNotSpecifiedAgentGenerated, "too late"); err == nil {
 		t.Fatal("Reject accepted a settled payment; the money has already moved between banks")
 	}
 
-	h.drain(t)
+	h.work(t)
 	if n := h.messagesSeen() - before; n != 0 {
 		t.Errorf("%d messages were sent by a rejection that was refused, want 0", n)
 	}
@@ -109,25 +109,25 @@ func TestAnOperatorRejectionOfASettledPaymentIsRefusedAndSendsNothing(t *testing
 	}
 }
 
-// A bank the mesh does not know about is reachable in BOTH directions once
+// A bank the deployment does not know about is reachable in BOTH directions once
 // AddBank has been called, and unreachable until then.
 //
-// # Why the fixture builds it without the mesh
+// # Why the fixture builds it without the deployment
 //
-// The state this is about is a bank the mesh has not READ: api.Server.Reset
-// truncates the store and rebuilds it underneath a live mesh, and every bank in
-// the new roster is one no actor answers to until JoinRoster runs.
-// storetest.Admit builds exactly that — three institutions' rows, no transport.
+// The state this is about is a bank the deployment has not READ: rows written by
+// something other than its own door. storetest.Admit builds exactly that — three
+// institutions' rows, and no place in the network.
 //
-// Such a bank is not slow, it is unreachable: it cannot pay, because Mesh.Submit
-// has no actor to hand its customer's instruction to, and it cannot be paid,
-// because the clearing house has nothing under its BIC to route a pacs.008 to.
+// Such a bank is not slow, it is unreachable: it cannot pay, because
+// Deployment.Submit holds no view of it to hand its customer's instruction to,
+// and it cannot be paid, because the clearing house holds no download queue under
+// its BIC to route a pacs.008 into.
 //
 // Both directions are asserted, because they fail for different reasons and one
 // of them can be fixed without the other: the bank index answers "can it pay"
-// and the actor table answers "can it be paid".
+// and enrolment answers "can it be paid".
 func TestABankAdmittedAfterStartCanPayAndBePaid(t *testing.T) {
-	h := newMeshHarness(t)
+	h := newHarness(t)
 	ctx := context.Background()
 
 	joiner, err := storetest.Admit(ctx, h.nets, "Nordhaven Bank", "NORDSESSXXX", euroOnly)
@@ -149,28 +149,28 @@ func TestABankAdmittedAfterStartCanPayAndBePaid(t *testing.T) {
 		CreditorDetails: payment.PartyDetails{Agent: h.creditorBIC, Name: h.creditorAcct.Name},
 		DebtorDetails:   payment.PartyDetails{Agent: joiner.BIC}}
 
-	// In the roster, not in the mesh.
-	if _, err := h.mesh.Submit(ctx, out); err == nil {
-		t.Fatal("Submit accepted an instruction for a bank with no actor; nothing could ever have answered it")
-	} else if !strings.Contains(err.Error(), "no bank actor") {
-		t.Errorf("Submit refused with %v, want a refusal naming the missing actor", err)
+	// In the roster, and nowhere in this deployment.
+	if _, err := h.dep.Submit(ctx, out); err == nil {
+		t.Fatal("Submit accepted an instruction for a bank this deployment holds no view of; nothing could ever have uploaded it")
+	} else if !strings.Contains(err.Error(), "holds no bank at") {
+		t.Errorf("Submit refused with %v, want a refusal naming the bank it does not hold", err)
 	}
 
-	if err := h.mesh.AddBank(context.Background(), joiner); err != nil {
+	if err := h.dep.AddBank(context.Background(), joiner); err != nil {
 		t.Fatalf("AddBank: %v", err)
 	}
 
-	sent, err := h.mesh.Submit(ctx, out)
+	sent, err := h.dep.Submit(ctx, out)
 	if err != nil {
 		t.Fatalf("Submit after AddBank: %v", err)
 	}
-	h.drain(t)
+	h.work(t)
 	if got := h.payment(t, sent.ID); got.Status != payment.Accepted {
 		t.Fatalf("the joining bank's own payment is %v, want Accepted", got.Status)
 	}
 
-	// And the other direction: a pacs.008 addressed to the new bank has an
-	// inbox to land in, and the bank answers it.
+	// And the other direction: a pacs.008 addressed to the new bank has a queue
+	// to land in, and the bank answers it.
 	in := h.creditTransferRequest(t)
 	in.Creditor = payment.PartyRef{
 		Account:    acct.ID,
@@ -178,293 +178,13 @@ func TestABankAdmittedAfterStartCanPayAndBePaid(t *testing.T) {
 	}
 	in.CreditorDetails = payment.PartyDetails{Agent: joiner.BIC, Name: acct.Name}
 	in.CreditorDetails = payment.PartyDetails{Agent: joiner.BIC, Name: acct.Name}
-	received, err := h.mesh.Submit(ctx, in)
+	received, err := h.dep.Submit(ctx, in)
 	if err != nil {
 		t.Fatalf("Submit to the joining bank: %v", err)
 	}
-	h.drain(t)
+	h.work(t)
 	if got := h.payment(t, received.ID); got.Status != payment.Accepted {
 		t.Fatalf("the payment addressed to the joining bank is %v, want Accepted", got.Status)
 	}
 	h.assertLastTxStatusTo(t, h.debtorBIC, iso20022.TransactionStatusAccepted)
-}
-
-// Two banks on one BIC is refused at admission, and the mesh is left as it was.
-//
-// It is the same refusal Start makes about a roster it cannot route, arriving
-// one bank at a time: the actor table would keep the second and drop the first,
-// and the dropped bank's goroutine would read an inbox nothing could address.
-// The bank INDEX must be left alone too — a Submit that found the newcomer under
-// the old bank's actor would sign one bank's instruction with another's identity.
-func TestAddingABankOnAnotherBanksBICIsRefusedAndChangesNothing(t *testing.T) {
-	h := newMeshHarness(t)
-
-	// The clashing bank is a VALUE rather than a founded one, because a bank's
-	// database is NAMED by its address (store/sqlite.Set): "a second bank on this
-	// BIC" is not a thing the store can hold, and founding on a taken address would
-	// open the first bank's own database rather than making a rival.
-	//
-	// That leaves the mesh's own refusal as the thing under test, which is what it
-	// always was: AddBank takes a *payment.Bank and asks whether an actor already
-	// answers to its address.
-	clash := &payment.Bank{ID: payment.ParticipantID(h.debtorBIC), Name: "Aurora Bank (again)", BIC: h.debtorBIC}
-
-	// The incumbent's entry, taken before. What the index has to be left holding
-	// is THIS handler and not the newcomer's.
-	//
-	// Asking whether the clashing bank is in the index at all is answered yes by
-	// the incumbent: a bank's id IS its address, so the clash's key is the
-	// incumbent's key. So the claim is asserted on the handler the key points at.
-	h.mesh.mu.Lock()
-	incumbent := h.mesh.banks[h.debtorBIC]
-	h.mesh.mu.Unlock()
-	if incumbent == nil {
-		t.Fatal("the harness's own bank is not in the index; there is no clash to make")
-	}
-
-	if err := h.mesh.AddBank(context.Background(), clash); err == nil {
-		t.Fatal("AddBank accepted a second bank on an address another bank already answers to")
-	}
-
-	h.mesh.mu.Lock()
-	after := h.mesh.banks[h.debtorBIC]
-	h.mesh.mu.Unlock()
-	if after != incumbent {
-		t.Error("the refused bank replaced the incumbent in the mesh's bank index; a refusal must leave it as it found it")
-	}
-}
-
-// ---------------------------------------------------------------------------
-// ForgetBanks and JoinRoster: the two halves of replacing the network under a
-// live mesh
-// ---------------------------------------------------------------------------
-//
-// api.Server.Reset is the only caller and the reason both exist: it truncates
-// every table and reseeds, and the mesh survives that — Start ran once, at boot.
-// Until these were tested the whole of their behaviour was prose, which on a
-// pair of methods whose failure mode is "an address nobody can ever use again"
-// is not good enough.
-
-// ForgetBanks takes out every actor that is not one of the two institutions, and
-// leaves those two exactly where they were.
-//
-// It is driven on a mesh with NO network, which is the honest fixture for what
-// this method actually does: it reads the actor table, not the roster, and the
-// two institutions are excluded by identity. A network here would add a store to
-// a test about the transport.
-func TestForgetBanksLeavesTheTwoInstitutionsAndNothingElse(t *testing.T) {
-	m := newTestMesh(t)
-	if err := m.Start(context.Background()); err != nil {
-		t.Fatalf("Start: %v", err)
-	}
-	t.Cleanup(func() { _ = m.Stop(context.Background()) })
-
-	if err := m.ForgetBanks(drainCtx(t)); err != nil {
-		t.Fatalf("ForgetBanks: %v", err)
-	}
-
-	left := m.bus.Addresses()
-	slices.Sort(left)
-	want := []iso20022.BIC{testConfig.CentralBankBIC, testConfig.ClearingHouseBIC}
-	slices.Sort(want)
-	if !slices.Equal(left, want) {
-		t.Errorf("the mesh holds %v after ForgetBanks, want the two institutions %v", left, want)
-	}
-
-	// And the addresses are free again, which is the whole point: a BIC an
-	// unjoined actor still answered to is one no operator could ever admit.
-	if err := m.bus.AddActor("AAAADEFFXXX", "A again", func(context.Context, iso20022.BIC, []byte) error { return nil }); err != nil {
-		t.Errorf("re-registering a forgotten address: %v", err)
-	}
-}
-
-// An actor the bank index does not name is forgotten anyway.
-//
-// This is the residue of a real race and not a hypothetical: AddBank writes the
-// actor and the index entry under separate locks, on a different goroutine from
-// joinRoster, so an index entry can be missing while its actor runs. Forgetting
-// by index left that actor unforgettable — its address taken for the life of the
-// process, and every later reset failing on it. Forgetting by actor table makes
-// it total.
-//
-// The state is set up directly rather than by racing two goroutines, because
-// what has to be pinned is that this SHAPE is recoverable, and a race that
-// reproduces it once in a hundred runs would pin nothing on the other
-// ninety-nine.
-func TestForgetBanksRemovesAnActorTheBankIndexDoesNotName(t *testing.T) {
-	h := newMeshHarness(t)
-
-	h.mesh.mu.Lock()
-	delete(h.mesh.banks, h.debtorBIC)
-	h.mesh.mu.Unlock()
-
-	if err := h.mesh.ForgetBanks(drainCtx(t)); err != nil {
-		t.Fatalf("ForgetBanks: %v", err)
-	}
-	if h.mesh.bus.Has(h.debtorBIC) {
-		t.Fatalf("%s still answers after ForgetBanks; an actor its index forgot is unforgettable", h.debtorBIC)
-	}
-	// The address is usable again, which is the failure this closes: it stayed
-	// taken for the life of the process.
-	if err := h.mesh.AddBank(context.Background(), h.debtor); err != nil {
-		t.Errorf("re-admitting the stranded bank's address: %v", err)
-	}
-}
-
-// JoinRoster merges into the bank index rather than replacing it, so a bank
-// registered beside it keeps its entry.
-//
-// The interleaving this stands for is an AddBank committing between JoinRoster's
-// roster read and its write. An assignment there drops the new bank's index entry
-// while leaving its actor running — a bank that answers every read and carries no
-// payment, with nothing anywhere saying so.
-//
-// The joining bank is a participant the ROSTER does not hold, which is what makes
-// the two writes distinguishable at all: a bank in the roster would be registered
-// by JoinRoster itself and the merge would prove nothing.
-func TestJoinRosterKeepsABankRegisteredBesideIt(t *testing.T) {
-	h := newMeshHarness(t)
-	ctx := context.Background()
-
-	if err := h.mesh.ForgetBanks(ctx); err != nil {
-		t.Fatalf("ForgetBanks: %v", err)
-	}
-	// The id IS the address (payment.AsBank), and AddBank opens this bank's own
-	// database from it — so an id that is not a BIC names no file and the mesh
-	// refuses to open it. It read "bank_beside" while ids were allocated.
-	beside := &payment.Bank{ID: "BSDEDEFFXXX", Name: "Beside Bank", BIC: "BSDEDEFFXXX"}
-	if err := h.mesh.AddBank(context.Background(), beside); err != nil {
-		t.Fatalf("AddBank: %v", err)
-	}
-
-	if err := h.mesh.JoinRoster(ctx); err != nil {
-		t.Fatalf("JoinRoster: %v", err)
-	}
-
-	h.mesh.mu.Lock()
-	_, kept := h.mesh.banks[beside.BIC]
-	_, rejoined := h.mesh.banks[h.debtorBIC]
-	h.mesh.mu.Unlock()
-	if !kept {
-		t.Error("the bank registered beside JoinRoster lost its index entry; its actor is running and nothing can reach it")
-	}
-	if !rejoined {
-		t.Error("the roster's own banks are not in the index after JoinRoster")
-	}
-}
-
-// JoinRoster is all-or-none: one address already taken and the whole roster is
-// refused, with the mesh left as it was.
-//
-// The batch is a roster, and half a roster is worse than none — a mesh holding
-// some banks and not others, with a caller that fixed the clash and retried
-// colliding with the actors its own failed attempt created.
-func TestJoinRosterRefusesTheWholeRosterWhenOneAddressIsTaken(t *testing.T) {
-	h := newMeshHarness(t)
-	ctx := context.Background()
-
-	if err := h.mesh.ForgetBanks(ctx); err != nil {
-		t.Fatalf("ForgetBanks: %v", err)
-	}
-	// Somebody else answering to the payer's bank's address.
-	squatter := &payment.Bank{ID: payment.ParticipantID(h.debtorBIC), Name: "Squatter", BIC: h.debtorBIC}
-	if err := h.mesh.AddBank(context.Background(), squatter); err != nil {
-		t.Fatalf("AddBank: %v", err)
-	}
-
-	err := h.mesh.JoinRoster(ctx)
-	if err == nil {
-		t.Fatal("JoinRoster accepted a roster whose address another actor already answers to")
-	}
-	if !errors.Is(err, ErrAddressTaken) {
-		t.Errorf("JoinRoster failed with %v, want ErrAddressTaken", err)
-	}
-	// None of it landed: the OTHER bank in the roster, which did not clash, must
-	// not have been registered either.
-	h.mesh.mu.Lock()
-	partial := h.mesh.bus.Has(h.creditorBIC)
-	_, indexed := h.mesh.banks[h.creditorBIC]
-	h.mesh.mu.Unlock()
-	if partial || indexed {
-		t.Error("a refused roster left one of its banks behind; the batch is all-or-none")
-	}
-}
-
-// ForgetBanks refuses a mesh that is stopping or stopped.
-//
-// Its whole contract is that a forgotten actor has been JOINED, and during a
-// shutdown Stop owns that: it has taken its snapshot and is joining them itself.
-// Two callers joining the same goroutines is not a race this package needs to
-// win — it is one it declines.
-func TestForgetBanksRefusesAMeshThatIsStopping(t *testing.T) {
-	m := newTestMesh(t)
-	if err := m.Start(context.Background()); err != nil {
-		t.Fatalf("Start: %v", err)
-	}
-	if err := m.Stop(context.Background()); err != nil {
-		t.Fatalf("Stop: %v", err)
-	}
-
-	if err := m.ForgetBanks(context.Background()); err == nil {
-		t.Fatal("ForgetBanks accepted a stopped mesh, whose actors Stop has already joined")
-	}
-}
-
-// A ForgetBanks that times out leaves the actors where Stop can still find them.
-//
-// Deleting from the actor table before the join would leave goroutines nobody
-// could ever wait for: Stop snapshots m.actors, so what is not in it is not
-// joined, and a caller that retried its reset would truncate the store
-// underneath a handler still running against it.
-//
-// Stop's own timeout does the opposite and says so at length; this is the same
-// rule, and it is asserted the same way — the mesh is left whole, the call can
-// be retried, and Stop still works.
-func TestForgetBanksThatTimesOutLeavesTheActorsForStopToJoin(t *testing.T) {
-	m := newTestMesh(t)
-	entered := make(chan struct{})
-	release := make(chan struct{})
-	a, _ := m.bus.Actor("AAAADEFFXXX")
-	a.SetHandler(func(ctx context.Context, from iso20022.BIC, raw []byte) error {
-		close(entered)
-		<-release
-		return nil
-	})
-	if err := m.Start(context.Background()); err != nil {
-		t.Fatalf("Start: %v", err)
-	}
-	if err := m.send("CCCCDEFFXXX", "AAAADEFFXXX", testEnvelope("CCCCDEFFXXX", "AAAADEFFXXX", "x")); err != nil {
-		t.Fatalf("send: %v", err)
-	}
-	<-entered
-
-	// An already-cancelled context rather than a short one: the handler is
-	// provably inside its call, so the select below has exactly one ready arm
-	// and no duration decides anything.
-	dead, cancel := context.WithCancel(context.Background())
-	cancel()
-	err := m.ForgetBanks(dead)
-	if err == nil {
-		t.Fatal("ForgetBanks returned nil while a handler was still inside its call")
-	}
-	if !strings.Contains(err.Error(), "AAAADEFFXXX") {
-		t.Errorf("the timeout error %q does not name the actor holding it up", err)
-	}
-
-	if !m.bus.Has("AAAADEFFXXX") {
-		t.Fatal("the actor was removed from the table before it was joined; Stop can no longer wait for it")
-	}
-
-	// And the retry finishes the job, which is what "closing a closed queue is a
-	// no-op" buys.
-	close(release)
-	if err := m.ForgetBanks(drainCtx(t)); err != nil {
-		t.Fatalf("retrying ForgetBanks after the handler returned: %v", err)
-	}
-	if m.bus.Has("AAAADEFFXXX") {
-		t.Error("the retry did not forget the actor it was able to join")
-	}
-	if err := m.Stop(drainCtx(t)); err != nil {
-		t.Fatalf("Stop after a timed-out ForgetBanks: %v", err)
-	}
 }

@@ -28,6 +28,18 @@ const (
 	clearingHouseKey = "clearing-house"
 )
 
+// ebicsPath is where a host's file-transfer endpoint sits on its own listener.
+//
+// One path, whatever the order type and whichever direction it runs in, because
+// that is the protocol's own shape: an EBICS request says what it wants in the
+// envelope rather than in the URL, and a REST-shaped /uploads and /downloads
+// would be this repository inventing an interface the standard does not have.
+//
+// Only two listeners carry it. A member bank dials the two hosts and is dialled
+// by nobody, so a bank's listener serves its console and nothing else — which is
+// the topology stated in the router rather than only in a comment.
+const ebicsPath = "/ebics"
+
 // An entity is one listener: which operator it serves, on which address, and —
 // for a bank — which participant it is.
 type entity struct {
@@ -110,9 +122,11 @@ func addrFor(port int) string { return ":" + strconv.Itoa(port) }
 func handlerFor(ctx context.Context, dep *Deployment, e entity, log *slog.Logger) (http.Handler, error) {
 	switch e.key {
 	case centralBankKey:
-		return cbapi.Routes(dep.CentralBank()).Handler(log), nil
+		cb := dep.CentralBank()
+		return withEBICS(cbapi.Routes(cb).Handler(log), cb.EBICS()), nil
 	case clearingHouseKey:
-		return csmapi.Routes(dep.ClearingHouse()).Handler(log), nil
+		csm := dep.ClearingHouse()
+		return withEBICS(csmapi.Routes(csm).Handler(log), csm.EBICS()), nil
 	default:
 		b, err := dep.Bank(ctx, e.pid)
 		if err != nil {
@@ -120,6 +134,28 @@ func handlerFor(ctx context.Context, dep *Deployment, e entity, log *slog.Logger
 		}
 		return bankapi.Routes(b).Handler(log), nil
 	}
+}
+
+// withEBICS puts a host's file-transfer endpoint on the same listener as its
+// console, and OUTSIDE the console's middleware chain.
+//
+// Two audiences share one port and want different things. The console's chain
+// exists for a browser — request logging shaped for a human, and an error
+// mapping that renders a domain refusal as JSON with an HTTP status. A file
+// transfer answers in the protocol's own terms: a return code in the envelope,
+// under HTTP 200, because EBICS_INVALID_USER_OR_USER_STATE is not a 403 and a
+// subscriber reading the status line would learn the wrong thing. Running one
+// through the other's chain would put a second, contradictory answer around
+// every upload.
+//
+// One port rather than two, because an institution has one address. Which door a
+// caller came through is what separates an operator from a counterparty, and
+// that is a distinction the paths make.
+func withEBICS(console, ebics http.Handler) http.Handler {
+	mux := http.NewServeMux()
+	mux.Handle(ebicsPath, ebics)
+	mux.Handle("/", console)
+	return mux
 }
 
 // serve starts every listener and returns a function that shuts them all down.

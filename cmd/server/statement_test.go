@@ -28,7 +28,7 @@ import (
 // that the two are separate postings in separate books, and a test about booking
 // twice has to read the one the second booking would land in. h.advice reads the
 // row beside it; ReserveBalance reads the other side.
-func (h *meshHarness) reserveOf(t *testing.T, id payment.ParticipantID) ledger.Amount {
+func (h *harness) reserveOf(t *testing.T, id payment.ParticipantID) ledger.Amount {
 	t.Helper()
 	ctx := context.Background()
 	p, err := h.bank(iso20022.BIC(id)).GetBank(ctx, id)
@@ -48,7 +48,7 @@ func (h *meshHarness) reserveOf(t *testing.T, id payment.ParticipantID) ledger.A
 
 // settlementAccountOf is a member's reserve account id as the CENTRAL BANK names
 // it — the account a camt.053 to that member is about.
-func (h *meshHarness) settlementAccountOf(t *testing.T, id payment.ParticipantID) ledger.AccountID {
+func (h *harness) settlementAccountOf(t *testing.T, id payment.ParticipantID) ledger.AccountID {
 	t.Helper()
 	p, err := h.bank(iso20022.BIC(id)).GetBank(context.Background(), id)
 	if err != nil {
@@ -68,7 +68,7 @@ func (h *meshHarness) settlementAccountOf(t *testing.T, id payment.ParticipantID
 // provoke a receiver's guard by CHANGING one thing about a document the receiver
 // would otherwise accept. A statement built from scratch could fail for some
 // other reason and still read like a pass.
-func statementTo(t *testing.T, h *meshHarness, to iso20022.BIC) (iso20022.Envelope, *iso20022.Camt053) {
+func statementTo(t *testing.T, h *harness, to iso20022.BIC) (iso20022.Envelope, *iso20022.Camt053) {
 	t.Helper()
 	env, err := iso20022.Unmarshal(h.lastMessageOfTypeTo(t, to, "camt.053.001.08"))
 	if err != nil {
@@ -83,7 +83,7 @@ func statementTo(t *testing.T, h *meshHarness, to iso20022.BIC) (iso20022.Envelo
 
 // injectStatement marshals an edited statement back into a bank's inbox, as the
 // settlement agent.
-func injectStatement(t *testing.T, h *meshHarness, to iso20022.BIC, env iso20022.Envelope) {
+func injectStatement(t *testing.T, h *harness, to iso20022.BIC, env iso20022.Envelope) {
 	t.Helper()
 	raw, err := iso20022.Marshal(env)
 	if err != nil {
@@ -107,11 +107,11 @@ func injectStatement(t *testing.T, h *meshHarness, to iso20022.BIC, env iso20022
 // post twice either — the guard's own job is to stop the bank TRYING, and its
 // observable form is the unchanged advice row that comes back.
 func TestARedeliveredStatementBooksTheMirrorLegOnce(t *testing.T) {
-	h := newMeshHarness(t)
+	h := newHarness(t)
 	h.submitCreditTransfer(t)
-	h.drain(t)
+	h.work(t)
 	h.closeCycle(t)
-	h.drain(t)
+	h.work(t)
 
 	cyc := h.creditTransferCycle(t)
 	before := h.advice(t, h.creditorPID, string(cyc.ID))
@@ -124,7 +124,7 @@ func TestARedeliveredStatementBooksTheMirrorLegOnce(t *testing.T) {
 	// The statement that bank already booked, replayed verbatim into its inbox.
 	raw := h.lastMessageOfTypeTo(t, h.creditorBIC, "camt.053.001.08")
 	h.injectRaw(t, h.cfg.CentralBankBIC, h.creditorBIC, raw)
-	h.drain(t)
+	h.work(t)
 
 	after := h.advice(t, h.creditorPID, string(cyc.ID))
 	if after != before {
@@ -151,11 +151,11 @@ func TestARedeliveredStatementBooksTheMirrorLegOnce(t *testing.T) {
 // gives: transitioning twice is what ErrInvalidStateTransition reports, and that
 // would tell a handler that did nothing wrong that it failed.
 func TestARedeliveredSettlementStatusPaysThePayeeOnce(t *testing.T) {
-	h := newMeshHarness(t)
+	h := newHarness(t)
 	p := h.submitCreditTransfer(t)
-	h.drain(t)
+	h.work(t)
 	h.closeCycle(t)
-	h.drain(t)
+	h.work(t)
 
 	before := h.payment(t, p.ID)
 	if before.Status != payment.Settled {
@@ -166,7 +166,7 @@ func TestARedeliveredSettlementStatusPaysThePayeeOnce(t *testing.T) {
 
 	raw := h.lastMessageOfTypeTo(t, h.creditorBIC, "pacs.002.001.10")
 	h.injectRaw(t, h.cfg.ClearingHouseBIC, h.creditorBIC, raw)
-	h.drain(t)
+	h.work(t)
 
 	if got := h.balance(t, h.creditorPID, h.creditorAcct.ID); got != payeeBefore {
 		t.Errorf("the payee holds %d after a replayed ACSC, want the unchanged %d", got, payeeBefore)
@@ -202,11 +202,11 @@ func TestARedeliveredSettlementStatusPaysThePayeeOnce(t *testing.T) {
 // because a message it cannot act on has no answer to send — a statement is not
 // an instruction, so there is nothing to reject back to the sender.
 func TestAStatementAboutAnotherBanksAccountIsRefused(t *testing.T) {
-	h := newMeshHarness(t)
+	h := newHarness(t)
 	h.submitCreditTransfer(t)
-	h.drain(t)
+	h.work(t)
 	h.closeCycle(t)
-	h.drain(t)
+	h.work(t)
 
 	cyc := h.creditTransferCycle(t)
 	reserveBefore := h.reserveOf(t, h.creditorPID)
@@ -229,12 +229,15 @@ func TestAStatementAboutAnotherBanksAccountIsRefused(t *testing.T) {
 	// delivered to the payee's bank instead.
 	h.injectRaw(t, h.cfg.CentralBankBIC, h.creditorBIC,
 		h.lastMessageOfTypeTo(t, h.debtorBIC, "camt.053.001.08"))
-	drained := h.drainErr(t)
+	drained := h.workErr(t)
 	if drained == nil || !strings.Contains(drained.Error(), "could not book the settlement") {
 		t.Fatalf("draining after a misrouted statement = %v, want a dead letter", drained)
 	}
-	if !errors.Is(drained, payment.ErrStatementNotForThisBank) {
-		t.Errorf("the dead letter is %v, want it to carry ErrStatementNotForThisBank", drained)
+	// Matched on the TEXT and not with errors.Is, for the reason
+	// TestARedeliveredReturnIsReportedAndNotAnswered gives: a day's report is
+	// prose an operator reads, not a wrapped error.
+	if drained == nil || !strings.Contains(drained.Error(), payment.ErrStatementNotForThisBank.Error()) {
+		t.Errorf("the day reported %v, want it to name ErrStatementNotForThisBank", drained)
 	}
 
 	// The money is what could not be retried: the payee's bank's reserve did not
@@ -258,17 +261,17 @@ func TestAStatementAboutAnotherBanksAccountIsRefused(t *testing.T) {
 // It is provoked by DUPLICATING the statement this bank was really sent, so the
 // only thing wrong with the document is the count.
 func TestAStatementCarryingTwoAccountsIsRefused(t *testing.T) {
-	h := newMeshHarness(t)
+	h := newHarness(t)
 	h.submitCreditTransfer(t)
-	h.drain(t)
+	h.work(t)
 	h.closeCycle(t)
-	h.drain(t)
+	h.work(t)
 
 	env, doc := statementTo(t, h, h.creditorBIC)
 	doc.BkToCstmrStmt.Stmt = append(doc.BkToCstmrStmt.Stmt, doc.BkToCstmrStmt.Stmt[0])
 	injectStatement(t, h, h.creditorBIC, env)
 
-	drained := h.drainErr(t)
+	drained := h.workErr(t)
 	if drained == nil || !strings.Contains(drained.Error(), "carrying 2 accounts") {
 		t.Fatalf("draining after a two-account statement = %v, want a dead letter naming the count", drained)
 	}
@@ -288,11 +291,11 @@ func TestAStatementCarryingTwoAccountsIsRefused(t *testing.T) {
 // is not a gap: the central bank has already settled and is final, and there is
 // no decision left for this bank to accept or refuse.
 func TestAnUnreadableStatementIsNotBooked(t *testing.T) {
-	h := newMeshHarness(t)
+	h := newHarness(t)
 	h.submitCreditTransfer(t)
-	h.drain(t)
+	h.work(t)
 	h.closeCycle(t)
-	h.drain(t)
+	h.work(t)
 
 	cyc := h.creditTransferCycle(t)
 	before := h.advice(t, h.creditorPID, string(cyc.ID))
@@ -302,7 +305,7 @@ func TestAnUnreadableStatementIsNotBooked(t *testing.T) {
 	doc.BkToCstmrStmt.Stmt[0].Ntry = append(doc.BkToCstmrStmt.Stmt[0].Ntry, doc.BkToCstmrStmt.Stmt[0].Ntry[0])
 	injectStatement(t, h, h.creditorBIC, env)
 
-	drained := h.drainErr(t)
+	drained := h.workErr(t)
 	if drained == nil || !strings.Contains(drained.Error(), "could not read the statement") {
 		t.Fatalf("draining after an unreadable statement = %v, want a dead letter", drained)
 	}

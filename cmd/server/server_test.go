@@ -19,6 +19,7 @@ import (
 	bankapi "github.com/raphi011/cbs/api/bank"
 	cbapi "github.com/raphi011/cbs/api/centralbank"
 	csmapi "github.com/raphi011/cbs/api/csm"
+	"github.com/raphi011/cbs/calendar"
 	"github.com/raphi011/cbs/deposit"
 	"github.com/raphi011/cbs/iban"
 	"github.com/raphi011/cbs/interest"
@@ -48,7 +49,9 @@ var fixedTime = time.Date(2025, 1, 15, 12, 0, 0, 0, time.UTC)
 type server struct {
 	dep  *Deployment
 	nets *payment.Networks
-	mesh *Mesh
+	// clock is the deployment's business date. It MOVES: POST /clock/day
+	// advances it, and every row written afterwards carries the new date.
+	clock *calendar.Clock
 }
 
 func (s *server) CentralBankRoutes() http.Handler {
@@ -88,75 +91,67 @@ func bankSurface(s *server, pid string) http.Handler {
 	return h
 }
 
-// newServer builds a deployment over an empty ephemeral store, with a mesh running
-// over the same network. populate is the reseed function — the tests' stand-in
-// for the sample dataset — and is called once now, as the process would at boot,
-// and again on every reset. Pass nil for a server that resets to an empty system.
+// newServer builds a deployment over an empty ephemeral store, with both hosts
+// really listening. populate is the reseed function — the tests' stand-in for
+// the sample dataset — and is called once now, as the process would at boot, and
+// again on every reset. Pass nil for a server that resets to an empty system.
 //
-// The mesh is not optional and every test here gets one, because it is what
-// carries a payment past the bank it was handed to. Started BEFORE populate,
-// which is the order cmd/server uses: a reseed gives each bank it provisions an
-// actor through the mesh's own door, so the transport has to be running first.
-// Mesh.Start's roster read therefore finds nothing, and every bank in these tests
-// gets its actor from Mesh.AddBank. That is why two banks in one test may not
-// share a BIC: two actors on one address is a routing table with one entry, and
-// the mesh refuses it.
+// The two listeners are not optional and every test here gets them, because they
+// are what carries a payment past the bank it was handed to: an institution
+// dials another over HTTP, and a deployment whose hosts were unreachable would
+// refuse every submission at the upload.
 //
-// Drain FIRST, then Stop, at cleanup, and both errors are reported. See
-// newAPIHarness in mesh_test.go, which says why at length.
+// There is nothing to drain and no goroutine to join at cleanup. Work is queued
+// by a request and performed by a business day, on the caller's goroutine; what
+// a test shuts down is two HTTP servers.
 func newServer(t *testing.T, populate func(context.Context, *payment.Networks, seed.Deployment) error) *server {
 	t.Helper()
-	return newServerOverStore(t, nil, populate)
-}
-
-// newServerOverStore is newServer with the store set wrapped, for the one test
-// that needs to hold a unit of work open. gate may be nil, which is every other
-// caller.
-func newServerOverStore(t *testing.T, gate *gatedStores,
-	populate func(context.Context, *payment.Networks, seed.Deployment) error) *server {
-
-	t.Helper()
-	clock := func() time.Time { return fixedTime }
-	var stores payment.Stores = testenv.NewSet(t, clock)
-	if gate != nil {
-		gate.Stores = stores
-		stores = gate
-	}
-	nets := payment.NewNetworks(stores, clock)
+	clock := calendar.NewClock(fixedTime)
+	nets := payment.NewNetworks(testenv.NewSet(t, clock.Now), clock.Now)
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	msh, err := NewMesh(nets, testMeshConfig, log)
+
+	s := &server{nets: nets, clock: clock}
+	// The two hosts, on real listeners, with the handler looked up per REQUEST:
+	// Reset replaces both, so a captured one would serve a deployment's dead
+	// queues after a reseed.
+	csmHost := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		s.dep.ClearingHouse().EBICS().ServeHTTP(w, r)
+	}))
+	cbHost := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		s.dep.CentralBank().EBICS().ServeHTTP(w, r)
+	}))
+	t.Cleanup(csmHost.Close)
+	t.Cleanup(cbHost.Close)
+
+	cfg := testConfig
+	cfg.ClearingHouseURL = csmHost.URL
+	cfg.CentralBankURL = cbHost.URL
+
+	dep, err := NewDeployment(context.Background(), nets, clock, cfg, populate, log)
 	if err != nil {
-		t.Fatalf("NewMesh: %v", err)
+		t.Fatalf("NewDeployment: %v", err)
 	}
-	if err := msh.Start(context.Background()); err != nil {
-		t.Fatalf("Mesh.Start: %v", err)
-	}
-	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		if err := msh.Drain(ctx); err != nil {
-			t.Errorf("draining at shutdown: %v", err)
-		}
-		if err := msh.Stop(ctx); err != nil {
-			t.Errorf("stopping: %v", err)
-		}
-	})
+	s.dep = dep
+
+	// The sample dataset LAST, and over the deployment the listeners are already
+	// serving — which is the order main uses and for the same reason: a reseed
+	// admits its banks through this deployment's own doors.
 	if populate != nil {
-		if err := populate(context.Background(), nets, msh); err != nil {
+		if err := populate(context.Background(), nets, dep); err != nil {
 			t.Fatalf("populate: %v", err)
 		}
 	}
-	return &server{dep: NewDeployment(nets, msh, populate, log), nets: nets, mesh: msh}
+	return s
 }
 
 // admitForPopulate is what a reseed here uses to make a bank: its three rows,
-// then an actor on the mesh.
+// then its place in the network.
 //
-// The second half is what a reseed cannot leave out. Deployment.Reset forgets
-// every bank actor before it truncates and does not re-register them afterwards,
-// so a baseline that wrote its rows and stopped would rebuild a network whose
-// banks answer every read and carry no payment.
-func admitForPopulate(ctx context.Context, nets *payment.Networks, msh seed.Deployment,
+// The second half is what a reseed cannot leave out. Deployment.Reset rebuilds
+// both hosts empty before it truncates and enrols nobody afterwards, so a
+// baseline that wrote its rows and stopped would rebuild a network whose banks
+// answer every read and can be sent nothing.
+func admitForPopulate(ctx context.Context, nets *payment.Networks, dep seed.Deployment,
 	name string, bic iso20022.BIC) (*payment.Bank, error) {
 
 	bank, err := provision.Bank(ctx, nets, provision.BankSpec{
@@ -165,26 +160,31 @@ func admitForPopulate(ctx context.Context, nets *payment.Networks, msh seed.Depl
 	if err != nil {
 		return nil, err
 	}
-	if err := msh.AddBank(ctx, bank); err != nil {
+	if err := dep.AddBank(ctx, bank); err != nil {
 		return nil, err
 	}
 	return bank, nil
 }
 
-// drainServer waits for the mesh behind a deployment built by newServer to go quiet.
+// carry runs every institution behind a server through everything queued for it.
 //
 // It exists because a payment is not finished when POST /payments answers: the
-// counterparty's acceptance and the clearing house's are two more actors and two
-// more messages. Every test below that submits a payment and then asserts on
-// what became of it calls this in between, and none of them waits for a duration
-// to do it.
-func drainServer(t *testing.T, s *server) {
+// file is waiting at the clearing house, and the counterparty's answer and the
+// clearing house's decision are two more files after that. Every test below that
+// submits a payment and then asserts on what became of it calls this in between,
+// and none of them waits for a duration to do it.
+//
+// It is the day's file-carrying phases and not the day itself — see workThrough,
+// which says which three it leaves out and why.
+func carry(t *testing.T, s *server) {
 	t.Helper()
-	drain(t, s.mesh)
+	if err := joinProblems(workThrough(s.dep)); err != nil {
+		t.Fatalf("working through what has arrived: %v", err)
+	}
 }
 
-// provisionMember writes one bank's three rows, gives it an actor on this
-// server's mesh, and has every member pull the routing directory. It returns the
+// provisionMember writes one bank's three rows, gives it its place in this
+// deployment, and has every member pull the routing directory. It returns the
 // bank's participant id, which is what the routes below are keyed by.
 //
 // There is no HTTP route that does this and that is the point: a deployment
@@ -209,7 +209,7 @@ func provisionMember(t *testing.T, s *server, bic, name string, assets ...string
 	if err != nil {
 		t.Fatalf("provisioning %s (%s): %v", name, bic, err)
 	}
-	if err := s.mesh.AddBank(ctx, p); err != nil {
+	if err := s.dep.AddBank(ctx, p); err != nil {
 		t.Fatalf("AddBank %s: %v", bic, err)
 	}
 	subscribeAll(t, s)
@@ -248,9 +248,10 @@ func subscribeAll(t *testing.T, s *server) {
 // customer's balance and leaves the bank holding vault cash; a bank settles out
 // of central-bank money, and POST /lodgements is how it gets some.
 //
-// It drains, because the lodgement answers 202: the reserve credit is the central
-// bank's to make, on a camt.050 still on the wire, so a fixture that did not drain
-// would go on to close a cycle against a reserve that was not there yet.
+// It carries, because the lodgement answers 202: the reserve credit is the
+// settlement agent's to make, on a camt.050 waiting in its order log, so a
+// fixture that did not would go on to close a cycle against a reserve that was
+// not there yet.
 func fundAndLodge(t *testing.T, s *server, pid, did string, amount int64) {
 	t.Helper()
 	doJSON(t, bankSurface(s, pid), "POST", "/deposits",
@@ -258,8 +259,8 @@ func fundAndLodge(t *testing.T, s *server, pid, did string, amount int64) {
 	lodge(t, s, pid, "EUR", amount)
 }
 
-// lodge puts one bank's vault cash on reserve over HTTP and drains, so the
-// central bank has posted its half before the caller goes on.
+// lodge puts one bank's vault cash on reserve over HTTP and carries the file, so
+// the settlement agent has posted its half before the caller goes on.
 //
 // It is separate from fundAndLodge for the fixtures that top a reserve up without
 // a customer paying anything in — see the recovery test, whose operator remedy is
@@ -268,7 +269,7 @@ func lodge(t *testing.T, s *server, pid, asset string, amount int64) {
 	t.Helper()
 	doJSON(t, bankSurface(s, pid), "POST", "/lodgements",
 		fmt.Sprintf(`{"asset":%q,"amount":%d}`, asset, amount), http.StatusAccepted)
-	drainServer(t, s)
+	carry(t, s)
 }
 
 // do runs a request through the handler and returns the recorder.
@@ -410,7 +411,7 @@ func TestSCTEndToEnd(t *testing.T) {
 		t.Fatalf("payment status in the 202 = %q, want Initiated", pay["status"])
 	}
 	payID := pay["id"].(string)
-	drainServer(t, h)
+	carry(t, h)
 	if got := doJSON(t, csmSurface(h), "GET", "/payments/"+payID, "", http.StatusOK); got["status"].(string) != "Accepted" {
 		t.Fatalf("payment status after draining = %q, want Accepted", got["status"])
 	}
@@ -419,7 +420,7 @@ func TestSCTEndToEnd(t *testing.T) {
 	// house nets the batch and sends a pacs.009, and the central bank discharges
 	// it in an actor of its own.
 	assertStatus(t, csmSurface(h), "POST", "/cycles/"+cyc+"/close", "", http.StatusOK)
-	drainServer(t, h)
+	carry(t, h)
 
 	aliceBal := doJSON(t, bankSurface(h, a), "GET", "/deposit-accounts/"+alice+"/balance", "", http.StatusOK)
 	if got := int64(aliceBal["book"].(float64)); got != 75000 {
@@ -593,89 +594,6 @@ func TestAnAssetTheAgentHasNotAnsweredForYetIsAMissingRowNotA422(t *testing.T) {
 	if len(all) != 1 {
 		t.Fatalf("the reserve list = %v, want the one row the agent can answer for", all)
 	}
-}
-
-// assertBankCountByBIC counts the banks answering to one address. By BIC and not
-// by id, because what it is for is a SECOND founding on an address that already
-// has one, which would have an id of its own and be invisible to any assertion
-// about the first.
-func assertBankCountByBIC(t *testing.T, h *server, bic string, want int) {
-	t.Helper()
-	var members []api.ParticipantDTO
-	getJSON(t, cbSurface(h), "/members", &members)
-	var got int
-	for _, m := range members {
-		if m.BIC == bic {
-			got++
-		}
-	}
-	if got != want {
-		t.Errorf("%d banks answer to %s, want %d", got, bic, want)
-	}
-}
-
-// gatedStores is a payment.Stores whose BANK stores can hold ONE writing unit of
-// work open.
-//
-// It exists for a single test, and for a single reason: an admission reserves
-// its address for the length of its founding unit of work, and nothing outside
-// the mesh can otherwise observe that window. Reads are never held — the second
-// request has to be able to make its own — and only the first Update after
-// arming is, so the request that is meant to be blocked is the one that is.
-//
-// It gates the BANKS' stores and not the two institutions', and that is the
-// store split showing through: founding is the applicant's own act, in the
-// applicant's own database, so the unit of work to hold open is one that this
-// set hands out per bank. Gating the whole set would also hold the clearing
-// house's roster read, which is the read the second request has to make.
-type gatedStores struct {
-	payment.Stores
-
-	mu      sync.Mutex
-	entered chan struct{}
-	release chan struct{}
-}
-
-func newGatedStores() *gatedStores { return &gatedStores{} }
-
-func (g *gatedStores) Bank(ctx context.Context, bic iso20022.BIC) (payment.Store, error) {
-	inner, err := g.Stores.Bank(ctx, bic)
-	if err != nil {
-		return nil, err
-	}
-	return gatedStore{Store: inner, gate: g}, nil
-}
-
-// armOneUpdate makes the next writing unit of work stop on entry. It returns a
-// channel that is closed once that has happened and the function that lets it
-// go.
-func (g *gatedStores) armOneUpdate() (<-chan struct{}, func()) {
-	entered, release := make(chan struct{}), make(chan struct{})
-	g.mu.Lock()
-	g.entered, g.release = entered, release
-	g.mu.Unlock()
-	return entered, sync.OnceFunc(func() { close(release) })
-}
-
-// gatedStore is one bank's store seen through the gate. It holds no state: the
-// arming is the SET's, so a bank whose store is opened after arming is gated
-// too — which is the case this test is about, since the applicant's database is
-// opened by the very admission being held.
-type gatedStore struct {
-	payment.Store
-	gate *gatedStores
-}
-
-func (g gatedStore) Update(ctx context.Context, fn func(context.Context, payment.Tx) error) error {
-	g.gate.mu.Lock()
-	entered, release := g.gate.entered, g.gate.release
-	g.gate.entered, g.gate.release = nil, nil
-	g.gate.mu.Unlock()
-	if entered != nil {
-		close(entered)
-		<-release
-	}
-	return g.Store.Update(ctx, fn)
 }
 
 // TestAccountResponseIncludesAsset pins that the account, deposit-account and
@@ -912,10 +830,10 @@ func TestPaymentDTOsCarryAsset(t *testing.T) {
 		"amount":1000,
 		"creditorName":"Bob"
 	}`, http.StatusAccepted)
-	drainServer(t, h)
+	carry(t, h)
 
 	assertStatus(t, csmSurface(h), "POST", "/cycles/"+cid+"/close", "", http.StatusOK)
-	drainServer(t, h)
+	carry(t, h)
 	sid := settlementOfCycle(t, h, cid)
 
 	// On the SETTLEMENT AGENT's console, which is whose rows these are, and the
@@ -1076,9 +994,9 @@ func TestARefusedSettlementIsRecoverableOverHTTP(t *testing.T) {
 		"endToEndId":"short-reserve",
 		"creditorName":"Bob"
 	}`, http.StatusAccepted)["id"].(string)
-	drainServer(t, h)
+	carry(t, h)
 	assertStatus(t, csmSurface(h), "POST", "/cycles/"+cyc+"/close", "", http.StatusOK)
-	drainServer(t, h)
+	carry(t, h)
 
 	// The stuck state, as the console sees it. The AM04 is nowhere here — it
 	// travelled between two actors in a pacs.002 and is stored nowhere — so what
@@ -1105,7 +1023,7 @@ func TestARefusedSettlementIsRecoverableOverHTTP(t *testing.T) {
 	// behind it. See fundAndLodge.
 	fundAndLodge(t, h, a, alice, 25000)
 	assertStatus(t, csmSurface(h), "POST", "/cycles/"+cyc+"/settle", "", http.StatusAccepted)
-	drainServer(t, h)
+	carry(t, h)
 
 	settled := doJSON(t, csmSurface(h), "GET", "/cycles/"+cyc, "", http.StatusOK)
 	if settled["status"] != "Settled" {
@@ -1562,9 +1480,9 @@ func auditFixture(t *testing.T, h *server) (bankA, bankB, payID string) {
 		"amount":25000,
 		"creditorName":"Bob"
 	}`, http.StatusAccepted)["id"].(string)
-	drainServer(t, h)
+	carry(t, h)
 	assertStatus(t, csmSurface(h), "POST", "/cycles/"+cyc+"/close", "", http.StatusOK)
-	drainServer(t, h)
+	carry(t, h)
 	return a, b, pay
 }
 
@@ -1686,7 +1604,7 @@ func TestAuditRejectedAndReturnedPayments(t *testing.T) {
 
 	// A settled payment can be returned.
 	doJSON(t, csmSurface(h), "POST", "/payments/"+payID+"/return", `{"reason":"AC04"}`, http.StatusAccepted)
-	drainServer(t, h)
+	carry(t, h)
 
 	// A fresh payment in a fresh cycle can be rejected before it clears.
 	var aAccounts, bAccounts []api.DepositAccountDTO
@@ -1700,9 +1618,9 @@ func TestAuditRejectedAndReturnedPayments(t *testing.T) {
 		"amount":1000,
 		"creditorName":"Bob"
 	}`, http.StatusAccepted)["id"].(string)
-	drainServer(t, h)
+	carry(t, h)
 	doJSON(t, csmSurface(h), "POST", "/payments/"+second+"/reject", `{"reason":"AM05"}`, http.StatusAccepted)
-	drainServer(t, h)
+	carry(t, h)
 
 	var returned []api.AuditEventDTO
 	getJSON(t, csmSurface(h), "/payments/audit?type="+ledger.EventPaymentReturned, &returned)
@@ -1736,7 +1654,7 @@ func TestRejectPaymentRendersItsCode(t *testing.T) {
 		"amount":1000,
 		"creditorName":"Bob"
 	}`, http.StatusAccepted)["id"].(string)
-	drainServer(t, h)
+	carry(t, h)
 
 	rejected := doJSON(t, csmSurface(h), "POST", "/payments/"+payID+"/reject", `{"reason":"card lost"}`, http.StatusAccepted)
 	assertEqual(t, "reject code on the reject response", rejected["rejectCode"].(string), "MS03")
@@ -1779,15 +1697,15 @@ func TestRejectPaymentGivesThePayerTheirMoneyBack(t *testing.T) {
 		"amount":1000,
 		"creditorName":"Bob"
 	}`, http.StatusAccepted)["id"].(string)
-	drainServer(t, h)
+	carry(t, h)
 	assertEqual(t, "payer's book balance after submission", bookOf(), before-1000)
 
 	doJSON(t, csmSurface(h), "POST", "/payments/"+payID+"/reject", `{"reason":"card lost"}`, http.StatusAccepted)
-	drainServer(t, h)
+	carry(t, h)
 	assertEqual(t, "payer's book balance after the rejection", bookOf(), before)
 }
 
-// TestARejectionWhoseRefundFailsStandsAndIsDeadLettered pins what replaced the
+// TestARejectionWhoseRefundFailsStandsAndIsReported pins what replaced the
 // route's composite, and it is the opposite property.
 //
 // Two institutions cannot share a transaction. The clearing house rejects in its
@@ -1802,7 +1720,7 @@ func TestRejectPaymentGivesThePayerTheirMoneyBack(t *testing.T) {
 // The forced failure is a leg that has already been reversed, which is what a
 // retried rejection produces. It is set up through the network because no route
 // can reverse a leg on its own.
-func TestARejectionWhoseRefundFailsStandsAndIsDeadLettered(t *testing.T) {
+func TestARejectionWhoseRefundFailsStandsAndIsReported(t *testing.T) {
 	ctx := context.Background()
 	h := newServer(t, nil)
 	a, b, _ := auditFixture(t, h)
@@ -1818,7 +1736,7 @@ func TestARejectionWhoseRefundFailsStandsAndIsDeadLettered(t *testing.T) {
 		"amount":1000,
 		"creditorName":"Bob"
 	}`, http.StatusAccepted)["id"].(string)
-	drainServer(t, h)
+	carry(t, h)
 
 	// The PAYER'S BANK's own copy and its own network. The leg this reverses is
 	// on that copy — the clearing house's row has no leg columns — and the act
@@ -1838,14 +1756,15 @@ func TestARejectionWhoseRefundFailsStandsAndIsDeadLettered(t *testing.T) {
 	rejected := doJSON(t, csmSurface(h), "POST", "/payments/"+payID+"/reject", `{"reason":"card lost"}`, http.StatusAccepted)
 	assertEqual(t, "status in the rejection's response", rejected["status"].(string), "Rejected")
 
-	// The payer's bank's half is not, and fails. It reaches nobody over HTTP
-	// and everybody through Drain.
-	err = h.mesh.Drain(ctx)
+	// The payer's bank's half is not, and fails. It reaches nobody over HTTP and
+	// everybody through the day's report: the pacs.002 was collected, the bank
+	// could not act on it, and there is nobody to answer.
+	err = joinProblems(workThrough(h.dep))
 	if err == nil {
-		t.Fatal("the refund failed and the mesh reported nothing; a swallowed dead letter is a payer silently left short")
+		t.Fatal("the refund failed and the day reported nothing; a swallowed failure is a payer silently left short")
 	}
 	if !strings.Contains(err.Error(), ledger.ErrTransactionAlreadyReversed.Error()) {
-		t.Fatalf("dead letter = %v, want one naming the already-reversed leg", err)
+		t.Fatalf("the day's problem is %v, want one naming the already-reversed leg", err)
 	}
 
 	// And the rejection stands, because it happened.
@@ -2749,7 +2668,7 @@ func TestSEPADebtorLegsValueDateApart(t *testing.T) {
 		"endToEndId":"e2e-1",
 		"creditorName":"Bob"
 	}`, http.StatusAccepted)
-	drainServer(t, h)
+	carry(t, h)
 
 	var listed []api.TransactionDTO
 	getJSON(t, bankSurface(h, a), "/transactions", &listed)
@@ -3585,7 +3504,7 @@ func TestPaymentAddressingRefusalsAre422(t *testing.T) {
 		pay["debtor"].(map[string]any)["identifier"].(map[string]any)["value"].(string), ibanFor(t, h, a, alice))
 	// A drain first, because the clearing house's own copy is written when the
 	// instruction reaches it and the 202 is answered before that.
-	drainServer(t, h)
+	carry(t, h)
 	// On the PAYER'S BANK's copy, which is the row the request was persisted
 	// into. It reads the same on the clearing house's: a quoted address is
 	// canonicalised where the request arrives, so what is stored and what the
@@ -3621,7 +3540,7 @@ func TestPaymentAddressingRefusalsAre422(t *testing.T) {
 	// refusals leaving five Initiated payments that nothing will ever answer is
 	// the other shape of the same bug: the row outlives the request that was
 	// told no.
-	drainServer(t, h)
+	carry(t, h)
 	bal := doJSON(t, bankSurface(h, a), "GET", "/deposit-accounts/"+alice+"/balance", "", http.StatusOK)
 	if got := int64(bal["book"].(float64)); got != 99000 {
 		t.Fatalf("Alice's book balance is %d, want 99000 — exactly one of these six requests may take her money", got)
@@ -3782,7 +3701,7 @@ func TestAQuotedAddressIsCanonicalisedOnTheWayIn(t *testing.T) {
 			}
 			// Read back off the PAYER's bank, which is the copy the request was
 			// persisted into and the one the outbound message was built from.
-			drainServer(t, h)
+			carry(t, h)
 			// A bank's port answers an identifier and nothing else — the outcome is
 			// a second request. See SubmittedPaymentDTO.
 			carried := doJSON(t, bankSurface(h, a), "GET", "/payments/"+got["paymentId"].(string), "", http.StatusOK)
@@ -3807,18 +3726,6 @@ func TestDepositAccountDTOCarriesIdentifiers(t *testing.T) {
 	if len(got.Identifiers) == 0 {
 		t.Fatal("api.DepositAccountDTO carried no identifiers")
 	}
-}
-
-// bicOf answers which address a bank is at, and is the identity function.
-//
-// A bank's ParticipantID IS its BIC (see payment.AsBank), so there is nothing to
-// look up. What the name buys is the reader knowing that a value is being used as
-// an ADDRESS at that call site, where the same string is elsewhere an id — an
-// assertion a submission body no longer has anywhere to make, since an
-// instruction names no bank at all.
-func bicOf(t *testing.T, h *server, pid string) string {
-	t.Helper()
-	return pid
 }
 
 // ibanFor is the address a bank minted for one of its accounts, read back off

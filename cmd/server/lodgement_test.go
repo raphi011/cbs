@@ -36,7 +36,7 @@ func (o lodgementFails) ReceiveLodgement(context.Context, payment.LodgementInstr
 // message: payment.LodgeReservesTx posts Debit Reserve / Credit Vault Cash before
 // the request exists, so what the agent's answer is about is money that has
 // already moved in the member's book.
-func lodgementFor(t *testing.T, h *meshHarness, amount ledger.Amount, msgID string) (iso20022.AppHdr, *iso20022.Camt050) {
+func lodgementFor(t *testing.T, h *harness, amount ledger.Amount, msgID string) (iso20022.AppHdr, *iso20022.Camt050) {
 	t.Helper()
 	ctx := context.Background()
 
@@ -79,14 +79,16 @@ func lodgementFor(t *testing.T, h *meshHarness, amount ledger.Amount, msgID stri
 // nothing here — the question is what happens to an error the agent has never
 // heard of, which is what a store failure is.
 func TestAStoreFailureAtTheAgentIsNotARefusal(t *testing.T) {
-	h := newMeshHarness(t)
+	h := newHarness(t)
 	hdr, doc := lodgementFor(t, h, 40_000, "lodge-store-failure")
 
 	broken := errors.New("store: the retry budget ran out")
-	cb := &centralBank{
-		m:   h.mesh,
-		ops: lodgementFails{settlementOps: h.cb(), err: broken},
-		bic: h.cfg.CentralBankBIC,
+	cb := &CentralBank{
+		d:    h.dep,
+		net:  h.cb(),
+		ops:  lodgementFails{settlementOps: h.cb(), err: broken},
+		bic:  h.cfg.CentralBankBIC,
+		host: h.dep.CentralBank().host,
 	}
 
 	mark := h.messagesSeen()
@@ -98,11 +100,11 @@ func TestAStoreFailureAtTheAgentIsNotARefusal(t *testing.T) {
 	if !errors.Is(err, broken) {
 		t.Errorf("the dead letter does not carry the cause: %v", err)
 	}
-	// The tap records a message when an actor is HANDED it, not when it is sent,
-	// so the count is only a count of what went on the wire after a drain. The
-	// camt.050 was never sent — this test calls the handler directly — so a drain
-	// here settles the receipt and nothing else.
-	h.drain(t)
+	// The tap records a file when it CROSSES, so a receipt sitting in a queue is
+	// not on it until somebody collects. The camt.050 was never uploaded — this
+	// test calls the handler directly — so carrying the day here would deliver a
+	// receipt and nothing else.
+	h.work(t)
 	if sent := h.messagesFrom(mark); len(sent) != 0 {
 		t.Errorf("a store failure put %d messages on the wire, want none; "+
 			"there is nothing true to tell the member", len(sent))
@@ -129,20 +131,22 @@ func TestAStoreFailureAtTheAgentIsNotARefusal(t *testing.T) {
 func TestALodgementRefusalIsAJudgement(t *testing.T) {
 	for _, sentinel := range lodgementRefusals {
 		t.Run(sentinel.Error(), func(t *testing.T) {
-			h := newMeshHarness(t)
+			h := newHarness(t)
 			hdr, doc := lodgementFor(t, h, 40_000, "lodge-refused")
 
 			refusal := fmt.Errorf("payment: %s lodges EUR: %w", h.debtorBIC, sentinel)
-			cb := &centralBank{
-				m:   h.mesh,
-				ops: lodgementFails{settlementOps: h.cb(), err: refusal},
-				bic: h.cfg.CentralBankBIC,
+			cb := &CentralBank{
+				d:    h.dep,
+				net:  h.cb(),
+				ops:  lodgementFails{settlementOps: h.cb(), err: refusal},
+				bic:  h.cfg.CentralBankBIC,
+				host: h.dep.CentralBank().host,
 			}
 
 			if err := cb.receiveLodgement(context.Background(), h.debtorBIC, hdr, doc); err != nil {
 				t.Fatalf("a judgement about the request became a dead letter: %v", err)
 			}
-			h.drain(t)
+			h.work(t)
 
 			env, err := iso20022.Unmarshal(h.lastMessageOfTypeTo(t, h.debtorBIC, "camt.025.001.05"))
 			if err != nil {

@@ -43,13 +43,13 @@ import (
 // payment.ErrBankCodeUnknown.
 func TestABankAdmittedAfterTheLastRefreshCannotBePaidUntilTheNextOne(t *testing.T) {
 	ctx := context.Background()
-	h := newMeshHarness(t)
+	h := newHarness(t)
 
 	// A third member, admitted after the two in the fixture pulled their copies.
 	// Its admission finishes in full: it holds a settlement account, it is in the
 	// roster, and it has a customer with an address of its own.
 	joiner := h.provision(t, "Nordhaven Bank", "NORDSESSXXX", euroOnly)
-	h.drain(t)
+	h.work(t)
 	joiner = h.getBank(t, joiner.ID)
 	if joiner.Assets["EUR"].Settlement == "" {
 		t.Fatal("the joining bank holds no settlement account after its admission")
@@ -72,7 +72,7 @@ func TestABankAdmittedAfterTheLastRefreshCannotBePaidUntilTheNextOne(t *testing.
 	}
 
 	mark := h.messagesSeen()
-	_, err := h.mesh.Submit(ctx, toNora)
+	_, err := h.dep.Submit(ctx, toNora)
 	if !errors.Is(err, payment.ErrBankCodeUnknown) {
 		t.Fatalf("paying a member admitted since the last refresh = %v, want ErrBankCodeUnknown", err)
 	}
@@ -94,14 +94,14 @@ func TestABankAdmittedAfterTheLastRefreshCannotBePaidUntilTheNextOne(t *testing.
 	}
 
 	// One request, made by the subscriber, and the same instruction goes through.
-	if _, err := h.mesh.RefreshDirectory(ctx, h.debtorBIC); err != nil {
+	if _, err := h.dep.RefreshDirectory(ctx, h.debtorBIC); err != nil {
 		t.Fatalf("RefreshDirectory: %v", err)
 	}
-	p, err := h.mesh.Submit(ctx, toNora)
+	p, err := h.dep.Submit(ctx, toNora)
 	if err != nil {
 		t.Fatalf("after the refresh, the same payment: %v", err)
 	}
-	h.drain(t)
+	h.work(t)
 	if got := h.payment(t, p.ID); got.Status != payment.Accepted {
 		t.Fatalf("the payment after the refresh is %v, want Accepted", got.Status)
 	}
@@ -130,10 +130,10 @@ func TestABankAdmittedAfterTheLastRefreshCannotBePaidUntilTheNextOne(t *testing.
 // would be holding a subscriber list.
 func TestARefreshCarriesTheAllocationAndTheAddressAndNothingElse(t *testing.T) {
 	ctx := context.Background()
-	h := newMeshHarness(t)
+	h := newHarness(t)
 	mark := h.messagesSeen()
 
-	got, err := h.mesh.RefreshDirectory(ctx, h.debtorBIC)
+	got, err := h.dep.RefreshDirectory(ctx, h.debtorBIC)
 	if err != nil {
 		t.Fatalf("RefreshDirectory: %v", err)
 	}
@@ -198,10 +198,10 @@ func TestARefreshCarriesTheAllocationAndTheAddressAndNothingElse(t *testing.T) {
 // act: it published, and somebody read.
 func TestARefreshIsRecordedInTheSubscribersOwnLog(t *testing.T) {
 	ctx := context.Background()
-	h := newMeshHarness(t)
+	h := newHarness(t)
 
 	before := h.directoryEvents(t, h.debtorBIC)
-	if _, err := h.mesh.RefreshDirectory(ctx, h.debtorBIC); err != nil {
+	if _, err := h.dep.RefreshDirectory(ctx, h.debtorBIC); err != nil {
 		t.Fatalf("RefreshDirectory: %v", err)
 	}
 
@@ -236,7 +236,7 @@ func TestARefreshIsRecordedInTheSubscribersOwnLog(t *testing.T) {
 }
 
 // directoryEvents is one member's own record of the snapshots it has pulled.
-func (h *meshHarness) directoryEvents(t *testing.T, bic iso20022.BIC) []ledger.AuditEvent {
+func (h *harness) directoryEvents(t *testing.T, bic iso20022.BIC) []ledger.AuditEvent {
 	t.Helper()
 	got, err := h.bank(bic).ListAudit(context.Background(), ledger.AuditFilter{
 		BookID: ledger.BookID(bic),
@@ -265,12 +265,12 @@ func (h *meshHarness) directoryEvents(t *testing.T, bic iso20022.BIC) []ledger.A
 // kind, and not the presence of an agent, is what decides which refusal a payer
 // meets.
 func TestAnAddressWithNoDirectoryHereIsRefusedForWantOfABIC(t *testing.T) {
-	h := newMeshHarness(t)
+	h := newHarness(t)
 
 	req := h.creditTransferRequest(t)
 	req.Creditor.Identifier = deposit.Identifier{Scheme: "PAN", Value: "4000000000000001"}
 
-	_, err := h.mesh.Submit(context.Background(), req)
+	_, err := h.dep.Submit(context.Background(), req)
 	if !errors.Is(err, payment.ErrCounterpartyAgentNotNamed) {
 		t.Fatalf("an address no directory here covers = %v, want ErrCounterpartyAgentNotNamed", err)
 	}

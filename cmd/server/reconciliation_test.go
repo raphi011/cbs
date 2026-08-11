@@ -120,7 +120,7 @@ func TestAnUnclaimedBalanceIsReportedWithItsDeadline(t *testing.T) {
 		"endToEndId":"unclaimed-e2e",
 		"creditorName":"Bob"
 	}`, http.StatusAccepted)["paymentId"].(string)
-	drainServer(t, h)
+	carry(t, h)
 
 	// Bob closes his account after his bank has accepted the credit and before
 	// the cut-off moves the money.
@@ -128,7 +128,7 @@ func TestAnUnclaimedBalanceIsReportedWithItsDeadline(t *testing.T) {
 	var cycles []api.ClearingCycleDTO
 	getJSON(t, csmSurface(h), "/cycles", &cycles)
 	assertStatus(t, csmSurface(h), "POST", "/cycles/"+cycles[0].ID+"/close", "", http.StatusOK)
-	drainServer(t, h)
+	carry(t, h)
 
 	var rep api.AgeingReportDTO
 	getJSON(t, bankSurface(h, b), "/unclaimed-balances/ageing?asset=EUR", &rep)

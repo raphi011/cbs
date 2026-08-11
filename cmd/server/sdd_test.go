@@ -3,8 +3,10 @@ package main
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
+	"github.com/raphi011/cbs/ebics"
 	"github.com/raphi011/cbs/iso20022"
 	"github.com/raphi011/cbs/payment"
 )
@@ -45,13 +47,13 @@ import (
 // worth having and is a different claim: that the refusal travelled as a message
 // rather than as a return value out of Submit.
 func TestDirectDebitPostsTheDebtorLegAtTheDebtorsBank(t *testing.T) {
-	h := newMeshHarness(t)
+	h := newHarness(t)
 	p := h.submitDirectDebit(t)
 	if p.DebtorLegTx != "" {
 		t.Fatal("the creditor's bank posted a debtor leg; it cannot see that account")
 	}
 
-	h.drain(t)
+	h.work(t)
 
 	if got := h.payment(t, p.ID); got.Status != payment.Accepted {
 		t.Fatalf("status = %v, want Accepted", got.Status)
@@ -66,9 +68,9 @@ func TestDirectDebitPostsTheDebtorLegAtTheDebtorsBank(t *testing.T) {
 }
 
 func TestDirectDebitAgainstAnUnfundedDebtorIsAM04(t *testing.T) {
-	h := newMeshHarnessWithAnUnfundedDebtor(t)
+	h := newHarnessWithAnUnfundedDebtor(t)
 	p := h.submitDirectDebit(t)
-	h.drain(t)
+	h.work(t)
 
 	got := h.payment(t, p.ID)
 	if got.RejectCode != iso20022.StatusReasonInsufficientFunds {
@@ -80,11 +82,11 @@ func TestDirectDebitAgainstAnUnfundedDebtorIsAM04(t *testing.T) {
 // reaches the wire in this system, and that is a modelling limit worth stating:
 // a real debtor's bank holds mandate records of its own and can reject with it.
 func TestARevokedMandateIsRefusedSynchronously(t *testing.T) {
-	h := newMeshHarnessWithARevokedMandate(t)
-	if _, err := h.mesh.Submit(context.Background(), h.directDebitRequest(t)); !errors.Is(err, payment.ErrMandateRevoked) {
+	h := newHarnessWithARevokedMandate(t)
+	if _, err := h.dep.Submit(context.Background(), h.directDebitRequest(t)); !errors.Is(err, payment.ErrMandateRevoked) {
 		t.Fatalf("Submit = %v, want ErrMandateRevoked", err)
 	}
-	h.drain(t)
+	h.work(t)
 	if got := h.messagesSeen(); got != 0 {
 		t.Errorf("a refused collection sent %d messages, want 0", got)
 	}
@@ -98,9 +100,9 @@ func TestARevokedMandateIsRefusedSynchronously(t *testing.T) {
 // the conversation, the payer's bank answers it. Everything after that is the
 // same clearing house doing the same job.
 func TestTheDirectDebitChainIsFourMessages(t *testing.T) {
-	h := newMeshHarness(t)
+	h := newHarness(t)
 	h.submitDirectDebit(t)
-	h.drain(t)
+	h.work(t)
 
 	want := []struct {
 		from, to iso20022.BIC
@@ -137,9 +139,9 @@ func TestTheDirectDebitChainIsFourMessages(t *testing.T) {
 // answer to an instruction, and it goes back to whoever gave it. The debtor's
 // bank is the one that DECIDED here, and it is the last party that needs telling.
 func TestARejectedCollectionIsAnsweredToThePayeesBank(t *testing.T) {
-	h := newMeshHarnessWithAnUnfundedDebtor(t)
+	h := newHarnessWithAnUnfundedDebtor(t)
 	h.submitDirectDebit(t)
-	h.drain(t)
+	h.work(t)
 
 	h.assertLastStatusTo(t, h.creditorBIC, iso20022.StatusReasonInsufficientFunds)
 	// And ONE answer, not two. The clearing house tells the payer's bank as well
@@ -163,9 +165,9 @@ func TestARejectedCollectionIsAnsweredToThePayeesBank(t *testing.T) {
 // asked, and the payer's bank, because it is holding money against a payment
 // this network has just rejected. See csm.receiveStatus.
 func TestDirectDebitWithNoOpenCycleIsTM01(t *testing.T) {
-	h := newMeshHarnessWithNoOpenCycle(t)
+	h := newHarnessWithNoOpenCycle(t)
 	p := h.submitDirectDebit(t)
-	h.drain(t)
+	h.work(t)
 
 	got := h.payment(t, p.ID)
 	if got.RejectCode != iso20022.StatusReasonInvalidCutOffTime {
@@ -173,7 +175,7 @@ func TestDirectDebitWithNoOpenCycleIsTM01(t *testing.T) {
 	}
 	// The debtor's bank really did take the money before the clearing house
 	// refused — otherwise there would be nothing for the reversal to prove. Its
-	// own copy is where the leg is; see meshHarness.bankPayment.
+	// own copy is where the leg is; see harness.bankPayment.
 	if h.bankPayment(t, h.debtorBIC, p.ID).DebtorLegTx == "" {
 		t.Fatal("no debtor leg, so this test cannot show the reversal it exists for")
 	}
@@ -212,9 +214,9 @@ func TestDirectDebitWithNoOpenCycleIsTM01(t *testing.T) {
 //
 // The clearing house cannot fail to KNOW where a bank is, only fail to REACH it.
 func TestTheRefundIsAttemptedEvenWhenTheSubmitterCannotBeAddressed(t *testing.T) {
-	h := newMeshHarness(t)
+	h := newHarness(t)
 	p := h.submitDirectDebit(t)
-	h.drain(t)
+	h.work(t)
 
 	got := h.payment(t, p.ID)
 	if h.bankPayment(t, h.debtorBIC, p.ID).DebtorLegTx == "" {
@@ -234,15 +236,15 @@ func TestTheRefundIsAttemptedEvenWhenTheSubmitterCannotBeAddressed(t *testing.T)
 		t.Fatalf("RejectAtCSM: %v", err)
 	}
 
-	// The submitter is made unreachable by moving it to an address this mesh has
-	// no actor for, so the clearing house's message to it is refused by the
-	// transport with ErrUnknownBIC.
+	// The submitter is made unreachable by moving it to an address no subscriber
+	// is enrolled under, so the clearing house has no download queue to put its
+	// message in and the enqueue is refused.
 	//
 	// On the local COPY of the payment, which is all tell is given and all it
 	// reads. Nothing is written, so the payer's bank is still the real one and
 	// still the bank the refund has to reach — which is the ordering under test.
 	rejected.CreditorDetails.Agent = "NOSUCHBKXXX"
-	relay := &csm{m: h.mesh, ops: h.net, bic: h.cfg.ClearingHouseBIC}
+	relay := h.dep.ClearingHouse()
 	before := h.statusesSentTo(h.debtorBIC)
 	// payerAccepted is true: this collection was answered ACCP by the payer's
 	// bank, which is what posted the debtor leg asserted above. It is an argument
@@ -260,14 +262,13 @@ func TestTheRefundIsAttemptedEvenWhenTheSubmitterCannotBeAddressed(t *testing.T)
 
 	// The failure is reported — it is not swallowed to make the refund look
 	// clean.
-	if err == nil || !errors.Is(err, ErrUnknownBIC) {
-		t.Fatalf("tell = %v, want the submitter's send reported", err)
+	if err == nil || ebics.CodeOf(err) != ebics.InvalidUserOrUserState {
+		t.Fatalf("tell = %v, want the submitter's queueing reported", err)
 	}
 
-	// And the refund went out anyway. Counted after the drain, because the tap
-	// records a message when its recipient picks it up rather than when it is
-	// sent.
-	h.drain(t)
+	// And the refund went out anyway. Counted after the day is carried, because
+	// the tap records a file when it crosses rather than when it is queued.
+	h.work(t)
 	if after := h.statusesSentTo(h.debtorBIC); after != before+1 {
 		t.Fatalf("the payer's bank was sent %d statuses, want 1 — the refund was skipped because the other message failed",
 			after-before)
@@ -302,10 +303,10 @@ func TestTheRefundIsAttemptedEvenWhenTheSubmitterCannotBeAddressed(t *testing.T)
 // reachable deterministically from here, because reaching it means racing the
 // clearing house's acceptance, and no test in this package waits on a duration
 // to decide who won.
-func TestARedeliveredCollectionIsDeadLetteredAtTheDebtorsBank(t *testing.T) {
-	h := newMeshHarness(t)
+func TestARedeliveredCollectionIsReportedAtTheDebtorsBank(t *testing.T) {
+	h := newHarness(t)
 	p := h.submitDirectDebit(t)
-	h.drain(t)
+	h.work(t)
 
 	// The pacs.003 the clearing house relayed, sent a second time.
 	var relayed []byte
@@ -321,9 +322,11 @@ func TestARedeliveredCollectionIsDeadLetteredAtTheDebtorsBank(t *testing.T) {
 	}
 	h.injectRaw(t, h.cfg.ClearingHouseBIC, h.debtorBIC, relayed)
 
-	err := h.drainErr(t)
-	if !errors.Is(err, payment.ErrInvalidStateTransition) {
-		t.Fatalf("Drain = %v, want the illegal transition as a dead letter", err)
+	err := h.workErr(t)
+	// Matched on the TEXT and not with errors.Is: a day's report is prose an
+	// operator reads, and Problem.Detail does not wrap the sentinel.
+	if err == nil || !strings.Contains(err.Error(), payment.ErrInvalidStateTransition.Error()) {
+		t.Fatalf("the day reported %v, want the illegal transition as a problem", err)
 	}
 	if got := h.payment(t, p.ID); got.Status != payment.Accepted {
 		t.Errorf("the redelivery moved the payment to %v; it was already Accepted", got.Status)

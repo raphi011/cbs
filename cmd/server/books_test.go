@@ -24,7 +24,6 @@ import (
 	"github.com/raphi011/cbs/iso20022"
 	"github.com/raphi011/cbs/ledger"
 	"github.com/raphi011/cbs/lending"
-	"github.com/raphi011/cbs/mesh/wire"
 	"github.com/raphi011/cbs/payment"
 	"github.com/raphi011/cbs/product"
 	"github.com/raphi011/cbs/store/sqlite"
@@ -183,7 +182,7 @@ func (n bookNoter) note(book ledger.BookID) { n.store.note(n.actor, n.unit, book
 // opened with. A unit of work opened by nobody in particular has no actor, and
 // its books still land in the whole-store set and in its own unit.
 func (s *recordingStores) noterFor(ctx context.Context, unit map[ledger.BookID]bool) bookNoter {
-	who, _ := wire.ActorOf(ctx)
+	who, _ := actorOf(ctx)
 	return bookNoter{store: s, actor: who, unit: unit}
 }
 
@@ -833,11 +832,11 @@ func assertBooksTouched(t *testing.T, who string, got, want []ledger.BookID) {
 // member's book through a method it legitimately holds would still fail here and
 // nowhere else.
 func TestWhichBooksEachBankActuallyReaches(t *testing.T) {
-	h := newMeshHarness(t) // builds a seeded network + mesh over a recordingStore
+	h := newHarness(t) // builds a seeded network + mesh over a recordingStore
 
 	h.rec.reset()
 	h.submitCreditTransfer(t)
-	h.drain(t)
+	h.work(t)
 
 	assertBooksTouched(t, "the payer's bank", h.booksTouchedBy(h.debtorBIC),
 		[]ledger.BookID{h.debtorBook})
@@ -924,11 +923,11 @@ func TestWhichBooksEachBankActuallyReaches(t *testing.T) {
 // entitled to have answered already. The claim that IS true is about
 // ATTRIBUTION, which is what the union above measures.
 func TestWhichBooksEachBankReachesInAPull(t *testing.T) {
-	h := newMeshHarness(t)
+	h := newHarness(t)
 
 	h.rec.reset()
 	h.submitDirectDebit(t)
-	h.drain(t)
+	h.work(t)
 
 	assertBooksTouched(t, "the payee's bank, submitting a collection", h.booksTouchedBy(h.creditorBIC),
 		[]ledger.BookID{h.creditorBook})
@@ -1001,10 +1000,10 @@ func TestWhichBooksEachBankReachesInAPull(t *testing.T) {
 // looked a payment up to decide where to send it would be one that could not
 // route a message about a payment it does not hold.
 func TestTheCSMTouchesOnlyItsOwnBook(t *testing.T) {
-	h := newMeshHarness(t)
+	h := newHarness(t)
 	h.rec.reset()
 	h.submitCreditTransfer(t)
-	h.drain(t)
+	h.work(t)
 
 	assertBooksTouched(t, "clearing house", h.booksTouchedBy(h.cfg.ClearingHouseBIC),
 		[]ledger.BookID{payment.ClearingHouseBook})
@@ -1023,13 +1022,13 @@ func TestTheCSMTouchesOnlyItsOwnBook(t *testing.T) {
 // That is the whole reason the recorder exists beside the interfaces in ops.go.
 // csmOps could not have expressed this: the method is on it, and must be.
 func TestTheCSMStillTouchesOnlyItsOwnBookWhenItSettles(t *testing.T) {
-	h := newMeshHarness(t)
+	h := newHarness(t)
 	h.submitCreditTransfer(t)
-	h.drain(t)
+	h.work(t)
 
 	h.rec.reset()
 	h.closeCycle(t)
-	h.drain(t)
+	h.work(t)
 
 	assertBooksTouched(t, "the clearing house, reaching a cut-off and instructing settlement",
 		h.booksTouchedBy(h.cfg.ClearingHouseBIC), []ledger.BookID{payment.ClearingHouseBook})
@@ -1078,13 +1077,13 @@ func TestTheCSMStillTouchesOnlyItsOwnBookWhenItSettles(t *testing.T) {
 // TestANetPayerWhoCannotCoverIsRejectedOnTheInstruction, which is the measurement
 // that would fail if it were ever deleted.
 func TestWhichBooksTheCentralBankReachesWhenItSettles(t *testing.T) {
-	h := newMeshHarness(t)
+	h := newHarness(t)
 	p := h.submitCreditTransfer(t)
-	h.drain(t)
+	h.work(t)
 
 	h.rec.reset()
 	h.closeCycle(t)
-	h.drain(t)
+	h.work(t)
 
 	if got := h.payment(t, p.ID); got.Status != payment.Settled {
 		t.Fatalf("the payment is %v, want Settled — this test measures a settlement that happened", got.Status)
@@ -1139,13 +1138,13 @@ func TestWhichBooksTheCentralBankReachesWhenItSettles(t *testing.T) {
 // It measures over the cut-off ONLY, resetting after the submission has drained,
 // so a book reached earlier can neither satisfy nor spoil it.
 func TestEachBankBooksItsOwnSettlementAndNoOtherBooks(t *testing.T) {
-	h := newMeshHarness(t)
+	h := newHarness(t)
 	h.submitCreditTransfer(t)
-	h.drain(t)
+	h.work(t)
 
 	h.rec.reset()
 	h.closeCycle(t)
-	h.drain(t)
+	h.work(t)
 
 	assertBooksTouched(t, "the payer's bank, booking its own settlement",
 		h.booksTouchedBy(h.debtorBIC), []ledger.BookID{h.debtorBook})
@@ -1203,12 +1202,12 @@ func TestEachBankBooksItsOwnSettlementAndNoOtherBooks(t *testing.T) {
 // measures over the RETURN only, resetting after the settlement it starts from
 // has drained.
 func TestWhichBooksAReturnReaches(t *testing.T) {
-	h := newMeshHarness(t)
+	h := newHarness(t)
 	p := h.settledPayment(t)
 
 	h.rec.reset()
 	h.returnPayment(t, p.ID, iso20022.ReturnReasonClosedAccountNumber, "account closed")
-	h.drain(t)
+	h.work(t)
 
 	if got := h.payment(t, p.ID); got.Status != payment.Returned {
 		t.Fatalf("the payment is %v, want Returned — this test measures a return that happened", got.Status)
@@ -1260,12 +1259,12 @@ func TestWhichBooksAReturnReaches(t *testing.T) {
 //
 // It measures over the RETURN only, for the reason above.
 func TestEachBankBooksItsOwnReturnAndNoOtherBooks(t *testing.T) {
-	h := newMeshHarness(t)
+	h := newHarness(t)
 	p := h.settledPayment(t)
 
 	h.rec.reset()
 	h.returnPayment(t, p.ID, iso20022.ReturnReasonClosedAccountNumber, "account closed")
-	h.drain(t)
+	h.work(t)
 
 	if got := h.payment(t, p.ID); got.Status != payment.Returned {
 		t.Fatalf("the payment is %v, want Returned — this test measures a return that happened", got.Status)
@@ -1319,7 +1318,7 @@ func TestEachBankBooksItsOwnReturnAndNoOtherBooks(t *testing.T) {
 func TestWhichBooksProvisioningReaches(t *testing.T) {
 	// After the fixture's own two banks, so what is measured is one arrival and
 	// not three.
-	h := newMeshHarness(t)
+	h := newHarness(t)
 	h.rec.reset()
 
 	joiner := h.provision(t, "Nordhaven Bank", "NORDSESSXXX", euroOnly)
@@ -1384,7 +1383,7 @@ func TestWhichBooksProvisioningReaches(t *testing.T) {
 // would mean a deposit had acquired a second act — which is what a LODGEMENT is,
 // and a lodgement is not this call.
 func TestTakingCashInReachesOnlyTheBanksOwnBook(t *testing.T) {
-	h := newMeshHarness(t)
+	h := newHarness(t)
 
 	// Both read before the recorder is cleared, so this fixture's own reads are
 	// not part of the measurement.
@@ -1458,7 +1457,7 @@ func TestTakingCashInReachesOnlyTheBanksOwnBook(t *testing.T) {
 // sent. A lodgement that raised only the bank's mirror would leave a bank that
 // believes it can settle and cannot.
 func TestALodgementIsTwoBooksInTwoUnitsOfWork(t *testing.T) {
-	h := newMeshHarness(t)
+	h := newHarness(t)
 	ctx := context.Background()
 
 	// A fresh deposit, so there is cash in the vault that has not been lodged.
@@ -1477,10 +1476,10 @@ func TestALodgementIsTwoBooksInTwoUnitsOfWork(t *testing.T) {
 	}
 
 	h.rec.reset()
-	if _, err := h.mesh.Lodge(ctx, h.debtor.BIC, "EUR", amount); err != nil {
+	if _, err := h.dep.Lodge(ctx, h.debtor.BIC, "EUR", amount); err != nil {
 		t.Fatalf("Lodge: %v", err)
 	}
-	h.drain(t)
+	h.work(t)
 	units := h.rec.unitsOfWork()
 
 	assertBooksTouched(t, "the lodging bank", h.booksTouchedBy(h.debtorBIC),
@@ -1523,14 +1522,14 @@ func TestALodgementIsTwoBooksInTwoUnitsOfWork(t *testing.T) {
 // reserve mirror does not move and no camt.050 goes out. A bank that could lodge
 // cash it did not hold would be creating central-bank money out of nothing.
 func TestABankCannotLodgeCashItDoesNotHold(t *testing.T) {
-	h := newMeshHarness(t)
+	h := newHarness(t)
 	ctx := context.Background()
 
 	vault := h.vaultCash(t, h.debtor.ID)
 	mirrorBefore := h.reserveMirror(t, h.debtor.ID)
 	mark := h.messagesSeen()
 
-	_, err := h.mesh.Lodge(ctx, h.debtor.BIC, "EUR", vault+1)
+	_, err := h.dep.Lodge(ctx, h.debtor.BIC, "EUR", vault+1)
 	if !errors.Is(err, ledger.ErrInsufficientBalance) {
 		t.Fatalf("lodging more than the vault holds = %v, want ledger.ErrInsufficientBalance", err)
 	}
@@ -1561,11 +1560,11 @@ func TestABankCannotLodgeCashItDoesNotHold(t *testing.T) {
 // all — a bank mints its customers' addresses under a code the settlement agent
 // allocates, so there would be no account to pay anything into.
 func TestTakingCashInReachesNoOtherInstitution(t *testing.T) {
-	h := newMeshHarness(t)
+	h := newHarness(t)
 	ctx := context.Background()
 
 	solo := h.provision(t, "Solo Bank", "SOLODEFFXXX", []ledger.AssetCode{"EUR"})
-	h.drain(t)
+	h.work(t)
 	solo = h.getBank(t, solo.ID)
 
 	acct := h.openCustomer(t, solo, "Sole Depositor", "EUR", 0)

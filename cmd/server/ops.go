@@ -118,6 +118,15 @@ type bankOps interface {
 	// looked at.
 	GetPayment(ctx context.Context, id payment.PaymentID) (payment.Payment, error)
 
+	// This bank's own row, which is the handle its end-of-day batches hang off:
+	// payment.Bank.RunEndOfDay is on the row rather than on the network, because
+	// accrual is a bank's own act over its own deposit and lending layers.
+	//
+	// It TAKES an id although the acting bank is the network's identity, because
+	// payment.Network.GetBank does; the banks table lives only in a bank's own
+	// database, so an id naming anybody else finds nothing there. See Bank.runEndOfDay.
+	GetBank(ctx context.Context, id payment.ParticipantID) (*payment.Bank, error)
+
 	// The bank's half of a rejection: record it on this bank's own copy, and give
 	// the payer their money back if this bank is the one holding it.
 	//
@@ -197,6 +206,12 @@ type bankOps interface {
 	// database. See payment.CompleteReturnTx and payment.PostReturnLegTx's note on
 	// position in the conversation.
 	CompleteReturn(ctx context.Context, id payment.PaymentID) (payment.Payment, error)
+
+	// This bank's own copy of the scheme's routing directory, replaced with the
+	// roster it is handed. The bank writes its OWN table; the publication it
+	// writes from is read at the clearing house, in another database, which is why
+	// the two reads are Deployment.RefreshDirectory's and not this method's.
+	RefreshDirectory(ctx context.Context, published []payment.RosterEntry) ([]payment.DirectoryEntry, error)
 
 	// The bank's own liquidity management, and the second thing on this interface
 	// whose subject is this bank rather than a payment.
@@ -297,6 +312,24 @@ type csmOps interface {
 	GetCycle(ctx context.Context, id payment.CycleID) (payment.ClearingCycle, error)
 	GetPayment(ctx context.Context, id payment.PaymentID) (payment.Payment, error)
 
+	// The two ends of a clearing day, and the pair that makes the cut-off an
+	// event on a calendar rather than a route somebody remembers to call.
+	//
+	// ListCycles is how the day finds what to cut off: every cycle this
+	// institution holds, of which the OPEN ones are the batch. There is no
+	// narrower question to ask — the store's GetOpenCycle answers for one scheme,
+	// and the day is asking about all of them.
+	//
+	// OpenCycle is the other end, run after the cut-off so the next day has
+	// somewhere to clear into. Both are the clearing house's own act over its own
+	// rows and neither posts.
+	ListCycles(ctx context.Context) ([]payment.ClearingCycle, error)
+	OpenCycle(ctx context.Context, scheme payment.SchemeID) (payment.ClearingCycle, error)
+
+	// ListSchemes is which cycles there are to open. The scheme registry is a map
+	// in memory rather than a table, which is why this takes no context.
+	ListSchemes() []payment.Scheme
+
 	// GetRosterEntryByBIC is the one lookup on any of these three interfaces
 	// that crosses nothing. Every other roster read here starts from a
 	// ParticipantID and has to go through the bank's own row to reach an address
@@ -304,6 +337,13 @@ type csmOps interface {
 	// because an instruction names a counterparty's agent by address and by
 	// nothing else. See Mesh.instruct, which asks it before either leg posts.
 	GetRosterEntryByBIC(ctx context.Context, bic iso20022.BIC) (payment.RosterEntry, error)
+
+	// ListRosterEntries is the roster PUBLISHED: every member, as the directory a
+	// subscriber pulls. It answers two questions that look alike and are not —
+	// which banks a business day's clearing phases visit, and what one bank's
+	// refreshed copy is written from — and both are read here because the roster
+	// is this institution's table and no bank may open it.
+	ListRosterEntries(ctx context.Context) ([]payment.RosterEntry, error)
 }
 
 // settlementOps is the central bank's view: what a settlement handler may

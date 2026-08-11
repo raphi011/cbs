@@ -446,9 +446,9 @@ func settledCycle(t *testing.T, h *server) string {
 		"endToEndId":"settle-e2e",
 		"creditorName":"Bob"
 	}`, http.StatusAccepted)
-	drainServer(t, h)
+	carry(t, h)
 	assertStatus(t, csmSurface(h), "POST", "/cycles/"+cyc+"/close", "", http.StatusOK)
-	drainServer(t, h)
+	carry(t, h)
 	return cyc
 }
 
@@ -542,7 +542,7 @@ func sct(t *testing.T, h *server, from, to seededBank, e2e string) string {
 	// The payment is Initiated when the 202 is written and the counterparty has
 	// not seen it. Callers of this helper assert on what became of it, so the
 	// conversation is carried to its end here.
-	drainServer(t, h)
+	carry(t, h)
 	return id
 }
 

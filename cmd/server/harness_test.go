@@ -1,14 +1,21 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
 	"log/slog"
-	"slices"
+	"net/http"
+	"net/http/httptest"
 	"sync"
 	"testing"
-	"time"
 
+	"github.com/raphi011/cbs/calendar"
 	"github.com/raphi011/cbs/deposit"
+	"github.com/raphi011/cbs/ebics"
 	"github.com/raphi011/cbs/iban"
 	"github.com/raphi011/cbs/iso20022"
 	"github.com/raphi011/cbs/ledger"
@@ -22,15 +29,22 @@ import (
 //
 // One harness, not one per test. The flows differ in what they assert, not in
 // what they need: two banks that can address each other, a clearing house
-// between them, a store that records which book each actor reached, and a way
-// to wait for a conversation to finish. A second fixture beside this one would
-// be a second answer to "what does this system look like", and the two would
-// drift.
+// between them, both hosts really listening, a store that records which book
+// each institution reached, and the phases of a business day to run. A second
+// fixture beside this one would be a second answer to "what does this system
+// look like", and the two would drift.
+//
+// # Nothing here waits
+//
+// Every phase is synchronous and there is no goroutine to join, so no test in
+// this package sleeps, polls or takes a deadline. That is what a business day
+// bought: work is queued by a request and performed by an advance, and when the
+// advance returns it is done.
 //
 // # What it is NOT
 //
-// It does not stand in for the API. Mesh.Submit is what a bank's customer-facing
-// layer calls, and the harness calls it directly.
+// It does not stand in for the API. Deployment.Submit is what a bank's
+// customer-facing layer calls, and the harness calls it directly.
 
 // harnessAmount is what every transfer in this package moves, and harnessFunding
 // is what the payer starts with. Funding is larger, so the payer is good for the
@@ -49,7 +63,7 @@ const (
 // The addresses this fixture's customers hold are NOT written down here any
 // more, and could not be: a bank mints its customers' addresses out of the bank
 // code it was allocated, so the only place one exists is on the account. They
-// are read off the accounts as they are opened — see meshHarness.debtorIBAN and
+// are read off the accounts as they are opened — see harness.debtorIBAN and
 // the fields beside it.
 //
 // They remain real, distinct, and in different countries, for the reason
@@ -89,8 +103,9 @@ type tappedMessage struct {
 	raw  []byte
 }
 
-// meshHarness is a seeded two-bank network with a mesh running over it.
-type meshHarness struct {
+// harness is a seeded two-bank network with a deployment running over it, and
+// the two hosts really listening.
+type harness struct {
 	rec *recordingStores
 
 	// nets mints one payment.Network per institution, and net is the CLEARING
@@ -103,8 +118,13 @@ type meshHarness struct {
 	nets *payment.Networks
 	net  *payment.Network
 
-	mesh *Mesh
-	cfg  MeshConfig
+	// clock is the deployment's business date, and it MOVES: day advances it,
+	// and every row written afterwards carries the new date. The frozen clock
+	// this replaces could not tell an accrual from a no-op.
+	clock *calendar.Clock
+
+	dep *Deployment
+	cfg Config
 
 	debtor   *payment.Bank
 	creditor *payment.Bank
@@ -127,7 +147,7 @@ type meshHarness struct {
 	creditorBook ledger.BookID
 
 	// The same two customers' dollar accounts. Zero values unless the fixture
-	// was built by newMeshHarnessWithTwoAssets, which is the only one that opens
+	// was built by newHarnessWithTwoAssets, which is the only one that opens
 	// them; submitCreditTransferInUSD is the only thing that reads them.
 	debtorUSDAcct   deposit.Account
 	creditorUSDAcct deposit.Account
@@ -141,9 +161,6 @@ type meshHarness struct {
 
 	mu   sync.Mutex
 	seen []tappedMessage
-	// observe is what watch installs: a test looking at the mesh while a
-	// conversation is still running.
-	observe func(to, from iso20022.BIC, raw []byte)
 }
 
 // harnessOptions is what the named constructors below vary, and nothing else
@@ -167,22 +184,21 @@ type harnessOptions struct {
 	// lendToTheDebtor opens the payer's account with an overdraft limit instead
 	// of paying an opening deposit in. It is what leaves the payer's BANK
 	// without reserves while the payer can still pay; see
-	// newMeshHarnessWithAnUnfundedReserve.
+	// newHarnessWithAnUnfundedReserve.
 	lendToTheDebtor bool
 	// twoAssets gives both banks and both customers a dollar side beside the
 	// euro one, and registers a dollar push scheme with a cut-off window of its
-	// own. See newMeshHarnessWithTwoAssets.
+	// own. See newHarnessWithTwoAssets.
 	twoAssets bool
 }
 
-// newMeshHarness builds the network, opens a clearing cycle for each scheme, and
-// starts the mesh.
-func newMeshHarness(t *testing.T) *meshHarness {
+// newHarness builds the network and opens a clearing cycle for each scheme.
+func newHarness(t *testing.T) *harness {
 	t.Helper()
-	return newHarness(t, harnessOptions{openCycles: true, fundTheDebtor: true})
+	return build(t, harnessOptions{openCycles: true, fundTheDebtor: true})
 }
 
-// newMeshHarnessWithNoOpenCycle is the same network with no cut-off window open.
+// newHarnessWithNoOpenCycle is the same network with no cut-off window open.
 //
 // Each variation gets a NAMED constructor rather than callers assembling their
 // own harnessOptions, and the reason is in this one's name: "there is no open
@@ -190,12 +206,12 @@ func newMeshHarness(t *testing.T) *meshHarness {
 // provoke — the clearing house refuses a payment it has nowhere to clear, and
 // answers TM01. A test that spelt the options out at its call site would be
 // stating a fixture where it means to state a hypothesis.
-func newMeshHarnessWithNoOpenCycle(t *testing.T) *meshHarness {
+func newHarnessWithNoOpenCycle(t *testing.T) *harness {
 	t.Helper()
-	return newHarness(t, harnessOptions{fundTheDebtor: true})
+	return build(t, harnessOptions{fundTheDebtor: true})
 }
 
-// newMeshHarnessWithAnUnfundedDebtor is the same network with the opening
+// newHarnessWithAnUnfundedDebtor is the same network with the opening
 // deposit never paid in.
 //
 // It is the pull flow's counterpart to the unknown IBAN: the condition only the
@@ -203,24 +219,24 @@ func newMeshHarnessWithNoOpenCycle(t *testing.T) *meshHarness {
 // A creditor's bank cannot know what is in the account it is collecting from —
 // that is the whole asymmetry a direct debit is built on — so an empty account
 // is a refusal that can only have come from the far side of the mesh.
-func newMeshHarnessWithAnUnfundedDebtor(t *testing.T) *meshHarness {
+func newHarnessWithAnUnfundedDebtor(t *testing.T) *harness {
 	t.Helper()
-	return newHarness(t, harnessOptions{openCycles: true})
+	return build(t, harnessOptions{openCycles: true})
 }
 
-// newMeshHarnessWithARevokedMandate is the same network with the debtor's
+// newHarnessWithARevokedMandate is the same network with the debtor's
 // authority withdrawn.
 //
 // The creditor's bank holds the mandate in SEPA, so this is the one refusal in
 // the pull flow that never reaches the wire: it happens inside Submit's own unit
 // of work, at the bank the collection was handed to. See
 // TestARevokedMandateIsRefusedSynchronously for what that costs.
-func newMeshHarnessWithARevokedMandate(t *testing.T) *meshHarness {
+func newHarnessWithARevokedMandate(t *testing.T) *harness {
 	t.Helper()
-	return newHarness(t, harnessOptions{openCycles: true, fundTheDebtor: true, revokeMandate: true})
+	return build(t, harnessOptions{openCycles: true, fundTheDebtor: true, revokeMandate: true})
 }
 
-// newMeshHarnessWithAnUnfundedReserve is the same network with the payer's bank
+// newHarnessWithAnUnfundedReserve is the same network with the payer's bank
 // holding no central-bank reserves.
 //
 // It is the one fixture in this package whose condition belongs to a BANK's
@@ -237,12 +253,12 @@ func newMeshHarnessWithARevokedMandate(t *testing.T) *meshHarness {
 // payer of 250,000 against a reserve of nothing. Every earlier refusal in this
 // package is a bank saying no about a customer; this is the settlement agent
 // saying no about a bank.
-func newMeshHarnessWithAnUnfundedReserve(t *testing.T) *meshHarness {
+func newHarnessWithAnUnfundedReserve(t *testing.T) *harness {
 	t.Helper()
-	return newHarness(t, harnessOptions{openCycles: true, lendToTheDebtor: true})
+	return build(t, harnessOptions{openCycles: true, lendToTheDebtor: true})
 }
 
-// newMeshHarnessWithTwoAssets is the same network operating in dollars as well
+// newHarnessWithTwoAssets is the same network operating in dollars as well
 // as euro: both banks hold both, both customers have an account in each, and
 // there is a dollar push scheme with a cut-off window of its own.
 //
@@ -251,9 +267,9 @@ func newMeshHarnessWithAnUnfundedReserve(t *testing.T) *meshHarness {
 // instruction per asset" is not observable until two cycles in two assets close
 // together — and what it rules out is the arrangement that would net a euro
 // position against a dollar one, or put both in one IntrBkSttlmAmt.
-func newMeshHarnessWithTwoAssets(t *testing.T) *meshHarness {
+func newHarnessWithTwoAssets(t *testing.T) *harness {
 	t.Helper()
-	return newHarness(t, harnessOptions{openCycles: true, fundTheDebtor: true, twoAssets: true})
+	return build(t, harnessOptions{openCycles: true, fundTheDebtor: true, twoAssets: true})
 }
 
 // schemeUSDCT and usdCT are a second push scheme, identical to SEPA credit
@@ -288,19 +304,19 @@ var euroAndDollar = []ledger.AssetCode{"EUR", "USD"}
 // inside an assertion and every address they pass is a bank this harness
 // founded, so a failure is a broken fixture rather than an outcome worth
 // reporting through the test's own error path.
-func (h *meshHarness) bank(bic iso20022.BIC) *payment.Network {
+func (h *harness) bank(bic iso20022.BIC) *payment.Network {
 	net, err := h.nets.Bank(context.Background(), payment.ParticipantID(bic))
 	if err != nil {
 		panic("mesh_test: opening " + string(bic) + "'s store: " + err.Error())
 	}
 	return net
 }
-func (h *meshHarness) cb() *payment.Network { return h.nets.CentralBank() }
+func (h *harness) cb() *payment.Network { return h.nets.CentralBank() }
 
 // cbBook is the central bank's book of accounts. Network.CentralBank returns an
 // error — every other institution's network has no such book — and here it
 // cannot fire, so the assertion is what says so.
-func (h *meshHarness) cbBook(t *testing.T) *ledger.Book {
+func (h *harness) cbBook(t *testing.T) *ledger.Book {
 	t.Helper()
 	book, err := h.cb().CentralBank()
 	if err != nil {
@@ -309,14 +325,35 @@ func (h *meshHarness) cbBook(t *testing.T) *ledger.Book {
 	return book
 }
 
-func newHarness(t *testing.T, opts harnessOptions) *meshHarness {
+// build assembles the fixture: two hosts really listening, a deployment over
+// them, two provisioned banks, and the customers, funding and mandate every flow
+// needs.
+//
+// # The two hosts are httptest servers, and that is decision 1 of the design
+//
+// The institutions talk over HTTP, on the listeners a deployment gives them.
+// Anything cheaper — calling ebics.Server directly, or wiring the client to the
+// server in memory — would make "the counterparty is unreachable" inexpressible
+// again, which is exactly what this transport exists to make reachable.
+//
+// The handler is looked up per REQUEST rather than captured, because Reset
+// replaces both hosts: a captured handler would serve a deployment's dead queues
+// after a reseed.
+//
+// # The fixture never advances a day
+//
+// Building it lodges reserves and opens cycles, and both would be disturbed by a
+// business day running through them — a day cuts every open cycle off and opens a
+// fresh one, so a fixture that advanced could not offer a network with NO open
+// cycle. Every act here is therefore composed or driven directly, and the day is
+// left to the tests.
+func build(t *testing.T, opts harnessOptions) *harness {
 	t.Helper()
 	ctx := context.Background()
-	clock := func() time.Time { return testTime }
 
-	h := &meshHarness{cfg: testConfig}
-	h.rec = newRecordingStores(testenv.NewSet(t, clock))
-	h.nets = payment.NewNetworks(h.rec, clock)
+	h := &harness{clock: calendar.NewClock(testTime)}
+	h.rec = newRecordingStores(testenv.NewSet(t, h.clock.Now))
+	h.nets = payment.NewNetworks(h.rec, h.clock.Now)
 	h.net = h.nets.ClearingHouse()
 
 	assets := euroOnly
@@ -325,40 +362,25 @@ func newHarness(t *testing.T, opts harnessOptions) *meshHarness {
 		h.net.RegisterScheme(usdCT{})
 	}
 
-	// The mesh comes FIRST now, and that is the shape of the change rather than
-	// a reordering. Admission is a conversation between three institutions, so
-	// there is nothing to admit a bank into until the actors that answer exist —
-	// where the atomic call this replaces wrote three rows into a store and
-	// needed no transport at all.
+	csmHost := httptest.NewServer(h.tap(testConfig.ClearingHouseBIC, func() http.Handler {
+		return h.dep.ClearingHouse().EBICS()
+	}))
+	cbHost := httptest.NewServer(h.tap(testConfig.CentralBankBIC, func() http.Handler {
+		return h.dep.CentralBank().EBICS()
+	}))
+	t.Cleanup(csmHost.Close)
+	t.Cleanup(cbHost.Close)
+
+	h.cfg = testConfig
+	h.cfg.ClearingHouseURL = csmHost.URL
+	h.cfg.CentralBankURL = cbHost.URL
+
+	// No populate: this fixture builds its own two banks, and a deployment that
+	// reseeded on Reset would rebuild a scenario none of these tests describes.
 	var err error
-	// The observer goes in through the CONFIG, which is the only way in: the
-	// transport takes it at construction and reads it only from actor
-	// goroutines, so there is no moment after this at which writing it would be
-	// safe. See MeshConfig.Observe.
-	cfg := h.cfg
-	cfg.Observe = h.record
-	if h.mesh, err = NewMesh(h.nets, cfg, slog.New(slog.DiscardHandler)); err != nil {
-		t.Fatalf("New: %v", err)
+	if h.dep, err = NewDeployment(ctx, h.nets, h.clock, h.cfg, nil, slog.New(slog.DiscardHandler)); err != nil {
+		t.Fatalf("NewDeployment: %v", err)
 	}
-	if err := h.mesh.Start(ctx); err != nil {
-		t.Fatalf("Start: %v", err)
-	}
-	// Drain FIRST, then Stop. Stop closes every inbox in one step before it
-	// joins anybody, so a chain still in flight when it runs is CUT — the payer
-	// debited and the pacs.002 that would have said so never sent. Draining
-	// leaves Stop nothing to do but join. Both return dead letters and both are
-	// reported: a shutdown that swallowed a handler's failure would let a test
-	// pass over the very thing it was asserting.
-	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		if err := h.mesh.Drain(ctx); err != nil {
-			t.Errorf("draining at shutdown: %v", err)
-		}
-		if err := h.mesh.Stop(ctx); err != nil {
-			t.Errorf("stopping: %v", err)
-		}
-	})
 
 	// Both banks' rows are written before anything else, because everything after
 	// this point — a customer account with a settlement reference behind it, a
@@ -397,8 +419,7 @@ func newHarness(t *testing.T, opts harnessOptions) *meshHarness {
 	// Funding is TWO acts and the fixture has to run both. A deposit gives the
 	// customer a balance and leaves the bank holding vault cash; it does not raise
 	// the bank's reserve, because a bank cannot write in the central bank's book.
-	// So every fixture that wants a settleable payment also lodges, which is a real
-	// camt.050/camt.025 round trip through the mesh.
+	// So every fixture that wants a settleable payment also lodges.
 	//
 	// Both are behind the SAME option, and that is deliberate rather than lazy.
 	// fundTheDebtor has always meant "this bank can pay", and it still means
@@ -448,12 +469,7 @@ func newHarness(t *testing.T, opts harnessOptions) *meshHarness {
 	}
 
 	// The fixture's own traffic is forgotten, so that a test counting messages
-	// counts its own.
-	//
-	// Building the fixture puts messages on the wire — a lodgement is a real
-	// camt.050/camt.025 round trip. Tests that count from zero are counting what
-	// they provoked, which is right: the fixture is a NETWORK, not something under
-	// test. It is the same forgetting h.rec.reset() does for books.
+	// counts its own. It is the same forgetting h.rec.reset() does for books.
 	h.forgetMessages()
 
 	if opts.openCycles {
@@ -471,18 +487,67 @@ func newHarness(t *testing.T, opts harnessOptions) *meshHarness {
 	return h
 }
 
-// provision writes one bank's three rows and gives it an actor on this mesh.
+// tap is the wire, and everything on it is recorded here.
+//
+// It sits in front of a host's EBICS endpoint and reads both directions out of
+// the envelope: an upload carries its payload up, and a download carries files
+// back. So a message is tapped exactly ONCE, at the moment it crosses — which is
+// what a message being handed to an actor used to mean, and is measured against
+// the same helpers.
+//
+// The two ends are the CONNECTION's rather than the header's. A file's sender is
+// the subscriber that dialled in, and its recipient is the host it dialled; on a
+// download the two are the other way round. That is what the receiving
+// institution itself goes by (see Bank.handle and ClearingHouse.handleFile), so
+// a test reading the tap sees what the institution saw.
+//
+// A file that is queued and never collected is never tapped, and that is
+// correct: nothing is pushed at a member bank, so a file waiting in a queue has
+// not been delivered to anybody.
+func (h *harness) tap(host iso20022.BIC, of func() http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		r.Body = io.NopCloser(bytes.NewReader(body))
+
+		rec := httptest.NewRecorder()
+		of().ServeHTTP(rec, r)
+
+		sub := iso20022.BIC(r.Header.Get(ebics.SubscriberHeader))
+		var req ebics.Request
+		if err := json.Unmarshal(body, &req); err == nil && len(req.Payload) > 0 {
+			h.record(host, sub, req.Payload)
+		}
+		var resp ebics.Response
+		if err := json.Unmarshal(rec.Body.Bytes(), &resp); err == nil {
+			for _, f := range resp.Files {
+				h.record(sub, host, f.Payload)
+			}
+		}
+
+		for k, v := range rec.Result().Header {
+			w.Header()[k] = v
+		}
+		w.WriteHeader(rec.Code)
+		_, _ = w.Write(rec.Body.Bytes())
+	})
+}
+
+// provision writes one bank's three rows and gives it its place in the network.
 //
 // The two steps are separate because they are different kinds of thing: the rows
-// are what the three institutions hold, and the actor is an inbox on a bus. A
-// deployment does the same in the same order — see provision.Bank and AddBank —
-// and neither is a message, so there is nothing here to drain.
+// are what the three institutions hold, and the place is a download queue at each
+// host. A deployment does the same in the same order — see provision.Bank and
+// AddBank — and neither is a file, so there is nothing here to carry.
 //
 // It does NOT subscribe. What comes back is a bank the roster carries and no
 // other member's copy has yet, which is the state
 // TestABankAdmittedAfterTheLastRefreshCannotBePaidUntilTheNextOne is about. A
 // fixture that wants members able to address each other calls subscribeAll.
-func (h *meshHarness) provision(t *testing.T, name string, bic iso20022.BIC, assets []ledger.AssetCode) *payment.Bank {
+func (h *harness) provision(t *testing.T, name string, bic iso20022.BIC, assets []ledger.AssetCode) *payment.Bank {
 	t.Helper()
 	ctx := context.Background()
 	p, err := provision.Bank(ctx, h.nets, provision.BankSpec{
@@ -491,7 +556,7 @@ func (h *meshHarness) provision(t *testing.T, name string, bic iso20022.BIC, ass
 	if err != nil {
 		t.Fatalf("provisioning %s (%s): %v", name, bic, err)
 	}
-	if err := h.mesh.AddBank(ctx, p); err != nil {
+	if err := h.dep.AddBank(ctx, p); err != nil {
 		t.Fatalf("AddBank %s: %v", bic, err)
 	}
 	return p
@@ -503,7 +568,7 @@ func (h *meshHarness) provision(t *testing.T, name string, bic iso20022.BIC, ass
 //
 // It reads the roster to find the members, which is what a deployment can do and
 // no institution may: each of them then pulls for itself.
-func (h *meshHarness) subscribeAll(t *testing.T) {
+func (h *harness) subscribeAll(t *testing.T) {
 	t.Helper()
 	ctx := context.Background()
 	entries, err := h.net.ListRosterEntries(ctx)
@@ -511,7 +576,7 @@ func (h *meshHarness) subscribeAll(t *testing.T) {
 		t.Fatalf("ListRosterEntries: %v", err)
 	}
 	for _, e := range entries {
-		if _, err := h.mesh.RefreshDirectory(ctx, e.BIC); err != nil {
+		if _, err := h.dep.RefreshDirectory(ctx, e.BIC); err != nil {
 			t.Fatalf("RefreshDirectory %s: %v", e.BIC, err)
 		}
 	}
@@ -532,11 +597,11 @@ func (h *meshHarness) subscribeAll(t *testing.T) {
 // address range at all, so it can open no customer account whatever
 // (deposit.ErrNoIssuer) and has nobody to pay with.
 //
-// The bank is given an ACTOR, because the tests using this are about what the
-// mesh refuses rather than about who it can reach: without one, a submission is
-// refused "no bank actor for", which is true and is not the refusal being
-// measured.
-func (h *meshHarness) admitWithoutTheRoster(t *testing.T, name string, bic iso20022.BIC) *payment.Bank {
+// The bank is given its PLACE, because the tests using this are about what the
+// network refuses rather than about who it can reach: without one, a submission
+// is refused "this deployment holds no bank at", which is true and is not the
+// refusal being measured.
+func (h *harness) admitWithoutTheRoster(t *testing.T, name string, bic iso20022.BIC) *payment.Bank {
 	t.Helper()
 	ctx := context.Background()
 	applicant := h.bank(bic)
@@ -556,7 +621,7 @@ func (h *meshHarness) admitWithoutTheRoster(t *testing.T, name string, bic iso20
 	if err != nil {
 		t.Fatalf("RecordMembership %s: %v", bic, err)
 	}
-	if err := h.mesh.AddBank(ctx, b); err != nil {
+	if err := h.dep.AddBank(ctx, b); err != nil {
 		t.Fatalf("AddBank %s: %v", bic, err)
 	}
 	return b
@@ -566,7 +631,7 @@ func (h *meshHarness) admitWithoutTheRoster(t *testing.T, name string, bic iso20
 //
 // Out of the BANK's own database: the csm shape has no banks table, and a bank's
 // own row is the one thing about it no other institution keeps.
-func (h *meshHarness) getBank(t *testing.T, id payment.ParticipantID) *payment.Bank {
+func (h *harness) getBank(t *testing.T, id payment.ParticipantID) *payment.Bank {
 	t.Helper()
 	p, err := h.bank(iso20022.BIC(id)).GetBank(context.Background(), id)
 	if err != nil {
@@ -581,7 +646,7 @@ func (h *meshHarness) getBank(t *testing.T, id payment.ParticipantID) *payment.B
 // It exists because the book recorder cannot tell a READ of a book from a
 // POSTING into it, and one measurement in this package needs to claim the
 // second. See TestFundingAReserveReachesTwoBooks.
-func (h *meshHarness) centralBankTransactionCount(t *testing.T) int {
+func (h *harness) centralBankTransactionCount(t *testing.T) int {
 	t.Helper()
 	var n int
 	if err := h.cb().Store().View(context.Background(), func(ctx context.Context, tx payment.Tx) error {
@@ -605,7 +670,7 @@ func (h *meshHarness) centralBankTransactionCount(t *testing.T) int {
 // predates one: payment.Network.GetSettlementMember exists now, added for GET
 // /reserves/{bic}, and this stays a direct read so that a fixture asserting what
 // the agent WROTE does not go through the method it is asserting about.
-func (h *meshHarness) getSettlementMember(t *testing.T, bic iso20022.BIC) payment.SettlementMember {
+func (h *harness) getSettlementMember(t *testing.T, bic iso20022.BIC) payment.SettlementMember {
 	t.Helper()
 	var out payment.SettlementMember
 	if err := h.cb().Store().View(context.Background(), func(ctx context.Context, tx payment.Tx) error {
@@ -618,66 +683,9 @@ func (h *meshHarness) getSettlementMember(t *testing.T, bic iso20022.BIC) paymen
 	return out
 }
 
-// getRosterEntry is the CLEARING HOUSE's own record: where to send a message
-// addressed to one BIC, and nothing else.
-//
-// It returns the error rather than failing, because "there is no entry" is an
-// assertion several tests make: a founded bank that has not been admitted is
-// exactly a bank this returns ErrRosterEntryNotFound for.
-func (h *meshHarness) getRosterEntry(bic iso20022.BIC) (payment.RosterEntry, error) {
-	return h.net.GetRosterEntryByBIC(context.Background(), bic)
-}
-
-// bankCount is how many banks this DEPLOYMENT holds — a database with a bank
-// founded in it. It is what says a refused admission wrote NOTHING, which no
-// read of one bank could say.
-//
-// It goes through payment.Stores.Banks rather than any institution's list,
-// because no institution enumerates banks: the clearing house has no banks table
-// and a bank holds only its own row. A fixture is the composition root, which is
-// what holds every store.
-func (h *meshHarness) bankCount(t *testing.T) int {
-	t.Helper()
-	return len(h.allBanks(t))
-}
-
-// allBanks is every address this deployment has founded a bank at.
-func (h *meshHarness) allBanks(t *testing.T) []iso20022.BIC {
-	t.Helper()
-	bics, err := h.rec.Banks(context.Background())
-	if err != nil {
-		t.Fatalf("Banks: %v", err)
-	}
-	return bics
-}
-
-// assertBankCount checks how many banks answer to one address.
-//
-// The count it can report is now 0 or 1 and cannot be 2, and that is a stronger
-// guarantee rather than a weaker assertion. A bank's database is NAMED by its
-// address (store/sqlite.Set), so a second founding on a taken address does not
-// make a second bank — it opens the first one's database. What this catches is
-// therefore the case that is still reachable: an address that should have no bank
-// and has one, or should have one and has none.
-//
-// It was a sweep of every bank row comparing BICs, on the stated worry that a
-// second founding would have its own id and be invisible to an assertion about
-// the first. Ids are addresses now (payment.AsBank), so there is no second id
-// for it to hide behind.
-func assertBankCount(t *testing.T, h *meshHarness, bic iso20022.BIC, want int) {
-	t.Helper()
-	var got int
-	if slices.Contains(h.allBanks(t), bic) {
-		got = 1
-	}
-	if got != want {
-		t.Errorf("%d banks answer to %s, want %d", got, bic, want)
-	}
-}
-
 // openCustomer opens a deposit account in one asset, addressable by an IBAN, with
 // an overdraft limit of the caller's choosing.
-func (h *meshHarness) openCustomer(t *testing.T, p *payment.Bank, name string,
+func (h *harness) openCustomer(t *testing.T, p *payment.Bank, name string,
 	asset ledger.AssetCode, overdraft ledger.Amount) deposit.Account {
 
 	t.Helper()
@@ -700,49 +708,25 @@ func addressOf(t *testing.T, a deposit.Account) string {
 	return ""
 }
 
-// record is the tap: every message an actor is handed lands here.
-//
-// It also runs whatever a test has installed with watch, and running it OUTSIDE
-// this fixture's own lock is deliberate: an observer is arbitrary code, it may
-// read the store, and holding the harness's mutex across a store read would put
-// this fixture in the middle of a lock order nothing else in the package takes.
-func (h *meshHarness) record(to, from iso20022.BIC, raw []byte) {
+// record notes one file crossing the wire: who from, who to, and the bytes. See
+// tap, which is the only caller.
+func (h *harness) record(to, from iso20022.BIC, raw []byte) {
 	h.mu.Lock()
+	defer h.mu.Unlock()
 	h.seen = append(h.seen, tappedMessage{from: from, to: to, raw: raw})
-	watch := h.observe
-	h.mu.Unlock()
-
-	if watch != nil {
-		watch(to, from, raw)
-	}
 }
 
 // forgetMessages drops what the tap has recorded so far. It is called once, at
-// the end of building the fixture; see newHarness for why.
-func (h *meshHarness) forgetMessages() {
+// the end of building the fixture; see build for why.
+func (h *harness) forgetMessages() {
 	h.mu.Lock()
 	h.seen = nil
 	h.mu.Unlock()
 }
 
-// watch installs an observer that runs on the RECEIVING actor's goroutine,
-// before that actor's handler, for every message it is handed.
-//
-// It is the only way to see the system MID-CONVERSATION. Everything a message
-// does leaves a trace afterwards and a drain is how a test waits for it; nothing
-// else can say what was true at the moment a bank was told something. See
-// MeshConfig.Observe, which is the same hook one layer down and which records
-// what an observer must not do — above all, wait for anything that itself waits
-// for the mesh.
-func (h *meshHarness) watch(fn func(to, from iso20022.BIC, raw []byte)) {
-	h.mu.Lock()
-	h.observe = fn
-	h.mu.Unlock()
-}
-
 // creditTransferRequest is the instruction the harness's payer gives its bank:
 // the whole of the happy path, as a value a test can alter one field of.
-func (h *meshHarness) creditTransferRequest(t *testing.T) payment.InitiatePaymentRequest {
+func (h *harness) creditTransferRequest(t *testing.T) payment.InitiatePaymentRequest {
 	t.Helper()
 	return h.creditTransferRequestTo(t, h.creditorIBAN)
 }
@@ -755,7 +739,7 @@ func (h *meshHarness) creditTransferRequest(t *testing.T) payment.InitiatePaymen
 // submission does not resolve it — the instruction carries what was quoted —
 // and the bank at the other end is the party whose answer decides whether it is
 // payable. See TestCreditTransferToAnUnknownAccountComesBackAsAC01.
-func (h *meshHarness) creditTransferRequestTo(t *testing.T, iban string) payment.InitiatePaymentRequest {
+func (h *harness) creditTransferRequestTo(t *testing.T, iban string) payment.InitiatePaymentRequest {
 	t.Helper()
 	return payment.InitiatePaymentRequest{
 		Scheme:      payment.SchemeSEPACT,
@@ -788,11 +772,11 @@ func (h *meshHarness) creditTransferRequestTo(t *testing.T, iban string) payment
 // refs party by party, so a fixture that built the mandate's parties and the
 // collection's parties separately could drift into a mismatch that looked like a
 // revoked mandate.
-func (h *meshHarness) debtorRef() payment.PartyRef {
+func (h *harness) debtorRef() payment.PartyRef {
 	return payment.PartyRef{Account: h.debtorAcct.ID, Identifier: h.debtorAcct.Identifiers[0]}
 }
 
-func (h *meshHarness) creditorRef(iban string) payment.PartyRef {
+func (h *harness) creditorRef(iban string) payment.PartyRef {
 	return payment.PartyRef{
 		Account:    h.creditorAcct.ID,
 		Identifier: deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: iban},
@@ -806,7 +790,7 @@ func (h *meshHarness) creditorRef(iban string) payment.PartyRef {
 // credit transfer is the payer instructing their bank to push; a collection is
 // the payee instructing THEIR bank to pull, which is why Mesh.Submit routes it
 // to the creditor's actor and why nothing is posted when it is accepted.
-func (h *meshHarness) directDebitRequest(t *testing.T) payment.InitiatePaymentRequest {
+func (h *harness) directDebitRequest(t *testing.T) payment.InitiatePaymentRequest {
 	t.Helper()
 	return payment.InitiatePaymentRequest{
 		Scheme:      payment.SchemeSEPADD,
@@ -833,9 +817,9 @@ func (h *meshHarness) directDebitRequest(t *testing.T) payment.InitiatePaymentRe
 // and unlike it, what comes back has moved no money at all: the debtor's bank
 // has not seen the collection yet, and until it does nobody has looked at the
 // account being collected from.
-func (h *meshHarness) submitDirectDebit(t *testing.T) payment.Payment {
+func (h *harness) submitDirectDebit(t *testing.T) payment.Payment {
 	t.Helper()
-	p, err := h.mesh.Submit(context.Background(), h.directDebitRequest(t))
+	p, err := h.dep.Submit(context.Background(), h.directDebitRequest(t))
 	if err != nil {
 		t.Fatalf("Submit: %v", err)
 	}
@@ -845,14 +829,14 @@ func (h *meshHarness) submitDirectDebit(t *testing.T) payment.Payment {
 // submitCreditTransfer runs the payer's instruction through their own bank, and
 // returns what that bank answered. It does NOT wait: the creditor's bank has not
 // seen the payment yet, which is the whole point of the mesh.
-func (h *meshHarness) submitCreditTransfer(t *testing.T) payment.Payment {
+func (h *harness) submitCreditTransfer(t *testing.T) payment.Payment {
 	t.Helper()
 	return h.submitCreditTransferTo(t, h.creditorIBAN)
 }
 
-func (h *meshHarness) submitCreditTransferTo(t *testing.T, iban string) payment.Payment {
+func (h *harness) submitCreditTransferTo(t *testing.T, iban string) payment.Payment {
 	t.Helper()
-	p, err := h.mesh.Submit(context.Background(), h.creditTransferRequestTo(t, iban))
+	p, err := h.dep.Submit(context.Background(), h.creditTransferRequestTo(t, iban))
 	if err != nil {
 		t.Fatalf("Submit: %v", err)
 	}
@@ -865,10 +849,10 @@ func (h *meshHarness) submitCreditTransferTo(t *testing.T, iban string) payment.
 // Both parties are the two customers' DOLLAR accounts, which is not a detail: a
 // payment's legs must both be denominated in its scheme's asset, so quoting the
 // euro account here would be refused by the payer's own bank before any message
-// was built. Only newMeshHarnessWithTwoAssets opens those accounts.
-func (h *meshHarness) submitCreditTransferInUSD(t *testing.T) payment.Payment {
+// was built. Only newHarnessWithTwoAssets opens those accounts.
+func (h *harness) submitCreditTransferInUSD(t *testing.T) payment.Payment {
 	t.Helper()
-	p, err := h.mesh.Submit(context.Background(), payment.InitiatePaymentRequest{
+	p, err := h.dep.Submit(context.Background(), payment.InitiatePaymentRequest{
 		Scheme: schemeUSDCT,
 		Debtor: payment.PartyRef{
 			Account:    h.debtorUSDAcct.ID,
@@ -891,46 +875,107 @@ func (h *meshHarness) submitCreditTransferInUSD(t *testing.T) payment.Payment {
 	return p
 }
 
-// drain waits for every message in flight to be handled, and fails the test on
-// a dead letter.
+// ---------------------------------------------------------------------------
+// The business day, and the piece of it a test can stand inside
+// ---------------------------------------------------------------------------
 //
-// No sleep, no Eventually, no retry: Drain blocks until nothing is in flight,
-// which is what lets every test here read submit, drain, assert. A test that
-// needed a duration would be reporting a bug in the flow, not in itself.
-func (h *meshHarness) drain(t *testing.T) {
+// "Submit, advance a day, assert" is what every flow here reads, and a day is
+// synchronous: nothing is in flight when one returns, so no test waits for a
+// duration and none ever needs to.
+
+// workThrough runs every institution through everything queued for it, in the
+// day's own order, WITHOUT reaching a cut-off and without moving the clock.
+//
+// It is AdvanceDay's phases 1, 2, 3, 5, 6 and 7 — everything that carries a file
+// — and it leaves out the three that are the day's own acts: the directory
+// refresh, the cut-off, and the advance. That is what makes it the piece a test
+// can stand inside. A payment is ACCEPTED when this returns and SETTLED when it
+// is run again after a cut-off, and the two moments are a day apart in a
+// deployment where one cycle closes per day.
+//
+// Leaving the refresh out is load-bearing rather than tidy: a fixture asserting
+// what a stale routing directory costs needs it not to run. Leaving the cut-off
+// out is what lets a test see a payment sitting in an open cycle at all.
+//
+// Members collect from the SETTLEMENT AGENT first, which is the ordering
+// AdvanceDay's phase 7 exists for and the only thing that now guarantees a
+// mirror leg is booked before the creditor legs draw on it.
+func workThrough(d *Deployment) []Problem {
+	ctx := context.Background()
+
+	ps := d.csm.work(ctx, ebics.CCT, ebics.CDD, ebics.CRT)
+	for _, b := range d.subscribers() {
+		ps = append(ps, b.collect(ctx, d.cfg.ClearingHouseBIC, b.csm, ebics.BTD)...)
+	}
+	ps = append(ps, d.csm.work(ctx, ebics.CST)...)
+	ps = append(ps, d.cb.work(ctx)...)
+	ps = append(ps, d.csm.collect(ctx)...)
+	for _, b := range d.subscribers() {
+		ps = append(ps, b.collect(ctx, d.cfg.CentralBankBIC, b.cb, ebics.C53)...)
+		ps = append(ps, b.collect(ctx, d.cfg.CentralBankBIC, b.cb, ebics.BTD)...)
+		ps = append(ps, b.collect(ctx, d.cfg.ClearingHouseBIC, b.csm, ebics.BTD)...)
+	}
+	return ps
+}
+
+// work carries everything waiting and fails the test on anything an institution
+// could not process.
+func (h *harness) work(t *testing.T) {
 	t.Helper()
-	if err := h.mesh.Drain(drainCtx(t)); err != nil {
-		t.Fatalf("Drain: %v", err)
+	if err := h.workErr(t); err != nil {
+		t.Fatalf("working through what has arrived: %v", err)
 	}
 }
 
-// drainErr is drain for the tests that are ASSERTING on a dead letter: a message
-// no actor could answer is the mesh's only way of saying so, and a test about
-// that path has to be able to read it.
-func (h *meshHarness) drainErr(t *testing.T) error {
+// workErr is work for the tests that are ASSERTING on a failure: a file nobody
+// could answer is recorded in the day's report and nowhere else, and a test
+// about that path has to be able to read it.
+func (h *harness) workErr(t *testing.T) error {
 	t.Helper()
-	return h.mesh.Drain(drainCtx(t))
+	return joinProblems(workThrough(h.dep))
+}
+
+// joinProblems renders a day's problems as one error, so that a test can match
+// on what an institution said about a file it could not get through.
+func joinProblems(ps []Problem) error {
+	var errs []error
+	for _, p := range ps {
+		errs = append(errs, fmt.Errorf("%s could not process %s: %s", p.Institution, p.OrderID, p.Detail))
+	}
+	return errors.Join(errs...)
+}
+
+// day is the whole thing, exactly as an operator's button runs it, and it is
+// what the tests about the DAY use rather than the tests about a flow.
+func (h *harness) day(t *testing.T) DayReport {
+	t.Helper()
+	report, err := h.dep.AdvanceDay(context.Background())
+	if err != nil {
+		t.Fatalf("AdvanceDay: %v", err)
+	}
+	return report
 }
 
 // closeCycle reaches the cut-off on every window this fixture has open.
 //
-// Through the MESH and not through the network: closing a cycle is the clearing
-// house's act and it ends in a pacs.009 to the central bank rather than in a
-// return value. Driving h.net directly would close the cycle on a bare context —
-// attributed to no actor, instructing nobody — and every settlement assertion in
-// this package would measure an operator poking the store.
+// Through the CLEARING HOUSE and not through the network: closing a cycle is
+// that institution's act and it ends in a pacs.009 uploaded to the settlement
+// agent rather than in a return value. Driving h.net directly would close the
+// cycle on a bare context — attributed to no institution, instructing nobody —
+// and every settlement assertion in this package would measure an operator
+// poking the store.
 //
 // EVERY open cycle, including the ones with nothing in them. A credit-transfer
 // test leaves the direct-debit window untouched, so this closes an empty cycle
 // on almost every run — which is exactly the path that must instruct nothing,
 // and it is walked constantly rather than reasoned about. See
-// csm.instructSettlement.
+// ClearingHouse.instructSettlement.
 //
-// It returns nothing. A cut-off is the START of a conversation, so a
-// ClearingCycle handed back here would describe the cycle before the central
-// bank had said anything about it — which is precisely the value a test must not
-// assert settlement from. Read the cycle back after a drain instead.
-func (h *meshHarness) closeCycle(t *testing.T) {
+// It returns nothing, and it settles nothing. A cut-off is the START of a
+// conversation: the instruction is uploaded and the settlement agent has not
+// looked at it, which is the state a test asserting on the INSTRUCTION wants.
+// Call work afterwards to carry it.
+func (h *harness) closeCycle(t *testing.T) {
 	t.Helper()
 	ctx := context.Background()
 	cycles, err := h.net.ListCycles(ctx)
@@ -942,7 +987,7 @@ func (h *meshHarness) closeCycle(t *testing.T) {
 		if c.Status != payment.CycleOpen {
 			continue
 		}
-		if _, err := h.mesh.CloseCycle(ctx, c.ID); err != nil {
+		if _, err := h.dep.ClearingHouse().CloseCycle(ctx, c.ID); err != nil {
 			t.Fatalf("CloseCycle %s (%s): %v", c.ID, c.Scheme, err)
 		}
 		closed++
@@ -966,7 +1011,7 @@ func (h *meshHarness) closeCycle(t *testing.T) {
 // It asserts the status itself rather than leaving that to its callers. A
 // fixture that quietly handed back an unsettled payment would make every test
 // built on it fail somewhere else, saying something else.
-func (h *meshHarness) settledPayment(t *testing.T) payment.Payment {
+func (h *harness) settledPayment(t *testing.T) payment.Payment {
 	t.Helper()
 	return h.settle(t, h.submitCreditTransfer(t))
 }
@@ -976,18 +1021,18 @@ func (h *meshHarness) settledPayment(t *testing.T) payment.Payment {
 // the one that RECEIVED the instruction — the payee's bank on a push, the
 // payer's on a pull — so a fixture with only credit transfers in it would leave
 // half of that rule unmeasured.
-func (h *meshHarness) settledCollection(t *testing.T) payment.Payment {
+func (h *harness) settledCollection(t *testing.T) payment.Payment {
 	t.Helper()
 	return h.settle(t, h.submitDirectDebit(t))
 }
 
 // settle carries a submitted payment through to finality: the counterparty's
 // answer, the cut-off, and the central bank's discharge.
-func (h *meshHarness) settle(t *testing.T, p payment.Payment) payment.Payment {
+func (h *harness) settle(t *testing.T, p payment.Payment) payment.Payment {
 	t.Helper()
-	h.drain(t)
+	h.work(t)
 	h.closeCycle(t)
-	h.drain(t)
+	h.work(t)
 
 	got := h.payment(t, p.ID)
 	if got.Status != payment.Settled {
@@ -1018,13 +1063,13 @@ func (h *meshHarness) settle(t *testing.T, p payment.Payment) payment.Payment {
 // window is refused TM01 by the clearing house. Opened on h.net rather than
 // through the mesh: opening one is nobody's message, and closeCycle is what
 // makes reaching the cut-off the clearing house's act.
-func (h *meshHarness) spendTheCredit(t *testing.T) {
+func (h *harness) spendTheCredit(t *testing.T) {
 	t.Helper()
 	ctx := context.Background()
 	if _, err := h.net.OpenCycle(ctx, payment.SchemeSEPACT); err != nil {
 		t.Fatalf("OpenCycle for the payee to spend it in: %v", err)
 	}
-	p, err := h.mesh.Submit(ctx, payment.InitiatePaymentRequest{
+	p, err := h.dep.Submit(ctx, payment.InitiatePaymentRequest{
 		Scheme:          payment.SchemeSEPACT,
 		Debtor:          payment.PartyRef{Account: h.creditorAcct.ID, Identifier: h.creditorAcct.Identifiers[0]},
 		Creditor:        h.debtorRef(),
@@ -1044,15 +1089,15 @@ func (h *meshHarness) spendTheCredit(t *testing.T) {
 // Like submitCreditTransfer it does NOT wait: the returning bank's half builds
 // a message and nothing else, and the money moves later, at the settlement
 // agent. returnErr is for the tests that are asserting on the refusal.
-func (h *meshHarness) returnPayment(t *testing.T, id payment.PaymentID, reason iso20022.ReturnReason, text string) {
+func (h *harness) returnPayment(t *testing.T, id payment.PaymentID, reason iso20022.ReturnReason, text string) {
 	t.Helper()
 	if err := h.returnErr(id, reason, text); err != nil {
 		t.Fatalf("Return: %v", err)
 	}
 }
 
-func (h *meshHarness) returnErr(id payment.PaymentID, reason iso20022.ReturnReason, text string) error {
-	return h.mesh.Return(context.Background(), id, reason, text)
+func (h *harness) returnErr(id payment.PaymentID, reason iso20022.ReturnReason, text string) error {
+	return h.dep.Return(context.Background(), id, reason, text)
 }
 
 // balance is what one customer's account holds, read through their own bank's
@@ -1061,7 +1106,7 @@ func (h *meshHarness) returnErr(id payment.PaymentID, reason iso20022.ReturnReas
 // It is what says a return actually gave the money back. The suspense helper
 // answers a question about a bank's own clearing position; this one answers the
 // question the payer would ask, which is the only one a return is about.
-func (h *meshHarness) balance(t *testing.T, id payment.ParticipantID, acct deposit.AccountID) ledger.Amount {
+func (h *harness) balance(t *testing.T, id payment.ParticipantID, acct deposit.AccountID) ledger.Amount {
 	t.Helper()
 	ctx := context.Background()
 	p, err := h.bank(iso20022.BIC(id)).GetBank(ctx, id)
@@ -1083,7 +1128,7 @@ func (h *meshHarness) balance(t *testing.T, id payment.ParticipantID, acct depos
 // payer's bank's book and "<payment>:return-claw" in the payee's — and a test
 // that searched the text for what it is about to assert about the text would be
 // asserting nothing.
-func (h *meshHarness) postingByKey(t *testing.T, id payment.ParticipantID, key string) ledger.Transaction {
+func (h *harness) postingByKey(t *testing.T, id payment.ParticipantID, key string) ledger.Transaction {
 	t.Helper()
 	ctx := context.Background()
 	p, err := h.bank(iso20022.BIC(id)).GetBank(ctx, id)
@@ -1105,7 +1150,7 @@ func (h *meshHarness) postingByKey(t *testing.T, id payment.ParticipantID, key s
 // under a key derived from the attempt it replaces, so its key is not something
 // a test can spell — but the payment names the transaction, and whether THAT
 // transaction still stands is the whole question. See payment.PostReturnLegTx.
-func (h *meshHarness) posting(t *testing.T, id payment.ParticipantID, txID ledger.TransactionID) ledger.Transaction {
+func (h *harness) posting(t *testing.T, id payment.ParticipantID, txID ledger.TransactionID) ledger.Transaction {
 	t.Helper()
 	ctx := context.Background()
 	p, err := h.bank(iso20022.BIC(id)).GetBank(ctx, id)
@@ -1124,7 +1169,7 @@ func (h *meshHarness) posting(t *testing.T, id payment.ParticipantID, txID ledge
 // It is how a test reads what a return actually SAID, which is the one thing a
 // pacs.004 exists to carry and the one thing no balance can show: two returns
 // of the same payment for opposite reasons move exactly the same money.
-func (h *meshHarness) returnSentTo(t *testing.T, to iso20022.BIC) *iso20022.Pacs004 {
+func (h *harness) returnSentTo(t *testing.T, to iso20022.BIC) *iso20022.Pacs004 {
 	t.Helper()
 	env, err := iso20022.Unmarshal(h.lastMessageOfTypeTo(t, to, "pacs.004.001.09"))
 	if err != nil {
@@ -1146,7 +1191,7 @@ func (h *meshHarness) returnSentTo(t *testing.T, to iso20022.BIC) *iso20022.Pacs
 // A test about what a BANK did needs bankPayment instead, and the shapes are
 // what make the difference sharp: the clearing house's row has no leg columns at
 // all, so a debtor leg read through here comes back empty rather than wrong.
-func (h *meshHarness) payment(t *testing.T, id payment.PaymentID) payment.Payment {
+func (h *harness) payment(t *testing.T, id payment.PaymentID) payment.Payment {
 	t.Helper()
 	p, err := h.net.GetPayment(context.Background(), id)
 	if err != nil {
@@ -1168,7 +1213,7 @@ func (h *meshHarness) payment(t *testing.T, id payment.PaymentID) payment.Paymen
 // house's: a bank that answered an instruction is never sent the ACCP, so its
 // copy says Initiated while the network's says Accepted. Both are right. Which
 // one a test wants is part of what it is asserting.
-func (h *meshHarness) bankPayment(t *testing.T, bic iso20022.BIC, id payment.PaymentID) payment.Payment {
+func (h *harness) bankPayment(t *testing.T, bic iso20022.BIC, id payment.PaymentID) payment.Payment {
 	t.Helper()
 	p, err := h.bank(bic).GetPayment(context.Background(), id)
 	if err != nil {
@@ -1183,7 +1228,7 @@ func (h *meshHarness) bankPayment(t *testing.T, bic iso20022.BIC, id payment.Pay
 // It cannot carry a SettlementID — that id is allocated inside the settlement
 // agent's own unit of work in its own database, and the pacs.002 that comes back
 // quotes the CYCLE, because the cycle is what the clearing house asked about.
-func (h *meshHarness) cycles(t *testing.T) []payment.ClearingCycle {
+func (h *harness) cycles(t *testing.T) []payment.ClearingCycle {
 	t.Helper()
 	cycles, err := h.net.ListCycles(context.Background())
 	if err != nil {
@@ -1195,7 +1240,7 @@ func (h *meshHarness) cycles(t *testing.T) []payment.ClearingCycle {
 // instructionsTo is every settlement instruction an actor was handed, parsed, in
 // arrival order. instructionsSentTo counts them; this is for the tests that read
 // what is inside one.
-func (h *meshHarness) instructionsTo(t *testing.T, to iso20022.BIC) []*iso20022.Pacs009 {
+func (h *harness) instructionsTo(t *testing.T, to iso20022.BIC) []*iso20022.Pacs009 {
 	t.Helper()
 	h.mu.Lock()
 	seen := append([]tappedMessage(nil), h.seen...)
@@ -1223,7 +1268,7 @@ func (h *meshHarness) instructionsTo(t *testing.T, to iso20022.BIC) []*iso20022.
 // It is what a rejection has to return to zero. A payment reversed at the
 // clearing house but not at the payer's own bank leaves the payer short and the
 // suspense holding money nobody will ever settle.
-func (h *meshHarness) suspense(t *testing.T, id payment.ParticipantID) ledger.Amount {
+func (h *harness) suspense(t *testing.T, id payment.ParticipantID) ledger.Amount {
 	t.Helper()
 	ctx := context.Background()
 	p, err := h.bank(iso20022.BIC(id)).GetBank(ctx, id)
@@ -1241,25 +1286,35 @@ func (h *meshHarness) suspense(t *testing.T, id payment.ParticipantID) ledger.Am
 	return bal
 }
 
-// lodge puts one bank's vault cash on reserve through the mesh's own door, and
-// drains so that the central bank has posted its half before the caller goes on.
+// lodge puts one bank's vault cash on reserve, composing both halves.
 //
-// It goes through the MESH rather than through payment.Network.LodgeReserves,
-// because the domain call posts only the BANK's leg and hands back a camt.050
-// nobody sends — which is half a lodgement, and would leave every fixture with a
-// reserve mirror the central bank's book had never heard of. Settlement reads the
-// central bank's row, so a fixture built that way would fail at the cut-off with
-// nothing to say why.
+// A member cannot credit its own reserve account at the settlement agent; it
+// asks, in a camt.050, and the answer arrives on a later download. Going through
+// Deployment.Lodge would therefore leave the file queued until a day ran — and a
+// day cuts every open cycle off, which is a fixture this package cannot build on.
 //
-// Draining here is what makes the reserve real before the test starts. The fixture
-// forgets its own messages afterwards (see newHarness), so the round trip does not
-// show up in a test that counts what it provoked.
-func (h *meshHarness) lodge(t *testing.T, id iso20022.BIC, asset ledger.AssetCode, amount ledger.Amount) {
+// So the two halves are driven directly, which is what seed.builder.lodge does
+// and for the same reason. The ROUND TRIP is not lost: it is what
+// lodgement_test.go is about, and that suite drives the door and the day itself.
+//
+// The instruction the member's half renders is what the agent's half is handed,
+// rather than one the fixture assembles: the two must agree about the account
+// number and the reference.
+func (h *harness) lodge(t *testing.T, id iso20022.BIC, asset ledger.AssetCode, amount ledger.Amount) {
 	t.Helper()
-	if _, err := h.mesh.Lodge(context.Background(), id, asset, amount); err != nil {
-		t.Fatalf("Lodge %s %s: %v", id, asset, err)
+	ctx := context.Background()
+	in, _, err := h.bank(id).LodgeReserves(ctx, asset, amount, payment.MessageContext{
+		From:  id,
+		To:    h.cfg.CentralBankBIC,
+		MsgID: fmt.Sprintf("fixture-lodge-%s-%s", id, asset),
+		Now:   h.clock.Now(),
+	})
+	if err != nil {
+		t.Fatalf("LodgeReserves %s %s: %v", id, asset, err)
 	}
-	h.drain(t)
+	if _, err := h.cb().ReceiveLodgement(ctx, in); err != nil {
+		t.Fatalf("ReceiveLodgement %s %s: %v", id, asset, err)
+	}
 }
 
 // vaultCash is one bank's euro vault balance: the cash it is holding and has not
@@ -1269,7 +1324,7 @@ func (h *meshHarness) lodge(t *testing.T, id iso20022.BIC, asset ledger.AssetCod
 // that move it in opposite directions — cash in raises it, a lodgement lowers it
 // — and both need a balance rather than a book set, because a book set cannot
 // tell a posting from a read.
-func (h *meshHarness) vaultCash(t *testing.T, id payment.ParticipantID) ledger.Amount {
+func (h *harness) vaultCash(t *testing.T, id payment.ParticipantID) ledger.Amount {
 	t.Helper()
 	ctx := context.Background()
 	p, err := h.bank(iso20022.BIC(id)).GetBank(ctx, id)
@@ -1294,7 +1349,7 @@ func (h *meshHarness) vaultCash(t *testing.T, id payment.ParticipantID) ledger.A
 // ReserveBalance, read from the settlement agent's book — and the whole point of
 // having both is that they can disagree. See payment.BankAccounts on the
 // unreconciled interval.
-func (h *meshHarness) reserveMirror(t *testing.T, id payment.ParticipantID) ledger.Amount {
+func (h *harness) reserveMirror(t *testing.T, id payment.ParticipantID) ledger.Amount {
 	t.Helper()
 	ctx := context.Background()
 	p, err := h.bank(iso20022.BIC(id)).GetBank(ctx, id)
@@ -1313,53 +1368,94 @@ func (h *meshHarness) reserveMirror(t *testing.T, id payment.ParticipantID) ledg
 }
 
 // booksTouchedBy is every ledger book one actor's units of work reached, sorted.
-func (h *meshHarness) booksTouchedBy(who iso20022.BIC) []ledger.BookID {
+func (h *harness) booksTouchedBy(who iso20022.BIC) []ledger.BookID {
 	return h.rec.touchedBy(who)
 }
 
-// allBooks is every book this network has: one per bank, the central bank's, and
-// the network's own.
-//
-// It exists so that "only its own book" can be stated as a claim about the ones
-// an actor did NOT reach, rather than only about the ones it did — and so that
-// an expectation which really is "every bank's book" (the directory sweep; see
-// TestWhichBooksEachBankActuallyReaches) is written once.
-//
-// The two bank books are the fixture's OWN fields and not a read of the roster,
-// which is the limit worth stating: the values come from the network (each is
-// the BookID founding assigned) but the LIST does not, so a third
-// participant would be reached by a directory sweep and by settlement and would
-// be missing from every expectation built on this. The tests would fail rather
-// than quietly track it — the right direction, but it is this helper that would
-// need fixing, not them.
-func (h *meshHarness) allBooks() []ledger.BookID {
-	out := []ledger.BookID{h.debtorBook, h.creditorBook, payment.CentralBankBook, payment.ClearingHouseBook}
-	slices.Sort(out)
-	return out
-}
-
-// bankBooks is allBooks without the two that belong to no bank: the central
-// bank's, and the label network-scoped rows carry.
-//
-// Derived from allBooks rather than listed again, so that a third bank in the
-// fixture reaches both at once.
-func (h *meshHarness) bankBooks() []ledger.BookID {
-	return slices.DeleteFunc(h.allBooks(), func(b ledger.BookID) bool {
-		return b == payment.CentralBankBook || b == payment.ClearingHouseBook
-	})
-}
-
-// injectRaw puts bytes into an actor's inbox without building a message.
+// injectRaw puts bytes where an institution will collect them, without building
+// a message.
 //
 // It is the only way to test what a receiver does with something it cannot
-// parse. Everything else in this package goes through send, which marshals — so
-// an unparseable message could not exist, and FF01 would be a code with no path
-// to it.
-func (h *meshHarness) injectRaw(t *testing.T, from, to iso20022.BIC, raw []byte) {
+// parse. Everything else in this package goes through an upload or an enqueue
+// that marshals — so an unparseable file could not exist, and FF01 would be a
+// code with no path to it.
+//
+// Which door it uses follows from WHO the recipient is, and that is the topology
+// rather than a convenience: a member bank is dialled by nobody, so bytes reach
+// one by being put in its download queue at a host; a host is dialled by its
+// subscribers, so bytes reach one by being uploaded.
+//
+// The order type is CST for a queued file, which is any label that is not C53 —
+// a download of BTD takes everything else in the queue, so the label decides
+// nothing here and the bytes are what the test is about.
+func (h *harness) injectRaw(t *testing.T, from, to iso20022.BIC, raw []byte) {
 	t.Helper()
-	if err := h.mesh.sendRaw(from, to, raw); err != nil {
-		t.Fatalf("sendRaw to %s: %v", to, err)
+	switch to {
+	case h.cfg.ClearingHouseBIC, h.cfg.CentralBankBIC:
+		client := ebics.NewClient(ebics.SubscriberID(from), h.urlOf(to))
+		if _, err := client.Upload(context.Background(), ebics.CST, raw); err != nil {
+			t.Fatalf("uploading raw bytes from %s to %s: %v", from, to, err)
+		}
+	default:
+		if _, err := h.hostOf(t, from).Enqueue(ebics.SubscriberID(to), ebics.CST, raw); err != nil {
+			t.Fatalf("queueing raw bytes at %s for %s: %v", from, to, err)
+		}
 	}
+}
+
+// upload puts one built message on the wire, from one institution to another,
+// exactly as the sending institution would.
+//
+// It is what a test needs to make an institution answer a message no fixture
+// flow produces: a pacs.004 the clearing house never asked for, a status about a
+// payment nobody submitted. The bytes go up a real connection when the recipient
+// is a HOST, and into a download queue when it is a member bank — because
+// nothing is pushed at one.
+func (h *harness) upload(t *testing.T, from, to iso20022.BIC, env iso20022.Envelope) {
+	t.Helper()
+	raw, err := iso20022.Marshal(env)
+	if err != nil {
+		t.Fatalf("marshalling for %s: %v", to, err)
+	}
+	orderType, err := orderTypeOf(env.Document)
+	if err != nil {
+		t.Fatalf("no order type for a %T: %v", env.Document, err)
+	}
+	switch to {
+	case h.cfg.ClearingHouseBIC, h.cfg.CentralBankBIC:
+		client := ebics.NewClient(ebics.SubscriberID(from), h.urlOf(to))
+		if _, err := client.Upload(context.Background(), orderType, raw); err != nil {
+			t.Fatalf("uploading a %s from %s to %s: %v", orderType, from, to, err)
+		}
+	default:
+		if _, err := h.hostOf(t, from).Enqueue(ebics.SubscriberID(to), orderType, raw); err != nil {
+			t.Fatalf("queueing a %s at %s for %s: %v", orderType, from, to, err)
+		}
+	}
+}
+
+// hostOf is the EBICS side of one of the two institutions that has one, and
+// fails on any other address: a member bank holds no host, because nothing is
+// ever pushed at one.
+func (h *harness) hostOf(t *testing.T, bic iso20022.BIC) *ebics.Server {
+	t.Helper()
+	switch bic {
+	case h.cfg.ClearingHouseBIC:
+		return h.dep.ClearingHouse().host
+	case h.cfg.CentralBankBIC:
+		return h.dep.CentralBank().host
+	default:
+		t.Fatalf("%s is a member bank and hosts nothing; nothing is pushed at one", bic)
+		return nil
+	}
+}
+
+// urlOf is where a subscriber dials one of the two hosts.
+func (h *harness) urlOf(bic iso20022.BIC) string {
+	if bic == h.cfg.CentralBankBIC {
+		return h.cfg.CentralBankURL
+	}
+	return h.cfg.ClearingHouseURL
 }
 
 // messagesFrom is every message handed over since a mark taken with
@@ -1369,7 +1465,7 @@ func (h *meshHarness) injectRaw(t *testing.T, from, to iso20022.BIC, raw []byte)
 // carried others: a return starts from a settled payment, so by the time it
 // begins the wire is six messages deep and none of them is what the test is
 // about. Copied under the lock, because actor goroutines are still appending.
-func (h *meshHarness) messagesFrom(mark int) []tappedMessage {
+func (h *harness) messagesFrom(mark int) []tappedMessage {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return append([]tappedMessage(nil), h.seen[mark:]...)
@@ -1382,7 +1478,7 @@ func (h *meshHarness) messagesFrom(mark int) []tappedMessage {
 // actor already handled back into its inbox, which is the only way to provoke
 // what a queue does on its own in a real network. lastStatusTo parses because
 // its callers are reading an answer; this one's caller is replaying a message.
-func (h *meshHarness) lastMessageOfTypeTo(t *testing.T, to iso20022.BIC, msgDef string) []byte {
+func (h *harness) lastMessageOfTypeTo(t *testing.T, to iso20022.BIC, msgDef string) []byte {
 	t.Helper()
 	h.mu.Lock()
 	seen := append([]tappedMessage(nil), h.seen...)
@@ -1412,7 +1508,7 @@ func (h *meshHarness) lastMessageOfTypeTo(t *testing.T, to iso20022.BIC, msgDef 
 // After a Drain that is also how many were SENT, because Drain returns only when
 // nothing is in flight. Before one it is neither, which is why every test that
 // counts drains first.
-func (h *meshHarness) messagesSeen() int {
+func (h *harness) messagesSeen() int {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return len(h.seen)
@@ -1432,7 +1528,7 @@ func (h *meshHarness) messagesSeen() int {
 // a settlement completing is the case that needs to say so. Matching an empty
 // string against a present code would pass on nothing, which is why the two
 // cases are separate here.
-func (h *meshHarness) assertLastStatusTo(t *testing.T, to iso20022.BIC, want iso20022.StatusReason) {
+func (h *harness) assertLastStatusTo(t *testing.T, to iso20022.BIC, want iso20022.StatusReason) {
 	t.Helper()
 	doc := h.lastStatusTo(t, to)
 	if want == "" {
@@ -1458,7 +1554,7 @@ func (h *meshHarness) assertLastStatusTo(t *testing.T, to iso20022.BIC, want iso
 // one, because the two answer different questions and a test usually wants one
 // of them. The status is what happened; the code is why, and only a rejection
 // has one.
-func (h *meshHarness) assertLastTxStatusTo(t *testing.T, to iso20022.BIC, want iso20022.TransactionStatus) {
+func (h *harness) assertLastTxStatusTo(t *testing.T, to iso20022.BIC, want iso20022.TransactionStatus) {
 	t.Helper()
 	doc := h.lastStatusTo(t, to)
 	for _, s := range doc.FIToFIPmtStsRpt.TxInfAndSts {
@@ -1471,7 +1567,7 @@ func (h *meshHarness) assertLastTxStatusTo(t *testing.T, to iso20022.BIC, want i
 
 // lastStatusTo is the most recent message an actor was handed, parsed as the
 // pacs.002 the caller expects it to be.
-func (h *meshHarness) lastStatusTo(t *testing.T, to iso20022.BIC) *iso20022.Pacs002 {
+func (h *harness) lastStatusTo(t *testing.T, to iso20022.BIC) *iso20022.Pacs002 {
 	t.Helper()
 	h.mu.Lock()
 	var last []byte
@@ -1500,20 +1596,20 @@ func (h *meshHarness) lastStatusTo(t *testing.T, to iso20022.BIC) *iso20022.Pacs
 // pacs.009 and nothing else: it is the one message definition in this system
 // whose parties are both banks, so counting the type IS counting settlement
 // instructions.
-func (h *meshHarness) instructionsSentTo(to iso20022.BIC) int {
+func (h *harness) instructionsSentTo(to iso20022.BIC) int {
 	return h.messagesSentTo(to, "pacs.009.001.08")
 }
 
 // statusesSentTo is how many pacs.002 an actor was handed. It is what says a
 // party was told NOTHING, which is an assertion the last-message helpers cannot
 // make: they need a message to look at.
-func (h *meshHarness) statusesSentTo(to iso20022.BIC) int {
+func (h *harness) statusesSentTo(to iso20022.BIC) int {
 	return h.messagesSentTo(to, "pacs.002.001.10")
 }
 
 // messagesSentTo counts one message definition delivered to one actor. Counted
 // after a Drain, when what was handed over is also what was sent.
-func (h *meshHarness) messagesSentTo(to iso20022.BIC, msgDef string) int {
+func (h *harness) messagesSentTo(to iso20022.BIC, msgDef string) int {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	var n int

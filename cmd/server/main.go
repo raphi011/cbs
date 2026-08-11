@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -16,26 +17,18 @@ import (
 	"github.com/raphi011/cbs/store/sqlite"
 )
 
-// meshConfig names the two institutions this process plays.
+// The two institutions this process plays, by address.
 //
 // They are configured rather than read, because neither has a participant row:
 // member banks are admitted and carry their own BIC, and the central bank and
 // the clearing house ARE the configuration. The two values are real-shaped and
 // deliberately different from each other and from every seeded bank — one BIC in
-// two roles would be one routing-table entry, which MeshConfig.validate
-// refuses.
-var meshConfig = MeshConfig{
-	CentralBankBIC:   "CBSEDEFFXXX",
-	ClearingHouseBIC: "CSMXFRPPXXX",
-}
-
-// meshShutdown bounds the drain and the stop at shutdown.
-//
-// It is generous, and the reason is in Mesh.Stop's own doc: the deadline covers
-// the handler in flight PLUS the whole depth of every inbox at the moment the
-// inboxes close, because queued messages are DELIVERED rather than discarded.
-// Sizing it against one handler would be sizing it against the optimistic case.
-const meshShutdown = 30 * time.Second
+// two roles would be one subscriber identity for two hosts, which
+// Config.validate refuses.
+const (
+	centralBankBIC   = "CBSEDEFFXXX"
+	clearingHouseBIC = "CSMXFRPPXXX"
+)
 
 func main() {
 	basePort := flag.Int("base-port", defaultBasePort(), "first listen port; the central bank takes it, the clearing house the next, then one per bank")
@@ -72,35 +65,26 @@ func main() {
 
 	nets := payment.NewNetworks(stores, clock.Now)
 
-	// The mesh starts BEFORE the seed, and the order is load-bearing. The seed
-	// gives each bank it provisions an actor and pulls each one's routing
-	// directory, both through the mesh's own doors, so the transport has to be
-	// running before there is anything to run against.
+	// The deployment is built BEFORE the listeners, and its two hosts are dialled
+	// over them. That is an ordering worth stating: the seed provisions banks
+	// through this deployment's own doors, and every one of those uploads a file
+	// — so nothing may be seeded until something is listening.
 	//
-	// What that costs is Start's roster read, which finds an empty roster on a
-	// fresh store: the banks it would have registered are the ones the seed is
-	// about to provision, and each of those gets its actor from Mesh.AddBank as
-	// it is built. Against a database file that already holds the scenario the
-	// read finds the whole roster and the seed builds nothing, which is the same
-	// division of labour seen from the other side.
-	msh, err := NewMesh(nets, meshConfig, log)
+	// It is also why the URLs are derived here rather than configured. The
+	// listener plan gives the central bank the base port and the clearing house
+	// the next, and a second source for those two numbers would be a second thing
+	// to keep in step.
+	cfg := Config{
+		CentralBankBIC:   centralBankBIC,
+		ClearingHouseBIC: clearingHouseBIC,
+		CentralBankURL:   ebicsURL(*basePort),
+		ClearingHouseURL: ebicsURL(*basePort + 1),
+	}
+	dep, err := NewDeployment(context.Background(), nets, clock, cfg, data.Populate, log)
 	if err != nil {
-		log.Error("building the mesh", "error", err)
+		log.Error("building the deployment", "error", err)
 		os.Exit(1)
 	}
-	// The mesh's lifetime is the process's, not any request's: every handler runs
-	// with this context and Stop is what cancels it.
-	if err := msh.Start(context.Background()); err != nil {
-		log.Error("starting the mesh", "error", err)
-		os.Exit(1)
-	}
-
-	if err := data.Populate(context.Background(), nets, msh); err != nil {
-		log.Error("seeding the sample dataset", "error", err)
-		os.Exit(1)
-	}
-
-	dep := NewDeployment(nets, msh, data.Populate, log)
 
 	entities, err := plan(context.Background(), stores, nets, *basePort)
 	if err != nil {
@@ -114,43 +98,41 @@ func main() {
 		os.Exit(1)
 	}
 
+	// The sample dataset last, and over real connections: a bank is admitted, its
+	// directory is refreshed and its cash is lodged through the same doors an
+	// operator would use, so the seeded scenario is one this deployment could have
+	// been driven into rather than one written straight into the tables.
+	if err := data.Populate(context.Background(), nets, dep); err != nil {
+		log.Error("seeding the sample dataset", "error", err)
+		os.Exit(1)
+	}
+
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	<-ctx.Done()
 
+	// There is nothing to drain and nothing to join. No goroutine runs under this
+	// process but the listeners' own: work is queued by requests and performed by
+	// AdvanceDay, on the caller's goroutine. What a shutdown leaves behind is the
+	// files sitting in the download queues, which is what a real gateway's
+	// operator would re-send.
 	log.Info("shutting down")
 	shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if err := shutdown(shutCtx); err != nil {
 		log.Error("graceful shutdown failed", "error", err)
 	}
+}
 
-	// Drain FIRST, then Stop, and neither return value is thrown away.
-	//
-	// Stop closes every inbox in one step before it joins anybody, so a
-	// conversation still in flight when it runs is CUT — the payer debited and the
-	// pacs.002 that would have told their bank never sent. Draining is the only
-	// way one finishes, and it leaves Stop nothing to do but join. The listeners
-	// are already down by this point, so nothing new can arrive while it runs.
-	//
-	// Both hand back what handlers had nobody to report to. A shutdown that
-	// swallowed those would be the silent failure the whole dead-letter design
-	// exists to prevent, reintroduced at the last line of the process.
-	// A deadline each, and not one shared between them. A Drain that used the
-	// whole budget would hand Stop an already-expired context, so the step that
-	// JOINS the goroutines would fail instantly — turning a slow drain into a
-	// process that exits with actors still running, which is the outcome the
-	// ordering above exists to prevent.
-	drainCtx, drainCancel := context.WithTimeout(context.Background(), meshShutdown)
-	defer drainCancel()
-	if err := msh.Drain(drainCtx); err != nil {
-		log.Error("mesh: dead letters at shutdown", "error", err)
-	}
-	stopCtx, stopCancel := context.WithTimeout(context.Background(), meshShutdown)
-	defer stopCancel()
-	if err := msh.Stop(stopCtx); err != nil {
-		log.Error("mesh: stopping", "error", err)
-	}
+// ebicsURL is the file-transfer endpoint on one institution's listener.
+//
+// Loopback rather than the listen address, because the listeners bind every
+// interface and a subscriber in this process is dialling back into it. One path
+// for every host and every order type, which is the protocol's own shape: EBICS
+// is one endpoint that everything POSTs to, and what a request is asking for is
+// in the envelope.
+func ebicsURL(port int) string {
+	return fmt.Sprintf("http://127.0.0.1:%d%s", port, ebicsPath)
 }
 
 // openStores opens every institution's database under dir, or an ephemeral set

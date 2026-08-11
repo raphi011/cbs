@@ -42,11 +42,11 @@ import (
 // finality and drained: both banks booked their halves of the cut-off, both hold
 // a Settled copy, and every suspense is back to zero. It is the state each test
 // below damages exactly once.
-func reconciled(t *testing.T) *meshHarness {
+func reconciled(t *testing.T) *harness {
 	t.Helper()
-	h := newMeshHarness(t)
+	h := newHarness(t)
 	h.settledPayment(t)
-	h.drain(t)
+	h.work(t)
 	return h
 }
 
@@ -81,10 +81,10 @@ func TestASettledNetworkReconciles(t *testing.T) {
 // path, and a flow that reconciles after a cut-off can still leave a bank short
 // after a return.
 func TestAReturnedNetworkReconciles(t *testing.T) {
-	h := newMeshHarness(t)
+	h := newHarness(t)
 	p := h.settledPayment(t)
 	h.returnPayment(t, p.ID, iso20022.ReturnReasonDuplication, "sent twice")
-	h.drain(t)
+	h.work(t)
 
 	report := recon.Check(t, h.nets)
 
@@ -104,9 +104,9 @@ func TestAReturnedNetworkReconciles(t *testing.T) {
 // fixture in which the two figures differ — which is what this one is: both
 // banks clear in both, and only the euro side carries a payment.
 func TestATwoAssetNetworkReconciles(t *testing.T) {
-	h := newMeshHarnessWithTwoAssets(t)
+	h := newHarnessWithTwoAssets(t)
 	h.settledPayment(t)
-	h.drain(t)
+	h.work(t)
 
 	recon.Check(t, h.nets)
 }
@@ -142,7 +142,7 @@ func TestABookTransferReconcilesAndMovesNothingBetweenInstitutions(t *testing.T)
 	}
 	// Drained, because the claim is about messages that do not exist. Reading
 	// the books while a pacs.008 was still in flight would pass either way.
-	h.drain(t)
+	h.work(t)
 
 	recon.Check(t, h.nets)
 
@@ -461,7 +461,7 @@ func TestAStaleDirectoryIsReportedAndIsNotABreak(t *testing.T) {
 
 	// A third member, admitted and published, and nobody has pulled since.
 	joiner := h.provision(t, "Nordhaven Bank", "NORDSESSXXX", euroOnly)
-	h.drain(t)
+	h.work(t)
 
 	// It PASSES. recon.Check fails the test on every break, so calling it here is
 	// the assertion: a network in which two members are two entries behind and a
@@ -672,7 +672,7 @@ func assertBreakAbout(t *testing.T, report *recon.Report, where, contains string
 
 // accounts is one bank's internal accounts for an asset, read out of that bank's
 // own row.
-func (h *meshHarness) accounts(t *testing.T, bic iso20022.BIC, asset ledger.AssetCode) payment.BankAccounts {
+func (h *harness) accounts(t *testing.T, bic iso20022.BIC, asset ledger.AssetCode) payment.BankAccounts {
 	t.Helper()
 	p := h.getBank(t, payment.ParticipantID(bic))
 	accts, err := p.AccountsFor(asset)
@@ -684,7 +684,7 @@ func (h *meshHarness) accounts(t *testing.T, bic iso20022.BIC, asset ledger.Asse
 
 // postBehindTheBanksBack posts a balanced transaction into one member's own
 // ledger that no act of that member's produced.
-func (h *meshHarness) postBehindTheBanksBack(t *testing.T, bic iso20022.BIC, desc string, entries ...ledger.Entry) {
+func (h *harness) postBehindTheBanksBack(t *testing.T, bic iso20022.BIC, desc string, entries ...ledger.Entry) {
 	t.Helper()
 	p := h.getBank(t, payment.ParticipantID(bic))
 	if _, err := p.Ledger.PostTransaction(context.Background(), ledger.PostTransactionRequest{
@@ -696,7 +696,7 @@ func (h *meshHarness) postBehindTheBanksBack(t *testing.T, bic iso20022.BIC, des
 
 // postInTheCentralBanksBook is the same for the settlement agent, whose book is
 // reached through its own network and no other.
-func (h *meshHarness) postInTheCentralBanksBook(t *testing.T, desc string, entries ...ledger.Entry) {
+func (h *harness) postInTheCentralBanksBook(t *testing.T, desc string, entries ...ledger.Entry) {
 	t.Helper()
 	if _, err := h.cbBook(t).PostTransaction(context.Background(), ledger.PostTransactionRequest{
 		Entries: entries, Description: desc,
@@ -707,7 +707,7 @@ func (h *meshHarness) postInTheCentralBanksBook(t *testing.T, desc string, entri
 
 // onlySettledPayment is the one payment this fixture carried to finality, read
 // off the clearing house's copy.
-func (h *meshHarness) onlySettledPayment(t *testing.T) payment.Payment {
+func (h *harness) onlySettledPayment(t *testing.T) payment.Payment {
 	t.Helper()
 	payments, err := h.net.ListPayments(context.Background())
 	if err != nil {
@@ -729,35 +729,35 @@ func (h *meshHarness) onlySettledPayment(t *testing.T) payment.Payment {
 // of that institution would have written, which is the only way to reach the
 // states above; see the note at the top of this file.
 
-func (h *meshHarness) putCycle(t *testing.T, c payment.ClearingCycle) {
+func (h *harness) putCycle(t *testing.T, c payment.ClearingCycle) {
 	t.Helper()
 	h.write(t, h.rec.ClearingHouse(), "the clearing house", func(ctx context.Context, tx payment.Tx) error {
 		return tx.PutCycle(ctx, c)
 	})
 }
 
-func (h *meshHarness) putRosterEntry(t *testing.T, e payment.RosterEntry) {
+func (h *harness) putRosterEntry(t *testing.T, e payment.RosterEntry) {
 	t.Helper()
 	h.write(t, h.rec.ClearingHouse(), "the clearing house", func(ctx context.Context, tx payment.Tx) error {
 		return tx.PutRosterEntry(ctx, e)
 	})
 }
 
-func (h *meshHarness) putSettlement(t *testing.T, s payment.Settlement) {
+func (h *harness) putSettlement(t *testing.T, s payment.Settlement) {
 	t.Helper()
 	h.write(t, h.rec.CentralBank(), "the central bank", func(ctx context.Context, tx payment.Tx) error {
 		return tx.PutSettlement(ctx, s)
 	})
 }
 
-func (h *meshHarness) putClearingHousePayment(t *testing.T, p payment.Payment) {
+func (h *harness) putClearingHousePayment(t *testing.T, p payment.Payment) {
 	t.Helper()
 	h.write(t, h.rec.ClearingHouse(), "the clearing house", func(ctx context.Context, tx payment.Tx) error {
 		return tx.PutPayment(ctx, p)
 	})
 }
 
-func (h *meshHarness) putPayment(t *testing.T, bic iso20022.BIC, p payment.Payment) {
+func (h *harness) putPayment(t *testing.T, bic iso20022.BIC, p payment.Payment) {
 	t.Helper()
 	h.write(t, h.store(t, bic), string(bic), func(ctx context.Context, tx payment.Tx) error {
 		return tx.PutPayment(ctx, p)
@@ -767,14 +767,14 @@ func (h *meshHarness) putPayment(t *testing.T, bic iso20022.BIC, p payment.Payme
 // putBank writes a member's own record of itself, into that member's own
 // database. It is the only row here whose writer and whose subject are the same
 // institution, which is what makes the states it reaches invisible from outside.
-func (h *meshHarness) putBank(t *testing.T, b payment.Bank) {
+func (h *harness) putBank(t *testing.T, b payment.Bank) {
 	t.Helper()
 	h.write(t, h.store(t, b.BIC), string(b.BIC), func(ctx context.Context, tx payment.Tx) error {
 		return tx.PutBank(ctx, b)
 	})
 }
 
-func (h *meshHarness) putDepositAccount(t *testing.T, bic iso20022.BIC, book ledger.BookID, a deposit.Account) {
+func (h *harness) putDepositAccount(t *testing.T, bic iso20022.BIC, book ledger.BookID, a deposit.Account) {
 	t.Helper()
 	h.write(t, h.store(t, bic), string(bic), func(ctx context.Context, tx payment.Tx) error {
 		return tx.PutDepositAccount(ctx, book, a)
@@ -783,7 +783,7 @@ func (h *meshHarness) putDepositAccount(t *testing.T, bic iso20022.BIC, book led
 
 // rosterEntry is what the clearing house publishes about one member, read out of
 // the clearing house's own store rather than through an actor.
-func (h *meshHarness) rosterEntry(t *testing.T, bic iso20022.BIC) payment.RosterEntry {
+func (h *harness) rosterEntry(t *testing.T, bic iso20022.BIC) payment.RosterEntry {
 	t.Helper()
 	e, err := h.net.GetRosterEntryByBIC(context.Background(), bic)
 	if err != nil {
@@ -792,14 +792,14 @@ func (h *meshHarness) rosterEntry(t *testing.T, bic iso20022.BIC) payment.Roster
 	return e
 }
 
-func (h *meshHarness) putSettlementAdvice(t *testing.T, bic iso20022.BIC, a payment.SettlementAdvice) {
+func (h *harness) putSettlementAdvice(t *testing.T, bic iso20022.BIC, a payment.SettlementAdvice) {
 	t.Helper()
 	h.write(t, h.store(t, bic), string(bic), func(ctx context.Context, tx payment.Tx) error {
 		return tx.PutSettlementAdvice(ctx, a.Book, a)
 	})
 }
 
-func (h *meshHarness) store(t *testing.T, bic iso20022.BIC) payment.Store {
+func (h *harness) store(t *testing.T, bic iso20022.BIC) payment.Store {
 	t.Helper()
 	store, err := h.rec.Bank(context.Background(), bic)
 	if err != nil {
@@ -808,7 +808,7 @@ func (h *meshHarness) store(t *testing.T, bic iso20022.BIC) payment.Store {
 	return store
 }
 
-func (h *meshHarness) write(t *testing.T, store payment.Store, who string, fn func(context.Context, payment.Tx) error) {
+func (h *harness) write(t *testing.T, store payment.Store, who string, fn func(context.Context, payment.Tx) error) {
 	t.Helper()
 	if err := store.Update(context.Background(), fn); err != nil {
 		t.Fatalf("writing into %s's database: %v", who, err)

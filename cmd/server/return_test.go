@@ -25,12 +25,12 @@ import (
 // row-book with no accounts in it, so an entry here is not a posting. See
 // TestWhichBooksAReturnReaches.
 func TestAReturnIsExecutedByTheCentralBank(t *testing.T) {
-	h := newMeshHarness(t)
+	h := newHarness(t)
 	p := h.settledPayment(t)
 
 	h.rec.reset()
 	h.returnPayment(t, p.ID, iso20022.ReturnReasonClosedAccountNumber, "account closed")
-	h.drain(t)
+	h.work(t)
 
 	got := h.payment(t, p.ID)
 	if got.Status != payment.Returned {
@@ -111,12 +111,12 @@ func TestAReturnIsExecutedByTheCentralBank(t *testing.T) {
 // any of this. What remains genuinely undetermined is the INTERLEAVING across
 // actors.
 func TestTheMessagesAReturnPutsOnTheWire(t *testing.T) {
-	h := newMeshHarness(t)
+	h := newHarness(t)
 	p := h.settledPayment(t)
 
 	before := h.messagesSeen()
 	h.returnPayment(t, p.ID, iso20022.ReturnReasonClosedAccountNumber, "account closed")
-	h.drain(t)
+	h.work(t)
 
 	type hop struct {
 		from, to iso20022.BIC
@@ -199,7 +199,7 @@ func TestTheMessagesAReturnPutsOnTheWire(t *testing.T) {
 // only place the answer exists — the payment row says Returned, and a status is
 // not a balance.
 func TestAReturnPutsTheMoneyBackInThePayersAccount(t *testing.T) {
-	h := newMeshHarness(t)
+	h := newHarness(t)
 	p := h.settledPayment(t)
 	if got := h.balance(t, h.debtorPID, h.debtorAcct.ID); got != harnessFunding-harnessAmount {
 		t.Fatalf("the payer holds %d after a settled transfer, want %d", got, harnessFunding-harnessAmount)
@@ -209,7 +209,7 @@ func TestAReturnPutsTheMoneyBackInThePayersAccount(t *testing.T) {
 	}
 
 	h.returnPayment(t, p.ID, iso20022.ReturnReasonClosedAccountNumber, "account closed")
-	h.drain(t)
+	h.work(t)
 
 	if got := h.balance(t, h.debtorPID, h.debtorAcct.ID); got != harnessFunding {
 		t.Errorf("the payer holds %d after the return, want %d — the whole of it should be back", got, harnessFunding)
@@ -253,12 +253,12 @@ func TestAReturnPutsTheMoneyBackInThePayersAccount(t *testing.T) {
 // The clawback is asserted at the biller's own balance, because that is where a
 // pull return differs from a push and the message count cannot see it.
 func TestAReturnedCollectionIsSentByThePayersBank(t *testing.T) {
-	h := newMeshHarness(t)
+	h := newHarness(t)
 	p := h.settledCollection(t)
 
 	before := h.messagesSeen()
 	h.returnPayment(t, p.ID, iso20022.ReturnReasonNoMandate, "the debtor disputes the mandate")
-	h.drain(t)
+	h.work(t)
 
 	if got := h.payment(t, p.ID); got.Status != payment.Returned {
 		t.Fatalf("status = %v, want Returned", got.Status)
@@ -343,9 +343,9 @@ func TestAReturnedCollectionIsSentByThePayersBank(t *testing.T) {
 // copy, because "the refused return changed nothing" is a claim about the
 // network and not about the bank that refused.
 func TestABankRefusesToReturnAPaymentThatHasNotSettled(t *testing.T) {
-	h := newMeshHarness(t)
+	h := newHarness(t)
 	p := h.submitCreditTransfer(t)
-	h.drain(t) // accepted and in a cycle, but no cut-off has been reached
+	h.work(t) // accepted and in a cycle, but no cut-off has been reached
 
 	before := h.messagesSeen()
 	err := h.returnErr(p.ID, iso20022.ReturnReasonClosedAccountNumber, "account closed")
@@ -355,7 +355,7 @@ func TestABankRefusesToReturnAPaymentThatHasNotSettled(t *testing.T) {
 	if !strings.Contains(err.Error(), "Initiated") {
 		t.Errorf("the refusal %q does not say what this BANK records the payment as", err)
 	}
-	h.drain(t)
+	h.work(t)
 	if got := h.messagesSeen(); got != before {
 		t.Errorf("a refused return put %d messages on the wire, want none", got-before)
 	}
@@ -364,7 +364,7 @@ func TestABankRefusesToReturnAPaymentThatHasNotSettled(t *testing.T) {
 	}
 }
 
-// TestARedeliveredReturnIsDeadLetteredAndNotAnswered is the same
+// TestARedeliveredReturnIsReportedAndNotAnswered is the same
 // discrimination one hop further on, and it is the case that actually reaches
 // the settlement agent.
 //
@@ -380,11 +380,11 @@ func TestABankRefusesToReturnAPaymentThatHasNotSettled(t *testing.T) {
 // reversal, in the central bank's own ledger. That sentinel carries the empty
 // code in reasonTable, because it describes this system's state and not the
 // sender's message.
-func TestARedeliveredReturnIsDeadLetteredAndNotAnswered(t *testing.T) {
-	h := newMeshHarness(t)
+func TestARedeliveredReturnIsReportedAndNotAnswered(t *testing.T) {
+	h := newHarness(t)
 	p := h.settledPayment(t)
 	h.returnPayment(t, p.ID, iso20022.ReturnReasonClosedAccountNumber, "account closed")
-	h.drain(t)
+	h.work(t)
 
 	// The pacs.004 the clearing house relayed, sent to the settlement agent a
 	// second time.
@@ -396,8 +396,11 @@ func TestARedeliveredReturnIsDeadLetteredAndNotAnswered(t *testing.T) {
 	// and a settlement agent that answered this instead would break both at
 	// once. Stopping at the first would leave the second unobserved in exactly
 	// the case it exists for.
-	if err := h.drainErr(t); !errors.Is(err, payment.ErrReturnAlreadySettled) {
-		t.Errorf("Drain = %v, want the already-settled return as a dead letter", err)
+	// Matched on the TEXT and not with errors.Is, because a day's report is prose:
+	// Problem.Detail is what an operator reads, and the sentinel the institution
+	// refused with does not survive into it as a wrapped error.
+	if err := h.workErr(t); err == nil || !strings.Contains(err.Error(), payment.ErrReturnAlreadySettled.Error()) {
+		t.Errorf("the day reported %v, want the already-settled return as a problem", err)
 	}
 	if got := h.statusesSentTo(h.creditorBIC); got != answered {
 		t.Errorf("the redelivery produced %d further statuses to the bank that asked, want none", got-answered)
@@ -455,7 +458,7 @@ func TestAReturnTheSettlementAgentCannotActOnWholeIsRefused(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			h := newMeshHarness(t)
+			h := newHarness(t)
 			p := h.settledPayment(t)
 
 			env, err := h.net.ReturnMessage(p, iso20022.ReturnReasonClosedAccountNumber, "account closed",
@@ -464,10 +467,8 @@ func TestAReturnTheSettlementAgentCannotActOnWholeIsRefused(t *testing.T) {
 				t.Fatalf("ReturnMessage: %v", err)
 			}
 			tc.doctor(env.Document.(*iso20022.Pacs004))
-			if err := h.mesh.send(h.creditorBIC, h.cfg.ClearingHouseBIC, env); err != nil {
-				t.Fatalf("send: %v", err)
-			}
-			h.drain(t)
+			h.upload(t, h.creditorBIC, h.cfg.ClearingHouseBIC, env)
+			h.work(t)
 
 			// Answered, not dead-lettered: this is a judgement about the
 			// message, and the bank that sent it can act on the answer.
@@ -515,12 +516,12 @@ func TestAReturnTheSettlementAgentCannotActOnWholeIsRefused(t *testing.T) {
 // the settlement it is, so the reason reaches the two customer legs and not the
 // third posting.
 func TestTheReturnsReasonTravelsFromTheAskingBankToTheLedgers(t *testing.T) {
-	h := newMeshHarness(t)
+	h := newHarness(t)
 	p := h.settledPayment(t)
 
 	const text = "the beneficiary account was closed"
 	h.returnPayment(t, p.ID, iso20022.ReturnReasonClosedAccountNumber, text)
-	h.drain(t)
+	h.work(t)
 
 	tx := h.returnSentTo(t, h.cfg.CentralBankBIC).PmtRtr.TxInf[0]
 	if tx.OrgnlTxId != string(p.ID) {
@@ -602,7 +603,7 @@ func TestTheReturnsReasonTravelsFromTheAskingBankToTheLedgers(t *testing.T) {
 // reaching a customer's ledger — asserted on the one leg the message really did
 // cause, plus the one it did not.
 func TestAProprietaryReturnReasonReachesTheLedgersToo(t *testing.T) {
-	h := newMeshHarness(t)
+	h := newHarness(t)
 	p := h.settledPayment(t)
 
 	env, err := h.net.ReturnMessage(p, iso20022.ReturnReasonClosedAccountNumber, "",
@@ -613,10 +614,8 @@ func TestAProprietaryReturnReasonReachesTheLedgersToo(t *testing.T) {
 	prtry := "SCHEME-LOCAL-DISPUTE"
 	rsn := &env.Document.(*iso20022.Pacs004).PmtRtr.TxInf[0].RtrRsnInf.Rsn
 	rsn.Cd, rsn.Prtry = nil, &prtry
-	if err := h.mesh.send(h.creditorBIC, h.cfg.ClearingHouseBIC, env); err != nil {
-		t.Fatalf("send: %v", err)
-	}
-	h.drain(t)
+	h.upload(t, h.creditorBIC, h.cfg.ClearingHouseBIC, env)
+	h.work(t)
 
 	if got := h.postingByKey(t, h.debtorPID, string(p.ID)+":return-refund").Description; !strings.Contains(got, prtry) {
 		t.Errorf("the payer's refund is described as %q, want it to carry the proprietary reason %q", got, prtry)
@@ -665,7 +664,7 @@ func TestAProprietaryReturnReasonReachesTheLedgersToo(t *testing.T) {
 // No actor in this mesh emits one — payment.ReturnMessage always writes
 // OrgnlTxId — so it is injected.
 func TestAReturnThatNamesNoPaymentCannotBeAnswered(t *testing.T) {
-	h := newMeshHarness(t)
+	h := newHarness(t)
 	p := h.settledPayment(t)
 
 	env, err := h.net.ReturnMessage(p, iso20022.ReturnReasonClosedAccountNumber, "no transaction id",
@@ -675,12 +674,10 @@ func TestAReturnThatNamesNoPaymentCannotBeAnswered(t *testing.T) {
 	}
 	tx := &env.Document.(*iso20022.Pacs004).PmtRtr.TxInf[0]
 	tx.OrgnlTxId, tx.OrgnlEndToEndId = "", "E2E-ONLY"
-	if err := h.mesh.send(h.creditorBIC, h.cfg.ClearingHouseBIC, env); err != nil {
-		t.Fatalf("send: %v", err)
-	}
+	h.upload(t, h.creditorBIC, h.cfg.ClearingHouseBIC, env)
 
 	answered := h.statusesSentTo(h.creditorBIC)
-	err = h.drainErr(t)
+	err = h.workErr(t)
 	if err == nil {
 		t.Fatal("Drain was clean; a return the settlement agent could neither execute nor answer went unreported")
 	}
@@ -713,7 +710,7 @@ func TestAReturnThatNamesNoPaymentCannotBeAnswered(t *testing.T) {
 // Any of its refusals would do; what this test is about is the ELEMENT, not the
 // reason.
 func TestARefusedReturnNamesTheSettlementAgentAsTheOriginator(t *testing.T) {
-	h := newMeshHarness(t)
+	h := newHarness(t)
 	p := h.settledPayment(t)
 
 	// The returning bank on a push is the PAYEE's bank: the one that received
@@ -726,10 +723,8 @@ func TestARefusedReturnNamesTheSettlementAgentAsTheOriginator(t *testing.T) {
 	// A header that claims two transactions over one. The settlement agent
 	// refuses the whole message rather than acting on the survivor.
 	env.Document.(*iso20022.Pacs004).PmtRtr.GrpHdr.NbOfTxs = "2"
-	if err := h.mesh.send(h.creditorBIC, h.cfg.ClearingHouseBIC, env); err != nil {
-		t.Fatalf("send: %v", err)
-	}
-	h.drain(t)
+	h.upload(t, h.creditorBIC, h.cfg.ClearingHouseBIC, env)
+	h.work(t)
 
 	status := h.lastStatusTo(t, h.creditorBIC)
 	if n := len(status.FIToFIPmtStsRpt.TxInfAndSts); n != 1 {
@@ -778,10 +773,10 @@ func TestTheSettlementAgentsAnswerQuotesTheReferenceTheBankSent(t *testing.T) {
 		{"a payment with none", "", notProvided},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			h := newMeshHarness(t)
+			h := newHarness(t)
 			req := h.creditTransferRequest(t)
 			req.EndToEndID = tc.e2e
-			submitted, err := h.mesh.Submit(context.Background(), req)
+			submitted, err := h.dep.Submit(context.Background(), req)
 			if err != nil {
 				t.Fatalf("Submit: %v", err)
 			}
@@ -796,10 +791,8 @@ func TestTheSettlementAgentsAnswerQuotesTheReferenceTheBankSent(t *testing.T) {
 				t.Fatalf("ReturnMessage: %v", err)
 			}
 			env.Document.(*iso20022.Pacs004).PmtRtr.GrpHdr.NbOfTxs = "2"
-			if err := h.mesh.send(h.creditorBIC, h.cfg.ClearingHouseBIC, env); err != nil {
-				t.Fatalf("send: %v", err)
-			}
-			h.drain(t)
+			h.upload(t, h.creditorBIC, h.cfg.ClearingHouseBIC, env)
+			h.work(t)
 
 			status := h.lastStatusTo(t, h.creditorBIC)
 			tx := status.FIToFIPmtStsRpt.TxInfAndSts[0]
@@ -824,8 +817,8 @@ func TestTheSettlementAgentsAnswerQuotesTheReferenceTheBankSent(t *testing.T) {
 // what stops the next one, and it is asserted directly because there is no
 // message that provokes it.
 func TestTheSettlementAgentCannotAnswerYesWithAReason(t *testing.T) {
-	h := newMeshHarness(t)
-	cb := &centralBank{m: h.mesh, ops: h.net, bic: h.cfg.CentralBankBIC}
+	h := newHarness(t)
+	cb := &CentralBank{d: h.dep, net: h.cb(), ops: h.cb(), bic: h.cfg.CentralBankBIC, host: h.dep.CentralBank().host}
 
 	err := cb.answer(h.cfg.ClearingHouseBIC,
 		payment.OriginalMessage{MsgID: notProvided, MsgDefIdr: notProvided},
@@ -836,10 +829,10 @@ func TestTheSettlementAgentCannotAnswerYesWithAReason(t *testing.T) {
 		t.Fatalf("answer: %v", err)
 	}
 	// The cycle id is invented, so whatever the clearing house makes of this
-	// message it will have nothing to look up. The dead letter is taken rather
-	// than asserted on: what is under test is the BYTES this actor put on the
-	// wire, and the recipient's opinion of them is another test's business.
-	_ = h.drainErr(t)
+	// message it will have nothing to look up. Its problem is taken rather than
+	// asserted on: what is under test is the BYTES this institution queued, and
+	// the recipient's opinion of them is another test's business.
+	_ = h.workErr(t)
 
 	status := h.lastStatusTo(t, h.cfg.ClearingHouseBIC)
 	tx := status.FIToFIPmtStsRpt.TxInfAndSts[0]
@@ -875,7 +868,7 @@ func TestTheSettlementAgentCannotAnswerYesWithAReason(t *testing.T) {
 // the settlement agent does not read the payment and would have no reason to
 // refuse.
 func TestAPayeeWhoSpentTheMoneyStopsTheReturnOnTheWire(t *testing.T) {
-	h := newMeshHarness(t)
+	h := newHarness(t)
 	p := h.settledPayment(t)
 	h.spendTheCredit(t)
 	if got := h.balance(t, h.creditorPID, h.creditorAcct.ID); got != 0 {
@@ -891,7 +884,7 @@ func TestAPayeeWhoSpentTheMoneyStopsTheReturnOnTheWire(t *testing.T) {
 		t.Errorf("the refusal maps to %q, want AM04 — this is a beneficiary who cannot repay", got)
 	}
 
-	h.drain(t)
+	h.work(t)
 	if got := h.messagesSeen(); got != before {
 		t.Errorf("a refused return put %d messages on the wire, want none", got-before)
 	}
@@ -945,7 +938,7 @@ func TestAPayeeWhoSpentTheMoneyStopsTheReturnOnTheWire(t *testing.T) {
 // biller back for a return the network then refused, with no message in this
 // flow that would ever tell it.
 func TestARefusedReturnUnwindsTheReturningBanksLeg(t *testing.T) {
-	h := newMeshHarness(t)
+	h := newHarness(t)
 	p := h.settledCollection(t)
 	h.spendTheCredit(t)
 	// Where everybody is before the return: the payer paid the collection and
@@ -957,7 +950,7 @@ func TestARefusedReturnUnwindsTheReturningBanksLeg(t *testing.T) {
 
 	before := h.messagesSeen()
 	h.returnPayment(t, p.ID, iso20022.ReturnReasonNoMandate, "the debtor disputes the mandate")
-	h.drain(t)
+	h.work(t)
 
 	// Refused, and refused with the code a reserve shortfall carries.
 	h.assertLastTxStatusTo(t, h.debtorBIC, iso20022.TransactionStatusRejected)
@@ -969,7 +962,7 @@ func TestARefusedReturnUnwindsTheReturningBanksLeg(t *testing.T) {
 	}
 	// Each leg is read off the bank whose ledger it would be in, which on a PULL
 	// puts the refund at the returner and the clawback at the other bank. See
-	// meshHarness.bankPayment.
+	// harness.bankPayment.
 	if got := h.bankPayment(t, h.creditorBIC, p.ID); got.ReturnClawbackTx != "" {
 		t.Errorf("the payee's bank posted a clawback (%s) for a return that was refused", got.ReturnClawbackTx)
 	}
@@ -1042,7 +1035,7 @@ func TestARefusedReturnUnwindsTheReturningBanksLeg(t *testing.T) {
 // payer repaid nothing, 250000 stranded in the returning bank's suspense, and an
 // ACSC on the wire saying it had all worked.
 func TestAReturnRetriedAfterAnUnwindRepaysThePayer(t *testing.T) {
-	h := newMeshHarness(t)
+	h := newHarness(t)
 	ctx := context.Background()
 	p := h.settledCollection(t)
 	// The biller spends what it collected, which empties its BANK's settlement
@@ -1051,7 +1044,7 @@ func TestAReturnRetriedAfterAnUnwindRepaysThePayer(t *testing.T) {
 	h.spendTheCredit(t)
 
 	h.returnPayment(t, p.ID, iso20022.ReturnReasonNoMandate, "the debtor disputes the mandate")
-	h.drain(t)
+	h.work(t)
 
 	if unwound := h.payment(t, p.ID); unwound.Status != payment.Settled {
 		t.Fatalf("the refused return left the payment at %v, want Settled — this test retries from there", unwound.Status)
@@ -1081,7 +1074,7 @@ func TestAReturnRetriedAfterAnUnwindRepaysThePayer(t *testing.T) {
 	billerBefore := h.balance(t, h.creditorPID, h.creditorAcct.ID)
 
 	h.returnPayment(t, p.ID, iso20022.ReturnReasonNoMandate, "the debtor disputes the mandate")
-	h.drain(t)
+	h.work(t)
 
 	if got := h.payment(t, p.ID); got.Status != payment.Returned {
 		t.Errorf("the retried return left the payment at %v, want Returned", got.Status)
@@ -1133,7 +1126,7 @@ func TestAReturnRetriedAfterAnUnwindRepaysThePayer(t *testing.T) {
 // non-empty at the moment the operator acts, which is the only arrangement in
 // which "left it alone" is a claim about anything.
 func TestTheClearingHousesOtherCallersLeaveTheHeldReturnsAlone(t *testing.T) {
-	h := newMeshHarness(t)
+	h := newHarness(t)
 	p := h.settledPayment(t)
 
 	// A real pacs.004 is built and carried, so that the entry placed below is the
@@ -1148,12 +1141,10 @@ func TestTheClearingHousesOtherCallersLeaveTheHeldReturnsAlone(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReturnMessage: %v", err)
 	}
-	if err := h.mesh.send(h.creditorBIC, h.cfg.ClearingHouseBIC, env); err != nil {
-		t.Fatalf("send: %v", err)
-	}
-	h.drain(t)
+	h.upload(t, h.creditorBIC, h.cfg.ClearingHouseBIC, env)
+	h.work(t)
 	held := heldReturn{doc: env.Document.(*iso20022.Pacs004), from: h.creditorBIC}
-	h.mesh.csm.held["pay_sentinel"] = held
+	h.dep.csm.held["pay_sentinel"] = held
 
 	// A cut-off, a re-instruction, and an operator's rejection: the three
 	// entry points that do not arrive in an inbox.
@@ -1161,30 +1152,30 @@ func TestTheClearingHousesOtherCallersLeaveTheHeldReturnsAlone(t *testing.T) {
 		t.Fatalf("OpenCycle: %v", err)
 	}
 	rejected := h.submitCreditTransfer(t)
-	h.drain(t)
+	h.work(t)
 	h.closeCycle(t)
-	h.drain(t)
+	h.work(t)
 	for _, c := range h.cycles(t) {
 		if c.Status == payment.CycleSettled {
-			if _, err := h.mesh.Settle(context.Background(), c.ID); err == nil {
+			if _, err := h.dep.ClearingHouse().Settle(context.Background(), c.ID); err == nil {
 				t.Errorf("re-settling %s was accepted; this test wants the refusal path walked", c.ID)
 			}
 		}
 	}
-	if _, err := h.mesh.Reject(context.Background(), rejected.ID,
+	if _, err := h.dep.ClearingHouse().Reject(context.Background(), rejected.ID,
 		iso20022.StatusReasonNotSpecifiedAgentGenerated, "operator says no"); err == nil {
 		t.Log("the rejection was accepted; either way the map is what is measured")
 	}
-	h.drain(t)
+	h.work(t)
 
-	got, ok := h.mesh.csm.held["pay_sentinel"]
+	got, ok := h.dep.csm.held["pay_sentinel"]
 	if !ok {
 		t.Fatal("closeCycle, settle or reject dropped a held return; only handle's two callers may touch csm.held")
 	}
 	if got != held {
 		t.Errorf("a held return was rewritten by a caller-goroutine method; csm.held is unlocked precisely because none of them touches it")
 	}
-	if n := len(h.mesh.csm.held); n != 1 {
+	if n := len(h.dep.csm.held); n != 1 {
 		t.Errorf("the clearing house holds %d returns, want the 1 this test put there", n)
 	}
 }

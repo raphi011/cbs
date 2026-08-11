@@ -40,7 +40,7 @@ func aurora(t *testing.T, s *server) http.Handler {
 // the whole point of the route: the same instruction a payer would submit is
 // refused by the clearing door and performed by the bank's own.
 func TestOneAddressIsRefusedAsAPaymentAndCarriedAsATransfer(t *testing.T) {
-	srv, _ := newAPIHarness(t)
+	srv := newAPIHarness(t)
 	h := aurora(t, srv)
 	_, alice := seededParty(t, srv, aliceIBAN)
 	aaronIBAN := auroraIBAN(2)
@@ -85,7 +85,7 @@ func TestOneAddressIsRefusedAsAPaymentAndCarriedAsATransfer(t *testing.T) {
 // above: a transfer that succeeded left nothing on the routes a payment would
 // have appeared on.
 func TestATransferNamesNoPaymentAndOpensNoCycle(t *testing.T) {
-	srv, msh := newAPIHarness(t)
+	srv := newAPIHarness(t)
 	h := aurora(t, srv)
 	_, alice := seededParty(t, srv, aliceIBAN)
 
@@ -94,10 +94,11 @@ func TestATransferNamesNoPaymentAndOpensNoCycle(t *testing.T) {
 		`{"from":%q,"to":%q,"amount":1000,"description":"rent"}`, alice.Account, auroraIBAN(2)),
 		http.StatusOK)
 
-	// Drained, because the assertion is about messages that were never sent: a
-	// clearing payment would have a pacs.008 in flight at this point, and
-	// counting the bank's legs before the mesh had settled would pass either way.
-	drain(t, msh)
+	// Carried, because the assertion is about a file that was never uploaded: a
+	// clearing payment would have left a pacs.008 in the clearing house's order
+	// log at this point, and counting the bank's legs before anybody had worked
+	// through it would pass either way.
+	carry(t, srv)
 	if after := len(doJSONArray(t, h, "GET", "/payments", "", http.StatusOK)); after != before {
 		t.Errorf("the bank holds %d payment legs after a book transfer, want %d", after, before)
 	}
@@ -107,7 +108,7 @@ func TestATransferNamesNoPaymentAndOpensNoCycle(t *testing.T) {
 // status code. Bella banks at Banca Verde, so there is nothing here to transfer
 // to and the instruction was a payment all along.
 func TestATransferToAnAddressThisBankDoesNotHoldIsNotFound(t *testing.T) {
-	srv, _ := newAPIHarness(t)
+	srv := newAPIHarness(t)
 	h := aurora(t, srv)
 	_, alice := seededParty(t, srv, aliceIBAN)
 
@@ -120,7 +121,7 @@ func TestATransferToAnAddressThisBankDoesNotHoldIsNotFound(t *testing.T) {
 // about the request rather than about either account, and the statuses that
 // separate them from the ones that are.
 func TestATransferRefusesItsOwnPayeeAndItsOwnAmount(t *testing.T) {
-	srv, _ := newAPIHarness(t)
+	srv := newAPIHarness(t)
 	h := aurora(t, srv)
 	_, alice := seededParty(t, srv, aliceIBAN)
 
