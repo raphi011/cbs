@@ -763,8 +763,10 @@ refused *specifically* rather than by family, in `iso20022/doc.go`: `camt.054`,
 because a notification carries no balance and therefore cannot detect a wrong
 posting, and `camt.051`, because this system lodges cash and never withdraws it.
 Reachable for the first time but unclaimed: a `pacs.028` status request. Batched
-bulks — which is what would exercise `pacs.002`'s `GrpSts: PART`, built and unused —
-and a cutoff timer were listed here too, and are now §21's task 7.
+bulks and a cutoff timer were listed here too and are §21's task 7, claimed;
+`pacs.002`'s `GrpSts: PART` is built and reached, by §21's task 8, at the clearing
+house — the only institution that still rejects anything once a cycle settles
+before its files are released.
 
 **A party model.** No party, customer or account-holder entity; a
 `deposit.Account` has a `Name string` and one person's accounts are not linked.

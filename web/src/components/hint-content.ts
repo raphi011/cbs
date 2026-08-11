@@ -519,7 +519,7 @@ Mandate checks, at the CREDITOR's bank, on submission:
   → the collection is sent, and the payment is Initiated
 \`\`\`
 
-A revoked mandate causes immediate rejection, and so does an amount over the limit. Passing all four does **not** make the payment [[payment-lifecycle|Accepted]] — it leaves it *Initiated*, in no cycle, with the collection on its way to the payer's bank; only the clearing house accepts. Once a payment is settled, the debtor can trigger a [[allows-return|return]] to dispute the collection.
+A revoked mandate causes immediate rejection, and so does an amount over the limit. Passing all four does **not** make the payment [[payment-lifecycle|Accepted]] — it leaves it *Initiated*, in no cycle, waiting for its bank's cut-off; only the clearing house accepts, and the payer's bank is handed the collection later still, once the cycle has settled. Once a payment is settled, the debtor can trigger a [[allows-return|return]] to dispute the collection.
 
 **The mandate is the creditor bank's row, and the API says so.** A *network-level* resource — created and listed on the clearing house's console, with every member's authorisations over every other member's customers' accounts on one page — would be the wrong owner for the rule stated above: the bank that validates a mandate is the creditor's, so the record belongs to it. Creating one is a request to that bank, and what it lists is its own customers' authorisations. Two consequences follow and neither is cosmetic. The **debtor is recorded, not checked** — that account is at another bank, and no bank here reads another's register — so a mandate naming an account that does not exist is created and fails its first collection. And the mandate's **asset comes from the creditor's account**, the one the recording bank holds; two accounts in different assets are no longer refused at creation, because the comparison needs a register this bank cannot read. That collection is refused at first use instead, by the debtor's bank, on the [[scheme-asset|scheme's asset]] — later than before, which is the honest price of one bank keeping only its own books.`,
   },
@@ -543,10 +543,10 @@ Every arrow is drawn by a **named institution**, and no two adjacent ones by the
 - **Initiated → Accepted:** the **clearing house's** act and nobody else's — it takes the payment into the open cycle for its scheme. No open cycle is a refusal, and it travels as **TM01, "invalid cut-off time"**: the cut-off belongs to the clearing house, so the refusal does too.
 - **Accepted → Cleared:** the cut-off. [[netting|Net positions]] computed across all payments in the cycle. No money moves.
 - **Cleared → Settled:** three institutions, and the arrow is the *third* one's. The clearing house asks — closing a cycle sends a \`pacs.009\` — and the **central bank** discharges the net positions in its own book, which is where the money becomes [[settlement-finality|final]]. The payment row moves to Settled later still, when the **payee's own bank** posts the [[creditor-leg]] on being told, per payment, that the cycle settled. The gap between those two moments is the [[unreconciled-position|unreconciled position]]. A net payer who cannot cover is refused before anything posts at all: the cycle stays Closed with no settlement against it, and every payment in it stays Cleared.
-- **Rejected:** reachable from *Initiated* as well as *Accepted*, and it is **two halves in two units of work** — the clearing house marks the payment Rejected, and the payer's own bank then [[reversal|reverses]] the debtor leg. In between, the rejection has half-happened: the payment reads Rejected while the customer's money is still in suspense. A rejected *collection* can be told to two banks, because the bank waiting for the answer and the bank holding the money can be different institutions — but only when the payer's bank has already **posted the debtor leg**. When it refused the collection itself for want of funds (\`AM04\`), it posted nothing, there is nothing to give back, and there is one message again.
+- **Rejected:** reachable from *Initiated* as well as *Accepted*, and it is **two halves in two units of work** — the clearing house marks the payment Rejected, and the submitting bank then [[reversal|reverses]] the debtor leg. In between, the rejection has half-happened: the payment reads Rejected while the customer's money is still in suspense. **The clearing house is the only institution that rejects anything**, and one message is all a rejection needs: before the cycle settles, the bank that submitted is the only bank that has heard of the payment. A receiving bank cannot reject — it is handed the instruction with the money already in its clearing suspense, so what would have been \`AC01\` or \`AM04\` is a return instead. *Before settlement, reject; after settlement, return* is the rule book's own division, and settling before releasing is what puts every receiving bank's objection on the second side of it.
 - **Returned:** after settlement; an R-transaction unwinds the flow (available on [[allows-return|return-enabled]] schemes only), and it is **three acts at three institutions**. It is sent by the bank that *received* the original instruction, and that bank posts the leg it owns **before** it sends — which is the only reason it can still refuse. The central bank then reverses the reserves and is final. The other bank posts the leg it owns **after** that, on the \`pacs.004\` the clearing house releases to it, and cannot refuse: there is nothing left to refuse. The status turns Returned when the second customer leg lands.
 
-A member bank advances its own copy through exactly three acts of its own: recording that the payment reached a cycle (which posts nothing — no money moves at an acceptance, but a record that jumped from *instructed* to *settled* could not answer the question a customer asks in between), recording a rejection **and** reversing the debtor leg in one unit of work, and recording a settlement while releasing the payee's money if it holds the payee.
+A member bank advances its own copy through exactly three acts of its own: recording that the payment reached a cycle (which posts nothing — no money moves at an acceptance, but a record that jumped from *instructed* to *settled* could not answer the question a customer asks in between), recording a rejection **and** reversing the debtor leg in one unit of work, and recording a settlement while releasing the payee's money if it holds the payee. A *receiving* bank does the last of those the moment it is handed the instruction, because by then the payment is already final.
 
 See [[clearing-vs-settlement]] for why clearing and settlement are distinct phases, and [[settlement-delay]] for how the value date is set.`,
   },
@@ -568,7 +568,7 @@ The debtor leg is reversed if the payment is [[payment-lifecycle|rejected]] befo
   },
   "creditor-leg": {
     title: "Creditor leg",
-    body: `The **creditor leg** is the ledger entry that delivers funds into the payee's account. It is posted by the **payee's own bank**, once reserves have actually moved between banks at the [[central-bank-reserves|central bank]] and the clearing house has told that bank so.
+    body: `The **creditor leg** is the ledger entry that delivers funds into the payee's account. It is posted by the **payee's own bank**, on the instruction the clearing house releases to it once reserves have actually moved between banks at the [[central-bank-reserves|central bank]]. That bank sees the payment for the first time then: the file is held until the cut-off is final, so no bank ever credits a customer against money that has not settled.
 
 Two postings put that bank back to flat, and they are **two separate [[unit-of-work|units of work]], booked from two different institutions' messages**. The reserve mirror comes **first**, because the central bank tells a member its reserve moved before it tells the clearing house the cycle settled:
 
@@ -579,7 +579,7 @@ Bank B — reserve mirror, from the camt.053:
 \`\`\`
 
 \`\`\`
-Bank B — creditor leg, from the pacs.002 (Bob gets €300):
+Bank B — creditor leg, from the released pacs.008 (Bob gets €300):
   Debit  Clearing Suspense (Liability) 300  ← suspense cleared
   Credit Bob Deposit (Liability)       300  ← Bob's balance rises
 \`\`\`
@@ -744,7 +744,7 @@ That is not a modelling convenience. In the EU it is the **Settlement Finality D
 Clearing house  --pacs.009-->  central bank
 Central bank commits its netting transaction   ← FINAL here
   --camt.053-->  each member whose position moved
-  --pacs.002/ACSC (via the clearing house)-->  per payment
+  --pacs.008 released (via the clearing house)-->  per receiving bank
 Each bank posts its own legs, locally, afterwards  ← catching up
 \`\`\`
 
@@ -804,12 +804,12 @@ The closing balance the statement carried is stored and **read** — see [[bank-
     body: `A bank reconciles **two advices from two institutions against one balance**.
 
 - The **central bank** says what its reserve moved by, in a \`camt.053\` statement of that bank's reserve account. That is the mirror leg against the [[reserve-account|reserve asset]].
-- The **clearing house** says which payments settled, one \`pacs.002\`/\`ACSC\` per payment. Those are the [[creditor-leg|creditor legs]].
+- The **clearing house** releases the instructions the cut-off settled, one \`pacs.008\` per receiving bank carrying that bank's share of every file uploaded. Those are the [[creditor-leg|creditor legs]]. The bank that *submitted* gets a \`pacs.002\`/\`ACSC\` per payment instead — the answer to the question it asked, with no leg left to post.
 
 \`\`\`
 Bank B, a net receiver, over one cut-off:
   camt.053  (central bank)     Debit  Reserve at CB    → Credit Clearing Suspense
-  pacs.002  (clearing house)   Credit payee's deposit  → Debit  Clearing Suspense
+  pacs.008  (clearing house)   Credit payee's deposit  → Debit  Clearing Suspense
   ─────────────────────────────────────────────────────────────
   Clearing suspense back to zero   ✓  only if the two agree
 \`\`\`
