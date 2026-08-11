@@ -130,7 +130,7 @@ and the *Multiple ledgers, no cross-ledger atomicity* block in `payment/system.g
 ### IDs are unique per `Book`, not globally — so keys are composite
 
 The chart-of-accounts numbering spec
-(`docs/superpowers/specs/2026-06-24-chart-of-accounts-numbering-design.md`) is explicit:
+(`specs/2026-06-24-chart-of-accounts-numbering-design.md`) is explicit:
 
 > **numbers are unique within a `Book`, not globally** — exactly the scope today's `acct_*` IDs
 > already have (each bank's `Book` numbers its own accounts).
