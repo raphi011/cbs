@@ -76,6 +76,14 @@ The sections below are organized around these layers: general-ledger concepts fi
     - [The Book Transfer](#the-book-transfer)
     - [A Scheme Declares Its Asset](#a-scheme-declares-its-asset)
     - [Cross-Currency Payments Are Two Operations](#cross-currency-payments-are-two-operations)
+  - [The Transport: Files, a Cut-off, and a Business Day](#the-transport-files-a-cut-off-and-a-business-day)
+    - [Nothing Is Ever Pushed at a Member Bank](#nothing-is-ever-pushed-at-a-member-bank)
+    - [An Upload Answers Technically](#an-upload-answers-technically-and-the-business-answer-comes-back-later)
+    - [The Hub Accumulates; the Cut-off Builds the File](#the-hub-accumulates-the-cut-off-builds-the-file)
+    - [Advancing the Clock Runs a Business Day](#advancing-the-clock-runs-a-business-day)
+    - [The Calendar Is TARGET's](#the-calendar-is-targets-and-a-shut-day-still-advances)
+    - [The Day's Report](#the-days-report)
+    - [What This Transport Is Not](#what-this-transport-is-not)
   - [The Payment Lifecycle](#the-payment-lifecycle)
   - [Posting Choreography: SEPA Credit Transfer](#posting-choreography-sepa-credit-transfer)
   - [Settlement Is Final at the Central Bank, and the Banks Catch Up](#settlement-is-final-at-the-central-bank-and-the-banks-catch-up)
@@ -470,7 +478,7 @@ Interest is calculated based on value dates, not booking dates. This distinction
 
 #### Who Decides the Value Date
 
-The value date is not set by a single actor — it depends on the transaction type:
+The value date is not set by a single rule — it depends on the transaction type:
 
 - **Automated rules** handle the majority of cases. The bank's system assigns the value date based on predefined policies per product and payment channel (e.g., domestic wires get same-day value, checks get T+2, international transfers get T+1 to T+3 depending on the corridor).
 
@@ -894,7 +902,7 @@ What makes that safe is one invariant the whole design rests on: **a bank code i
 
 And the refusal cannot say **which** of two situations it is in: no such bank is in this scheme, or this bank's copy predates it. Those have different remedies and a subscriber has no way to tell them apart, because telling them apart would mean asking the clearing house — the lookup the subscription replaces. A status code claiming to know would be lying about it. Contrast `ErrBankCodeNotAllocated`, which is the *issuer's* answer to the same shape of question and can tell, because the registry is where an allocation comes into existence.
 
-Not a timer, and not a push. A background poller in a repository whose suites run on a fake clock buys realism and pays in flaky tests; a clearing house holding a subscriber list and a retry policy is a delivery system rather than a publisher, and the real vendor does not know who is listening.
+Not a push, and not a background poller. A clearing house holding a subscriber list and a retry policy is a delivery system rather than a publisher, and the real vendor does not know who is listening. What the refresh *does* have is a cadence, and it is the [business day's](#advancing-the-clock-runs-a-business-day): every bank takes the published roster as phase 0, before anything else moves, so a bank admitted since the last advance can be paid by its neighbours today rather than after somebody remembers to call the route. A route nobody calls and a poller nobody can test are both replaced by a phase in a schedule that runs on demand.
 
 ##### The copy carries a BIC and a code, and nothing else
 
@@ -1070,9 +1078,9 @@ One request asks for **one currency**, so a bank joining in two assets is answer
 
 What it **can** do is its own book: it publishes products, adds ledgers, and takes money in over the counter. **A bank's counter has nothing to do with its central bank account** — a bank that has founded itself and joined no scheme can open its doors, and what it does with the cash is hold it, as [vault cash](#vault-cash-and-the-lodgement): its own money, in its own hands, in its own book. `POST /deposits` answers `200` and reaches no other institution. It has no customers to take cash from until it has an address range, so that claim is asserted directly rather than through one.
 
-**What the last refusal cost when it did not exist.** Routing in this system is the mesh's actor table, not the clearing house's roster, so nothing about the transport makes an unadmitted bank unreachable — and for a while nothing else did either. A payment addressed to one was submitted (`202`), relayed, accepted and cleared like any other; so was one **from** one, whose customer had spendable money from an [arranged overdraft](#overdraft) — which is why "it has no money to pay with" was never the guard it was taken for. Both failed at the *cut-off*, because the clearing house cannot name a non-member in the `pacs.009` it sends the central bank, and that takes the **whole cycle** down rather than the one payment: every other member's payments stay `Cleared`, their payees unpaid and their payers' money sitting in suspense. No remedy avoided admitting the bank — [`POST /cycles/{id}/settle`](#the-clearing-house--8082) failed in exactly the same place and rejecting the offending payment was refused `invalid payment state transition`. A refusal at the door costs one payer a `422`; the absence of it stopped the network.
+**What the last refusal cost when it did not exist.** Enrolling a bank as a subscriber and admitting it to the scheme are separate acts and nothing orders them, so a bank can hold a [download queue](#nothing-is-ever-pushed-at-a-member-bank) and no roster entry — addressable in both directions, and for a while refused in neither. A payment addressed to one was submitted (`202`), carried, accepted and cleared like any other; so was one **from** one, whose customer had spendable money from an [arranged overdraft](#overdraft) — which is why "it has no money to pay with" was never the guard it was taken for. Both failed at the *cut-off*, because the clearing house cannot name a non-member in the `pacs.009` it sends the central bank, and that takes the **whole cycle** down rather than the one payment: every other member's payments stay `Cleared`, their payees unpaid and their payers' money sitting in suspense. No remedy avoided admitting the bank — [`POST /cycles/{id}/settle`](#the-clearing-house--8082) failed in exactly the same place and rejecting the offending payment was refused `invalid payment state transition`. A refusal at the door costs one payer a `422`; the absence of it stopped the network.
 
-It is refused now, of **both** parties and in two places: `Mesh.Submit`, the one door every submission comes through, so the refusal arrives before any leg is posted; and `AcceptAtCSMTx`, where the clearing house makes the same judgement from its own routing row before it takes a payment into a cycle. Both, and not one, because the clearing house's answer travels as a `pacs.002` addressed *through the roster* — so in the direction where the non-member is the payer, the rejection that would reverse its debtor leg has nowhere to go, and the money would stay in suspense. Nothing can reach either refusal today, because every bank a deployment has is provisioned in full before the process starts; that is a claim about today's callers rather than an invariant, and what holds it to being true is the reconciliation harness asking of the books what the two guards ask of a submission.
+It is refused now, of **both** parties and in two places: at the submitting bank's own door, which every submission comes through, so the refusal arrives before any leg is posted; and at `AcceptAtCSMTx`, where the clearing house makes the same judgement from its own routing row before it takes a payment into a cycle. Both, and not one, because the clearing house's answer travels as a `pacs.002` addressed *through the roster* — so in the direction where the non-member is the payer, the rejection that would reverse its debtor leg has nowhere to go, and the money would stay in suspense. Nothing can reach either refusal today, because every bank a deployment has is provisioned in full before the process starts; that is a claim about today's callers rather than an invariant, and what holds it to being true is the reconciliation harness asking of the books what the two guards ask of a submission.
 
 #### None of This Travels on a Message
 
@@ -1118,7 +1126,7 @@ What `Direction` governs is bigger than it used to be, and it is worth stating e
 - **Which half runs where.** `SubmitPaymentTx` runs the *submitting* bank's half and `AcceptInboundTx` runs the other one. For a push that means the debtor half at submission and the creditor half on receipt; for a pull it is the other way round, so **a collection posts nothing at all when it is submitted** and the debtor leg is posted by the payer's bank when the `pacs.003` reaches it. That is the only moment any actor in this system has been able to look at the account being collected from, which is why a collection refused for want of funds can only ever be refused there.
 - **Whether a mandate is required**, and — because in SEPA the *creditor* holds the mandate — that it is the creditor's bank that checks it. On a pull that is synchronous, at submission, so a revoked mandate comes back to the caller as a `4xx` and never as a message: this system never *rejects* a collection with `MD01`, though a debtor's bank may still *return* a settled one with it.
 
-**What no direction answers is a payment that never leaves one bank**, and that one is refused outright. When the payer and the payee are customers of the *same* institution — an **on-us** payment — nothing crosses between banks: no interbank obligation comes into existence, so there is no position for a clearing house to net, no reserves for a settlement agent to move, and no `camt.053` that could tell a bank anything about a book it already holds. A real bank recognises the beneficiary as its own and moves the money between two of its own deposit accounts; the payment never reaches a scheme at all. So `Mesh.Submit` refuses it (`payment.ErrOnUsPayment`, `422` from either `POST /payments`), before the submitting bank's half has run and before any row exists.
+**What no direction answers is a payment that never leaves one bank**, and that one is refused outright. When the payer and the payee are customers of the *same* institution — an **on-us** payment — nothing crosses between banks: no interbank obligation comes into existence, so there is no position for a clearing house to net, no reserves for a settlement agent to move, and no `camt.053` that could tell a bank anything about a book it already holds. A real bank recognises the beneficiary as its own and moves the money between two of its own deposit accounts; the payment never reaches a scheme at all. So the submitting bank's door refuses it (`payment.ErrOnUsPayment`, `422` from either `POST /payments`), before that bank's half has run and before any row exists.
 
 That refusal is about the **route** and not about the payment: a transfer between two customers of one bank is an ordinary product, and this system offers it — see [The Book Transfer](#the-book-transfer). What the refusal says is that the payer asked for the wrong one of the two. Submitted to clearing anyway it produced three different wrong answers, one per institution — a cycle whose only payment netted to zero settled nothing and stranded at `Cleared`; a return sent that bank two statements of the *same* reserve account under the same reference, so its own mirror moved by an amount the central bank's record of it did not; and the returning bank, being both parties, held both legs and refused its own customer's unconditional refund. Each is a symptom of an instruction that should never have been handed to a clearing house, which is why one refusal at the door replaces three patches further in.
 
@@ -1193,6 +1201,115 @@ A consequence of the above: paying euro *into* a bitcoin account is not a paymen
 In the real world it is not one operation either. Sending euro to a dollar account is a euro payment plus a **foreign-exchange trade**, and somebody — the sender's bank, the recipient's bank, or a correspondent in between — does the trade, quotes a rate, and takes a spread on it. The reason the transfer has a worse rate than the one on the news is that the trade is a separate, priced transaction that has been bundled into the payment's presentation.
 
 Modelling it therefore needs the [FX machinery](#foreign-exchange-and-why-the-ledger-needs-no-rates) — position accounts, a rate source, a spread booked to revenue — none of which exists here. What does exist is the refusal, which is the part that keeps the books correct in the meantime.
+
+### The Transport: Files, a Cut-off, and a Business Day
+
+Everything above describes what each institution decides. This section is how a decision reaches the institution that has to act on it, and **when** — which in bulk clearing is a different question from *how fast*.
+
+**A payment network is not a set of banks messaging each other.** It is a set of banks that accumulate their customers' instructions until a **cut-off**, upload one **file** carrying all of them, and come back later to collect the results. That is store-and-forward against a clock, and every mechanical property below follows from taking it seriously rather than from any choice about software.
+
+#### Nothing is ever pushed at a member bank
+
+The transport is **EBICS** — the Electronic Banking Internet Communication Standard, which is what German and French banks actually use to reach their clearing house. Its defining property is that it has **no push at all**: a bank *polls* for its downloads. The subscriber is always the client, and that is the whole of the topology:
+
+```
+member bank    -->  clearing house      (CCT, CDD, CRT up; pacs.002, pacs.004 down)
+member bank    -->  settlement agent    (CLD up; camt.053, camt.025 down)
+clearing house -->  settlement agent    (CSI, CRT up; pacs.002 down)
+```
+
+**The settlement agent dials nobody.** Three base URLs are the entire address book of an N+2 deployment, and there is no table of who-can-be-reached to keep in step with the roster — because **the download queue *is* the routing table.** The clearing house routes an output file to a receiving bank by putting it in that bank's queue. There is no address to resolve and no lookup that could disagree with membership, because [enrolment](#provisioning-a-bank-is-three-rows-at-three-institutions) is what creates the queue. A BIC with no queue is a BIC the clearing house answers `RC01` for, out of a row it owns.
+
+That is one refusal where there were two facts that could disagree, and it also makes a genuinely new failure mode expressible: **a bank that never collects.** Its customers are never told the fate of anything. That is a real operational failure with a real remedy, and it has no analogue in a system where results are delivered.
+
+#### An upload answers *technically*, and the business answer comes back later
+
+| Order type | Direction | Carries |
+|---|---|---|
+| `CCT` | upload | a `pacs.008` file — credit transfers |
+| `CDD` | upload | a `pacs.003` file — direct debit collections |
+| `CRT` | upload | a `pacs.004` — a return |
+| `CST` | upload | a `pacs.002` — a status report |
+| `CSI` | upload | a `pacs.009` — a settlement instruction |
+| `CLD` | upload | a `camt.050` — a lodgement |
+| `C53` | download | statements |
+| `HAC` | download | the acknowledgement file: what became of each order this subscriber sent |
+| `BTD` | download | everything else waiting in the queue, in order |
+
+`EBICS_OK` and an order id mean **the file arrived and parsed**. They say nothing about what it means. The business answer is a `pacs.002` the subscriber collects on a later download — and that seam is the whole point of modelling the transport at all.
+
+`HAC` is what makes the seam *visible* rather than merely true. A subscriber that uploaded a file and has not yet been told anything about its contents can ask for its order's status, and "received, not yet processed" is an answer distinct from "accepted" and from "no such order".
+
+**The subscriber's identity is a request header, and that is not authentication.** Naming what a real one has is the point of saying so: `A006` signs the order, `E002` encrypts the payload, `X002` authenticates the request, and enrolment is INI/HIA — a half-offline ceremony ending in a **hand-signed paper letter** carrying the key hashes. This is the same posture the ports take: *the port is the claim*. Stating it once is what keeps a reader from inferring that file transfer between banks is unauthenticated by nature. It is in fact the most heavily authenticated hop in the whole chain, and this system models none of it.
+
+#### The hub accumulates; the cut-off builds the file
+
+`POST /payments` validates the instruction, posts the debtor leg, marks the payment `Initiated` and **queues it for the next file**. Nothing has been sent when the API answers `202`. `GET /payments/pending` is what is waiting; `POST /payments/cutoff` builds one file per scheme, uploads it, and answers with the order id.
+
+The customer-facing half does not change: a submission that fails the bank's **own** checks is still refused synchronously, which is why the API can answer `422` rather than `202` followed by a rejection nobody can be told about.
+
+**One file in, M files out.** The clearing house receives one file carrying N transactions from one bank, answers it with **one** `pacs.002` carrying a decision per transaction — whose group status is `PART` when they did not all go the same way — and **sorts it by creditor agent**, building one output file per receiving bank. So the counts along a chain are 1 in, 1 answered, M out, and none of the institutions sees the same file. That fan-out is what a clearing house is *for*, and it is invisible in a network where every message carries one payment.
+
+It reads no store to sort. A clearing house that had to look a payment up to decide where to send it could not route a file about a payment it does not hold, which in a real network is every file.
+
+#### Advancing the clock runs a business day
+
+**The deployment owns a clock, and there are no background goroutines under this process at all.** No timers, no pollers, no actor loops. HTTP requests *queue* work — a customer's instruction joins their bank's hub, an operator's cut-off becomes an instruction uploaded to the settlement agent — and `POST /clock/day` drains all of it **synchronously**, on one goroutine, in the order a business day runs in.
+
+That is simpler than a set of concurrent actors *and* more faithful, and those two rarely point the same way. Bulk clearing genuinely is store-and-forward against a cut-off clock; concurrency between the institutions would be modelling a liveness that bulk SEPA does not have.
+
+The schedule, on a day the scheme settles:
+
+```
+0  banks   take the published routing directory
+1  banks   cut-off -> one file per scheme -> upload CCT / CDD
+2  csm     validate, record, take into the open cycle, answer per transaction,
+           and BUILD each receiving bank's share -- releasing nothing
+3  csm     its own cut-off: net every open cycle -> upload CSI
+4  cb      settle whole-or-nothing -> camt.053 per member -> answer the csm
+5  csm     collect the answer -> RELEASE the output files, and the ACSC per payment
+6  banks   collect -- THE SETTLEMENT AGENT FIRST, then the clearing house
+7  banks   end of day: accrual, arrears
+   clock   -> the next calendar day
+```
+
+Two things it deliberately does not do. It **does not interleave**: each phase completes for every institution before the next begins, because real clearing is exactly this batched and a system that interleaved would be inventing concurrency it does not have. And it **does not run a cycle on a day TARGET is shut**.
+
+Three orderings in that list are load-bearing rather than presentational:
+
+- **The directory refresh is phase 0**, so a bank admitted since the last advance can be paid by its neighbours *today* rather than after somebody remembers to call the route. The refresh is a phase of the day rather than a background poller, and it visits **every** bank rather than every subscriber, because a bank waiting on admission is exactly the bank that needs the directory it is about to appear in.
+- **Phases 3, 4, 5 are settle-then-release.** The cycle settles before the output files leave the clearing house, so a receiving bank is handed its instructions only once the funds behind them are final. Reverse them and settlement risk is invented. What the order costs is the receiving bank's ability to say *no*, which is why [its objections are returns](#the-payment-lifecycle) rather than rejections.
+- **Phase 6 collects from the settlement agent first.** The mirror leg has to be booked before the creditor legs draw on it, and the two files that carry them sit in **different queues at different institutions** — the `camt.053` at the settlement agent, the released `pacs.008` at the clearing house. Two connections share no ordering, so nothing about the order they were written in survives. What guarantees it is the **bank's own collection order**, and that is more honest than a guarantee from the network: the ordering was never a property of the transport; it was a property of there being one queue.
+
+**A phase never stops the day.** Every one of them collects its failures and carries on, because a file one bank cannot read must not stop another bank being paid — and an institution that abandoned the day halfway would leave the clock where it was with half the queues drained.
+
+#### The calendar is TARGET's, and a shut day still advances
+
+Which days money can move on is the **settlement agent's** calendar, not a currency's, not a market's and not any member state's. German banks are shut on 3 October and TARGET is not, so a payment submitted that morning clears and settles that afternoon: a national holiday closes branches, it does not close the settlement agent.
+
+Six named days and the weekend are the whole of it — New Year's Day, Good Friday, Easter Monday, 1 May, 25 and 26 December — and two of the six move with Easter, which is arithmetic rather than a data file. There is nothing to ship, nothing to keep current and nothing that can be stale; what it costs is that the Eurosystem adding a closing day would need a commit here where a table would need a row. TARGET substitutes nothing, either: a 25 December falling on a Saturday is simply a closing day the year does not get, unlike the UK and US calendars, which move the observance to the following Monday.
+
+**A day TARGET is shut still advances the date and still runs every bank's end of day.** Interest accrues over a weekend — that is the entire reason day-count conventions exist — while no cut-off, no clearing and no settlement runs. The clock moves one **calendar** day and never skips to the next settlement day, because a deployment that never had a Saturday would clear a Friday-evening payment the same night and make the whole point of a business calendar invisible.
+
+This is what closes a gap the payment layer documented against itself: the SEPA rule book's return window is **three banking business days**, and counting it in calendar days called a Thursday balance overdue on Sunday where the rule book would say Tuesday. There is a business date now, and the window counts in it.
+
+**The business date is in none of the N+2 databases,** and that absence is the substance. A bank's database holding one would be that bank's *opinion* about what day it is, and two banks could then disagree — a state no clearing system has. So the clock is a small file beside the databases, or nothing at all when they are ephemeral, in which case it starts at the seed's base date every time. That is the same bargain the ephemeral store makes, and it is why `go test ./...` needs no setup.
+
+#### The day's report
+
+`POST /clock/day` answers with everything that moved: the files uploaded and their order ids, the per-transaction outcomes, and whatever any institution could not process. A **problem** is a file an institution could not get through — recorded against the order id it arrived under, at the institution that could not act on it.
+
+That is where a failure goes because there is nowhere else for it to go: the uploader was told `EBICS_OK` and went away, so a handler that cannot process a downloaded file has nobody to return an error to. What it has instead is its own business day, which is running.
+
+A report is a **value** rather than an error string, which is what lets the operator console render it, the suite assert against it and the seed check it — and it is what makes the day legible, because a learner can watch a payment move through eight phases instead of observing that it has arrived.
+
+#### What this transport is not
+
+It carries an HTTP status. The store-and-forward transports under real bulk clearing (SWIFT FIN, FileAct) carry **delivery guarantees and non-repudiation**, and this carries neither. Delivery is not exactly-once and not in order: an upload can fail and be retried, a file can arrive twice, and two connections share no ordering at all — which is why every receiver here treats a redelivery as an ordinary event with a guard rather than as an impossibility.
+
+There is **one cut-off in a business day**, where SEPA runs several settlement cycles. Adding more is a loop over a list of times, and the calendar has to exist before a time of day within it means anything. There is no time of day within a settlement day at all.
+
+And EBICS's security half is absent entirely, as is EBICS 3.0's BTF descriptor — the order types here stay the legible three-letter codes. The most interesting thing in the protocol, **VEU distributed signature**, is four-eyes authorisation in the *transport* rather than in an application, and it is not built.
 
 ### The Payment Lifecycle
 
@@ -1334,7 +1451,7 @@ It works because the reserve side closes into an identity. Exactly two things po
 | a statement **missed, and then superseded** by one that did arrive | the same running-balance check, at the later statement |
 | **the last statement never arriving** | **nothing.** It is undetectable from inside, and stays so |
 
-The check is a *walk* rather than a comparison of two totals, because the first three failures have the same total and different histories; only the running balance separates them. And the last row has nothing in its right-hand column because a closing balance only ever arrives on a statement the bank holds. Closing it needs a **periodic** statement, and there is none. The case is unreachable while the mesh delivers exactly once and in order, and it becomes reachable *and invisible* the day a lossy transport arrives.
+The check is a *walk* rather than a comparison of two totals, because the first three failures have the same total and different histories; only the running balance separates them. And the last row has nothing in its right-hand column because a closing balance only ever arrives on a statement the bank holds. Closing it needs a **periodic** statement, and there is none. The case is **reachable and invisible**, which is the combination that matters: a statement is not pushed at a member, it waits in that member's download queue until the member collects, so a bank that stops collecting stops being told and this walk goes on agreeing with itself.
 
 **The clearing suspense has no such identity and cannot be given one**, because the mirror leg is **netted**: one cut-off produces one figure per member covering every payment in the batch and naming none of them, deliberately, since a member holds no cycle. So a bank cannot decompose its own suspense into the payments that put it there. What it can do is what an operations team does — age the balance FIFO over the account's own entries, oldest lots first, so that a netted leg discharges the batch that opened before it. That yields **positions with ages and no breaks**, and it is the honest shape: from inside the bank, nothing proves an old suspense wrong.
 
@@ -1390,7 +1507,7 @@ A direct debit is a **pull**: the creditor (e.g. a utility) collects from the de
 
 **The collection is submitted by the *creditor's* bank**, and that one sentence is what a push and a pull actually differ by. A collection is the payee asking for what it is owed, so the payee's bank is the one that puts the `pacs.003` on the wire — and its submission **moves nothing at all**. The account being collected from belongs to another bank's customer, and this bank has never seen it. What it checks is its own half: the payee's account, and the **mandate**, because in SEPA the mandate is a document the *creditor* holds. The package checks it exists, is active, matches both parties, and stays within its amount limit — otherwise the collection is refused right there, at the payee's own bank, as an error to the caller (`ErrMandateRequired`, `ErrMandateRevoked`, `ErrMandateExceeded`, …) rather than as a message to anybody.
 
-**The debtor's bank posts the debtor leg**, on receiving the `pacs.003`. That is the first moment any actor in this system has been able to look at the account being collected from, which is why a collection refused for want of funds can only ever be refused there — and why the payer's money moves *after* the collection was submitted rather than at the moment of it. The rule that covers both schemes, and that neither one on its own would tell you, is that **the debtor's bank posts the debtor leg**: which bank that is never changes, and the direction only decides whether it is the one submitting or the one answering.
+**The debtor's bank posts the debtor leg**, on collecting the `pacs.003`. That is the first moment any institution in this system has been able to look at the account being collected from, which is why a collection refused for want of funds can only ever be refused there — and why the payer's money moves *after* the collection was submitted rather than at the moment of it. The rule that covers both schemes, and that neither one on its own would tell you, is that **the debtor's bank posts the debtor leg**: which bank that is never changes, and the direction only decides whether it is the one submitting or the one answering.
 
 A settled payment can be **returned** (a SEPA R-transaction), and *both* schemes permit it — `AllowsReturn()` is `true` on each, and `PostReturnLegTx` asks only that and whether the payment is `Settled` — plus one thing about the *money*, which direction decides. The bank that sends the return posts its own leg **before** it sends, so it can still refuse: on a credit transfer that is the payee's bank holding the clawback, and a payee who has spent the money stops the return dead, with no `pacs.004` ever composed. The bank that posts **after** finality cannot refuse, because there is nothing left to refuse — on a collection that is the creditor's bank, which takes the money back off its biller whether or not the biller can afford it, and funds the shortfall out of its own [returns receivable](#returns-receivable) if the biller's account has closed. A collection comes back when the debtor disputes it or the funds are not there; a credit transfer comes back when the beneficiary's bank cannot apply it — an address it does not hold, a name that does not match. **Most returns in this system are asked for by that bank the moment it is handed the instruction**, because that is when it finds out: a receiving bank sees a payment only after the cycle carrying it is final, so its refusals have nowhere to go but back. An operator asking for one afterwards is the same act down the same route. What this system does **not** model is the debtor's SEPA **refund** right, the 8-week no-questions-asked claim on a settled collection: nothing here expires a return right, and the one window this system does count — the [three days](#unclaimed-balances) a receiving bank has to send back a credit it cannot apply — is a line in a report and gates no act. A payer who merely changes their mind about a credit transfer would in SEPA need a *recall* (`camt.056`), which the beneficiary may refuse and which this system does not implement. A return posts compensating transactions that move the funds back from the creditor to the debtor across the central bank, unwinding the original flow — but not in one act and not at one institution: the returning bank posts its own leg and sends a `pacs.004`, the settlement agent reverses the reserves and states both accounts in a `camt.053`, and the clearing house relays the `pacs.004` to the other bank once the return is final so that bank can post the leg it owns. Both customers' balances are restored where both accounts can still take the postings; where one cannot — a payer who has closed their account since, a biller who has closed theirs — the money lands in that bank's [unclaimed balances](#unclaimed-balances) or comes out of its [returns receivable](#returns-receivable) rather than stranding in an account nothing can reach. The return is *sent* by the bank that received the original instruction — which for a collection is the payer's bank, and for a credit transfer is the payee's — and the *reserve* movement is the central bank's, because a settled payment coming back moves reserves and no member bank moves those. An `RJCT` from the settlement agent makes the returning bank reverse the leg it had already posted — and the return can then be **asked again**, which matters because the commonest `RJCT` here is `AM04`: the other bank was short of reserves at that moment, and a shortfall somebody can cover is not a payer who has lost their refund right. The reversed leg's transaction id stays on the payment rather than being cleared, because it is what the retry's idempotency key is derived from; what it therefore stops meaning is "this bank's leg stands". Whether the leg still stands is in the ledger, on the transaction, and that is what `PostReturnLegTx` reads before it decides it has nothing to post. Reading the id alone was a return that ran its whole conversation — reserves reversed, the other bank's customer clawed back, `ACSC` on the wire — around a refund that no longer existed.
 
@@ -1418,12 +1535,12 @@ The order the acts run in, and what each institution puts on the wire:
 5. --pacs.002-->  clearing house  --pacs.002-->  the returning bank
 6. the clearing house releases the pacs.004 it held  -->  the other bank
 
-   each bank then takes its own inbox in order: it books its reserve mirror
-   from (4), and the other bank goes on to post its customer leg from (6) —
-   the second leg, and what takes the payment to Returned
+   each bank then COLLECTS, the settlement agent first: it books its reserve
+   mirror from (4), and the other bank goes on to post its customer leg from
+   (6) — the second leg, and what takes the payment to Returned
 ```
 
-Three things in that sequence are load-bearing. The **statements go out before the answer**, because step 6 is provoked by the answer and the relayed `pacs.004` is what makes the other bank post the one customer leg still outstanding. On a **push** that leg is the **refund**, and it draws on the very clearing suspense the statement in step 4 credits — get the order wrong and a bank pays its customer out of a suspense the return has not yet funded. On a **pull** it is the **clawback**, which *credits* that bank's suspense while its own statement debits it, so nothing there is drawn on and the order costs that direction nothing. One order goes out in both directions, and it is the one the push needs. The **clearing house holds the `pacs.004`** between steps 2 and 6 rather than relaying it straight through, because a bank that posted its leg against a return the settlement agent then refused would have moved a customer's money for nothing; on an `RJCT` the held message is dropped and only the answer goes out. That hold is the only state any actor in the mesh keeps between messages, it is in memory, and a restart loses it — recorded rather than fixed, because a durable version of it belongs in a clearing-house store that does not exist yet. And the settlement agent **reads the parties off the message**, out of `OrgnlTxRef`, not out of a payment row: it never saw the payment clear and holds none.
+Three things in that sequence are load-bearing. The **statements are queued before the answer**, because step 6 is provoked by the answer and the released `pacs.004` is what makes the other bank post the one customer leg still outstanding — and because the two sit in different queues, it is the bank's own collection order (the settlement agent first) that turns "queued before" into "booked before". On a **push** that leg is the **refund**, and it draws on the very clearing suspense the statement in step 4 credits — get the order wrong and a bank pays its customer out of a suspense the return has not yet funded. On a **pull** it is the **clawback**, which *credits* that bank's suspense while its own statement debits it, so nothing there is drawn on and the order costs that direction nothing. One order goes out in both directions, and it is the one the push needs. The **clearing house holds the `pacs.004`** between steps 2 and 6 rather than relaying it straight through, because a bank that posted its leg against a return the settlement agent then refused would have moved a customer's money for nothing; on an `RJCT` the held message is dropped and only the answer goes out. That hold is the only state any institution keeps between files, it is in memory, and a restart loses it — recorded rather than fixed, because a durable version of it belongs in a clearing-house store that does not exist yet. And the settlement agent **reads the parties off the message**, out of `OrgnlTxRef`, not out of a payment row: it never saw the payment clear and holds none.
 
 #### Returns Receivable
 
@@ -1443,7 +1560,7 @@ Bank B forces the clawback; the biller's account is Closed:
 
 This is a learning model, not a production processor. The simplifications are intentional:
 
-- **A named set of ISO 20022 messages, and what is missing is named rather than implied.** The messages are real, and they divide into three kinds. The **customer** payments between banks: `pacs.008` (credit transfer), `pacs.003` (collection), `pacs.002` (status) and `pacs.004` (return). The **institutions'** own traffic: `pacs.009` (the settlement instruction a clearing house sends its settlement agent at the cut-off) and `camt.053` (the statement of a member's reserve account, which is what it books its mirror leg from). There is no third kind: getting a bank its settlement account is [four calls, not a conversation](#none-of-this-travels-on-a-message), because scheme membership is contractual and a central bank account is reference data. There is no count here on purpose: this list is where the answer is, and every version of it that carried a number was falsified by the next task. Each is wrapped in a `head.001` business application header, marshalled to XML and *parsed on arrival* — which is what makes `FF01`, the rejection a receiver sends when it cannot read what it was given, a reachable failure mode rather than a decoration. Nothing but bytes crosses between the institutions. What is absent: **`pain.001`/`pain.008`** customer initiation (a customer's instruction arrives over this system's own REST API instead), the whole **`acmt`** family — a settlement account here is opened by a call and never afterwards maintained, closed or inspected over a wire — the rest of the **`camt`** reporting family — including the `camt.054` a bank would learn of an individual credit from, and the `admi.002` a real receiver would answer an unreadable file with — **`camt.056`/`pacs.007`** recalls and reversals, **runtime XSD validation**, and **message signing**. A golden-file schema check does exist — `TestGoldenFilesValidateAgainstTheSchema`, run by `make test-schemas` — but **it cannot be run as the tree stands**: it needs `xmllint` and the XSDs under `iso20022/testdata/xsd`, and that directory is deliberately not committed (the schemas are ISO's to redistribute, not this repository's to vendor — see `iso20022/testdata/README.md`). So a plain `go test` skips every one of its subtests, and `make test-schemas`, which sets `ISO20022_REQUIRE_SCHEMAS=1` precisely to turn each skip into a failure, **fails**. Until someone fetches the schemas, nothing here is checked against a real one. There is also no **batching** of customer payments: a `pacs.008` or `pacs.003` this system builds carries exactly one transaction, and one arriving with several is refused — which is why `pacs.002`'s `PART` group status, built by `groupStatusOf` in `payment/translate.go`, is never produced. The settlement `pacs.009` is not an exception to that so much as a different thing: it carries one leg per member with a **non-zero** position, because netting produces exactly one position per member and a member that nets to zero has nothing to discharge.
+- **A named set of ISO 20022 messages, and what is missing is named rather than implied.** The messages are real, and they divide into three kinds. The **customer** payments between banks: `pacs.008` (credit transfer), `pacs.003` (collection), `pacs.002` (status) and `pacs.004` (return). The **institutions'** own traffic: `pacs.009` (the settlement instruction a clearing house sends its settlement agent at the cut-off) and `camt.053` (the statement of a member's reserve account, which is what it books its mirror leg from). There is no third kind: getting a bank its settlement account is [four calls, not a conversation](#none-of-this-travels-on-a-message), because scheme membership is contractual and a central bank account is reference data. There is no count here on purpose: this list is where the answer is, and every version of it that carried a number was falsified by the next task. Each is wrapped in a `head.001` business application header, marshalled to XML and *parsed on arrival* — which is what makes `FF01`, the rejection a receiver sends when it cannot read what it was given, a reachable failure mode rather than a decoration. Nothing but bytes crosses between the institutions. What is absent: **`pain.001`/`pain.008`** customer initiation (a customer's instruction arrives over this system's own REST API instead), the whole **`acmt`** family — a settlement account here is opened by a call and never afterwards maintained, closed or inspected over a wire — the rest of the **`camt`** reporting family — including the `camt.054` a bank would learn of an individual credit from, and the `admi.002` a real receiver would answer an unreadable file with — **`camt.056`/`pacs.007`** recalls and reversals, **runtime XSD validation**, and **message signing**. A golden-file schema check does exist — `TestGoldenFilesValidateAgainstTheSchema`, run by `make test-schemas` — but **it cannot be run as the tree stands**: it needs `xmllint` and the XSDs under `iso20022/testdata/xsd`, and that directory is deliberately not committed (the schemas are ISO's to redistribute, not this repository's to vendor — see `iso20022/testdata/README.md`). So a plain `go test` skips every one of its subtests, and `make test-schemas`, which sets `ISO20022_REQUIRE_SCHEMAS=1` precisely to turn each skip into a failure, **fails**. Until someone fetches the schemas, nothing here is checked against a real one. The interbank messages are **bulk**: a `pacs.008` or `pacs.003` carries every transaction its sender accumulated before the [cut-off](#the-hub-accumulates-the-cut-off-builds-the-file), and one `pacs.002` answers the whole file with a decision per transaction — which is what makes `pacs.002`'s `PART` group status reachable, and it is produced whenever a file's transactions do not all go the same way. What is **not** batched is the customer's half: instructions arrive over this system's REST API one at a time, so a corporate handing its bank one file carrying its payroll has no analogue here, which is the same absence as the missing `pain.001`. The settlement `pacs.009` is a different thing again: it carries one leg per member with a **non-zero** position, because netting produces exactly one position per member and a member that nets to zero has nothing to discharge.
   Two elisions inside the messages are worth naming, because both are places where a real element has no source in this system. **`CdtrSchmeId`** — the Creditor Identifier a `pacs.003` must carry — is filled with the creditor's IBAN, because this system has no Creditor Identifier at all; that is a larger elision than `MndtRltdInf/DtOfSgntr`, which at least maps a real date (the mandate's `CreatedAt`) rather than substituting a different kind of thing. And the `FF01` status this system sends for an unreadable message carries **`NOTPROVIDED` three times** — the original message id, its definition identifier and the end-to-end reference — because a message nobody could parse has no readable references, and the `admi.002` a real network answers that with, which refers back by nothing, does not exist here.
 - **An address is checked for structure and never for existence.** An IBAN's length, country structure and both kinds of check digit are enforced — see [Addressing](#addressing) — so a mistyped address is refused offline, before any lookup. A well-formed address belonging to nobody is refused only by the register that finds no account, and only at the bank that holds that register. A BIC's structure is checked and its existence is not, and a payer no longer types one at all: the counterparty's agent is derived from their address through the [routing directory](#the-multi-bank-model) this bank subscribes to. What is absent there is the **reverse** — nothing confirms that the institution a code resolves to still exists, or that the payee's name matches the account, which is what Verification of Payee is for and which this system does not implement. What is also absent is the full ISO 13616 registry — four countries, not eighty. That is licensed reference data in the real world, which is the more interesting fact and belongs in prose rather than in a table nobody opens an account against.
 - **Many assets, but no exchange between them.** Accounts are denominated in one of the [known assets](#assets-what-an-account-is-denominated-in) — EUR, USD, BTC — and transactions [balance per asset](#the-invariant-is-per-asset), so the multi-asset accounting is real rather than a currency label on a single-currency system. What is missing is everything to do with *converting* one asset into another: there are no exchange rates anywhere in the system, no FX trade operation, no position accounts, and consequently no [cross-currency payment](#cross-currency-payments-are-two-operations) — a payment whose two ends differ in asset is refused with `ErrAssetMismatch` rather than converted, because converting it would require a rate, and a rate is a *price*: something a ledger records the consequences of and never decides. Two further limits are worth stating plainly: asset scale is [capped at 9 decimal places](#why-scale-is-capped-at-nine), so an 18-decimal asset such as ether cannot be held at its native precision; and the set of assets is a list in Go, so adding one is a deploy rather than an API call.
@@ -1470,7 +1587,7 @@ What each of them still lacks is a **standing** version. A transfer or a payment
 
 Separately from the scheme wiring above, three more entries are worth listing, and none is a gap any longer — two closed and one became a deliberate trade. They are kept because a reader who remembers them as gaps needs to be told, and because what closed them is the interesting part:
 
-- **The on-us book transfer is built**, and [The Book Transfer](#the-book-transfer) is what it does. This entry used to read "a payment this system cannot make at all", and the missing half of the sentence was what a real bank does *instead* of clearing: recognise the beneficiary as its own and post both customer legs in its own book, in one unit of work, with no message, no suspense and no counterparty. That act is `deposit.Register.TransferTx`, and it is in the `deposit` layer rather than the `payment` one because nothing about it needs to know what an institution is. `Mesh.Submit` still refuses the on-us *payment*, unchanged and for the reasons it always did — the two are different products and the payer has to choose one, so the refusal became a signpost rather than an apology.
+- **The on-us book transfer is built**, and [The Book Transfer](#the-book-transfer) is what it does. This entry used to read "a payment this system cannot make at all", and the missing half of the sentence was what a real bank does *instead* of clearing: recognise the beneficiary as its own and post both customer legs in its own book, in one unit of work, with no message, no suspense and no counterparty. That act is `deposit.Register.TransferTx`, and it is in the `deposit` layer rather than the `payment` one because nothing about it needs to know what an institution is. The submitting bank's door still refuses the on-us *payment*, for the reasons it always did — the two are different products and the payer has to choose one, so the refusal became a signpost rather than an apology.
 
 - **Money that cannot reach a customer goes to that bank's unclaimed balances, on both paths.** This entry used to read "a refund into a closed payer's account still strands", and it no longer does — it is kept here, under a lead that says so, because the two halves closed one task apart and the second is recent. The settlement half: `SettleAtBankTx` — the payee's bank's own act, extracted out of `SettleCycleTx` — calls `CheckCreditTx` before it releases a settled payment out of suspense, and a payee whose account was **closed** between their bank's answer and the cut-off is credited to that bank's **Unclaimed Balances (\<asset\>)** instead. The payment still reaches `Settled`, because it did: the reserves moved and the payee's bank has been paid. Whether the **customer** has been paid is left open, and it is between the bank and its customer. What made the check affordable was not the check — it was having somewhere for the money to go, plus the split that lets one payment at one bank fail without taking the cut-off down with it. (A *frozen* payee being credited is still deliberate, not a gap: the freeze here is a debit block.) The mirror case on the **return** path is closed too, and this entry used to say it was not: `PostReturnLegTx` checks before it credits the payer, and a payer who has closed their account since the payment settled is credited to their bank's **Unclaimed Balances (\<asset\>)** instead. What made that affordable was the same thing — the return is no longer one unit of work over three institutions, so the payer's bank has an act of its own to decide in.
 
@@ -1794,6 +1911,18 @@ DATABASE_URL=./cbs.db go run ./cmd/server      # a file; state outlives the proc
 
 There is nothing to redact from the log line that records which database was opened, and there used to be. `-database` was a Postgres DSN, which routinely arrives from the environment carrying a real credential, and a log line is the easiest place in a system to leak one; a filesystem path carries no secret, so the function that hid it is gone rather than kept for a value that cannot contain one.
 
+**What a restart does not keep is everything the transport holds in memory,** and each absence is deliberate rather than pending:
+
+| Not stored | Where it lives | What a restart costs |
+|---|---|---|
+| the **download queues** | the two EBICS hosts' memory | every file waiting to be collected. A queue is one institution holding bytes addressed to another; storing them would make the transport a database and the holder a reader of somebody else's mail |
+| a bank's **payment hub** | that bank's memory | instructions accumulated since the last cut-off, whose debtor legs *are* committed — so the money is in suspense against a file that will never be built |
+| the clearing house's **held output files** and **held returns** | its memory | a settled cycle's shares are lost before release, and payments that settled are never handed to the banks that have to apply them |
+
+The first two are the transport's own state and belong to it. The third is the one worth naming as a defect: it is the only state any institution keeps between files, and a durable version of it belongs in a clearing-house table that does not exist. It is recorded rather than fixed because the fix is a schema change to an institution's own database, not a workaround.
+
+**The business date is beside the databases, not in one.** It is a fact about the *deployment*, and a bank's database holding one would be that bank's opinion about what day it is — a state no clearing system has, because two banks could then disagree. So it is a small file in the `-database` directory, read at boot and written on each advance. With no directory it starts at the seed's base date every time, which is exactly what the ephemeral store does and is what keeps `go test ./...` free of setup.
+
 One property is deliberately kept, and it is easier to hold than it was:
 
 - **Nothing requires setup.** `go test ./...`, `make dev` and `make run` all work on a fresh checkout with no database, no Docker and no C toolchain. That used to be a property of the *default* — Postgres was opt-in and a second run had to be kept green beside it — and it is now a property of the only store there is.
@@ -1801,8 +1930,8 @@ One property is deliberately kept, and it is easier to hold than it was:
 ## Usage Example
 
 Working directly with the general ledger. A `Book` is a view over a store and a
-book identity — swapping `mem.New(time.Now)` for `pg.Open(ctx, dsn, time.Now)`
-is the only change needed to make all of this outlive the process:
+book identity — passing a directory to `sqlite.OpenSet` instead of `""` is the
+only change needed to make all of this outlive the process:
 
 ```go
 ctx := context.Background()
@@ -1894,9 +2023,9 @@ What it no longer answers on is one shared `payment.Network`, and the correction
 
 That is not a convenience. `store/mem` was a map behind a mutex in one process's memory, so four bank *processes* would have been four disconnected universes: a payment from Aurora to Verde posting into an Aurora that Verde had never heard of. The swap to SQLite changed that in a direction nobody asked for and it is worth recording rather than acting on: a SQLite **file** under WAL is shared between processes, so an entity-per-process split no longer needs a server to make the state one universe. What it still needs is everything else below.
 
-A flag once ran a single entity in its own process against a shared Postgres, which was the real topology. It is gone, and what took its place is the `mesh`: the institutions are separate **actors**, each with its own goroutine and inbox, and one reaches another only by sending it a message.
+A flag once ran a single entity in its own process against a shared Postgres, which was the real topology. It is gone, and what took its place is [the file transport](#the-transport-files-a-cut-off-and-a-business-day): each institution is an EBICS host or an EBICS client or both, and one reaches another only by uploading a file — or, more often, by putting one in a queue the other has to come and collect.
 
-**And they no longer share a store.** This paragraph carried "they still share this process, this store and this clock" for several tasks, with the store named as the last thing left to split. It is split: a member bank's database, the clearing house's and the central bank's are three *different schemas*, and no statement can span two of them — a bank reading another bank's rows finds nothing, and a method reaching for a table its institution's schema does not create is refused by name rather than answered. What is genuinely left is the process and the clock. Two banks in a real network do not share a clock, and every timestamp comparison between them is a comparison across two, which is why real cut-offs are stated in a named time zone and enforced with a tolerance; none of that is modelled. A listener started alone would still serve its API while no message could reach it.
+**And they no longer share a store.** A member bank's database, the clearing house's and the central bank's are three *different schemas*, and no statement can span two of them — a bank reading another bank's rows finds nothing, and a method reaching for a table its institution's schema does not create is refused by name rather than answered. What is left shared is the process and **the clock**, and the clock is now shared on purpose: it is the [deployment's business date](#advancing-the-clock-runs-a-business-day), read by the stores, the networks and every message header alike, and `time.Now` appears nowhere in the running system. Two banks in a real network do not share one, and every timestamp comparison between them is a comparison across two — which is why real cut-offs are stated in a named time zone and enforced with a tolerance. None of that is modelled. A listener started alone would still serve its API while no file could reach it.
 
 What the split created is the thing this system did not previously need: **a reconciliation**. While one database held every book, "the bank's reserve equals the central bank's liability to it" was true by construction and there was nothing to check. Now it is a claim about two databases that can disagree, and the instrument for it is `payment/recon` — a test-level harness that opens all N+2 stores at once, precisely because no institution in the system may. What it finds is of two kinds and only one is a defect: a **break** is two books that disagree with nothing able to reconcile them, and an **unreconciled position** is a clearing suspense that has not returned to zero with a payment still in flight or a reserve movement not yet booked. The second is modelled on purpose and is [what settlement finality means](#settlement-is-final-at-the-central-bank-and-the-banks-catch-up).
 
@@ -1915,7 +2044,11 @@ The settlement layer. Reserves move in its book and nowhere else.
 | `GET /settlements`, `GET /settlements/{sid}` | what it settled |
 | `GET /assets` | known assets |
 | `GET /audit` | the central bank's own log |
+| `GET /clock` | the deployment's business date, and the closure if TARGET is shut |
+| `POST /clock/day` | run one business day and move to the next; answers with the day's report |
 | `POST /admin/reset` | clear every store and rebuild the sample dataset |
+
+**The two clock routes are the OPERATOR's, and they are here for `POST /admin/reset`'s reason.** Advancing the day drives all N+2 institutions, so it is an act over a *deployment* and a deployment is not an institution — and it takes the same lock the reset takes, because there is one deployment behind every port. It is **one-way**: only a reset rewinds it, which puts the button nearer `Reset` than to anything else on a console. On a day TARGET is shut it still advances; nothing clears, the readout says why, and that is the lesson rather than a state to be prevented.
 
 **`GET /cycles` was here and is not.** A cycle is the clearing house's row: this institution holds no cycles table, is told a set of positions and a reference, and records what it discharged. The route was invisible while one database served every institution and is a missing table now. It is on the clearing house, where the cut-off is.
 
@@ -1982,6 +2115,8 @@ Everything that used to sit under `/participants/{pid}/…`, with the segment go
 | `GET /payments/audit` | this bank's own **payment-layer** log — its own copy's events, and nothing of another bank's |
 | `GET /payments`, `GET /payments/{payid}` | **its own copies only** |
 | `POST /payments` | accept a customer's instruction — `202` and a `paymentId` |
+| `GET /payments/pending` | what is waiting in this bank's hub for the next cut-off |
+| `POST /payments/cutoff` | build one file per scheme out of the hub and upload it. `202`, and the order ids |
 | `GET /directory/accounts` | resolve an address in **this bank's own** register — which of my accounts holds it |
 | `GET /directory/banks`, `POST /directory/banks/refresh` | which institution answers for a bank code, **from this bank's copy**; and pull a fresh snapshot |
 | `GET /assets` | known assets |
@@ -1991,9 +2126,11 @@ Two of those are new, and both were impossible before. **`GET /payments` is narr
 
 **`GET /payments/audit` is one endpoint per institution**, for the same reason and with a sharper consequence: there is no combined payment log anywhere, and no order between two institutions' events. See [There Is No Combined Log](#there-is-no-combined-log-and-no-order-between-two-of-them).
 
-**`POST /payments` is where a customer's instruction lands.** A retail client must never talk to the clearing house — it has no CSM connection in the real thing either — so submission goes to its own bank, which forwards it. The answer is `202 Accepted` with a `paymentId` rather than the payment itself, and the outcome is read back from `GET /payments/{id}`. That is the shape a real CSM imposes: it answers with a `pacs.002` later, not by return value.
+**`POST /payments` is where a customer's instruction lands.** A retail client must never talk to the clearing house — it has no CSM connection in the real thing either — so submission goes to its own bank. The answer is `202 Accepted` with a `paymentId` rather than the payment itself, and the outcome is read back from `GET /payments/{id}`. That is the shape a real CSM imposes: it answers with a `pacs.002` later, not by return value.
 
-**Which bank submits is the scheme's direction, and this listener supplies it.** A credit transfer is submitted by the *payer's* bank and a direct debit by the *payee's*, so this port fills in whichever side is its own before the instruction reaches the mesh. There is no field for it and nothing to disagree with: an instruction names no bank at all, its own side coming from the port and the counterparty's being derived from their address. A scheme nobody has registered is refused before that rule is reached, rather than falling through to the push case and being told which bank submits a scheme that does not exist. Like everything else here this is **scoping, not authorization**: it says which instructions this listener is for, and verifies nothing about who is calling it.
+**And `202` means something specific: the instruction is in this bank's [hub](#the-hub-accumulates-the-cut-off-builds-the-file), not on a wire.** Nothing has been sent. The bank has run its own half synchronously — which is what lets a submission that fails *this bank's* checks be refused `422` rather than accepted and rejected later — and the payment then waits for a cut-off. `GET /payments/pending` is that queue, and `POST /payments/cutoff` is the operator reaching the day's first phase out of turn; the business day reaches it for every bank anyway.
+
+**Which bank submits is the scheme's direction, and this listener supplies it.** A credit transfer is submitted by the *payer's* bank and a direct debit by the *payee's*, so this port fills in whichever side is its own before the instruction reaches the bank's hub. There is no field for it and nothing to disagree with: an instruction names no bank at all, its own side coming from the port and the counterparty's being derived from their address. A scheme nobody has registered is refused before that rule is reached, rather than falling through to the push case and being told which bank submits a scheme that does not exist. Like everything else here this is **scoping, not authorization**: it says which instructions this listener is for, and verifies nothing about who is calling it.
 
 **`POST /transfers` is the route `POST /payments` names when it refuses.** `200` and not `202`, for `POST /deposits`' reason: one institution, one posting, and the act is finished when the response is written — `202` is for the routes where somebody else has still to decide, and nobody has to agree to a book transfer. The payer names their own account by id and the payee by address, which is the same pair the send form types for a clearing payment; an address this bank does not hold is a `404`, because an address that resolves elsewhere was a payment all along. The two routes state one rule from opposite sides.
 
@@ -2019,11 +2156,16 @@ CSM=http://localhost:8082; CB=http://localhost:8081; H='-H Content-Type:applicat
 # address that sorts earlier moves them.
 BANK_A=http://localhost:8083; BANK_B=http://localhost:8086
 
+# What day is it? Every date on every screen and in every message header is this
+# one; the wall clock appears nowhere in the running system. It is a settlement
+# day here, so the advance below will clear.
+curl -s $CB/clock | jq -r '.date, .settlementDay'
+
 # Alice's bank subscribes to the scheme's routing directory. Nothing pushes it,
 # and no payment queries the clearing house — a member pulls a snapshot and
-# routes from what it holds until it pulls again. The seed does this for every
-# bank it admits; doing it again costs one request and is how a bank catches up
-# with a member admitted since.
+# routes from what it holds until it pulls again. Every bank does this as the
+# first phase of every clearing day; doing it by hand costs one request and is
+# how a bank catches up without waiting for one.
 curl -s -X POST $BANK_A/directory/banks/refresh | jq -r '.[] | "\(.country) \(.bankCode) -> \(.bic)"'
 
 # A deposit account is sold FROM a product, so the product is not optional. The
@@ -2054,8 +2196,8 @@ curl -s "$BANK_A/directory/banks?iban=$BOB_IBAN" | jq -r .bic
 # would teach the wrong route.
 #
 # The answer is `202` and a `paymentId` — nothing else, because there is nothing
-# else true yet: the payer's bank has run its own half and sent a `pacs.008`, and
-# nobody has looked at it.
+# else true yet: the payer's bank has run its own half and the instruction is
+# sitting in that bank's hub, waiting for a cut-off. No file exists.
 #
 # The instruction names NO BANK, on either side. Alice's is the port; Bob's is
 # derived from Bob's IBAN, through Bank A's own copy of the scheme's routing
@@ -2073,21 +2215,35 @@ PAY=$(curl -s $H -X POST $BANK_A/payments -d "{\"scheme\":\"sepa.ct\",
     \"identifier\":{\"scheme\":\"IBAN\",\"value\":\"$BOB_IBAN\"}},
   \"creditorName\":\"Bob\",\"amount\":25000}" | jq -r .paymentId)
 
-# Ask again for the outcome. By now Bob's bank has answered and the clearing
-# house has taken the payment into its scheme's open cycle, so this reads
-# `Accepted` and names the cycle. (`POST /cycles` opens one, but a scheme may
-# only have one open at a time — against the seeded dataset it answers "already
-# open for scheme".)
-curl -s $CSM/payments/$PAY | jq -r .status          # Accepted
-CYC=$(curl -s $CSM/payments/$PAY | jq -r .cycleId)
+# Nothing has happened yet, and asking proves it: `Initiated`, in no cycle, and
+# Bob's bank has never heard of it. Nothing in this system runs in the
+# background, so this state is stable rather than fleeting.
+curl -s $BANK_A/payments/$PAY | jq -r '.status, .cycleId'   # Initiated, null
 
-# The cut-off. Netting is the clearing house's act and moves nothing; the
-# `pacs.009` it then sends is what asks the central bank to discharge the net
-# positions, and the central bank does that in an actor of its own.
-curl -s $H -X POST $CSM/cycles/$CYC/close | jq -r .status   # Closed
+# ONE BUSINESS DAY, and it is the whole flow. Alice's bank cuts off and uploads a
+# `pacs.008`; the clearing house validates it, answers per transaction and takes
+# it into the open cycle; the cycle is netted and a `pacs.009` goes to the
+# central bank; the reserves move; only THEN is Bob's bank handed the
+# instruction; and each bank collects, the settlement agent first. The call
+# returns when the day is done, so there is nothing to poll and nothing to wait
+# for. The report says what moved.
+curl -s $H -X POST $CB/clock/day | jq -r '.files[] | "\(.from) -> \(.to) \(.orderType)"'
+#   AURODEFFXXX -> CSMXFRPPXXX CCT      Alice's bank cuts off
+#   CSMXFRPPXXX -> AURODEFFXXX CST      answered per transaction
+#   CSMXFRPPXXX -> CBSEDEFFXXX CSI      the cycle is netted and instructed
+#   CBSEDEFFXXX -> AURODEFFXXX C53      the statements, once the reserves have moved
+#   CBSEDEFFXXX -> VERDITMMXXX C53
+#   CBSEDEFFXXX -> CSMXFRPPXXX CST      ACSC to the clearing house
+#   CSMXFRPPXXX -> VERDITMMXXX CCT      RELEASED — Bob's bank sees it here, and not before
+#   CSMXFRPPXXX -> AURODEFFXXX CST      ACSC to the submitter
+#
+# Against the seeded dataset the real list is longer: four banks share the day,
+# and a second CSI settles the cycle in the scheme's other asset. The lines above
+# are this payment's own chain, in the order they appear.
 
 curl -s $BANK_A/deposit-accounts/$ALICE/balance   # book 75000 — the debtor leg
 curl -s $BANK_B/deposit-accounts/$BOB/balance     # book 25000 — settled
+CYC=$(curl -s $CSM/payments/$PAY | jq -r .cycleId)
 
 # Whether the cut-off was discharged, asked of the CLEARING HOUSE — the cycle is
 # its row, and the status is all it can say. A cycle does not name its
@@ -2105,10 +2261,10 @@ curl -s $CB/settlements | jq -r '.[-1] | .id, .cycleId, .asset'   # set_…, cyc
 # curl -s $H -X POST $CSM/cycles/$CYC/settle | jq -r .status  # Closed, and asked again
 ```
 
-**The walkthrough now runs all the way to Bob being paid, and what carries it there is the message layer rather than any of these calls.** Four institutions ran seven units of work between the `POST` and the balance: Alice's bank debited her and sent a `pacs.008`, Bob's bank checked his address and answered `pacs.002`/`ACCP`, the clearing house took the payment into a cycle and told Alice's bank, and — at the cut-off — the central bank discharged the net positions on a `pacs.009`, sent each bank a `camt.053` of its own reserve account, and both banks booked their mirror legs from it; then the clearing house turned the settlement into a per-payment `ACSC`, and **Bob's bank** posted the creditor leg into Bob's account on hearing it. None of that is a function call: every hop is bytes in an inbox, handled by one goroutine per institution.
+**One `POST` and one business day is the whole walkthrough, and what carries it is files rather than any of these calls.** Four institutions ran seven units of work inside `POST /clock/day`: Alice's bank cut off and uploaded a `pacs.008`; the clearing house validated it, took it into a cycle and answered Alice's bank per transaction; it netted the cycle and uploaded a `pacs.009`; the central bank discharged the positions, put a `camt.053` in each bank's queue and answered the clearing house; **only then** did the clearing house release the instruction into Bob's bank's queue; and each bank collected — the settlement agent first, so the mirror leg was booked before **Bob's bank** posted the creditor leg into Bob's account. None of that is a function call: every hop is bytes in a queue somebody had to come and collect.
 
-**And the reads can be early too.** `# Accepted`, `# book 25000` and `Settled` are each issued straight after the request that provoked them, so each is racing four goroutines against a `curl` process starting up — in practice the mesh wins by a wide margin, but nothing here guarantees it. If a status still says `Initiated`, or a cycle still says `Closed` with no settlement, nothing has gone wrong and nothing is lost: ask again. That is what "read it back" means in a system where the answer arrives at another institution.
+**And the reads are not early — they are answering about a day that has not run.** `Accepted`, `book 25000` and `Settled` each need a business day between the request that provoked them and the state they report, because nothing in this system happens on a timer and nothing happens in the background. A status that still says `Initiated` and a cycle that still says `Closed` with no settlement are both correct: the instruction is sitting in its bank's hub, or the file is sitting in a queue. `POST /clock/day` is what moves it, and it returns only when the day is done — so there is no polling anywhere in this walkthrough and no assertion that could be racing anything.
 
-**Which means every one of these responses describes a moment rather than an outcome.** `POST /payments` answers `202` and a payment that is `Initiated`, in no cycle, unseen by the payee's bank — a truthful description of the only work that had finished when the response was written. `POST /cycles/{cid}/close` answers `200` and a `Closed` cycle with net positions and no settlement on it, because the settlement agent has not been asked yet. Only the reads afterwards say what became of either, which is why `POST /payments` hands back an identifier to ask about. A refusal decided by *this* caller's own bank — no funds, an account that is not theirs — still comes back as a `4xx` on the request that caused it; a refusal decided three hops away cannot, and lands on the payment's own row instead. Watch either on the central bank's console: a closed cycle with no settlement against it is an instruction the central bank refused, and `POST /cycles/{cid}/settle` on the clearing house is what an operator does about it once the short member is funded.
+**Which means every one of these responses describes a moment rather than an outcome.** `POST /payments` answers `202` and a payment that is `Initiated`, in no cycle, unseen by the payee's bank — a truthful description of the only work that had finished when the response was written, and a state that stays put until a day runs. Only the reads afterwards say what became of it, which is why `POST /payments` hands back an identifier to ask about. A refusal decided by *this* caller's own bank — no funds, an account that is not theirs — still comes back as a `4xx` on the request that caused it; a refusal decided three hops and one business day away cannot, and lands on the payment's own row and in the day's report instead. Watch it on the central bank's console: a closed cycle with no settlement against it is an instruction the central bank refused, and `POST /cycles/{cid}/settle` on the clearing house is what an operator does about it once the short member is funded.
 
 > Without `DATABASE_URL` the server runs on an **ephemeral in-memory database**: all state resets on restart, and `POST /admin/reset` rebuilds the sample dataset at any time. With one, it is a SQLite file and the data outlives the process (see [Persistence](#persistence)). Either way it is a learning and prototyping tool, not a production service.
