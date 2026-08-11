@@ -67,6 +67,21 @@ CREATE TABLE roster_entries (
     -- the rule and its enforcement are two different things — which is what the
     -- split was for.
     --
+    -- NOR IS THE DOWNLOAD QUEUE HERE, and that is the more interesting absence
+    -- now. Routing a file to this member means putting it in that member's
+    -- queue, so the queue is the routing table and this row is the membership —
+    -- two facts that could disagree if either were derived from the other. What
+    -- keeps them together is that enrolment is what creates a queue and
+    -- provisioning is what enrols, both outside this database.
+    --
+    -- The queue itself is a list of byte slices in the host's memory, and it is
+    -- deliberately not a table. One institution holding bytes addressed to
+    -- another is not a crossing while the bytes are OPAQUE to the holder; a
+    -- table of them is a store this institution reads, and the first query
+    -- anybody writes against it is a clearing house looking inside a file it is
+    -- only carrying. A restart empties every queue, which loses whatever had not
+    -- been collected — see cycles below, where the same absence costs more.
+    --
     -- Keyed by BIC, and it is the only key this institution has. A clearing
     -- house routes what a message addresses, and a message addresses a BIC.
     --
@@ -386,6 +401,28 @@ CREATE TABLE cycles (
     -- cycle's own status: CycleSettled. The link in the other direction is real
     -- and lives where it can be kept — settlements.cycle_id in the central bank's
     -- schema, which is that agent's own row pointing at what it settled.
+    --
+    -- THE OUTPUT FILES THIS CYCLE IS HOLDING ARE NOT HERE EITHER, and that one
+    -- IS a defect rather than a boundary.
+    --
+    -- Between a cut-off and its settlement this institution has sorted every
+    -- submitted file by creditor agent and is holding each receiving bank's
+    -- share, releasing nothing until the cycle is final. Those shares are
+    -- POSITIONS in the submitters' documents, in memory, keyed by cycle — so
+    -- that a payment an operator rejects out of an open cycle is cut out of the
+    -- share when the rest of it settles, which a rendered file could not do.
+    --
+    -- A restart between the two loses them: the reserves have moved and no
+    -- receiving bank is ever handed the instructions it has to apply. Nothing
+    -- recovers that. The same is true of a pacs.004 held between its upload to
+    -- the settlement agent and the answer coming back.
+    --
+    -- It is written here rather than fixed because the fix is this table's
+    -- neighbour — a held_files table in this institution's own database — and
+    -- not a workaround anywhere else. What makes it survivable meanwhile is that
+    -- no deployment here outlives a process by design: the ephemeral store is
+    -- the default and a restart against a file resumes a system whose queues are
+    -- empty anyway.
     seq           INTEGER NOT NULL
 ) STRICT;
 

@@ -250,11 +250,21 @@ func TestSchemaArgumentsReachSqliteMaster(t *testing.T) {
 			// bank_assets.settlement being empty is how far through provisioning
 			// a bank got, and a status beside it would say so twice.
 			{"banks", "There is NO column here saying how far through provisioning"},
+			// A TABLE that is in no schema at all, argued on the columns it
+			// would otherwise have fed. The business date is the deployment's
+			// and is in a file beside these databases.
+			{"transactions", "WHAT DAY IT IS IS NOT IN THIS DATABASE"},
+			// State the TRANSPORT holds and no institution stores. A payment
+			// waiting for its bank's cut-off has a row and no marker saying so.
+			{"payments", "WHAT IS NOT HERE IN EITHER SHAPE IS THE HUB"},
 		}},
 		{CentralBank, payment.CentralBankBook, []struct{ object, argument string }{
 			{"ledgers", "A note on what is NOT here: UNIQUE (book_id, name)"},
 			{"subledgers", "carries NO foreign key"},
 			{"transactions_idempotency_key_idx", "the ONLY unique index in THIS schema"},
+			// The same absent table, in the shape a reader would expect to hold
+			// it: the settlement agent decides which days money moves on.
+			{"transactions", "WHAT DAY IT IS IS NOT IN THIS DATABASE EITHER"},
 		}},
 		{CSM, payment.ClearingHouseBook, []struct{ object, argument string }{
 			// A COLUMN that is not here, which is the kind of argument with
@@ -264,6 +274,11 @@ func TestSchemaArgumentsReachSqliteMaster(t *testing.T) {
 			// The audit log's absent foreign key, argued in the shape that has
 			// no books table at all.
 			{"audit_events", "It has no foreign key to books"},
+			// The download queue, argued on the row that IS the routing table.
+			{"roster_entries", "NOR IS THE DOWNLOAD QUEUE HERE"},
+			// The one absence recorded as a DEFECT rather than a boundary: a
+			// settled cycle's output files are in memory until released.
+			{"cycles", "THE OUTPUT FILES THIS CYCLE IS HOLDING ARE NOT HERE"},
 		}},
 	} {
 		t.Run(c.shape.String(), func(t *testing.T) {

@@ -234,6 +234,14 @@ CREATE TABLE accounts (
 ) STRICT;
 
 CREATE TABLE transactions (
+    -- WHAT DAY IT IS IS NOT IN THIS DATABASE EITHER, and that matters most here.
+    -- transactions in bank/0001_init.sql carries the argument; what is worth
+    -- adding is that this is the institution a reader would expect to hold it.
+    -- The settlement agent decides which days money moves on, so a business_date
+    -- row here would look like the calendar's natural home — and it would make
+    -- the date a fact this institution could change under the others. It is the
+    -- DEPLOYMENT's, in a file beside these databases, and the calendar that says
+    -- whether a date settles is a function rather than a table anybody owns.
     book_id         TEXT NOT NULL REFERENCES books (id) ON DELETE CASCADE,
     id              TEXT NOT NULL,
     idempotency_key TEXT NOT NULL,
