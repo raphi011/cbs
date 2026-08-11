@@ -140,21 +140,21 @@ func validateFunds(ctx context.Context, p *Payment, sc SchemeContext) error {
 // And a party who is both — a payment from a bank to itself — would make a
 // negation ambiguous, while these two rules stay total.
 //
-// It takes the two AGENTS rather than a Payment, which is how mesh.submitterOf —
+// It takes the two AGENTS rather than a Payment, which is how cmd/server's submitterOf —
 // its counterpart in both senses, the other party and the other role — is
-// written, and that one has to be: mesh.Mesh.Submit chooses a submitter from a
+// written, and that one has to be: a deployment chooses a submitter from a
 // request, and a request is not yet a payment.
 //
 // It hands back the ADDRESS rather than a party ref, because what all four
 // callers want is a bank to address.
 //
-// # Why it lives here and not in mesh
+// # Why it lives here and not in cmd/server
 //
-// Two callers: mesh picks which actor's goroutine sends the pacs.004, and
-// PostReturnLegTx decides whether the bank posting a leg may REFUSE it. Two
-// copies of that rule would be free to drift, and a mesh that sent a return from
-// one bank while the domain let the other refuse is a payment nobody can finish.
-// mesh.returnerOf is a one-line delegation.
+// Two callers: the deployment picks which bank composes and uploads the
+// pacs.004, and PostReturnLegTx decides whether the bank posting a leg may
+// REFUSE it. Two copies of that rule would be free to drift, and a deployment
+// that sent a return from one bank while the domain let the other refuse is a
+// payment nobody can finish. cmd/server's returnerOf is a one-line delegation.
 func ReturnerOf(scheme Scheme, debtorAgent, creditorAgent iso20022.BIC) iso20022.BIC {
 	if scheme.Direction() == Pull {
 		return debtorAgent

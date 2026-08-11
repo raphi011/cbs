@@ -190,8 +190,27 @@ func (p *Portfolio) applyToScheduleTx(ctx context.Context, tx Tx, f Facility, am
 	return nil
 }
 
-// Outstanding is everything a facility owes: drawn principal plus the
-// receivable. Returns ErrFacilityNotFound.
+// OutstandingOf is what a facility owes, from the two figures it is made of:
+// drawn principal plus the receivable.
+//
+// A NEGATIVE receivable contributes nothing. It arises from a backdated
+// correction that overshot — the bank owes the borrower interest back — and
+// that debt runs the other way, so netting it in here would report a smaller
+// loan rather than an obligation. What discharges it is RefundInterest.
+//
+// It takes the figures rather than reading them because its two callers hold
+// them already and hold them differently: Outstanding below reads inside its own
+// unit of work, and the wire renderer is handed them by a caller that resolved
+// a whole listing at once. A rule with two arithmetics is a rule that can differ
+// by route.
+func OutstandingOf(drawn, receivable ledger.Amount) ledger.Amount {
+	if receivable < 0 {
+		receivable = 0
+	}
+	return drawn + receivable
+}
+
+// Outstanding is everything a facility owes. Returns ErrFacilityNotFound.
 func (p *Portfolio) Outstanding(ctx context.Context, id FacilityID) (ledger.Amount, error) {
 	var out ledger.Amount
 	err := p.store.View(ctx, func(ctx context.Context, tx Tx) error {
@@ -203,11 +222,7 @@ func (p *Portfolio) Outstanding(ctx context.Context, id FacilityID) (ledger.Amou
 		if err != nil {
 			return err
 		}
-		receivable := f.Accrued.Minor()
-		if receivable < 0 {
-			receivable = 0
-		}
-		out = drawn + receivable
+		out = OutstandingOf(drawn, f.Accrued.Minor())
 		return nil
 	})
 	return out, err

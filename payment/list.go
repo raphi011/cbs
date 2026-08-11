@@ -75,8 +75,8 @@ func (s *Network) ListBanks(ctx context.Context) ([]*Bank, error) {
 // Bank.Ledger.
 //
 // GetRosterEntryByBIC below is the answer to the narrower question — "is this
-// address a member, and what does the scheme hold about it" — and it is what the
-// mesh asks. It exists because that question was being answered with this method.
+// address a member, and what does the scheme hold about it" — and it is what a
+// submitting bank's door asks.
 func (s *Network) GetBank(ctx context.Context, id ParticipantID) (*Bank, error) {
 	var out *Bank
 	err := s.store.View(ctx, func(ctx context.Context, tx Tx) error {
@@ -103,7 +103,7 @@ func (s *Network) GetBank(ctx context.Context, id ParticipantID) (*Bank, error) 
 //
 // It is what a handler asking about SOMEBODY ELSE gets, and the whole of it.
 // Nothing about it is a ledger handle, and until it existed the callers all got
-// one — mesh/ops.go carried GetParticipant on two of its three interfaces and
+// one — cmd/server/ops.go carried GetParticipant on two of its three interfaces and
 // every caller of it took the BIC off a value carrying the named bank's live
 // Ledger, Deposit and Catalogue.
 //
@@ -114,8 +114,9 @@ func (s *Network) GetBank(ctx context.Context, id ParticipantID) (*Bank, error) 
 // address, so the conversion had nothing left to convert. Seven of the eight
 // callers stopped calling anything at all — they read the agent BIC that was
 // already beside them on the payment, or the BIC a cycle's positions are now
-// keyed by — and the eighth is Mesh.Submit checking that a counterparty it has
-// been NAMED is a member, which is this method and was always this question.
+// keyed by — and the eighth is a submitting bank's door checking that a
+// counterparty it has been NAMED is a member, which is this method and was
+// always this question.
 //
 // # One error it can return that GetParticipant could not
 //
@@ -145,8 +146,9 @@ func (s *Network) GetRosterEntryByBIC(ctx context.Context, bic iso20022.BIC) (Ro
 //
 // It is what says WHO IS A MEMBER, which is a different question from who has a
 // bank row: a bank founded and not yet admitted has a row and no entry here.
-// mesh.Mesh.joinRoster is the caller, and asking this rather than ListBanks is
-// what stops a founded, unadmitted bank being given an actor at startup.
+// The deployment reads it at startup and package provision publishes it, and
+// asking this rather than ListBanks is what stops a founded, unadmitted bank
+// being enrolled as a subscriber.
 func (s *Network) ListRosterEntries(ctx context.Context) ([]RosterEntry, error) {
 	var out []RosterEntry
 	err := s.store.View(ctx, func(ctx context.Context, tx Tx) error {

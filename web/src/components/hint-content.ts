@@ -455,11 +455,11 @@ SEPA Direct Debit [[allows-return|allows returns]] because the debtor did not in
 6. the CSM releases the held pacs.004 to the
    other bank
 
-each bank then takes its own inbox in order:
-it books its reserve mirror from (4), and the
-other bank goes on to post its customer leg
-from (6) — the second leg, and what turns the
-payment Returned
+each bank then COLLECTS, the settlement
+agent first: it books its reserve mirror from
+(4), and the other bank goes on to post its
+customer leg from (6) — the second leg, and
+what turns the payment Returned
 \`\`\`
 
 The clearing house **holds** that \`pacs.004\` between steps 2 and 6 rather than relaying it straight through: a bank that posted its leg against a return the settlement agent then refused would have moved a customer's money for nothing. On an \`RJCT\` the held message is dropped and only the answer goes out. The returning bank then **unwinds its own leg** by [[reversal|reversing]] the posting, so its customer is back where the return found them.
@@ -493,6 +493,8 @@ So on a credit transfer the payee's bank can refuse a clawback it cannot fund, a
 
 These are the model's fixed delays. SEPA Credit Transfer really does settle by T+1; the **SDD T+2 is a simplification** — real SDD Core settles on the collection's *due date*, presented at least one business day ahead.
 
+"Business day" in that table is now the [[target-calendar|settlement calendar's]] answer rather than a calendar day wearing the name: a Friday payment does not settle on Saturday, because no [[business-day|business day]] clears one.
+
 \`\`\`
 Payment initiated today (T):
   Debtor leg, customer side  = T           (PSD2 Art. 87(2): no earlier than the debit)
@@ -519,7 +521,7 @@ Mandate checks, at the CREDITOR's bank, on submission:
   → the collection is sent, and the payment is Initiated
 \`\`\`
 
-A revoked mandate causes immediate rejection, and so does an amount over the limit. Passing all four does **not** make the payment [[payment-lifecycle|Accepted]] — it leaves it *Initiated*, in no cycle, with the collection on its way to the payer's bank; only the clearing house accepts. Once a payment is settled, the debtor can trigger a [[allows-return|return]] to dispute the collection.
+A revoked mandate causes immediate rejection, and so does an amount over the limit. Passing all four does **not** make the payment [[payment-lifecycle|Accepted]] — it leaves it *Initiated*, in no cycle, waiting for its bank's cut-off; only the clearing house accepts, and the payer's bank is handed the collection later still, once the cycle has settled. Once a payment is settled, the debtor can trigger a [[allows-return|return]] to dispute the collection.
 
 **The mandate is the creditor bank's row, and the API says so.** A *network-level* resource — created and listed on the clearing house's console, with every member's authorisations over every other member's customers' accounts on one page — would be the wrong owner for the rule stated above: the bank that validates a mandate is the creditor's, so the record belongs to it. Creating one is a request to that bank, and what it lists is its own customers' authorisations. Two consequences follow and neither is cosmetic. The **debtor is recorded, not checked** — that account is at another bank, and no bank here reads another's register — so a mandate naming an account that does not exist is created and fails its first collection. And the mandate's **asset comes from the creditor's account**, the one the recording bank holds; two accounts in different assets are no longer refused at creation, because the comparison needs a register this bank cannot read. That collection is refused at first use instead, by the debtor's bank, on the [[scheme-asset|scheme's asset]] — later than before, which is the honest price of one bank keeping only its own books.`,
   },
@@ -539,16 +541,139 @@ Initiated ──▶ Accepted ──▶ Cleared ──▶ Settled
 
 Every arrow is drawn by a **named institution**, and no two adjacent ones by the same:
 
-- **Initiated** is a state a payment sits in, not a moment. The submitting bank has run its own half and sent the instruction; nobody else has looked at it yet. On a push that half already posted the [[debtor-leg]] — the payer's money is in [[clearing-suspense]], customer's side value-dated to the debit and suspense side to settlement — while the payment still reads *Initiated*. On a pull it posted nothing, and the **payer's** bank posts the debtor leg when the collection reaches it, still leaving the payment *Initiated*.
-- **Initiated → Accepted:** the **clearing house's** act and nobody else's — it takes the payment into the open cycle for its scheme. No open cycle is a refusal, and it travels as **TM01, "invalid cut-off time"**: the cut-off belongs to the clearing house, so the refusal does too.
+- **Initiated** is a state a payment sits in, not a moment. The submitting bank has run its own half and the instruction is waiting in that bank's [[payment-hub|hub]] for its next cut-off — nothing has been sent, and nobody else has heard of it. On a push that half already posted the [[debtor-leg]] — the payer's money is in [[clearing-suspense]], customer's side value-dated to the debit and suspense side to settlement — while the payment still reads *Initiated*. On a pull it posted nothing, and the **payer's** bank posts the debtor leg when the collection reaches it, still leaving the payment *Initiated*.
+- **Initiated → Accepted:** the **clearing house's** act and nobody else's — it validates the [[bulk-file|file]] it was uploaded and takes each transaction into the open cycle for its scheme. No open cycle is a refusal, and it travels as **TM01, "invalid cut-off time"**: the cut-off belongs to the clearing house, so the refusal does too.
 - **Accepted → Cleared:** the cut-off. [[netting|Net positions]] computed across all payments in the cycle. No money moves.
 - **Cleared → Settled:** three institutions, and the arrow is the *third* one's. The clearing house asks — closing a cycle sends a \`pacs.009\` — and the **central bank** discharges the net positions in its own book, which is where the money becomes [[settlement-finality|final]]. The payment row moves to Settled later still, when the **payee's own bank** posts the [[creditor-leg]] on being told, per payment, that the cycle settled. The gap between those two moments is the [[unreconciled-position|unreconciled position]]. A net payer who cannot cover is refused before anything posts at all: the cycle stays Closed with no settlement against it, and every payment in it stays Cleared.
-- **Rejected:** reachable from *Initiated* as well as *Accepted*, and it is **two halves in two units of work** — the clearing house marks the payment Rejected, and the payer's own bank then [[reversal|reverses]] the debtor leg. In between, the rejection has half-happened: the payment reads Rejected while the customer's money is still in suspense. A rejected *collection* can be told to two banks, because the bank waiting for the answer and the bank holding the money can be different institutions — but only when the payer's bank has already **posted the debtor leg**. When it refused the collection itself for want of funds (\`AM04\`), it posted nothing, there is nothing to give back, and there is one message again.
+- **Rejected:** reachable from *Initiated* as well as *Accepted*, and it is **two halves in two units of work** — the clearing house marks the payment Rejected, and the submitting bank then [[reversal|reverses]] the debtor leg. In between, the rejection has half-happened: the payment reads Rejected while the customer's money is still in suspense. **The clearing house is the only institution that rejects anything**, and one message is all a rejection needs: before the cycle settles, the bank that submitted is the only bank that has heard of the payment. A receiving bank cannot reject — it is handed the instruction with the money already in its clearing suspense, so what would have been \`AC01\` or \`AM04\` is a return instead. *Before settlement, reject; after settlement, return* is the rule book's own division, and settling before releasing is what puts every receiving bank's objection on the second side of it.
 - **Returned:** after settlement; an R-transaction unwinds the flow (available on [[allows-return|return-enabled]] schemes only), and it is **three acts at three institutions**. It is sent by the bank that *received* the original instruction, and that bank posts the leg it owns **before** it sends — which is the only reason it can still refuse. The central bank then reverses the reserves and is final. The other bank posts the leg it owns **after** that, on the \`pacs.004\` the clearing house releases to it, and cannot refuse: there is nothing left to refuse. The status turns Returned when the second customer leg lands.
 
-A member bank advances its own copy through exactly three acts of its own: recording that the payment reached a cycle (which posts nothing — no money moves at an acceptance, but a record that jumped from *instructed* to *settled* could not answer the question a customer asks in between), recording a rejection **and** reversing the debtor leg in one unit of work, and recording a settlement while releasing the payee's money if it holds the payee.
+A member bank advances its own copy through exactly three acts of its own: recording that the payment reached a cycle (which posts nothing — no money moves at an acceptance, but a record that jumped from *instructed* to *settled* could not answer the question a customer asks in between), recording a rejection **and** reversing the debtor leg in one unit of work, and recording a settlement while releasing the payee's money if it holds the payee. A *receiving* bank does the last of those the moment it is handed the instruction, because by then the payment is already final.
 
 See [[clearing-vs-settlement]] for why clearing and settlement are distinct phases, and [[settlement-delay]] for how the value date is set.`,
+  },
+  "download-queue": {
+    title: "Nothing is pushed at a bank",
+    body: `A bank does not receive its results. It **collects** them.
+
+The file-transfer protocol between a bank and its clearing house — **EBICS**, which is what German and French banks actually use — has no push at all. The subscriber is always the client, so the topology of a whole network is short:
+
+\`\`\`
+member bank    -->  clearing house      (files up, results down)
+member bank    -->  settlement agent    (lodgements up, statements down)
+clearing house -->  settlement agent    (net positions up, the answer down)
+\`\`\`
+
+The settlement agent dials nobody. Every result waits in a **download queue** — the files one host is holding for one subscriber, in the order they were put there — until that subscriber comes and asks.
+
+**The queue is the routing table.** The clearing house routes a file to a receiving bank by putting it in that bank's queue. There is no address to look up and no table of who-is-reachable that could disagree with who-is-a-member, because being enrolled is what creates the queue in the first place. A BIC with no queue is a BIC the clearing house refuses to route to, out of a row it holds itself.
+
+Two things follow that a push-based network cannot express. **An upload can genuinely fail** — a refused connection, a timeout — and the uploading bank keeps its file and tries again. And **a bank that never collects** is a real operational failure with a real remedy: its customers are simply never told the fate of anything, while the queue grows.
+
+An upload is answered **technically and immediately** — the file arrived, and here is an order id for it — and never with what the file *means*. That answer is a status report the sender collects on a later download. Asking "what became of my order" in between is its own request: *received, not yet processed* is a distinct answer from *accepted* and from *no such order*.
+
+The identity a subscriber sends is a header, and it is **not** authentication. A real EBICS connection signs the order, encrypts the payload and authenticates the request under three separate key pairs, and enrolment ends in a hand-signed paper letter carrying the key hashes. It is the most heavily authenticated hop in the whole chain, and none of that is modelled here.
+
+See [[bulk-file]] for what a file carries and [[payment-hub]] for where one comes from.`,
+  },
+  "bulk-file": {
+    title: "One file in, many files out",
+    body: `Banks do not exchange payments one at a time. They exchange **files**.
+
+One \`pacs.008\` carries every credit transfer its sending bank accumulated before its [[payment-hub|cut-off]] — thousands of them in a real scheme. The clearing house answers that file with **one** \`pacs.002\` carrying a decision per transaction, whose group status is **\`PART\`** when they did not all go the same way: some accepted, some rejected, in one document.
+
+Then it does the thing a clearing house exists for. It **sorts the file by creditor agent** — the element naming the bank that holds each payee — and builds one output file per receiving bank:
+
+\`\`\`
+one bank uploads:      1 file, N transactions
+the clearing house:    1 answer back to the sender
+                       M files out, one per receiving bank
+\`\`\`
+
+So none of the institutions in a chain ever sees the same file, and that fan-out is invisible in any system where a message carries one payment. On a [[scheme-direction-pull|pull]] the sort is by the **debtor's** agent instead — a collection travels towards the money's source while a transfer travels towards its destination — and that single element is the whole difference at the clearing house.
+
+It sorts **without reading any record of its own**. A clearing house that had to look a payment up to decide where to send it could not route a file about a payment it does not hold, which in a real network is most of them.
+
+What is *not* batched here is the customer's half: instructions arrive one at a time, so a company handing its bank a single file carrying its whole payroll has no equivalent — that is the customer-to-bank layer, and this system does not model it.
+
+See [[download-queue]] for how a file reaches the bank it is addressed to.`,
+  },
+  "payment-hub": {
+    title: "The hub, and the cut-off",
+    body: `When a customer instructs their bank, **nothing is sent**.
+
+The bank validates the instruction, posts the [[debtor-leg|debtor leg]] on a push, and puts the payment in its **hub** — the pile of its own customers' instructions waiting for the next [[bulk-file|file]]. The payment is *Initiated*, in no cycle, and the payee's bank has never heard of it. That is a state it rests in rather than passes through, because nothing in a bulk scheme happens on a timer.
+
+The **cut-off** is what empties the hub: one file per scheme, uploaded to the clearing house, answered with an order id. Everything a bank accumulated since its last cut-off goes in one file, and everything instructed a moment later waits for the next one.
+
+**Two cut-offs share the word and they are not the same act**, which is worth keeping straight:
+
+| Whose | What it does |
+|---|---|
+| a **bank's** | turns its hub into files and uploads them |
+| the **clearing house's** | closes every open cycle, [[netting|nets]] it, and instructs settlement |
+
+They are two steps apart in a [[business-day|business day]] — every bank cuts off first, the clearing house validates and accepts what arrived, and only then does it cut off in its own sense.
+
+The customer-facing half of the door does not move: an instruction that fails the **submitting bank's own** checks — no funds, an account that is not the customer's, a revoked [[mandate]] — is refused there and then, before it ever joins the hub. What waits is only what that bank has already agreed to carry.
+
+The hub is not a durable record. A payment in it has a committed debtor leg, so its money is already in [[clearing-suspense|clearing suspense]] — which is exactly where a reconciliation would find it if the hub were ever lost.`,
+  },
+  "business-day": {
+    title: "The business day",
+    body: `A bulk payment scheme is **store-and-forward against a clock**. Banks accumulate, a cut-off arrives, files move, and results come back later. So the unit of progress is not a message — it is a **day**.
+
+Running one carries every payment through every phase, in a fixed order, for every institution before the next phase begins:
+
+\`\`\`
+0  banks   take the published routing directory
+1  banks   cut-off -> one file per scheme, uploaded
+2  csm     validate, accept into the open cycle, answer per transaction,
+           and BUILD each receiving bank's share -- releasing nothing
+3  csm     its own cut-off: net every open cycle, instruct settlement
+4  cb      settle whole-or-nothing, statement per member, answer the csm
+5  csm     collect the answer -> RELEASE the output files
+6  banks   collect -- THE SETTLEMENT AGENT FIRST, then the clearing house
+7  banks   end of day: interest accrual, arrears
+   clock   -> the next calendar day
+\`\`\`
+
+It **does not interleave**. Each phase finishes everywhere before the next starts, because real clearing is exactly this batched.
+
+Three of those orderings are load-bearing:
+
+- **The directory refresh is first**, so a bank admitted since the last day can be paid by its neighbours today rather than whenever somebody remembers to pull. See [[routing-directory]].
+- **Phases 3, 4 and 5 are settle, then release.** The cycle settles before any output file leaves the clearing house, so a receiving bank is handed its instructions only once the funds behind them are final. Reverse them and a bank could credit a customer against a batch that still fails. What the order costs is the receiving bank's ability to reject — its objections become [[allows-return|returns]] instead.
+- **Banks collect from the settlement agent first.** The reserve mirror has to be booked before the [[creditor-leg|creditor legs]] draw on it, and the two files sit in **different queues at different institutions**. Two connections share no ordering, so nothing about the order they were written in survives; what guarantees it is the bank's own collection order, which is a decision each bank makes about its own operations.
+
+A **failure never stops the day.** A file one bank cannot read must not stop another bank being paid, so every phase records what went wrong and carries on. What a day hands back is a report: the files that moved, what was decided about each transaction, and every file some institution could not get through.
+
+Which days clear at all is [[target-calendar|the settlement calendar's]] answer.`,
+  },
+  "target-calendar": {
+    title: "Which days money can move",
+    body: `Clearing and settlement run on the **settlement agent's** calendar — in the euro area, **TARGET**, the Eurosystem's real-time gross settlement system. It is not a currency's calendar, not a market's, and not any one country's.
+
+That distinction has teeth. German banks are shut on 3 October and TARGET is not, so a payment submitted that morning clears and settles that afternoon: a national holiday closes branches, it does not close the settlement agent.
+
+TARGET is shut at weekends and on six named days:
+
+\`\`\`
+New Year's Day   1 January
+Good Friday      moves with Easter
+Easter Monday    moves with Easter
+Labour Day       1 May
+Christmas Day    25 December
+St Stephen's Day 26 December
+\`\`\`
+
+Two of the six move with Easter, which is arithmetic rather than a list somebody maintains. And TARGET **substitutes nothing**: a 25 December falling on a Saturday is simply a closing day the year does not get, unlike the UK and US calendars, which move the observance to the following Monday.
+
+**A day the scheme is shut still happens.** The date advances and every bank still runs its end of day, because [[interest-accrual|interest accrues]] over a weekend — that is the entire reason [[day-count|day-count conventions]] exist. What does not run is any cut-off, any clearing and any settlement.
+
+This is what makes a rule book's deadlines mean what they say. SEPA gives a receiving bank **three banking business days** to return a credit it cannot apply; counted in calendar days, a balance arriving on a Thursday is overdue on Sunday where the rule book would say Tuesday. See [[unclaimed-balances]].
+
+What is **not** modelled: there is no time of day inside a settlement day, and one cut-off per day where SEPA runs several settlement cycles. A calendar has to exist before a time within it means anything.`,
   },
   "debtor-leg": {
     title: "Debtor leg",
@@ -568,9 +693,9 @@ The debtor leg is reversed if the payment is [[payment-lifecycle|rejected]] befo
   },
   "creditor-leg": {
     title: "Creditor leg",
-    body: `The **creditor leg** is the ledger entry that delivers funds into the payee's account. It is posted by the **payee's own bank**, once reserves have actually moved between banks at the [[central-bank-reserves|central bank]] and the clearing house has told that bank so.
+    body: `The **creditor leg** is the ledger entry that delivers funds into the payee's account. It is posted by the **payee's own bank**, on the instruction the clearing house releases to it once reserves have actually moved between banks at the [[central-bank-reserves|central bank]]. That bank sees the payment for the first time then: the file is held until the cut-off is final, so no bank ever credits a customer against money that has not settled.
 
-Two postings put that bank back to flat, and they are **two separate [[unit-of-work|units of work]], booked from two different institutions' messages**. The reserve mirror comes **first**, because the central bank tells a member its reserve moved before it tells the clearing house the cycle settled:
+Two postings put that bank back to flat, and they are **two separate [[unit-of-work|units of work]], booked from two different institutions' messages**. The reserve mirror comes **first**, and what guarantees it is the bank's own [[download-queue|collection order]] — it takes the settlement agent's queue before the clearing house's, because two connections share no ordering and nothing about who wrote first survives:
 
 \`\`\`
 Bank B — reserve mirror, from the camt.053:
@@ -579,7 +704,7 @@ Bank B — reserve mirror, from the camt.053:
 \`\`\`
 
 \`\`\`
-Bank B — creditor leg, from the pacs.002 (Bob gets €300):
+Bank B — creditor leg, from the released pacs.008 (Bob gets €300):
   Debit  Clearing Suspense (Liability) 300  ← suspense cleared
   Credit Bob Deposit (Liability)       300  ← Bob's balance rises
 \`\`\`
@@ -744,7 +869,7 @@ That is not a modelling convenience. In the EU it is the **Settlement Finality D
 Clearing house  --pacs.009-->  central bank
 Central bank commits its netting transaction   ← FINAL here
   --camt.053-->  each member whose position moved
-  --pacs.002/ACSC (via the clearing house)-->  per payment
+  --pacs.008 released (via the clearing house)-->  per receiving bank
 Each bank posts its own legs, locally, afterwards  ← catching up
 \`\`\`
 
@@ -804,12 +929,12 @@ The closing balance the statement carried is stored and **read** — see [[bank-
     body: `A bank reconciles **two advices from two institutions against one balance**.
 
 - The **central bank** says what its reserve moved by, in a \`camt.053\` statement of that bank's reserve account. That is the mirror leg against the [[reserve-account|reserve asset]].
-- The **clearing house** says which payments settled, one \`pacs.002\`/\`ACSC\` per payment. Those are the [[creditor-leg|creditor legs]].
+- The **clearing house** releases the instructions the cut-off settled, one \`pacs.008\` per receiving bank carrying that bank's share of every file uploaded. Those are the [[creditor-leg|creditor legs]]. The bank that *submitted* gets a \`pacs.002\`/\`ACSC\` per payment instead — the answer to the question it asked, with no leg left to post.
 
 \`\`\`
 Bank B, a net receiver, over one cut-off:
   camt.053  (central bank)     Debit  Reserve at CB    → Credit Clearing Suspense
-  pacs.002  (clearing house)   Credit payee's deposit  → Debit  Clearing Suspense
+  pacs.008  (clearing house)   Credit payee's deposit  → Debit  Clearing Suspense
   ─────────────────────────────────────────────────────────────
   Clearing suspense back to zero   ✓  only if the two agree
 \`\`\`
@@ -978,7 +1103,7 @@ So **staleness is real**, and it is the behaviour rather than a defect being tol
 
 And the refusal cannot say **which** of two situations it is in — no such bank is in this scheme, or this bank's copy predates it. Those have different remedies, and telling them apart would mean asking the clearing house, which is the lookup the subscription replaces. A refusal claiming to know would be lying about it.
 
-**Not a timer, and not a push.** A background poller buys realism and pays in tests that fail at random; a clearing house holding a subscriber list and a retry policy is a delivery system rather than a publisher, and the real vendor does not know who is listening.
+**Not a push, and not a background poller.** A clearing house holding a subscriber list and a retry policy is a delivery system rather than a publisher, and the real vendor does not know who is listening. What the pull does have is a cadence: it is the **first phase of every clearing [[business-day|business day]]**, before anything else moves, so a bank admitted since yesterday can be paid by its neighbours today rather than whenever somebody remembers.
 
 The copy carries a code and a BIC and **nothing else** — no name, because what the published row is written from delivers none, and no list of assets either. Refusing early from data that may be behind would refuse a payment the clearing house would have accepted, so whether a member clears in this currency stays a question for whoever reads the live roster. See [[routing-roster]] and [[counterparty-details]].`,
   },

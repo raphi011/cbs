@@ -3,8 +3,10 @@
 What is left to build, in the order it should be built.
 
 This file is forward-looking. What each shipped sub-project decided, reversed and
-learned is in its spec under `superpowers/specs/` and in `git log`; the index at
-the bottom is only enough to resolve a cross-reference by number.
+learned is in its spec under `docs/specs/` and in `git log`; the index at the bottom is
+only enough to resolve a cross-reference by number. A decision that outlives the
+sub-project that produced it — one a later reader has to know about before
+changing the shape of anything near it — is in [`docs/adr/`](adr/).
 
 **Status legend:** `todo` · `spec` (design agreed, spec written) · `plan`
 (implementation plan written) · `wip`
@@ -19,9 +21,10 @@ domain carried through all layers the way the existing ones are.
 Three constraints apply to everything below.
 
 - **Domain knowledge stays consistent across layers.** `README.md` is
-  authoritative; `web/src/components/hint-content.ts`, the quiz chapters under
-  `web/src/lib/quiz/chapters/`, and the schema comments in
-  `store/sqlite/schema/` all have to move with it. See `CLAUDE.md`.
+  authoritative; `CONTEXT.md`, `web/src/components/hint-content.ts`, the quiz
+  chapters under `web/src/lib/quiz/chapters/`, and the schema comments in
+  `store/sqlite/schema/` all have to move with it. A decision that outlives its
+  sub-project goes in `docs/adr/`. See `CLAUDE.md`.
 - **Nothing requires setup.** A fresh checkout runs the whole suite with no
   database, no Docker and no toolchain. Every new entity still needs to be in
   `store/storetest`.
@@ -39,10 +42,19 @@ Three constraints apply to everything below.
 - `payment` — one institution's handle on the interbank network. SEPA CT and DD,
   `Initiated → Accepted → Cleared → Settled` **per copy**. `payment.Networks`
   mints one `Network` per institution.
-- `iso20022`, `mesh` — the messages, and the N+2 actors that exchange them.
+- `iso20022`, `ebics` — the messages, and the file transport that carries them.
+  `ebics` carries bytes and knows no ISO 20022: order types, order ids, return
+  codes and one ordered download queue per enrolled subscriber. Nothing is ever
+  pushed at a member bank.
+- `calendar` — the TARGET settlement calendar and the deployment's clock. Which
+  days money can move on, and what day this deployment thinks it is.
+- `cmd/server` — the three institutions, the composition root and the business
+  day. They are this deployment's orchestration rather than a library some other
+  system could use, which is what puts them in a command; which institutions a
+  deployment has is that deployment's business and not a library's.
 - `payment/recon` — the reconciliation harness, test-only by convention: the one
   instrument that opens every institution's database at once, precisely because
-  no actor in the system may. Its narrow sibling is `payment.Network.Reconcile`,
+  no institution in the system may. Its narrow sibling is `payment.Network.Reconcile`,
   one bank over its own database, which reports **breaks** on the reserve and
   **positions with ages** on the clearing suspense, because only the first of the
   two accounts closes into an identity from inside.
@@ -58,7 +70,7 @@ Four groups, and only the first two are sequenced against each other.
 
 1. **Defects** — small, verified against the current tree, and each one is a
    thing the system gets wrong rather than a thing it does not have.
-2. **The build sequence** — the payments and settlement arc, §1 through §6,
+2. **The build sequence** — the payments and settlement arc, §1 through §7,
    where each item genuinely wants the one before it.
 3. **Domain gaps worth building** — a standing catalogue, ranked by value per
    unit of effort. Take from the top; nothing here blocks anything there.
@@ -114,8 +126,14 @@ about what a 500 may disclose.
 
 ## The build sequence
 
+**21, EBICS and the business day, has shipped**, and it was first for two
+reasons that now hold for everything below: it replaced the transport every item
+here is built on, and the business date it brought is a prerequisite the other
+four had each been paying for separately.
+
 1. **7c, the message log.** The last piece of sub-project 7, and it makes every
-   flow already shipped visible.
+   flow already shipped visible. Cheaper after 21, which gives it files to show
+   rather than one message per payment.
 2. **Instant payments.** The one place the settlement orchestrator has to grow.
 3. **Card transactions.** Additive on top of holds and the existing net path.
 4. **Reserve adequacy.** Wanted by both 2 and 3, and worth little before either.
@@ -126,19 +144,88 @@ about what a 500 may disclose.
 `deposit.Register.TransferTx`, and `POST /transfers` on a bank's own port. It is
 the `deposit` layer's act rather than the `payment` layer's, because nothing
 about it needs to know what an institution is: it touches the two customers' own
-GL accounts, and a register spans one book. `Mesh.Submit` refuses the on-us
-*payment* unchanged — the two are different products and the payer chooses one.
+GL accounts, and a register spans one book. A submitting bank's door refuses the
+on-us *payment* unchanged — the two are different products and the payer chooses
+one.
 
 What it does NOT cover is the standing order: a transfer that happens on a date
 has a lifecycle of its own, and nothing here holds an instruction between the day
 it is given and the day it runs.
 
 Two defects found under sub-project 8 remain reachable only through an
-arrangement `Mesh.Submit` refuses, and this work did not change that —
+arrangement a submitting bank's door refuses, and this work did not change that —
 `AcceptInboundTx`'s witness is the ROW, which is false when the same bank also
 submitted, and `PostReturnLegTx` decides which leg is last by position in a
 conversation one institution does not have. Both are closed and both are still
 proved through the store rather than through a path a caller can reach.
+
+### EBICS batches, the institutions in `cmd/server`, and the business day — `done`
+
+Sub-project 21.
+[`2026-08-11-ebics-and-the-business-day-design.md`](specs/2026-08-11-ebics-and-the-business-day-design.md).
+Nine tasks, and the largest since 8. It deleted `mesh`, which 7b built, the way §9
+deleted the two store backends §8 built.
+
+`docs/sepa-real-world.md` contradicted the mesh on every mechanical claim it made:
+bulk clearing is *"store-and-forward file transfer against a cutoff clock"* and
+*"EBICS has no push at all — the bank polls for its downloads"*. 7b had built the
+opposite — N+2 actors with inboxes, one message per payment, delivery that always
+succeeds. 21 kept what 7b was for, the message being the interface, and replaced
+everything underneath it.
+
+Three deliveries landed. **The top level is library and `cmd/server` is glue** —
+`api` split three ways over interfaces each sub-package declares, and each
+institution has a struct with its own routes and its own EBICS side.
+**The transport is EBICS** — uploads, per-subscriber download queues, order types
+and order ids; there is no actor table, because enrolment is what creates a queue.
+**The deployment owns a clock, and advancing it runs a business day** — the
+refresh, the cut-off, the clearing, the netting, settlement, release, each bank's
+collection and each bank's end of day, in one explicit list, on a TARGET calendar.
+
+The third is what made the first two cheap, and it was not asked for. There are
+**no background goroutines under this process at all**, so `Drain` — the thing
+that let every test say "submit, drain, assert" — needed no replacement rather
+than a test-only substitute. The suite says "submit, advance a day, assert" and
+`AdvanceDay` returns when the day is done.
+
+Two decisions outlive the sub-project and are recorded as such:
+[ADR-0001](adr/0001-the-deployment-owns-the-clock.md), the deployment owns the
+clock, and [ADR-0002](adr/0002-settle-before-release.md), the clearing house
+settles before it releases.
+
+**Task 8 was the one that changed the domain rather than the plumbing.** Settling
+before releasing moved every receiving bank's objection from a `pacs.002` reject
+to a `pacs.004` return — which is what those codes are in SEPA — and left the
+clearing house as the only institution that rejects anything. A payee whose
+account is closed is taken on and sent back rather than refused, which is what
+made the unclaimed-balances ageing feature reachable at all.
+
+It claimed two items filed elsewhere. The roll half of *A business date* below,
+including the case that item named: a transfer submitted after cut-off before a
+holiday weekend. And the deferred note that batched bulks and a cut-off timer
+were *reachable for the first time but unclaimed* — task 7 claimed both, and
+`pacs.002`'s `GrpSts: PART` is produced. `pacs.028`, listed beside them, stays
+unclaimed.
+
+It did **not** claim the threading half of *A business date* — assigning the date
+at command acceptance and carrying it — which is the `BusinessDate` type under
+*Structural work*, and is a compiler-guided rename across four packages that had
+no business being inside a transport swap.
+
+**Three things it leaves behind**, none of them a surprise and each written where
+it bites rather than only here:
+
+- **The clearing house's held output files are in memory.** A restart between a
+  cycle settling and its files being released loses shares whose reserves have
+  already moved, and no receiving bank is ever handed the instructions it has to
+  apply. The fix is a table in that institution's own database; the absence is
+  argued inside `csm/0001_init.sql`'s `cycles` statement.
+- **A bank's payment hub is in memory too**, so a restart loses instructions
+  whose debtor legs are committed — money in clearing suspense against a file
+  that will never be built. `payment/recon` is the instrument that finds it.
+- **One cut-off per business day**, where SEPA runs several settlement cycles.
+  Adding more is a loop over a list of times, and it is deliberately out of
+  scope: the calendar had to exist before a time of day within it meant anything.
 
 ### 1. 7c, the message log — `todo`
 
@@ -365,9 +452,9 @@ timing, which is the nondeterminism idempotency exists to kill.
 
 ### A business date
 
-There is no business date, no roll event, no banking calendar and no TARGET or
-holiday handling anywhere. `PostTransactionTx` assigns `bookingDate = s.now()`
-when the caller supplies none.
+`PostTransactionTx` assigns `bookingDate = s.now()` when the caller supplies
+none, and every layer below the deployment reads a clock rather than being handed
+a date.
 
 Booking dates should advance by an explicit, logged business-date roll rather
 than by the server clock crossing midnight — assigned once at command acceptance
@@ -379,6 +466,19 @@ schedule generator will silently disagree with any calendar.
 Pairs with the `BusinessDate` type under *Structural work* — same problem
 approached from the code side, and doing either alone leaves the other's cost
 in place.
+
+**The roll half shipped with §21**, which gave the deployment a clock, a TARGET
+calendar and an explicit advance that runs a business day — see
+[ADR-0001](adr/0001-the-deployment-owns-the-clock.md). So the first paragraph
+above is out of date in one respect and kept because the rest of it is not: there
+IS a business date now, and the worked case — a transfer submitted after cut-off
+before a holiday weekend — is buildable in the seed.
+
+What stays here is the **threading**: the date assigned at command acceptance and
+carried, so nothing downstream calls `today()` for accounting purposes. §21 did
+not do it, and made it worth doing — a rule about what nothing downstream may
+call needs a roll event to be a rule about, and now there is one to enforce it
+against.
 
 ### Blocks as rows, not a status field
 
@@ -518,21 +618,28 @@ A day-granular, UTC-normalised-at-construction type with `Start()`, `NextDay()`,
 `Key()` and value equality. Thread the type, not the instant, and a missing date
 becomes a compile error. Cheaper today than at any later point.
 
-### Deepen the transport module
+### Deepen the transport module — `done`
 
-65% of `api`'s handler lines are the same five steps — participant guard,
-`decodeJSON`, domain call, `writeError`, `writeJSON` — and 28 of 70 handlers are
-nothing else. The same six-line transaction tail appears nine times and the same
-`YYYY-MM-DD` parse seven.
+Done between §21's tasks 4 and 5, against the three surface packages the split
+had just produced rather than against one large one.
 
-The DTO layer is not purely mapping either: `toFacilityDTO` re-implements
-`lending.Outstanding`, the wire number comes from the `api` copy, and nothing
-asserts the two agree; `entryAssets` does I/O from `dto_ledger.go`, contradicting
-`api/doc.go`.
+A handler RETURNS its response and its error; `api.Handle` and `api.HandleBody`
+decode the body, map the error, choose the status and encode, and `api/bank`'s
+pair resolve the listener's own bank in front of them. The five steps are one
+function instead of seventy call sites, `api/bank` lost a quarter of its lines,
+and the writers are unexported — so "every response carries the JSON content
+type and every error goes through the mapping" is enforced rather than kept.
+`api.ParseDay` and `api.ResolveTransactionDTO` absorbed the repeated parse and
+the repeated transaction tail; a 400 a handler decides is now
+`api.BadRequest`, mapped like any other sentinel.
 
-One typed handler adapter absorbing guard/decode/status/encode, plus
-`writeTransaction` and `parseDate` absorbing the nine and seven copies, plus
-`toFacilityDTO` calling `Outstanding` instead of redefining it.
+The two DTO-layer complaints are closed with it. `lending.OutstandingOf` is the
+one place drawn-plus-receivable is written, called by `Portfolio.Outstanding` and
+by the wire renderer, so there is nothing left for a test to hold together; the
+asset resolution moved out of `dto_ledger.go` into `transaction.go` and is
+unexported, leaving the DTO files free of I/O as `api/doc.go` claims.
+
+The 99-route table was dumped before and after and is byte-identical.
 
 ### Move the derived balances off the store seam
 
@@ -561,7 +668,7 @@ known to be the wrong place for it.
 **Do not act on this before instant payments.** `SettlementModel()` had no
 consumer at all when this was written and now has exactly one, a DTO field —
 nothing branches on it. A third scheme with a genuinely different settlement
-model is what would let the seam earn itself, and §2 of the sequence is that
+model is what would let the seam earn itself, and §3 of the sequence is that
 scheme. Re-ask afterwards.
 
 ---
@@ -701,9 +808,11 @@ recalls and reversals, runtime XSD validation, and message signing. Two are
 refused *specifically* rather than by family, in `iso20022/doc.go`: `camt.054`,
 because a notification carries no balance and therefore cannot detect a wrong
 posting, and `camt.051`, because this system lodges cash and never withdraws it.
-Reachable for the first time but unclaimed: batched bulks — which is what would
-exercise `pacs.002`'s `GrpSts: PART`, built and unused — a `pacs.028` status
-request, and a cutoff timer.
+Reachable for the first time but unclaimed: a `pacs.028` status request. Batched
+bulks and a cutoff timer were listed here too and are §21's task 7, claimed;
+`pacs.002`'s `GrpSts: PART` is built and reached, by §21's task 8, at the clearing
+house — the only institution that still rejects anything once a cycle settles
+before its files are released.
 
 **A party model.** No party, customer or account-holder entity; a
 `deposit.Account` has a `Name string` and one person's accounts are not linked.
@@ -739,20 +848,21 @@ One line apiece, for resolving a reference by number. The spec is the record.
 
 | # | | Spec |
 |---|---|---|
-| 1 | Multi-asset ledger core | [`2026-07-27-multi-asset-ledger-design.md`](superpowers/specs/2026-07-27-multi-asset-ledger-design.md) |
-| 2 | Lending — `interest`, `lending`, three products | [`2026-07-27-lending-design.md`](superpowers/specs/2026-07-27-lending-design.md) |
+| 1 | Multi-asset ledger core | [`2026-07-27-multi-asset-ledger-design.md`](specs/2026-07-27-multi-asset-ledger-design.md) |
+| 2 | Lending — `interest`, `lending`, three products | [`2026-07-27-lending-design.md`](specs/2026-07-27-lending-design.md) |
 | 3 | Crypto | *above* |
 | 4 | FX / exchange | *above* |
-| 5 | Account addressing — `(scheme, value)` identifiers | [`2026-07-31-account-addressing-design.md`](superpowers/specs/2026-07-31-account-addressing-design.md) |
-| 6a | Operator-split API — one listener per institution | [`2026-07-31-operator-split-api-design.md`](superpowers/specs/2026-07-31-operator-split-api-design.md) |
-| 6b | Role-scoped web UI — four personas | [`2026-07-31-role-scoped-web-ui-design.md`](superpowers/specs/2026-07-31-role-scoped-web-ui-design.md) |
-| 7a | The `iso20022` package | [`2026-07-31-iso20022-messages-design.md`](superpowers/specs/2026-07-31-iso20022-messages-design.md) |
-| 7b | The mesh and its N+2 actors | [`2026-08-01-iso20022-mesh-design.md`](superpowers/specs/2026-08-01-iso20022-mesh-design.md) |
+| 5 | Account addressing — `(scheme, value)` identifiers | [`2026-07-31-account-addressing-design.md`](specs/2026-07-31-account-addressing-design.md) |
+| 6a | Operator-split API — one listener per institution | [`2026-07-31-operator-split-api-design.md`](specs/2026-07-31-operator-split-api-design.md) |
+| 6b | Role-scoped web UI — four personas | [`2026-07-31-role-scoped-web-ui-design.md`](specs/2026-07-31-role-scoped-web-ui-design.md) |
+| 7a | The `iso20022` package | [`2026-07-31-iso20022-messages-design.md`](specs/2026-07-31-iso20022-messages-design.md) |
+| 7b | The mesh and its N+2 actors | [`2026-08-01-iso20022-mesh-design.md`](specs/2026-08-01-iso20022-mesh-design.md) |
 | 7c | The message log | *above* |
-| 8 | Per-entity stores — N+2 databases, three shapes | [`2026-08-02-db-per-entity-design.md`](superpowers/specs/2026-08-02-db-per-entity-design.md) |
-| 9 | One store, and it is SQLite | [`2026-08-03-sqlite-only-store-design.md`](superpowers/specs/2026-08-03-sqlite-only-store-design.md) |
-| 19 | Reconciliation a bank can do for itself | [`2026-08-09-bank-reconciliation-design.md`](superpowers/specs/2026-08-09-bank-reconciliation-design.md) |
-| 20 | The subsidiary ledger — customer accounts leave the chart of accounts, and the trial balance that measures it | [`2026-08-10-subsidiary-ledger-design.md`](superpowers/specs/2026-08-10-subsidiary-ledger-design.md) |
+| 8 | Per-entity stores — N+2 databases, three shapes | [`2026-08-02-db-per-entity-design.md`](specs/2026-08-02-db-per-entity-design.md) |
+| 9 | One store, and it is SQLite | [`2026-08-03-sqlite-only-store-design.md`](specs/2026-08-03-sqlite-only-store-design.md) |
+| 19 | Reconciliation a bank can do for itself | [`2026-08-09-bank-reconciliation-design.md`](specs/2026-08-09-bank-reconciliation-design.md) |
+| 20 | The subsidiary ledger — customer accounts leave the chart of accounts, and the trial balance that measures it | [`2026-08-10-subsidiary-ledger-design.md`](specs/2026-08-10-subsidiary-ledger-design.md) |
+| 21 | EBICS batches, the institutions in `cmd/server`, and the business day | [`2026-08-11-ebics-and-the-business-day-design.md`](specs/2026-08-11-ebics-and-the-business-day-design.md) |
 
 Sub-project 20 shipped the trial balance with it: the report is the acceptance
 test for the third task, and a row count bounded by the institution rather than

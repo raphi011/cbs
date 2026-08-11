@@ -177,6 +177,14 @@ const (
 type ReturnReason string
 
 const (
+	// ReturnReasonIncorrectAccountNumber (AC01): the agent that was handed the
+	// settled payment holds no such account.
+	//
+	// It is a RETURN rather than a rejection because of WHEN the receiving agent
+	// finds out: it is given the instruction only once the cycle carrying it is
+	// final, so the money is already there and the only way to say no is to send
+	// it back.
+	ReturnReasonIncorrectAccountNumber ReturnReason = "AC01"
 	// ReturnReasonClosedAccountNumber (AC04): the creditor account was closed
 	// by the time the credit was applied.
 	ReturnReasonClosedAccountNumber ReturnReason = "AC04"
@@ -195,6 +203,9 @@ const (
 	// ReturnReasonBankIdentifierIncorrect (RC01): the payment reached the wrong
 	// agent.
 	ReturnReasonBankIdentifierIncorrect ReturnReason = "RC01"
+	// ReturnReasonMissingDebtorAccountOrIdentification (RR01): the account the
+	// settled payment named carries no address of the kind the scheme routes on.
+	ReturnReasonMissingDebtorAccountOrIdentification ReturnReason = "RR01"
 )
 
 // CreditDebitCode says which way an amount runs, from the point of view of the

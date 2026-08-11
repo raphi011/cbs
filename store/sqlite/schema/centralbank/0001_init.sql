@@ -73,7 +73,7 @@ CREATE TABLE books (
     -- There is one thing to add that is only true here. A process in which every
     -- payment.Network holds a ledger.Book over payment.CentralBankBook makes this
     -- book reachable from all of them, and the only thing then keeping a member
-    -- bank's handler out is that the mesh's bankOps names no method reaching it.
+    -- bank's handler out is that bankOps in cmd/server names no method reaching it.
     -- Only this institution's network holds the book, and only this institution's
     -- DATABASE holds the rows — which is what makes the refusal a fact rather
     -- than a field being nil.
@@ -234,6 +234,14 @@ CREATE TABLE accounts (
 ) STRICT;
 
 CREATE TABLE transactions (
+    -- WHAT DAY IT IS IS NOT IN THIS DATABASE EITHER, and that matters most here.
+    -- transactions in bank/0001_init.sql carries the argument; what is worth
+    -- adding is that this is the institution a reader would expect to hold it.
+    -- The settlement agent decides which days money moves on, so a business_date
+    -- row here would look like the calendar's natural home — and it would make
+    -- the date a fact this institution could change under the others. It is the
+    -- DEPLOYMENT's, in a file beside these databases, and the calendar that says
+    -- whether a date settles is a function rather than a table anybody owns.
     book_id         TEXT NOT NULL REFERENCES books (id) ON DELETE CASCADE,
     id              TEXT NOT NULL,
     idempotency_key TEXT NOT NULL,
@@ -503,7 +511,7 @@ CREATE TABLE settlement_positions (
     -- looks open — this table is a child of settlements, plainly this
     -- institution's, and a bank plausibly wants a settlement-position row per
     -- cycle — and what settles it is asking what reads one: every reader is this
-    -- institution's or the operator console's, and nothing in mesh/bank.go names
+    -- institution's or the operator console's, and nothing in cmd/server/bank.go names
     -- a position at all. What a bank holds is a settlement_advices row, its own
     -- record of the movement it was told about.
     --

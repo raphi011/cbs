@@ -134,8 +134,8 @@
 //     It carries no amount, which is what decides where the member's own leg is
 //     posted; see Camt025.
 //
-// payment/translate.go builds and reads every one of them, and mesh carries them
-// between the institutions as marshalled bytes.
+// payment/translate.go builds and reads every one of them, and the file
+// transport carries them between the institutions as marshalled bytes.
 //
 // Deliberately absent: pain.001 and pain.008 (the customer-to-bank layer),
 // camt.056 recalls and pacs.007 reversals, message signing, and runtime XSD

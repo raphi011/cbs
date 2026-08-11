@@ -11,9 +11,9 @@ import (
 // Wire format for the demand-deposit layer: customer accounts, holds,
 // balances, snapshots, and their requests.
 
-// depositAccountDTO carries the arranged overdraft's credit terms alongside
+// DepositAccountDTO carries the arranged overdraft's credit terms alongside
 // the account. Rate crosses the wire as its millionths integer with RateScale
-// beside it, the same convention facilityDTO follows for the same reason: an
+// beside it, the same convention FacilityDTO follows for the same reason: an
 // integer whose scale a client learns from documentation is an integer a
 // client renders wrong.
 //
@@ -24,18 +24,18 @@ import (
 // visible here until it takes effect, and a past one is not visible here at
 // all. GET /participants/{pid}/deposit-accounts/{did}/overdraft-terms is what
 // shows the whole timeline.
-type depositAccountDTO struct {
+type DepositAccountDTO struct {
 	ID   string `json:"id"`
 	Name string `json:"name"`
 	// ControlAccount is the chart-of-accounts line this account's money is
 	// pooled in. There is no second field for the subsidiary within it: that is
 	// this account's own ID, above. A client naming a customer's money in a
-	// posting sends the two together — see entryDTO.Subsidiary.
+	// posting sends the two together — see EntryDTO.Subsidiary.
 	ControlAccount string `json:"controlAccount"`
 	Asset          string `json:"asset"`
 	Status         string `json:"status"`
 	// Identifiers are the account's external addresses. Empty is normal.
-	Identifiers []identifierDTO `json:"identifiers"`
+	Identifiers []IdentifierDTO `json:"identifiers"`
 	// ProductID is the catalogue entry pricing this account today. It varies
 	// over the account's life, so it comes from the resolved terms rather than
 	// from the account row.
@@ -59,24 +59,24 @@ type depositAccountDTO struct {
 }
 
 // pricingSourceProduct and pricingSourceNegotiated are the two values
-// depositAccountDTO.PricingSource takes.
+// DepositAccountDTO.PricingSource takes.
 const (
 	pricingSourceProduct    = "product"
 	pricingSourceNegotiated = "negotiated"
 )
 
-func toDepositAccountDTO(a deposit.Account, t deposit.EffectiveTerms, control ledger.AccountID) depositAccountDTO {
+func ToDepositAccountDTO(a deposit.Account, t deposit.EffectiveTerms, control ledger.AccountID) DepositAccountDTO {
 	source := pricingSourceProduct
 	if t.Negotiated {
 		source = pricingSourceNegotiated
 	}
-	return depositAccountDTO{
+	return DepositAccountDTO{
 		ID:             string(a.ID),
 		Name:           a.Name,
 		ControlAccount: string(control),
 		Asset:          string(a.Asset),
 		Status:         a.Status.String(),
-		Identifiers:    toIdentifierDTOs(a.Identifiers),
+		Identifiers:    ToIdentifierDTOs(a.Identifiers),
 		ProductID:      string(t.ProductID),
 		OverdraftLimit: int64(t.Limit),
 
@@ -91,7 +91,7 @@ func toDepositAccountDTO(a deposit.Account, t deposit.EffectiveTerms, control le
 	}
 }
 
-type holdDTO struct {
+type HoldDTO struct {
 	ID          string    `json:"id"`
 	AccountID   string    `json:"accountId"`
 	Amount      int64     `json:"amount"`
@@ -101,8 +101,8 @@ type holdDTO struct {
 	CreatedAt   time.Time `json:"createdAt"`
 }
 
-func toHoldDTO(h deposit.Hold) holdDTO {
-	return holdDTO{
+func ToHoldDTO(h deposit.Hold) HoldDTO {
+	return HoldDTO{
 		ID:          string(h.ID),
 		AccountID:   string(h.AccountID),
 		Amount:      int64(h.Amount),
@@ -113,7 +113,7 @@ func toHoldDTO(h deposit.Hold) holdDTO {
 	}
 }
 
-// balanceDTO carries the asset alongside the three numbers.
+// BalanceDTO carries the asset alongside the three numbers.
 //
 // Every one of them is an integer in the account's minor units, and a client
 // cannot render any of them without the asset's scale. Without this field a
@@ -121,15 +121,15 @@ func toHoldDTO(h deposit.Hold) holdDTO {
 // its code, then the asset list for that code's scale — and the number is on
 // screen before the scale that gives it meaning, which is what an amount
 // rendered at a guessed scale looks like just before it is wrong.
-type balanceDTO struct {
+type BalanceDTO struct {
 	Asset     string `json:"asset"`
 	Book      int64  `json:"book"`
 	Holds     int64  `json:"holds"`
 	Available int64  `json:"available"`
 }
 
-func toBalanceDTO(b deposit.Balance, asset ledger.AssetCode) balanceDTO {
-	return balanceDTO{
+func ToBalanceDTO(b deposit.Balance, asset ledger.AssetCode) BalanceDTO {
+	return BalanceDTO{
 		Asset:     string(asset),
 		Book:      int64(b.Book),
 		Holds:     int64(b.Holds),
@@ -137,7 +137,7 @@ func toBalanceDTO(b deposit.Balance, asset ledger.AssetCode) balanceDTO {
 	}
 }
 
-// overdraftTermsDTO is one row of an account's effective-dated terms timeline.
+// OverdraftTermsDTO is one row of an account's effective-dated terms timeline.
 //
 // effectiveFrom is the day the row takes economic effect and createdAt is when
 // it was entered: the booking-date/value-date distinction applied to
@@ -145,7 +145,7 @@ func toBalanceDTO(b deposit.Balance, asset ledger.AssetCode) balanceDTO {
 // the 15th can be recorded honestly. A row whose effectiveFrom is in the future
 // appears here before it applies; the account's own resolved fields show the
 // row in force today.
-type overdraftTermsDTO struct {
+type OverdraftTermsDTO struct {
 	AccountID      string    `json:"accountId"`
 	EffectiveFrom  time.Time `json:"effectiveFrom"`
 	ProductID      string    `json:"productId"`
@@ -163,8 +163,8 @@ type overdraftTermsDTO struct {
 	CreatedAt      time.Time `json:"createdAt"`
 }
 
-func toOverdraftTermsDTO(t deposit.OverdraftTerms) overdraftTermsDTO {
-	out := overdraftTermsDTO{
+func ToOverdraftTermsDTO(t deposit.OverdraftTerms) OverdraftTermsDTO {
+	out := OverdraftTermsDTO{
 		AccountID:      string(t.AccountID),
 		EffectiveFrom:  t.EffectiveFrom,
 		ProductID:      string(t.ProductID),
@@ -181,24 +181,24 @@ func toOverdraftTermsDTO(t deposit.OverdraftTerms) overdraftTermsDTO {
 	return out
 }
 
-type snapshotDTO struct {
+type SnapshotDTO struct {
 	AccountID string     `json:"accountId"`
 	Date      time.Time  `json:"date"`
-	Balance   balanceDTO `json:"balance"`
+	Balance   BalanceDTO `json:"balance"`
 	TakenAt   time.Time  `json:"takenAt"`
 }
 
-func toSnapshotDTO(s deposit.Snapshot, asset ledger.AssetCode) snapshotDTO {
-	return snapshotDTO{AccountID: string(s.AccountID), Date: s.Date, Balance: toBalanceDTO(s.Balance, asset), TakenAt: s.TakenAt}
+func ToSnapshotDTO(s deposit.Snapshot, asset ledger.AssetCode) SnapshotDTO {
+	return SnapshotDTO{AccountID: string(s.AccountID), Date: s.Date, Balance: ToBalanceDTO(s.Balance, asset), TakenAt: s.TakenAt}
 }
 
-// openDepositAccountRequest carries a required asset, for the same reason
-// createAccountRequest does: the asset is what decides which control account the
+// OpenDepositAccountRequest carries a required asset, for the same reason
+// CreateAccountRequest does: the asset is what decides which control account the
 // money pools in, and it may not be guessed on the caller's behalf.
 // productId is required for the same reason: every deposit account is opened
 // FROM a product, because a floating terms row with no product would have
 // nothing to float to.
-type openDepositAccountRequest struct {
+type OpenDepositAccountRequest struct {
 	Name           string `json:"name"`
 	Asset          string `json:"asset"`
 	ProductID      string `json:"productId"`
@@ -208,20 +208,20 @@ type openDepositAccountRequest struct {
 	// refused (422): the bank mints the account's own address, and one arriving
 	// in a request body would be a caller asserting who holds the account.
 	// Optional, and usually empty; the account comes out addressed either way.
-	Identifiers []identifierDTO `json:"identifiers"`
+	Identifiers []IdentifierDTO `json:"identifiers"`
 }
 
-type statusRequest struct {
+type StatusRequest struct {
 	Action string `json:"action"`
 }
 
-type createHoldRequest struct {
+type CreateHoldRequest struct {
 	Amount      int64      `json:"amount"`
 	ExpiresAt   *time.Time `json:"expiresAt"`
 	Description string     `json:"description"`
 }
 
-type captureHoldRequest struct {
+type CaptureHoldRequest struct {
 	Counterparty string `json:"counterparty"`
 	// Subsidiary names which one when Counterparty is a control account: a
 	// deposit account's id when the money is going to another customer of this
@@ -233,17 +233,17 @@ type captureHoldRequest struct {
 	Description string `json:"description"`
 }
 
-type snapshotRequest struct {
+type SnapshotRequest struct {
 	Date string `json:"date"`
 }
 
-type fundRequest struct {
+type FundRequest struct {
 	Account     string `json:"account"`
 	Amount      int64  `json:"amount"`
 	Description string `json:"description"`
 }
 
-// transferRequest is a book transfer between two of this bank's own customers.
+// TransferRequest is a book transfer between two of this bank's own customers.
 //
 // The payer names their own account by ID and the payee by ADDRESS, and the
 // asymmetry is what a payer actually holds: you know which of your accounts the
@@ -254,14 +254,14 @@ type fundRequest struct {
 // To carries no scheme beside it, because there is only one it could be. Every
 // account this bank opens is minted an IBAN; a card PAN is a scheme somebody
 // else issues and quotes to this bank, and it is not somewhere money is sent.
-type transferRequest struct {
+type TransferRequest struct {
 	From        string `json:"from"`
 	To          string `json:"to"`
 	Amount      int64  `json:"amount"`
 	Description string `json:"description"`
 }
 
-// transferDTO is the receipt: what the posting is called in the ledger, which
+// TransferDTO is the receipt: what the posting is called in the ledger, which
 // account the address turned out to be, and what the PAYER has left.
 //
 // One balance and not two. The caller is the payer, and a transfer is not an
@@ -269,11 +269,11 @@ type transferRequest struct {
 // register is a fact about this route, not a permission it confers. The payee's
 // account id is here because GET /directory/accounts already answers exactly
 // that on this port; their NAME is not, for the reason that route states.
-type transferDTO struct {
+type TransferDTO struct {
 	TransactionID string     `json:"transactionId"`
 	From          string     `json:"from"`
 	To            string     `json:"to"`
-	Balance       balanceDTO `json:"balance"`
+	Balance       BalanceDTO `json:"balance"`
 }
 
 // The three requests that replaced setOverdraftTermsRequest, one per decision
@@ -285,15 +285,15 @@ type transferDTO struct {
 // next month is inert until the end-of-day runs reach it. Absent or null means
 // today on the register's clock rather than on this process's wall clock.
 
-// setOverdraftLimitRequest changes what this customer may go overdrawn by. The
+// SetOverdraftLimitRequest changes what this customer may go overdrawn by. The
 // limit is never part of a product: it is an underwriting decision about one
 // customer, which is why product.OverdraftPricing cannot express one.
-type setOverdraftLimitRequest struct {
+type SetOverdraftLimitRequest struct {
 	Limit         int64      `json:"limit"`
 	EffectiveFrom *time.Time `json:"effectiveFrom"`
 }
 
-// setOverdraftPricingRequest gives this customer a negotiated price instead of
+// SetOverdraftPricingRequest gives this customer a negotiated price instead of
 // the product's, or clears one.
 //
 // A NULL pricing clears the overlay and puts the account back on its product —
@@ -305,27 +305,27 @@ type setOverdraftLimitRequest struct {
 // customer, and the audit log is the only control on it. The catalogue refuses
 // the same thing outright, because its blast radius is every account on the
 // product.
-type setOverdraftPricingRequest struct {
-	Pricing       *overdraftPricingDTO `json:"pricing"`
+type SetOverdraftPricingRequest struct {
+	Pricing       *OverdraftPricingDTO `json:"pricing"`
 	EffectiveFrom *time.Time           `json:"effectiveFrom"`
 }
 
-// overdraftPricingDTO is the floating parameter group on the wire. Rate and
-// UnarrangedRate are millionths, the same convention facilityDTO uses.
-type overdraftPricingDTO struct {
+// OverdraftPricingDTO is the floating parameter group on the wire. Rate and
+// UnarrangedRate are millionths, the same convention FacilityDTO uses.
+type OverdraftPricingDTO struct {
 	Rate           int64  `json:"rate"`
 	UnarrangedRate int64  `json:"unarrangedRate"`
 	DayCount       string `json:"dayCount"`
 }
 
-// changeProductRequest migrates an account onto another product. The days
+// ChangeProductRequest migrates an account onto another product. The days
 // before effectiveFrom still resolve against the product that priced them: a
 // migration is not a rewrite.
-type changeProductRequest struct {
+type ChangeProductRequest struct {
 	ProductID     string     `json:"productId"`
 	EffectiveFrom *time.Time `json:"effectiveFrom"`
 }
 
-type chargeOverdraftInterestRequest struct {
+type ChargeOverdraftInterestRequest struct {
 	Date string `json:"date"`
 }

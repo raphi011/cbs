@@ -9,7 +9,6 @@ import (
 	"github.com/raphi011/cbs/iso20022"
 	"github.com/raphi011/cbs/ledger"
 	"github.com/raphi011/cbs/lending"
-	"github.com/raphi011/cbs/mesh"
 	"github.com/raphi011/cbs/payment"
 	"github.com/raphi011/cbs/product"
 )
@@ -22,12 +21,18 @@ import (
 //   - 422 Unprocessable Entity: a well-formed request that violates business
 //     state (insufficient funds, frozen account, invalid state transition).
 //   - 400 Bad Request: malformed input (unbalanced/empty transaction, non-
-//     positive amounts, text carrying a control character). JSON-decode and
-//     enum-parse failures are reported as 400 directly by the handlers before
-//     the core is ever called, as is a control character in the request target
-//     (see screenRequestTarget).
+//     positive amounts, text carrying a control character), and everything a
+//     handler refuses before the core is ever called — a body that will not
+//     decode, an enum naming nothing, a required parameter that is absent — each
+//     of which arrives here as a BadRequest. A control character in the request
+//     target is refused earlier still, by the middleware (see
+//     screenRequestTarget).
 func errorStatus(err error) int {
+	var refused badRequest
 	switch {
+	case errors.As(err, &refused):
+		return http.StatusBadRequest
+
 	case errors.Is(err, ledger.ErrLedgerNotFound),
 		errors.Is(err, ledger.ErrSubledgerNotFound),
 		errors.Is(err, ledger.ErrAccountNotFound),
@@ -96,16 +101,16 @@ func errorStatus(err error) int {
 		//
 		// Two routes answer with it. POST /participants/{pid}/deposits, where the
 		// funded account is in an asset its bank does not operate in; and
-		// POST /payments, where the scheme's asset is — Mesh.Submit runs the
+		// POST /payments, where the scheme's asset is — Deployment.Submit runs the
 		// submitting bank's half on the caller's goroutine, so Bank.AccountsFor's
 		// refusal comes back as a status code rather than as a message. Measured
 		// on a bank admitted in dollars only, paying in a euro scheme: 422,
 		// "participant does not hold accounts in this asset: EUR in Bank A".
 		//
 		// It does not reach a settlement route, because there is none: settling is
-		// performed on instruction (mesh.centralBank), so that refusal goes back to
+		// performed on instruction (cmd/server's centralBank), so that refusal goes back to
 		// the clearing house as a pacs.002. Nor the reserve routes, which report a
-		// missing account as a missing row (see Server.reserveRows).
+		// missing account as a missing row (see api/centralbank.reserveRows).
 		errors.Is(err, payment.ErrParticipantAssetNotFound),
 		// A bank the settlement agent holds no account for is a bank that has
 		// founded itself and not yet joined — a legitimate state since admission
@@ -123,7 +128,7 @@ func errorStatus(err error) int {
 		// INSTRUCTED, so their refusal leaves as a pacs.002 and never as a status
 		// code. But they are not only reached that way: seed.builder calls
 		// Network.Deposit, SettleReturnTx and SettleCycleTx directly, and
-		// seed.Populate runs inside POST /admin/reset (see Server.Reset), whose
+		// seed.Populate runs inside POST /admin/reset (see cmd/server's Deployment.Reset), whose
 		// error is written by this same function — so a seed that could produce
 		// this sentinel would produce a 422 from the reset route too. It cannot,
 		// and that is a property of the seed rather than of the code's shape:
@@ -232,17 +237,17 @@ func errorStatus(err error) int {
 		// An on-us payment is well formed, names two real accounts and is a
 		// perfectly legitimate thing to want; what refuses it is that this route
 		// does not carry it. Both parties bank at one institution, so nothing
-		// clears — see mesh.ErrOnUsPayment. The same category as an unaddressable
-		// account, and the reason it is mapped here rather than in the handler
-		// (as mesh.ErrAddressTaken is): two handlers submit through Mesh.Submit,
-		// and a rule written twice is a rule that can differ by route.
-		errors.Is(err, mesh.ErrOnUsPayment),
+		// clears — see payment.ErrOnUsPayment. The same category as an unaddressable
+		// account, and the reason it is mapped here rather than in the handler is
+		// that two handlers submit through Deployment.Submit, and a rule written
+		// twice is a rule that can differ by route.
+		errors.Is(err, payment.ErrOnUsPayment),
 		// A payment to or from a bank the scheme has not admitted is the same
 		// category again: the request is well formed, both accounts are real, and
 		// what refuses it is that this route does not carry it — a founded bank
 		// has a licence and a book and no place in a clearing scheme. It is
-		// mapped here rather than in the handler for mesh.ErrOnUsPayment's stated
-		// reason, and it arrives here from Mesh.Submit; the clearing house's own
+		// mapped here rather than in the handler for payment.ErrOnUsPayment's stated
+		// reason, and it arrives here from Deployment.Submit; the clearing house's own
 		// copy of the refusal is asked after the 202 has been answered and is
 		// reported as a rejected payment, not as a status. See
 		// payment.ErrBankNotAdmitted.

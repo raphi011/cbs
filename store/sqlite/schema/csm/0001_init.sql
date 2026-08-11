@@ -8,7 +8,7 @@
 -- One database holding every table makes that claim invisible: every
 -- institution's payment.Network reaches every book, and the only thing asserting
 -- that the clearing house stays out of them is a measurement in
--- mesh/books_test.go, which goes on passing if the assertion is deleted. Here it
+-- cmd/server/books_test.go, which goes on passing if the assertion is deleted. Here it
 -- is a fact about the schema — a statement naming accounts in this database is
 -- not a policy violation, it is a syntax error against a table that does not
 -- exist.
@@ -67,6 +67,21 @@ CREATE TABLE roster_entries (
     -- the rule and its enforcement are two different things — which is what the
     -- split was for.
     --
+    -- NOR IS THE DOWNLOAD QUEUE HERE, and that is the more interesting absence
+    -- now. Routing a file to this member means putting it in that member's
+    -- queue, so the queue is the routing table and this row is the membership —
+    -- two facts that could disagree if either were derived from the other. What
+    -- keeps them together is that enrolment is what creates a queue and
+    -- provisioning is what enrols, both outside this database.
+    --
+    -- The queue itself is a list of byte slices in the host's memory, and it is
+    -- deliberately not a table. One institution holding bytes addressed to
+    -- another is not a crossing while the bytes are OPAQUE to the holder; a
+    -- table of them is a store this institution reads, and the first query
+    -- anybody writes against it is a clearing house looking inside a file it is
+    -- only carrying. A restart empties every queue, which loses whatever had not
+    -- been collected — see cycles below, where the same absence costs more.
+    --
     -- Keyed by BIC, and it is the only key this institution has. A clearing
     -- house routes what a message addresses, and a message addresses a BIC.
     --
@@ -85,7 +100,7 @@ CREATE TABLE roster_entries (
     -- What writes this row identifies the account owner by BIC and delivers no
     -- legal name, so a name here could only be the clearing house remembering
     -- something nobody told it — and nothing would read it: every reader of this
-    -- row in mesh takes the BIC and touches nothing else, and the operator
+    -- row takes the BIC and touches nothing else, and the operator
     -- console lists banks from their own rows. A member's legal name lives where
     -- it was actually given: on the bank's row, and on settlement_members, which
     -- is told it by the application and names the reserve account after it.
@@ -246,14 +261,13 @@ CREATE TABLE payments (
     --     it would leave empty; they name a ledger this database does not have.
     --   * return_clawback_tx and return_refund_tx, for the same reason.
     --
-    -- ONE READER HAD TO CHANGE FOR THAT TO BE TRUE, and it is worth naming
-    -- rather than leaving to be discovered. mesh's csm.tell decided whether to
-    -- send the payer's bank a refund instruction by reading debtor_leg_tx off
-    -- this row — "has the payer's bank debited?" answered out of another
-    -- institution's column. It cannot be, and it did not need to be: the
-    -- clearing house knows the scheme's direction and knows what status it
-    -- carried this payment to, which is the same question asked of facts it
-    -- owns.
+    -- THE READER A CLEARING HOUSE IS TEMPTED INTO is worth naming rather than
+    -- leaving to be discovered: whether to tell the payer's bank to refund could
+    -- be decided by reading debtor_leg_tx off this row — "has the payer's bank
+    -- debited?" answered out of another institution's column. It cannot be, and
+    -- it does not need to be: the clearing house knows the scheme's direction and
+    -- knows what status it carried this payment to, which is the same question
+    -- asked of facts it owns.
     --
     -- The two agent columns mean something different here than at a bank as
     -- well. This institution derives neither: both arrive on the message it is
@@ -387,6 +401,28 @@ CREATE TABLE cycles (
     -- cycle's own status: CycleSettled. The link in the other direction is real
     -- and lives where it can be kept — settlements.cycle_id in the central bank's
     -- schema, which is that agent's own row pointing at what it settled.
+    --
+    -- THE OUTPUT FILES THIS CYCLE IS HOLDING ARE NOT HERE EITHER, and that one
+    -- IS a defect rather than a boundary.
+    --
+    -- Between a cut-off and its settlement this institution has sorted every
+    -- submitted file by creditor agent and is holding each receiving bank's
+    -- share, releasing nothing until the cycle is final. Those shares are
+    -- POSITIONS in the submitters' documents, in memory, keyed by cycle — so
+    -- that a payment an operator rejects out of an open cycle is cut out of the
+    -- share when the rest of it settles, which a rendered file could not do.
+    --
+    -- A restart between the two loses them: the reserves have moved and no
+    -- receiving bank is ever handed the instructions it has to apply. Nothing
+    -- recovers that. The same is true of a pacs.004 held between its upload to
+    -- the settlement agent and the answer coming back.
+    --
+    -- It is written here rather than fixed because the fix is this table's
+    -- neighbour — a held_files table in this institution's own database — and
+    -- not a workaround anywhere else. What makes it survivable meanwhile is that
+    -- no deployment here outlives a process by design: the ephemeral store is
+    -- the default and a restart against a file resumes a system whose queues are
+    -- empty anyway.
     seq           INTEGER NOT NULL
 ) STRICT;
 

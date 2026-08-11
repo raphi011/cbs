@@ -9,17 +9,17 @@
 // # It is not an institution
 //
 // It has the same standing as payment/recon: it opens all N+2 databases
-// precisely because no actor in the system may. What it does NOT do is write in
+// precisely because no institution in the system may. What it does NOT do is write in
 // anybody's book on their behalf — it calls each institution's own act against
 // that institution's own network, one unit of work each. A component that
 // reached across two would be the thing the split exists to refuse.
 //
 // # It is not a payment network either
 //
-// It puts nothing on a wire, gives no bank an actor and opens no listener. A
-// deployment that wants a bank other banks can reach provisions first and starts
-// second, because what makes a bank reachable is a port and an inbox, and
-// neither is a row. See mesh.Mesh.AddBank and cmd/server.
+// It uploads no file, enrols no subscriber and opens no listener. A deployment
+// that wants a bank other banks can reach provisions first and starts second,
+// because what makes a bank reachable is a port and a download queue at each
+// host, and neither is a row. See cmd/server's Deployment.AddBank.
 //
 // # The gap between the acts
 //

@@ -120,7 +120,7 @@ func (s *testSystem) cb() *Network { return s.nets.CentralBank() }
 
 // testCentralBankBIC is the address this fixture's settlement agent is reached
 // at. It has no store row — a settlement agent is not a member of the scheme it
-// settles — so, like the mesh's, it is configured rather than discovered.
+// settles — so, like a deployment's, it is configured rather than discovered.
 //
 // It exists because SettleCycle takes the LEGS and a leg names the agent at one
 // end. See settleCycle.
@@ -129,7 +129,7 @@ const testCentralBankBIC iso20022.BIC = "CBANDEFFXXX"
 // settleCycle instructs the settlement agent to discharge one cut-off, with the
 // legs the clearing house would have put on the pacs.009.
 //
-// The two steps are one call here and two institutions in the mesh, which is
+// The two steps are one call here and two institutions in a deployment, which is
 // what makes the helper worth having: the legs are rendered from the CLEARING
 // HOUSE's closed cycle (payment.SettlementLegsOf) and handed to the CENTRAL
 // BANK, because the agent holds no cycles table and settles what it was
@@ -196,14 +196,14 @@ func accountsOf(t *testing.T, p *Bank) BankAccounts {
 // What the loss costs a caller is nothing these tests were measuring: a failure
 // in a later half leaves the earlier ones committed, and every test here
 // assertNoErrors the whole call. It is seed.builder.initiate's shape, for
-// seed.builder.initiate's reason, and the real thing is the mesh — three actors,
-// three units of work, and a refusal after the debtor leg is posted is a
-// reversal.
+// seed.builder.initiate's reason, and the real thing is a deployment — three
+// institutions, three units of work, and a refusal after the debtor leg is
+// posted is a reversal.
 //
 // The RECORD at the clearing house is the fourth act and is new: that
 // institution has to be carrying the payment before it can take one into a
-// cycle (RecordRelayedTx). In the mesh it is the moment the instruction is
-// relayed on; here there is nothing to relay, so it stands alone.
+// cycle (RecordRelayedTx). In a deployment it is the moment the file is taken
+// in; here there is no file, so it stands alone.
 func initiate(ctx context.Context, sys *testSystem, req InitiatePaymentRequest) (Payment, error) {
 	// The SUBMITTING bank's own network, not the clearing house's: the submitting
 	// side is resolved in this network's own register. See submitterOfReq.
@@ -215,7 +215,7 @@ func initiate(ctx context.Context, sys *testSystem, req InitiatePaymentRequest) 
 	if err := sys.bank(receiverOf(sys, p)).AcceptInbound(ctx, p.ID, relayed); err != nil {
 		return Payment{}, err
 	}
-	if _, err := sys.RecordRelayed(ctx, p.ID, relayed); err != nil {
+	if _, err := sys.RecordRelayed(ctx, []InboundTransaction{{ID: p.ID, Request: relayed}}); err != nil {
 		return Payment{}, err
 	}
 	return sys.AcceptAtCSM(ctx, p.ID)
@@ -240,11 +240,11 @@ func reject(ctx context.Context, sys *testSystem, id PaymentID, code iso20022.St
 	// be separated once the row the guard reads is the acting bank's own. See
 	// RejectAtBankTx.
 	//
-	// A bank that holds NO copy is skipped, and that is the mesh's behaviour
+	// A bank that holds NO copy is skipped, and that is a deployment's behaviour
 	// rather than a convenience. The pacs.002 is addressed to both agents on the
 	// payment, and one of them may never have been sent the instruction at all —
 	// a clearing house that refuses a payment before relaying it leaves the far
-	// bank with nothing, and that bank dead-letters the status it is then sent.
+	// bank with nothing, and that bank reports the status it is then sent.
 	// Failing here instead would make this helper unusable for exactly the
 	// pre-relay rejections it is most needed for.
 	agents := []iso20022.BIC{out.DebtorDetails.Agent}
@@ -297,9 +297,9 @@ func setupTwoBanks(t *testing.T, sys *testSystem) (a, b *Bank, alice, bob deposi
 // on error. It is setupTwoBanks' admission, factored out for tests that want
 // more than two banks or want to name them themselves.
 //
-// It goes through storetest.Admit, which runs the four acts in order with no mesh
-// to carry the messages between them. The conversation itself is tested in
-// mesh; what these tests need is a bank the scheme has admitted.
+// It goes through storetest.Admit, which runs the four acts in order with no
+// transport to carry the messages between them. The conversation itself is
+// tested in cmd/server; what these tests need is a bank the scheme has admitted.
 //
 // # The address is an argument now, and it had to become one
 //
@@ -316,8 +316,8 @@ func addParticipant(t *testing.T, ctx context.Context, sys *testSystem, name str
 	return p
 }
 
-// admitWithoutTheRoster builds the bank this system can hold and the mesh's own
-// flow does not produce: one the settlement agent has answered — so it has a
+// admitWithoutTheRoster builds the bank this system can hold and a deployment's
+// own flow does not produce: one the settlement agent has answered — so it has a
 // bank code and can address its customers' accounts — and the clearing house has
 // never admitted.
 //
@@ -448,7 +448,7 @@ func openCycle(t *testing.T, ctx context.Context, sys *testSystem, scheme Scheme
 //
 // # It plays both institutions, and has to
 //
-// This package has no mesh, so there is nobody to send the camt.050 to and nobody
+// This package has no transport, so there is nobody to send the camt.050 to and nobody
 // to answer it. So the helper composes the two halves directly — the member's
 // LodgeReservesTx and the settlement agent's ReceiveLodgementTx — exactly as
 // runCycle composes settlement's three. What it must NOT do is call only the
@@ -502,8 +502,8 @@ func assetOfAccount(t *testing.T, ctx context.Context, sys *testSystem, p *Bank,
 // lodgementSeq makes each fixture lodgement's reference unique. See lodgeReserves.
 var lodgementSeq atomic.Int64
 
-// lodgeReserves runs both halves of a lodgement in this package, where there is no
-// mesh to carry the message between them.
+// lodgeReserves runs both halves of a lodgement in this package, where there is
+// no transport to carry the message between them.
 //
 // It renders the camt.050, reads it back and hands the instruction to the
 // settlement agent's half — so the fixture exercises the real translation rather
@@ -515,7 +515,7 @@ func lodgeReserves(t *testing.T, ctx context.Context, sys *testSystem, p *Bank, 
 	// lodgement is not: LodgeReservesTx keys its posting on it, so a fixture that
 	// derived the key from the bank, the asset and the amount would fail the
 	// second time one bank lodged the same amount twice — which is a collision in
-	// this helper and not a defect in the domain. Mesh.nextMsgID is what supplies
+	// this helper and not a defect in the domain. A deployment's message id is what supplies
 	// a unique one in the running system; this counter is its stand-in.
 	mc := MessageContext{
 		From:  p.BIC,
@@ -644,7 +644,7 @@ func (s *testSystem) assetOf(id SchemeID) ledger.AssetCode {
 // settlement agent's reserve reversal, both members' reserve mirrors, and the
 // other bank's customer leg.
 //
-// It is the test's stand-in for the four hops the mesh carries. No institution
+// It is the test's stand-in for the four hops a deployment carries. No institution
 // may post in another's book, so there is no one call that does all of this.
 // What these tests are about is where the money ends up, which is why moving the
 // composition into the fixture leaves their assertions alone.
@@ -657,8 +657,8 @@ func (s *testSystem) assetOf(id SchemeID) ledger.AssetCode {
 // refuses on its own.
 //
 // The instruction is built from the payment row, as seed's is, because this
-// package has no messages. See payment.ReadReturn for where the mesh gets the
-// same values from instead.
+// package has no messages. See payment.ReadReturn for where a returning bank
+// gets the same values from instead.
 func returnWholePayment(ctx context.Context, sys *testSystem, id PaymentID, reason string) (Payment, error) {
 	p, err := sys.GetPayment(ctx, id)
 	if err != nil {
@@ -709,7 +709,7 @@ func returnWholePayment(ctx context.Context, sys *testSystem, id PaymentID, reas
 	// And the two institutions that learn it only by being told: the bank that
 	// ASKED for the return, whose own leg was the first and therefore not the
 	// one that closes the payment, and the clearing house, which carried the
-	// pacs.004 and posts nothing. In the mesh both are sent the settlement
+	// pacs.004 and posts nothing. In a deployment both are sent the settlement
 	// agent's ACSC; here, as in the seed, they are told directly.
 	//
 	// The fixture ran neither, which is why the returner's copy and the clearing
@@ -727,9 +727,9 @@ func returnWholePayment(ctx context.Context, sys *testSystem, id PaymentID, reas
 // bookTheAdvices is every member's half of a cut-off: each books the mirror leg
 // the statement it was sent advises.
 //
-// It is the test's stand-in for the messages the mesh carries — one camt.053 per
+// It is the test's stand-in for the files a deployment carries — one camt.053 per
 // member, and each member calling PostSettlementAdvice for itself. This package
-// has no mesh and no actors, so it plays the members the way seed's builder does.
+// holds no institutions, so it plays the members the way seed's builder does.
 func bookTheAdvices(t *testing.T, sys *testSystem, statements []SettlementStatement) {
 	t.Helper()
 	ctx := context.Background()
@@ -770,7 +770,7 @@ func bookTheAdvices(t *testing.T, sys *testSystem, statements []SettlementStatem
 //   - The PAYER's bank posts nothing and still has to be told, because its copy
 //     would otherwise say Initiated for ever — and a return is an edge from
 //     Settled, so it would then refuse to return a payment it could not see had
-//     settled. See csm.tellSettled in mesh, which is this loop with messages.
+//     settled. See ClearingHouse.tellSettled, which is this loop with files.
 //
 // Each leg is its OWN unit of work, and that is the substance rather than the
 // shape of the loop: one payee's closed account, or one payment the ledger
@@ -1317,7 +1317,7 @@ func TestSDD_Return(t *testing.T) {
 // there is no partway to fail at, and nothing was written to roll back. What it
 // asserts is that the refusal writes nothing, which is what makes asking again
 // safe once the member is funded (TestARefusedSettlementCanBeInstructedAgain in
-// mesh is the other half).
+// cmd/server is the other half).
 //
 // Nothing carries the MID-FLIGHT rollback claim — a unit of work that had
 // already WRITTEN, then failed, then left nothing behind — because there is no
@@ -1423,8 +1423,8 @@ func TestSettleCycleRollsBackEveryLayer(t *testing.T) {
 
 	// No settlement was recorded, and the cycle is still Closed rather than
 	// Settled — which is what leaves the operation retriable once the member is
-	// funded. Retrying it is not this layer's act: in the mesh the clearing
-	// house re-sends the pacs.009 (POST /cycles/{cid}/settle, mesh.csm.settle),
+	// funded. Retrying it is not this layer's act: in a deployment the clearing
+	// house re-sends the pacs.009 (POST /cycles/{cid}/settle, ClearingHouse.Settle),
 	// and SettleCycleTx's CycleClosed guard is what makes asking twice safe.
 	settlements, err := net.cb().ListSettlements(ctx)
 	assertNoError(t, err)
@@ -1607,7 +1607,7 @@ func TestStateMachineGuards(t *testing.T) {
 	//
 	// "Not closed" went to the CLEARING HOUSE, which is whose cut-off it is: it
 	// will not build an instruction for a cycle that is still open, and
-	// mesh/csm.settle is where that lives and where it is measured. What the
+	// ClearingHouse.Settle is where that lives and where it is measured. What the
 	// agent sees of an open cycle is an instruction with NO LEGS, because an
 	// open cycle has no net positions to render — and refusing a batch it cannot
 	// read as one is a statement it can make about the message in front of it.
@@ -2091,8 +2091,8 @@ func TestOpeningASettlementAccountTwiceOpensOne(t *testing.T) {
 }
 
 // TestAdmittingABICTwiceIsRefused is the address clash, decided by the entity
-// that owns routing. The mesh's actor map refuses a taken address too; that one
-// is a statement about connectivity, and this is the statement about membership.
+// that owns routing. Enrolling a subscriber twice at an EBICS host is a no-op;
+// that is about reachability, and this is the statement about membership.
 //
 // The impostor's acknowledgement carries a DIFFERENT admission reference, and
 // that is what makes it an impostor rather than a second message of the same
@@ -3836,7 +3836,7 @@ func networkWithASubmittedPayment(t *testing.T) (*testSystem, Payment) {
 	n, req := networkWithTwoBanks(t)
 	p, err := n.submit(ctx, req)
 	assertNoError(t, err)
-	_, err = n.RecordRelayed(ctx, p.ID, relayedFrom(p))
+	_, err = n.RecordRelayed(ctx, []InboundTransaction{{ID: p.ID, Request: relayedFrom(p)}})
 	assertNoError(t, err)
 	return n, p
 }
@@ -3853,9 +3853,9 @@ func closeCreditorAccount(t *testing.T, n *testSystem, p Payment) {
 
 // Initiated becomes an observable state for the first time. Today
 // InitiatePaymentTx transitions straight to Accepted inside the submitting
-// transaction, so no caller has ever seen it; the mesh needs the payment to
-// exist, with its debtor leg posted, while the creditor's bank has not yet
-// answered.
+// transaction, so no caller has ever seen it; a deployment needs the payment to
+// exist, with its debtor leg posted, while it waits in the hub for a cut-off and
+// the creditor's bank has not yet answered.
 func TestSubmitLeavesAPushPaymentInitiatedAndOutOfAnyCycle(t *testing.T) {
 	n, req := networkWithTwoBanks(t)
 
@@ -3877,11 +3877,11 @@ func TestSubmitLeavesAPushPaymentInitiatedAndOutOfAnyCycle(t *testing.T) {
 }
 
 // TestTheClearingHouseWillNotClearForANonMember is the clearing house's half of
-// the guard mesh.Mesh.Submit also makes at its own door.
+// the guard a submitting bank's door also makes.
 //
 // It is here and not only there because these acts are separately callable —
 // seed/seed.go composes them directly and every fixture above does too — so a
-// refusal that lived only at Mesh.Submit would be a refusal the split removes.
+// refusal that lived only at that door would be a refusal the split removes.
 // The same argument checkAcknowledgement makes about the admission acts one flow
 // over.
 //
@@ -3891,7 +3891,7 @@ func TestSubmitLeavesAPushPaymentInitiatedAndOutOfAnyCycle(t *testing.T) {
 // why this refusal is not enough on its own: the debtor leg is already posted
 // when it fires, and getting that money back needs a pacs.002 the clearing house
 // addresses through the roster — which is the row the non-member has none of.
-// That is Mesh.Submit's guard's whole reason for existing.
+// That is the door guard's whole reason for existing.
 func TestTheClearingHouseWillNotClearForANonMember(t *testing.T) {
 	// build returns a network with one member and one bank the settlement agent
 	// has answered and the clearing house has not admitted, the push request
@@ -3960,7 +3960,7 @@ func TestTheClearingHouseWillNotClearForANonMember(t *testing.T) {
 			// it can take a payment into a cycle — and which it writes from the
 			// instruction it relayed, asking nothing about membership. The
 			// roster check is the ACCEPTANCE's, below. See RecordRelayedTx.
-			_, err = sys.RecordRelayed(ctx, p.ID, relayedFrom(p))
+			_, err = sys.RecordRelayed(ctx, []InboundTransaction{{ID: p.ID, Request: relayedFrom(p)}})
 			assertNoError(t, err)
 
 			_, err = sys.AcceptAtCSM(ctx, p.ID)
@@ -3970,8 +3970,8 @@ func TestTheClearingHouseWillNotClearForANonMember(t *testing.T) {
 			if !strings.Contains(err.Error(), tc.role) {
 				t.Errorf("the refusal says %q and does not name the %s", err, tc.role)
 			}
-			// RC01 on the wire, which is what makes csm.clear's rejection an
-			// answer rather than a dead letter. reasonTable is what decides it.
+			// RC01 on the wire, which is what makes the clearing house's rejection
+			// an answer rather than a reported problem. reasonTable is what decides it.
 			if got := ReasonFor(err); got != iso20022.StatusReasonBankIdentifierIncorrect {
 				t.Errorf("ReasonFor = %q, want RC01", got)
 			}
@@ -4070,7 +4070,7 @@ func TestTheClearingHouseWillNotClearInAnAssetAMemberWasNotAdmittedIn(t *testing
 	assertNoError(t, sys.bank(receiverOf(sys, p)).AcceptInbound(ctx, p.ID, relayedFrom(p)))
 	// The clearing house's own copy first; see the same step in
 	// TestTheClearingHouseWillNotClearForANonMember.
-	_, err = sys.RecordRelayed(ctx, p.ID, relayedFrom(p))
+	_, err = sys.RecordRelayed(ctx, []InboundTransaction{{ID: p.ID, Request: relayedFrom(p)}})
 	assertNoError(t, err)
 
 	_, err = sys.AcceptAtCSM(ctx, p.ID)
@@ -4120,8 +4120,8 @@ func TestSubmitDoesNotCheckTheCreditorAccount(t *testing.T) {
 	}
 
 	// And the check did not VANISH, it moved: the creditor's bank is the one
-	// that discovers the account does not exist, which is the AC01 the mesh
-	// answers with. Without this half the inventory's "nothing was dropped"
+	// that discovers the account does not exist, which is the AC01 a receiving
+	// bank returns with. Without this half the inventory's "nothing was dropped"
 	// would be a claim no test could contradict — a creditorSideTx that
 	// tolerated a missing account passed the whole suite before this line
 	// existed.
@@ -4218,7 +4218,7 @@ func TestSubmitRefusesAnUnnamedCounterparty(t *testing.T) {
 // It is deliberately the WORST assertion, the submitting bank's own BIC, because
 // a message routed on that one comes straight back to its sender. Nothing here
 // corrects it, and nothing here can: what happens to a payment carrying a wrong
-// agent is answered by the bank the message reaches, which is mesh's to measure.
+// agent is answered by the bank the file reaches, which is cmd/server's to measure.
 // The narrow claim is that the fallback is a fallback and not a correction.
 //
 // Where an address IS quoted the assertion is ignored entirely — there is no
@@ -4290,9 +4290,9 @@ func TestSubmitRecordsAnAssertedAgentWhereThereIsNoAddressToDeriveFrom(t *testin
 // That is the split doing what it is for rather than a hole. The submitting bank
 // has no business knowing which institutions exist — it is not the registry, and
 // it holds no row but its own. What refuses an unreachable counterparty is the
-// layer that knows: the mesh answers RC01 for a BIC no actor answers to
-// (mesh.ErrUnknownBIC), and the clearing house refuses a payment whose banks it
-// does not both route for (ErrBankNotAdmitted).
+// layer that knows: the clearing house answers RC01 for a BIC it holds no
+// download queue for, and refuses a payment whose banks it does not both route
+// for (ErrBankNotAdmitted).
 //
 // The payment is ACCEPTED here and the payer's leg posts, which is the cost and
 // is the same cost every other misaddressed instruction has: the rejection comes
@@ -4300,8 +4300,8 @@ func TestSubmitRecordsAnAssertedAgentWhereThereIsNoAddressToDeriveFrom(t *testin
 func TestSubmitDoesNotCheckWhetherTheCounterpartysBankExists(t *testing.T) {
 	n, req := networkWithTwoBanks(t)
 	// A well-formed address nobody has founded. It has to be well formed: the
-	// FORMAT is still refused here, and by design — the mesh cannot route to a
-	// string that is not a BIC, so that refusal belongs where the payer can
+	// FORMAT is still refused here, and by design — nothing can address a queue
+	// named by a string that is not a BIC, so that refusal belongs where the payer can
 	// still fix it. See SubmitPaymentTx. What is not checked is whether anything
 	// answers to it.
 	req.CreditorDetails.Agent = "NOSUCHBKXXX"
@@ -4338,8 +4338,8 @@ func TestSubmitRefusesItsOwnPartyAtNoSuchBank(t *testing.T) {
 // RECEIVING bank for that direction — the creditor's on a push, the debtor's on
 // a pull — not the submitting one. Filling PartyDetails from the register
 // there would silently overwrite what the submitting bank already stored (and
-// already sent, in the message SubmitAndInstruct built in the same unit of
-// work) with the receiving bank's own record of the same account, which need
+// already gone out in the file that bank's cut-off built) with the receiving
+// bank's own record of the same account, which need
 // not agree with what the payer typed. Checked on both directions, because the
 // two arms fail differently if this regresses: a pull always posts its debtor
 // leg in AcceptInboundTx, so its overwrite would be unconditional, while a
@@ -4482,7 +4482,7 @@ func (s failingUpdateStore) Update(ctx context.Context, fn func(context.Context,
 //
 // Collapsing every error from checkPartyTx's two reads into a domain sentinel —
 // `if err != nil { return ErrAccountNotInParticipant }` — is on the MONEY path:
-// AcceptInboundTx runs it through creditorSideTx/debtorSideTx, mesh/bank.go's
+// AcceptInboundTx runs it through creditorSideTx/debtorSideTx, cmd/server/bank.go's
 // answer hands whatever comes back to ReasonFor, and AC01 "incorrect account
 // number" goes out in a pacs.002. So a dropped connection at the RECEIVING bank
 // would tell the SENDING bank its customer's IBAN was wrong — and on a push the
@@ -4597,14 +4597,29 @@ func TestAcceptInboundRefusesAPaymentThatIsNoLongerInitiated(t *testing.T) {
 		mustGetPaymentAt(t, ctx, receiver, p.ID).Status, Rejected)
 }
 
-func TestAcceptInboundRefusesAClosedCreditorAccount(t *testing.T) {
+// A payee whose account is CLOSED is taken on rather than refused, and the money
+// is diverted when the leg posts.
+//
+// It is the one refusal from the creditor's half that this side swallows, and
+// the reason is WHEN it runs: a receiving bank is handed the instruction only
+// after the cycle carrying it is final, so refusing would strand money that is
+// already in its clearing suspense. What a bank does with a credit for an
+// account that cannot take one is hold it for the payee — SettleAtBankTx's
+// diversion to unclaimed balances, which is the whole reason that account
+// exists, and which TestSettleDivertsACreditAClosedAccountCannotTake measures.
+//
+// The same refusal at the SUBMITTING bank stands: see
+// TestMandateIsCheckedAtSubmissionAndFundsOnReceipt for the half that still
+// bites.
+func TestAcceptInboundTakesOnAPayeeWhoseAccountHasClosed(t *testing.T) {
+	ctx := context.Background()
 	n, p := networkWithASubmittedPayment(t)
 	closeCreditorAccount(t, n, p)
+	receiver := n.bank(receiverOf(n, p))
 
-	err := n.bank(receiverOf(n, p)).AcceptInbound(context.Background(), p.ID, relayedFrom(p))
-	if !errors.Is(err, deposit.ErrAccountClosed) {
-		t.Fatalf("AcceptInbound = %v, want the closed-account error", err)
-	}
+	assertNoError(t, receiver.AcceptInbound(ctx, p.ID, relayedFrom(p)))
+	assertEqual(t, "the receiving bank's own copy",
+		mustGetPaymentAt(t, ctx, receiver, p.ID).Status, Initiated)
 }
 
 // The creditor's bank holds the mandate, so it validates it — synchronously,
@@ -4708,14 +4723,14 @@ func TestRejectAtCSMDropsThePaymentFromItsCycle(t *testing.T) {
 // # The half-happened outcome is on every route
 //
 // It was called TestAFailedReversalRollsBackTheWholeRejection and its subject
-// was the composition sites that stand in for the mesh: they ran the clearing
+// was the composition sites that stand in for a deployment: they ran the clearing
 // house's transition and the payer's bank's reversal in ONE unit of work, so a
 // reversal that failed took the transition with it and no caller could read a
 // Rejected payment whose money was still in suspense.
 //
 // A transaction is ONE DATABASE's: the clearing house decides on its own row, in
 // its own store, and each bank records the decision on its own. So the
-// half-happened outcome is on every route, and it is what the mesh always had —
+// half-happened outcome is on every route, and it is what a real network has —
 // the clearing house's decision stands, the payer's bank has not acted, and the
 // retry is a message redelivered rather than a rollback.
 //
@@ -4765,7 +4780,7 @@ func TestReverseDebtorLegIsANoOpWhenNoLegWasPosted(t *testing.T) {
 	assertEqual(t, "debtor leg after submitting a collection", p.DebtorLegTx, "")
 	// The clearing house's own copy, which it must be holding before it can
 	// refuse one. See networkWithASubmittedPayment.
-	_, err = n.RecordRelayed(ctx, p.ID, relayedFrom(p))
+	_, err = n.RecordRelayed(ctx, []InboundTransaction{{ID: p.ID, Request: relayedFrom(p)}})
 	assertNoError(t, err)
 
 	_, err = n.RejectAtCSM(ctx, p.ID, iso20022.StatusReasonNoMandate, "no usable mandate")
@@ -4789,8 +4804,8 @@ func TestReverseDebtorLegIsANoOpWhenNoLegWasPosted(t *testing.T) {
 }
 
 // Reversing the same leg twice would pay the payer twice, so the ledger refuses
-// it rather than absorbing it: a redelivered pacs.002 fails loudly and becomes
-// a dead letter instead of quietly crediting the payer again.
+// it rather than absorbing it: a redelivered pacs.002 fails loudly and reaches
+// the day's report instead of quietly crediting the payer again.
 func TestReverseDebtorLegRefusesToRunTwice(t *testing.T) {
 	ctx := context.Background()
 	n, p := networkWithASubmittedPayment(t)
@@ -4860,7 +4875,7 @@ func TestAcceptInboundIgnoresARedeliveredCollection(t *testing.T) {
 	balance := customerBalance(t, bank, p.Debtor.Account)
 
 	if err := n.bank(receiverOf(n, p)).AcceptInbound(ctx, p.ID, relayedFrom(p)); err != nil {
-		t.Fatalf("redelivered collection = %v, want a no-op — the mesh would answer MS03 for a collection this bank accepted", err)
+		t.Fatalf("redelivered collection = %v, want a no-op — a receiving bank would answer MS03 for a collection it accepted", err)
 	}
 	assertEqual(t, "payer's balance after the redelivery", customerBalance(t, bank, p.Debtor.Account), balance)
 
@@ -5004,7 +5019,7 @@ func TestASettlementAgentRefusesAReturnItsCreditorBankCannotCover(t *testing.T) 
 // nameless return then comes back ErrReturnAlreadySettled having settled
 // nothing. The first one costs money and the rest are silently wrong.
 //
-// mesh's settlement agent cannot reach this, because payment.ReadReturn refuses
+// A deployment's settlement agent cannot reach this, because payment.ReadReturn refuses
 // the message before an instruction exists. That is exactly why the check is
 // ALSO here: ReadReturn is a reader, and a ReturnInstruction built any other way
 // — a future caller, a test, another transport — would reopen the hole. It is
@@ -5237,10 +5252,10 @@ func TestAForcedClawbackOverdrawsAnOpenBillerRatherThanBookingAReceivable(t *tes
 // TestAPullRefundIsHonouredWhenOneBankIsBothParties holds the return's one rule
 // where the two banks collapse into one.
 //
-// # Why this is tested here and not through the mesh
+// # Why this is tested here and not through a deployment
 //
 // A payment with the same institution at both ends never reaches a clearing
-// house — Mesh.Submit refuses one, because nothing leaves the bank and there is
+// house — a submitting bank's door refuses one, because nothing leaves the bank and there is
 // no interbank obligation to clear. So this arrangement is not buildable through
 // the transport, and the guard that would be measured there is a different
 // guard. This one is the DOMAIN's, and the domain is where it has to be right:
@@ -5329,9 +5344,9 @@ func settledCollection(t *testing.T, sys *testSystem, debtorBank *Bank, debtorAc
 // members book their reserve mirrors, and the other bank posts the leg it was
 // sent. It returns the payment as that last leg left it.
 //
-// It is this package's stand-in for the mesh, exactly as bookTheAdvices and
+// It is this package's stand-in for a deployment, exactly as bookTheAdvices and
 // payTheCreditors are for a cut-off, and for the same reason: there are no
-// actors here, so a test that wants the end state has to play them. Which bank
+// institutions here, so a test that wants the end state has to play them. Which bank
 // goes first is ReturnerOf's answer and not the caller's — that is the rule the
 // whole flow turns on.
 func returnTheWholeWay(t *testing.T, sys *testSystem, p Payment, reason string) Payment {
@@ -5369,7 +5384,7 @@ func returnTheWholeWay(t *testing.T, sys *testSystem, p Payment, reason string) 
 	// The two institutions that learn it only by being told: the RETURNER, whose
 	// own leg was the first and therefore not the one that closes the payment,
 	// and the clearing house, which carried the pacs.004 and posts nothing. In
-	// the mesh both are sent the settlement agent's ACSC. Same last two acts as
+	// a deployment both are sent the settlement agent's ACSC. Same last two acts as
 	// returnWholePayment, for the same reason.
 	_, err = sys.bank(returner).CompleteReturn(ctx, p.ID)
 	assertNoError(t, err)
@@ -5594,7 +5609,7 @@ func TestARejectedReturnUnwindsTheReturningBanksOwnLeg(t *testing.T) {
 // bank's own suspense and the payment row still saying Returned.
 //
 // Nothing calls it on a completed return, and the caller it does have is exactly
-// why the check belongs here: mesh's bank.receiveReturnStatus acts on a MESSAGE
+// why the check belongs here: Bank.receiveReturnStatus acts on a MESSAGE
 // rather than on a status it checked, so a late or duplicated RJCT is the shape
 // that would otherwise arrive. Next to the money, and not in the handler.
 //
@@ -5656,13 +5671,13 @@ func TestACompletedReturnCannotBeUnwound(t *testing.T) {
 //
 // It exists because AcceptInboundTx and RecordRelayedTx take a REQUEST: each
 // institution writes its own row from the message, so an id alone says nothing
-// to an institution that has never seen the payment. In the mesh this is
+// to an institution that has never seen the payment. In a deployment this is
 // CreditTransferRequest or DirectDebitRequest reading a real pacs.008; here it
 // is the payment turned back into what the message would have said.
 //
 // The account ids go through unchanged, and that is the fixture being a fixture.
 // A real receiving bank resolves its own side from the ADDRESS and never learns
-// the other's internal key; this process holds every register, and the mesh's
+// the other's internal key; this process holds every register, and cmd/server's
 // own suites are where that distinction is measured.
 func relayedFrom(p Payment) InitiatePaymentRequest {
 	return InitiatePaymentRequest{

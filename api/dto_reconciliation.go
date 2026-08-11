@@ -16,14 +16,14 @@ import (
 // and fetch by id. What survives a run is the audit event it appended, on GET
 // /audit, and the books it read.
 
-// reconciliationDTO is what POST /reconciliation answers.
+// ReconciliationDTO is what POST /reconciliation answers.
 //
 // Breaks and positions are separate fields because they are different findings
 // and only one is a defect: a break is something this bank's own books say
 // cannot be true, and a position is money legitimately in flight with how long it
 // has been. A client rendering them in one list would be telling an operator to
 // investigate every payment that has not settled yet.
-type reconciliationDTO struct {
+type ReconciliationDTO struct {
 	Bank  string    `json:"bank"`
 	Asset string    `json:"asset"`
 	AsOf  time.Time `json:"asOf"`
@@ -41,29 +41,29 @@ type reconciliationDTO struct {
 	Reference   string `json:"reference,omitempty"`
 	LodgedSince int64  `json:"lodgedSince"`
 
-	Breaks    []findingDTO      `json:"breaks"`
-	Positions []ageingReportDTO `json:"positions"`
+	Breaks    []FindingDTO      `json:"breaks"`
+	Positions []AgeingReportDTO `json:"positions"`
 }
 
-// findingDTO is one thing this bank's books say cannot be true: the account to
+// FindingDTO is one thing this bank's books say cannot be true: the account to
 // go and look at, and the disagreement as one sentence with both figures in it.
-type findingDTO struct {
+type FindingDTO struct {
 	Account string `json:"account"`
 	What    string `json:"what"`
 }
 
-// ageingReportDTO is one in-transit account decomposed into what its balance is
+// AgeingReportDTO is one in-transit account decomposed into what its balance is
 // made of and how long each part has been there.
-type ageingReportDTO struct {
+type AgeingReportDTO struct {
 	Bank    string       `json:"bank"`
 	Asset   string       `json:"asset"`
 	Account string       `json:"account"`
 	AsOf    time.Time    `json:"asOf"`
 	Balance int64        `json:"balance"`
-	Lots    []agedLotDTO `json:"lots"`
+	Lots    []AgedLotDTO `json:"lots"`
 }
 
-// agedLotDTO is one part of a balance, with what put it there and what may now
+// AgedLotDTO is one part of a balance, with what put it there and what may now
 // be done about it.
 //
 // # Payment is absent on a clearing suspense and present on an unclaimed balance
@@ -78,7 +78,7 @@ type ageingReportDTO struct {
 // off it — the payment and the scheme — are lifted onto the lot by the domain,
 // and putting the raw map on the wire as well would publish an internal posting
 // convention as an interface.
-type agedLotDTO struct {
+type AgedLotDTO struct {
 	Transaction string    `json:"transaction"`
 	Since       time.Time `json:"since"`
 	// Days is whole days from Since, same-day being 0. Calendar days: there is
@@ -105,13 +105,13 @@ type agedLotDTO struct {
 	Blocked string `json:"blocked,omitempty"`
 }
 
-// settlementAdviceDTO is one statement this bank was sent, read back.
+// SettlementAdviceDTO is one statement this bank was sent, read back.
 //
 // Reference is opaque and stays opaque on the wire: it is the AcctSvcrRef the
 // statement carried — a cycle id at a cut-off, a payment id at a return — and a
 // member bank holds neither, so it cannot tell the two apart and has no reason
 // to. See payment.SettlementAdvice.
-type settlementAdviceDTO struct {
+type SettlementAdviceDTO struct {
 	Reference string `json:"reference"`
 	Asset     string `json:"asset"`
 	// Movement is signed: positive means this bank's reserve went up.
@@ -128,8 +128,8 @@ type settlementAdviceDTO struct {
 	PostedAt          time.Time `json:"postedAt"`
 }
 
-func toReconciliationDTO(r payment.Reconciliation) reconciliationDTO {
-	out := reconciliationDTO{
+func ToReconciliationDTO(r payment.Reconciliation) ReconciliationDTO {
+	out := ReconciliationDTO{
 		Bank:        string(r.Bank),
 		Asset:       string(r.Asset),
 		AsOf:        r.AsOf,
@@ -141,29 +141,29 @@ func toReconciliationDTO(r payment.Reconciliation) reconciliationDTO {
 		// Both built with a zero length rather than a nil slice, so a bank whose
 		// books hold together answers [] and not null. A client rendering "no
 		// breaks" should not have to tell an empty list from a missing field.
-		Breaks:    make([]findingDTO, 0, len(r.Breaks)),
-		Positions: make([]ageingReportDTO, 0, len(r.Positions)),
+		Breaks:    make([]FindingDTO, 0, len(r.Breaks)),
+		Positions: make([]AgeingReportDTO, 0, len(r.Positions)),
 	}
 	for _, b := range r.Breaks {
-		out.Breaks = append(out.Breaks, findingDTO{Account: string(b.Account), What: b.What})
+		out.Breaks = append(out.Breaks, FindingDTO{Account: string(b.Account), What: b.What})
 	}
 	for _, p := range r.Positions {
-		out.Positions = append(out.Positions, toAgeingReportDTO(p))
+		out.Positions = append(out.Positions, ToAgeingReportDTO(p))
 	}
 	return out
 }
 
-func toAgeingReportDTO(r payment.AgeingReport) ageingReportDTO {
-	out := ageingReportDTO{
+func ToAgeingReportDTO(r payment.AgeingReport) AgeingReportDTO {
+	out := AgeingReportDTO{
 		Bank:    string(r.Bank),
 		Asset:   string(r.Asset),
 		Account: string(r.Account),
 		AsOf:    r.AsOf,
 		Balance: int64(r.Balance),
-		Lots:    make([]agedLotDTO, 0, len(r.Lots)),
+		Lots:    make([]AgedLotDTO, 0, len(r.Lots)),
 	}
 	for _, l := range r.Lots {
-		out.Lots = append(out.Lots, agedLotDTO{
+		out.Lots = append(out.Lots, AgedLotDTO{
 			Transaction: string(l.Transaction),
 			Since:       l.Since,
 			Days:        l.Days,
@@ -179,8 +179,8 @@ func toAgeingReportDTO(r payment.AgeingReport) ageingReportDTO {
 	return out
 }
 
-func toSettlementAdviceDTO(a payment.SettlementAdvice) settlementAdviceDTO {
-	return settlementAdviceDTO{
+func ToSettlementAdviceDTO(a payment.SettlementAdvice) SettlementAdviceDTO {
+	return SettlementAdviceDTO{
 		Reference:         a.Reference,
 		Asset:             string(a.Asset),
 		Movement:          int64(a.Movement),

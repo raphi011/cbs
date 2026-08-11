@@ -6,59 +6,64 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/raphi011/cbs/calendar"
 	"github.com/raphi011/cbs/deposit"
 	"github.com/raphi011/cbs/iban"
 	"github.com/raphi011/cbs/interest"
 	"github.com/raphi011/cbs/iso20022"
 	"github.com/raphi011/cbs/ledger"
 	"github.com/raphi011/cbs/lending"
-	"github.com/raphi011/cbs/mesh"
 	"github.com/raphi011/cbs/payment"
 	"github.com/raphi011/cbs/product"
 	"github.com/raphi011/cbs/provision"
 )
 
-// baseDate anchors the deterministic seed timeline. Everything built before the
-// clock goes live is dated relative to this instant.
-var baseDate = time.Date(2025, 9, 15, 9, 0, 0, 0, time.UTC)
-
-// Dataset is the sample scenario together with the deterministic clock it is
-// built on.
+// BaseDate anchors the deterministic seed timeline, and is therefore where a
+// deployment holding no business date of its own begins: everything this
+// scenario builds is dated relative to it, and the days an operator advances
+// afterwards run on from where it left off.
 //
-// The clock has to be owned here rather than passed in, because seeding
-// controls it: it is frozen at baseDate and advanced step by step while the
-// scenario is built, then switched to real time so that anything done
-// afterwards — through the API, say — is timestamped live. Rebuilding after a
-// store reset rewinds it, so a reset restores the dataset rather than a version
-// of it shifted forward in time.
-type Dataset struct{ clock *clock }
+// It is a Monday, which is what makes the first advance a settlement day rather
+// than a weekend.
+var BaseDate = time.Date(2025, 9, 15, 9, 0, 0, 0, time.UTC)
 
-// New returns a Dataset with its clock frozen at baseDate.
-func New() *Dataset { return &Dataset{clock: newClock(baseDate)} }
+// Dataset is the sample scenario together with the deployment clock it is built
+// on.
+//
+// The clock is the DEPLOYMENT's and is passed in. Seeding drives it — rewound to
+// BaseDate and advanced a day at a time while the scenario is built — and then
+// leaves it wherever the timeline ended, which is where the deployment goes on
+// from. Nothing switches it to wall time: a business date is advanced by an
+// operator, and a dataset dated a year before the wall clock beside rows dated
+// today is two timelines on one screen.
+//
+// Rebuilding after a store reset rewinds it, so a reset restores the dataset
+// rather than a version of it shifted forward in time.
+type Dataset struct{ clock *calendar.Clock }
 
-// Now is the time source every layer built over the dataset's store must read.
-// Hand it to the store and to payment.NewNetwork so that booking dates, value
-// dates and audit timestamps all come from the same clock.
-func (d *Dataset) Now() time.Time { return d.clock.now() }
+// New returns a Dataset built on clock.
+func New(clock *calendar.Clock) *Dataset { return &Dataset{clock: clock} }
 
 // Populate builds the full sample scenario (see the package doc) into the
-// network's store, provisioning its banks and giving each one an actor on the
-// mesh it is given.
+// network's store, provisioning its banks and giving each one its place in the
+// deployment it is given.
 //
-// # Why it takes a mesh
+// # Why it takes a deployment
 //
-// Writing a bank's three rows needs no mesh at all — see provision.Bank — but a
-// bank with rows and no inbox can neither send nor be sent to, and this scenario
-// is payments: an opening deposit is lodged, a cycle is settled, a collection is
-// answered. Every one of those is a message between two actors.
+// Writing a bank's three rows needs no deployment at all — see provision.Bank —
+// but a bank with rows and no place in the network can neither send nor be sent
+// to, and this scenario is payments: an opening deposit is lodged, a cycle is
+// settled, a collection is answered. Every one of those is a conversation
+// between two institutions.
 //
-// So the mesh must be RUNNING before this is called: it is built and started
-// over an unseeded store, and its roster read finds nothing because the banks it
+// So the deployment must be RUNNING before this is called: it is built over an
+// unseeded store, and what it reads there finds nothing because the banks it
 // would find are the ones this is about to write.
 //
-// It is not optional and there is no nil path. A Populate with no mesh could
-// write four banks' rows and would leave every one of them unreachable, which is
-// a scenario in which no payment in it can be made — see builder.provision.
+// It is not optional and there is no nil path. A Populate with no deployment
+// could write four banks' rows and would leave every one of them unreachable,
+// which is a scenario in which no payment in it can be made — see
+// builder.provision.
 //
 // It is idempotent: a store that already holds participants is left alone. That
 // is what makes it safe to call on every boot — against a database that
@@ -82,13 +87,13 @@ func (d *Dataset) Now() time.Time { return d.clock.now() }
 // api.Server.handleReset). What remains is a process killed mid-seed, which
 // leaves a partial dataset this probe will skip; the answer to that is to reset.
 //
-// The clock goes live on every path out of Populate, including the one that
-// built nothing. That is not a detail: the second process to open a store that
-// outlives the first has a Dataset whose clock is still frozen at baseDate, and
-// if the skip returned without releasing it, every payment, account, hold,
-// snapshot and audit event that process went on to write would be timestamped
-// 2025-09-15. Freezing the clock is a property of building the scenario, not of
-// the Dataset.
+// The clock is REWOUND only on the path that builds, which is what makes the
+// skip above safe against a store that outlives the process. A second process
+// opening one finds the banks already there, builds nothing, and leaves the
+// business date exactly where it opened it — which is the date the last process
+// left, read back from beside the databases (calendar.OpenClock). Rewinding
+// unconditionally would put a running deployment back at BaseDate on every boot,
+// behind books that already hold entries dated months later.
 //
 // The scenario is hardcoded, so a failure while building it is a programming
 // bug rather than a runtime condition, and the builder says so by panicking.
@@ -96,14 +101,9 @@ func (d *Dataset) Now() time.Time { return d.clock.now() }
 // boundary, since its caller — the server's reset handler — has an error to
 // report and a request to answer. Any other panic is re-raised with its stack
 // intact; see recoverBuild.
-func (d *Dataset) Populate(ctx context.Context, nets *payment.Networks, msh *mesh.Mesh) (err error) {
-	// Registered first, so it runs last: whether the scenario was built now,
-	// was already there, or failed halfway, the clock is released before
-	// Populate returns.
-	defer d.clock.goLive()
-
-	if msh == nil {
-		return errors.New("seed: no mesh, so no bank in this scenario could be admitted to the scheme")
+func (d *Dataset) Populate(ctx context.Context, nets *payment.Networks, dep Deployment) (err error) {
+	if dep == nil {
+		return errors.New("seed: no deployment, so no bank in this scenario could be admitted to the scheme")
 	}
 
 	// "Has anything been built here already", asked of the DEPLOYMENT rather than
@@ -129,9 +129,11 @@ func (d *Dataset) Populate(ctx context.Context, nets *payment.Networks, msh *mes
 		}
 	}()
 
-	d.clock.rewind(baseDate)
+	if err := d.clock.Rewind(BaseDate); err != nil {
+		return err
+	}
 	b := &builder{
-		ctx: ctx, nets: nets, mesh: msh, clock: d.clock,
+		ctx: ctx, nets: nets, dep: dep, clock: d.clock,
 		cats: map[payment.ParticipantID]catalogue{},
 	}
 	b.build()
@@ -168,14 +170,13 @@ func recoverBuild(r any) error {
 	return fmt.Errorf("seed: %w", se.err)
 }
 
-// There is no Network() convenience constructor any more, and the reason is
-// worth recording rather than rediscovering.
+// There is no Network() convenience constructor, and the reason is worth
+// recording rather than rediscovering.
 //
-// Building the scenario needs a running mesh, and a mesh is a set of goroutines
-// somebody has to stop — so there is no one-call helper that hands back only the
-// network and leaves them running for the life of the process. Callers build the
-// four pieces themselves: cmd/server does, and so does this package's own test
-// helper.
+// Building the scenario needs a DEPLOYMENT as well as a network — three acts
+// need a table no single institution owns — and a deployment is a composition
+// root, which a package it imports cannot name. So callers build the pieces
+// themselves: cmd/server does, and so does this package's own test helper.
 
 type builder struct {
 	ctx context.Context
@@ -187,9 +188,11 @@ type builder struct {
 	// here — initiate, reject, returnPayment, settle — still run several
 	// institutions' halves inside ONE unit of work, and each half says whose it
 	// is.
-	nets  *payment.Networks
-	mesh  *mesh.Mesh
-	clock *clock
+	nets *payment.Networks
+	// dep is the running system: the five acts the builder cannot perform for
+	// itself, because each needs more than one institution. See Deployment.
+	dep   Deployment
+	clock *calendar.Clock
 	// cats holds each bank's product IDs, keyed by participant: the
 	// catalogue is book-scoped, so every bank has its own Basic and Premium and
 	// the same name at two banks is two products.
@@ -253,7 +256,7 @@ func check(err error) {
 
 // provision writes one bank's three rows — its own, its settlement account in
 // the central bank's book, its roster entry in the clearing house's — and gives
-// it an actor on this mesh.
+// it its place in the network.
 //
 // The two steps are different kinds of thing and are spelled separately: the
 // rows are what the three institutions hold, and the actor is an inbox on a bus.
@@ -267,7 +270,7 @@ func (b *builder) provision(name string, bic iso20022.BIC, country iban.Country,
 	bank := must(provision.Bank(b.ctx, b.nets, provision.BankSpec{
 		Name: name, BIC: bic, Country: country, Assets: assets,
 	}))
-	check(b.mesh.AddBank(b.ctx, bank))
+	check(b.dep.AddBank(b.ctx, bank))
 	return bank
 }
 
@@ -276,9 +279,9 @@ func (b *builder) provision(name string, bic iso20022.BIC, country iban.Country,
 //
 // It is no part of provisioning a bank and is not a message: nothing is queued
 // and nobody answers later. What it does is read the roster as it stands and
-// replace this bank's copy with it. See mesh.Mesh.RefreshDirectory.
+// replace this bank's copy with it. See Deployment.RefreshDirectory.
 func (b *builder) subscribe(p *payment.Bank) {
-	must(b.mesh.RefreshDirectory(b.ctx, p.BIC))
+	must(b.dep.RefreshDirectory(b.ctx, p.BIC))
 }
 
 // seedAsset is the asset the whole sample scenario is denominated in.
@@ -305,7 +308,7 @@ const seedAsset ledger.AssetCode = "EUR"
 //
 // Both are forward-dated, which is the only direction PublishVersion allows.
 func (b *builder) products(p *payment.Bank) {
-	from := ledger.DayStart(b.clock.now())
+	from := ledger.DayStart(b.clock.Now())
 
 	b.publish(p, p.ProductID, from.AddDate(0, 0, 1), product.OverdraftPricing{
 		Rate: 120_000, UnarrangedRate: 350_000, DayCount: interest.ACT365,
@@ -374,13 +377,23 @@ func (b *builder) openLine(p *payment.Bank, borrower deposit.Account, name strin
 	return must(p.Lending.GetFacility(b.ctx, line.ID))
 }
 
+// day moves the business date on by one, and it is the only step this builder
+// takes.
+//
+// A deployment's clock keeps the time of day (calendar.Clock.Advance), so
+// everything the scenario writes on one date carries the SAME instant and its
+// order is the order it was written in. That is the running system's own
+// property, and a fixture that stepped an hour between two holds would be
+// building a timeline no operator can produce.
+func (b *builder) day() { must(b.clock.Advance()) }
+
 // runDays advances the clock a day at a time, driving RunEndOfDay through each
 // one — the same entry point payment.Bank exposes to the API — so the
 // seed's accrual and arrears move exactly as a running day would produce them.
 func (b *builder) runDays(p *payment.Bank, days int) {
 	for i := 0; i < days; i++ {
-		b.clock.advance(24 * time.Hour)
-		check(p.RunEndOfDay(b.ctx, b.clock.now()))
+		b.day()
+		check(p.RunEndOfDay(b.ctx, b.clock.Now()))
 	}
 }
 
@@ -414,8 +427,8 @@ func (b *builder) fund(p *payment.Bank, acct deposit.Account, amount ledger.Amou
 	check(b.bank(p.BIC).Deposit(b.ctx, p.ID, acct.ID, amount, "Opening deposit"))
 }
 
-// lodge moves one bank's vault cash onto its reserve at the central bank, and
-// drains the mesh so that the receipt has arrived before the seed goes on.
+// lodge moves one bank's vault cash onto its reserve at the central bank: the
+// member's own swap, and the settlement agent's credit that matches it.
 //
 // # Why the seed has to do this at all
 //
@@ -423,53 +436,54 @@ func (b *builder) fund(p *payment.Bank, acct deposit.Account, amount ledger.Amou
 // would reach the first cut-off with a zero reserve and settlement would fail
 // for all of them.
 //
-// # It goes through the MESH and not through the domain
+// # Both halves, composed, exactly as initiate composes three
 //
-// a bank's own LodgeReserves would post the bank's own leg and hand back a camt.050 that
-// nobody sends, which is exactly half a lodgement: the bank's reserve mirror would
-// rise and the central bank's book would never hear about it. So this uses the
-// mesh's door, and the seed plays the operator asking for it.
+// A member cannot credit its own reserve account at the central bank; it asks,
+// in a camt.050, and the answer arrives on a later download. Going through the
+// deployment's door would therefore leave the file waiting in the settlement
+// agent's queue until a business day ran through it — and this scenario settles
+// a cycle several steps further down, against a reserve the agent would not yet
+// have credited.
 //
-// That makes it the one place in this file where the seed does NOT compose the
-// halves itself. initiate composes three, and its doc explains why — the seed runs
-// before any actor exists. By the time funding happens the actors DO exist: every
-// bank in this scenario has been provisioned and given one already, and
-// provisioning is what gave it the settlement account this lodgement quotes. So
-// there is a real conversation available and the seed uses it.
+// So the seed plays both institutions, which is what it does for an initiation,
+// a rejection, a return and a cut-off. What it gives up is that no camt.050 and
+// no camt.025 exist in the built scenario; what it keeps is a fixed dataset that
+// does not depend on when a day is advanced.
 //
-// # It drains
-//
-// The camt.025 is what confirms the central bank posted its half, and a scenario
-// that left it queued would hand the API a mesh with messages in flight — which
-// is the state Populate's own contract says it does not leave. Draining here also
-// means a failure in the central bank's half surfaces as this seed failing rather
-// than as a dead letter discovered later.
+// The instruction the member's half renders is what the agent's half is handed,
+// rather than one the seed assembles: the two must agree about the account
+// number and the reference, and a second rendering is a second thing that can
+// drift. See payment.LodgeReservesTx and payment.ReceiveLodgementTx.
 func (b *builder) lodge(p *payment.Bank, amount ledger.Amount) {
-	must(b.mesh.Lodge(b.ctx, p.BIC, "EUR", amount))
-	check(b.mesh.Drain(b.ctx))
+	in, _ := must2(b.bank(p.BIC).LodgeReserves(b.ctx, seedAsset, amount, payment.MessageContext{
+		From:  p.BIC,
+		To:    b.dep.CentralBankBIC(),
+		MsgID: fmt.Sprintf("seed-lodge-%s-%s", p.BIC, seedAsset),
+		Now:   b.clock.Now(),
+	}))
+	must(b.cb().ReceiveLodgement(b.ctx, in))
 }
 
 // initiate runs all three halves of an initiation — the submitting bank's, the
 // receiving bank's and the clearing house's — leaving the payment Accepted in
 // its scheme's open cycle.
 //
-// The seed is one process building a scenario, so it plays every actor; the
-// mesh is what makes them separate. Composing the three halves here rather
-// than calling one method that does all three is the point of the split: there
-// is no such method, precisely so that no caller can validate both ends of a
-// payment by accident.
+// The seed is one process building a scenario, so it plays every institution;
+// the transport is what makes them separate. Composing the three halves here
+// rather than calling one method that does all three is the point of the split:
+// there is no such method, precisely so that no caller can validate both ends of
+// a payment by accident.
 //
-// It is the LAST composite in this repository, and it survives for a reason no
-// HTTP handler has: the seed runs before any actor exists, so there is nothing
-// to send a message to and nobody to answer one — and its whole job is to leave
-// a FIXED scenario, which a conversation carried out at startup could not
-// promise.
+// It survives for a reason no HTTP handler has: its whole job is to leave a
+// FIXED scenario, and a conversation carried out over the transport would not
+// finish until a business day ran — so the dataset would depend on when somebody
+// advanced the clock.
 //
 // # It is THREE units of work now, and it has to be
 //
 // The three halves shared one Tx until the store split, and the doc here said
-// what that bought: the whole initiation or none of it, which in the mesh is
-// exactly what the three actors do not have. There is no Tx to share. A unit of
+// what that bought: the whole initiation or none of it, which is exactly what
+// three institutions with a database each do not have. There is no Tx to share. A unit of
 // work is one database's, each institution has its own, and a statement that
 // spanned two of them is the thing this task removed — so what the seed gives up
 // is not a convenience but an impossibility.
@@ -498,7 +512,7 @@ func (b *builder) initiate(req payment.InitiatePaymentRequest) payment.Payment {
 	// message it would have built carries what it wrote. Everything else is the
 	// instruction unchanged, including both account ids — which is the seed being
 	// the seed. A real receiving bank resolves its own side from the address and
-	// has no way to know the other's, and the mesh is where that is modelled;
+	// has no way to know the other's, and cmd/server is where that is modelled;
 	// this process holds every register and is building a fixed scenario.
 	relayed := req
 	relayed.DebtorDetails, relayed.CreditorDetails = p.DebtorDetails, p.CreditorDetails
@@ -512,18 +526,18 @@ func (b *builder) initiate(req payment.InitiatePaymentRequest) payment.Payment {
 	}
 	check(b.bank(receiver).AcceptInbound(b.ctx, p.ID, relayed))
 	// And the CLEARING HOUSE, which has to be carrying the payment before it can
-	// take it into a cycle. In the mesh this is the moment it relays the
-	// instruction on; here there is nothing to relay, so the record stands alone.
-	must(b.csm().RecordRelayed(b.ctx, p.ID, relayed))
+	// take it into a cycle. In the running system this is the moment it routes the
+	// instruction on; here there is nothing to route, so the record stands alone.
+	must(b.csm().RecordRelayed(b.ctx, []payment.InboundTransaction{{ID: p.ID, Request: relayed}}))
 	accepted := must(b.csm().AcceptAtCSM(b.ctx, p.ID))
 
 	// And the SUBMITTING bank is told, which is the act this composite was
-	// missing. In the mesh the clearing house answers the instruction with an
-	// ACCP addressed to the bank that sent it, and that bank records Accepted on
-	// its own copy (csm.tell, payment.AcceptAtBankTx). Without it the seed's
-	// banks sat at Initiated where the mesh's reach Accepted — the same payment
-	// with two different histories depending on which fixture built it, which is
-	// exactly the divergence a sample dataset must not have.
+	// missing. In the running system the clearing house answers the instruction
+	// with an ACCP addressed to the bank that sent it, and that bank records
+	// Accepted on its own copy (ClearingHouse.tell, payment.AcceptAtBankTx).
+	// Without it a seeded bank would sit at Initiated where a carried one reaches
+	// Accepted — the same payment with two different histories depending on which
+	// built it, which is exactly the divergence a sample dataset must not have.
 	//
 	// Only the submitter. The other bank ANSWERED the instruction and is told
 	// nothing further until the cut-off; its copy goes Initiated -> Settled and
@@ -538,8 +552,8 @@ func (b *builder) initiate(req payment.InitiatePaymentRequest) payment.Payment {
 //
 // Split for the same reason initiate is: there is no method that plays both
 // actors, and the two cannot share a Tx — two institutions, two databases. So
-// the fixture has the mesh's shape here as well, and what it promises is the
-// OUTCOME rather than the process.
+// the fixture has the running system's shape here as well, and what it promises
+// is the OUTCOME rather than the process.
 func (b *builder) reject(id payment.PaymentID, code iso20022.StatusReason, reason string) {
 	rejected := must(b.csm().RejectAtCSM(b.ctx, id, code, reason))
 	// Both banks record it, each on its own copy, and only the payer's bank gives
@@ -549,7 +563,7 @@ func (b *builder) reject(id payment.PaymentID, code iso20022.StatusReason, reaso
 	//
 	// On a push the two are one bank and there is one call; on a pull the payee's
 	// bank submitted and is being told the answer to its instruction, with nothing
-	// to undo. csm.tell is what decides the same thing in the mesh, and it decides
+	// to undo. ClearingHouse.tell is what decides the same thing in the running system, and it decides
 	// it the same way.
 	must(b.bank(rejected.DebtorDetails.Agent).RejectAtBank(b.ctx, id, code, reason))
 	if other := rejected.CreditorDetails.Agent; other != rejected.DebtorDetails.Agent {
@@ -580,8 +594,8 @@ func (b *builder) reject(id payment.PaymentID, code iso20022.StatusReason, reaso
 // together.
 //
 // The instruction handed to SettleReturn is built from the CLEARING HOUSE's
-// payment row here, which is the one thing the mesh does differently rather than
-// merely faster: in the mesh both agents come off the pacs.004's OrgnlTxRef,
+// payment row here, which is the one thing the running system does differently
+// rather than merely faster: there both agents come off the pacs.004's OrgnlTxRef,
 // because a settlement agent holds no payment rows. The values are identical —
 // payment.ReturnMessage writes these same two fields and payment.ReadReturn
 // reads them back — and the way they were obtained is the whole difference.
@@ -615,7 +629,7 @@ func (b *builder) returnPayment(id payment.PaymentID, reason string) {
 	// something readable off a row; see payment.PostReturnLegTx.
 	must(b.bank(other).PostReturnLeg(b.ctx, id, reason))
 	// So the returner's copy and the clearing house's are moved by what they are
-	// TOLD, which in the mesh is the settlement agent's ACSC relayed on. The seed
+	// TOLD, which in the running system is the settlement agent's ACSC relayed on. The seed
 	// has no message and says the same thing directly.
 	must(b.bank(returner).CompleteReturn(b.ctx, id))
 	must(b.csm().CompleteReturn(b.ctx, id))
@@ -656,8 +670,8 @@ func (b *builder) advise(statements []payment.SettlementStatement) {
 // fixed scenario before any actor exists, and a conversation carried out at
 // startup could not promise a fixed outcome.
 //
-// What the seed gives up by doing so is exactly what the mesh exists to model:
-// in the mesh these halves are several units of work with an unreconciled
+// What the seed gives up by doing so is exactly what the transport exists to
+// model: there these halves are several units of work with an unreconciled
 // interval between them. They are several here too — one database each, and no
 // statement spans two. The fixture is the outcome, not the process.
 func (b *builder) settle(id payment.CycleID) {
@@ -671,7 +685,7 @@ func (b *builder) settle(id payment.CycleID) {
 	if !ok {
 		check(fmt.Errorf("seed: no scheme %q to settle %s under: %w", closed.Scheme, id, payment.ErrSchemeNotFound))
 	}
-	legs := payment.SettlementLegsOf(closed, scheme.Asset(), b.mesh.CentralBankBIC())
+	legs := payment.SettlementLegsOf(closed, scheme.Asset(), b.dep.CentralBankBIC())
 
 	_, statements := must2(b.cb().SettleCycle(b.ctx, id, legs))
 	b.advise(statements)
@@ -679,7 +693,7 @@ func (b *builder) settle(id payment.CycleID) {
 	// The CLEARING HOUSE's own copies move first, and they are also the payment
 	// list — which the settlement does not carry: a settlement agent answers about
 	// net positions per MEMBER and holds no way to enumerate the batch. That is
-	// why the fan-out is the clearing house's in the mesh, and why the seed asks
+	// why the fan-out is the clearing house's in the running system, and why the seed asks
 	// this institution rather than the statements above.
 	for _, p := range must(b.csm().SettleAtCSM(b.ctx, id)) {
 		// Then both banks, each on its own copy, and only the payee's bank pays
@@ -720,7 +734,7 @@ func (b *builder) initSCT(dp *payment.Bank, d deposit.Account, cp *payment.Bank,
 		// refilled from its own row either way (payment.SubmitPaymentTx), so
 		// naming it changes nothing about the payment — what it buys is that the
 		// seed's requests still say which bank submits, which is what initiate
-		// below reads and what mesh.Mesh.Submit's on-us guard compares.
+		// below reads and what cmd/server's Deployment.Submit on-us guard compares.
 		DebtorDetails:   payment.PartyDetails{Agent: dp.BIC, Name: d.Name},
 		CreditorDetails: payment.PartyDetails{Agent: cp.BIC, Name: c.Name},
 	})
@@ -779,7 +793,7 @@ func (b *builder) build() {
 	// every bank can pay every other. Refreshing inside provision would give
 	// Aurora a directory holding only itself, Verde one holding two, and a dataset
 	// whose payments worked or did not depending on the order the banks joined —
-	// which is real behaviour, and is measured in mesh rather than baked into the
+	// which is real behaviour, and is measured in cmd/server rather than baked into the
 	// fixture every other suite reads.
 	for _, p := range []*payment.Bank{aurora, verde, nord, soleil} {
 		b.subscribe(p)
@@ -843,8 +857,6 @@ func (b *builder) build() {
 	b.lodge(nord, 360_000)
 	b.lodge(soleil, 210_000)
 
-	b.clock.advance(2 * time.Hour)
-
 	// --- Holds on Alice: active / released / captured ----------------------
 	ctx := b.ctx
 	must(aurora.Deposit.CreateHold(ctx, deposit.CreateHoldRequest{
@@ -861,9 +873,9 @@ func (b *builder) build() {
 	must(aurora.Deposit.CaptureHold(ctx, captured.ID, merchantPos, 0, "Captured: card payment"))
 
 	// --- End-of-day snapshots for Alice across two business days -----------
-	must(aurora.Deposit.TakeEndOfDaySnapshot(ctx, alice.ID, b.clock.now()))
-	b.clock.advance(24 * time.Hour)
-	must(aurora.Deposit.TakeEndOfDaySnapshot(ctx, alice.ID, b.clock.now()))
+	must(aurora.Deposit.TakeEndOfDaySnapshot(ctx, alice.ID, b.clock.Now()))
+	b.day()
+	must(aurora.Deposit.TakeEndOfDaySnapshot(ctx, alice.ID, b.clock.Now()))
 
 	// --- Account status lifecycle ------------------------------------------
 	check(aurora.Deposit.MarkDormant(ctx, annie.ID)) // Active -> Dormant
@@ -881,8 +893,6 @@ func (b *builder) build() {
 	m3 := must(b.bank(soleil.BIC).CreateMandate(b.ctx, nord.BIC, b.ref(niklas), b.ref(claude), 25_000))
 	check(b.bank(soleil.BIC).RevokeMandate(b.ctx, m3.ID)) // revoked, for display
 
-	b.clock.advance(1 * time.Hour)
-
 	// --- Phase A: a fully settled SEPA Credit Transfer cycle ---------------
 	sct1 := must(b.csm().OpenCycle(b.ctx, payment.SchemeSEPACT))
 	b.initSCT(aurora, alice, nord, niklas, 25_000, "SCT-001", "Rent to N. Nyborg")
@@ -891,7 +901,7 @@ func (b *builder) build() {
 	must(b.csm().CloseCycle(b.ctx, sct1.ID))
 	b.settle(sct1.ID)
 
-	b.clock.advance(24 * time.Hour)
+	b.day()
 
 	// --- Phase B: a settled SEPA Direct Debit cycle (one will be returned) --
 	sdd1 := must(b.csm().OpenCycle(b.ctx, payment.SchemeSEPADD))
@@ -903,7 +913,7 @@ func (b *builder) build() {
 	// --- Phase C: return the settled direct debit (an R-transaction) --------
 	b.returnPayment(returned.ID, "Debtor dispute — unauthorised collection")
 
-	b.clock.advance(24 * time.Hour)
+	b.day()
 
 	// --- Phase D: a closed-but-not-settled SCT cycle (payments stay Cleared) -
 	sct2 := must(b.csm().OpenCycle(b.ctx, payment.SchemeSEPACT))
@@ -944,7 +954,6 @@ func (b *builder) build() {
 // deposit page read.
 func (b *builder) lendingShowcase(aurora, verde, nord *payment.Bank, alice, bruno, bella, niklas deposit.Account) {
 	ctx := b.ctx
-	b.clock.advance(1 * time.Hour)
 
 	// --- Bruno's overdraft, priced ------------------------------------------
 	// He already has a 500.00 limit (openOverdraft, above); this is what makes
@@ -957,8 +966,8 @@ func (b *builder) lendingShowcase(aurora, verde, nord *payment.Bank, alice, brun
 	// is the whole point of the distinction and is visible on his account page.
 	must(verde.Deposit.SetOverdraftPricingOverlay(ctx, bruno.ID,
 		&product.OverdraftPricing{Rate: 150_000, UnarrangedRate: 350_000, DayCount: interest.ACT365},
-		b.clock.now()))
-	must(verde.Deposit.SetOverdraftLimit(ctx, bruno.ID, 50_000, b.clock.now()))
+		b.clock.Now()))
+	must(verde.Deposit.SetOverdraftLimit(ctx, bruno.ID, 50_000, b.clock.Now()))
 
 	// --- Bella, migrated onto Premium ---------------------------------------
 	// Effective a fortnight in. Her earlier days keep pricing at Basic's rate —
@@ -969,26 +978,26 @@ func (b *builder) lendingShowcase(aurora, verde, nord *payment.Bank, alice, brun
 	// the day-30 reprice (everyone else), negotiated and therefore unmoved by
 	// it (Bruno), and migrated (Bella).
 	must(verde.Deposit.ChangeProduct(ctx, bella.ID, b.cats[verde.ID].premium,
-		b.clock.now().AddDate(0, 0, 14)))
+		b.clock.Now().AddDate(0, 0, 14)))
 
 	// --- A term loan part-way through its schedule (Alice, Aurora) ----------
 	// EUR 10,000, five years, 6%, annuity. Disbursed, then run day by day
 	// through two monthly instalments paid on time, then a little further so a
 	// fresh accrual is visible without reaching the third instalment. The
 	// result: accrued interest, a partly-paid schedule, Current arrears.
-	t1 := b.clock.now()
+	t1 := b.clock.Now()
 	firstDue := t1.AddDate(0, 1, 0)
 	loan := b.openLoan(aurora, alice, "Alice Home Loan", 1_000_000, 60_000, 60, firstDue, "Home loan payout")
 	alicePos := must(aurora.Deposit.Position(ctx, alice.ID))
 
 	b.runDays(aurora, int(firstDue.Sub(t1)/(24*time.Hour)))
 	sched := must(aurora.Lending.Schedule(ctx, loan.ID))
-	must(aurora.Lending.Repay(ctx, loan.ID, alicePos, sched[0].Total(), b.clock.now(), "Instalment 1"))
+	must(aurora.Lending.Repay(ctx, loan.ID, alicePos, sched[0].Total(), b.clock.Now(), "Instalment 1"))
 
 	secondDue := t1.AddDate(0, 2, 0)
 	b.runDays(aurora, int(secondDue.Sub(firstDue)/(24*time.Hour)))
 	sched = must(aurora.Lending.Schedule(ctx, loan.ID))
-	must(aurora.Lending.Repay(ctx, loan.ID, alicePos, sched[1].Total(), b.clock.now(), "Instalment 2"))
+	must(aurora.Lending.Repay(ctx, loan.ID, alicePos, sched[1].Total(), b.clock.Now(), "Instalment 2"))
 
 	b.runDays(aurora, 10) // a fresh accrual builds up; the third instalment is not yet due
 
@@ -996,8 +1005,7 @@ func (b *builder) lendingShowcase(aurora, verde, nord *payment.Bank, alice, brun
 	// A smaller loan than Alice's, disbursed and then left unpaid past two due
 	// dates: one month plus twenty days past the first instalment, comfortably
 	// inside the 30-59 bucket however the calendar months involved fall.
-	b.clock.advance(1 * time.Hour)
-	t3 := b.clock.now()
+	t3 := b.clock.Now()
 	niklasFirstDue := t3.AddDate(0, 1, 0)
 	b.openLoan(nord, niklas, "Niklas Car Loan", 300_000, 90_000, 24, niklasFirstDue, "Car loan payout")
 	target := t3.AddDate(0, 2, 20)
@@ -1042,15 +1050,14 @@ func (b *builder) lendingShowcase(aurora, verde, nord *payment.Bank, alice, brun
 	// It joins the SCT cycle Phase F left open (only one may be open per
 	// scheme at a time) rather than opening a second one, which is also why it
 	// stays Accepted like SCT-020 rather than Settled.
-	b.clock.advance(1 * time.Hour)
-	check(verde.RunEndOfDay(ctx, b.clock.now()))
+	check(verde.RunEndOfDay(ctx, b.clock.Now()))
 
 	brunoBalance := must(verde.Deposit.GetBalance(ctx, bruno.ID))
 	overdrawBy := ledger.Amount(20_000) // EUR 200 into the EUR 500 arranged limit
 	b.initSCT(verde, bruno, aurora, alice, brunoBalance.Book+overdrawBy, "SCT-030", "Card settlement")
 
 	b.runDays(verde, 45)
-	must(verde.Deposit.ChargeOverdraftInterest(ctx, bruno.ID, b.clock.now()))
+	must(verde.Deposit.ChargeOverdraftInterest(ctx, bruno.ID, b.clock.Now()))
 
 	// --- Bruno, repriced mid-life -------------------------------------------
 	// The arranged rate moves from 15% to 18%, effective TWENTY DAYS AGO — a
@@ -1070,7 +1077,7 @@ func (b *builder) lendingShowcase(aurora, verde, nord *payment.Bank, alice, brun
 	// would have kept the old rate forever.
 	must(verde.Deposit.SetOverdraftPricingOverlay(ctx, bruno.ID,
 		&product.OverdraftPricing{Rate: 180_000, UnarrangedRate: 350_000, DayCount: interest.ACT365},
-		b.clock.now().AddDate(0, 0, -20)))
+		b.clock.Now().AddDate(0, 0, -20)))
 
 	b.runDays(verde, 15)
 
@@ -1087,10 +1094,9 @@ func (b *builder) lendingShowcase(aurora, verde, nord *payment.Bank, alice, brun
 	// carries Bruno's overdraft forward another 30 days — which is where the
 	// 45 days behind his final figure above come from, not the 15 his own
 	// phase runs.
-	b.clock.advance(1 * time.Hour)
 	line := b.openLine(verde, bella, "Bella Card Line", 250_000, 180_000, 20_000, 100_000, "Card line draw")
 	b.runDays(verde, 30)
-	must(verde.Lending.ChargeInterest(ctx, line.ID, b.clock.now()))
+	must(verde.Lending.ChargeInterest(ctx, line.ID, b.clock.Now()))
 }
 
 // glShowcase exercises the raw general-ledger primitives on one bank so that all

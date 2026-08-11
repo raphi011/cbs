@@ -5,6 +5,14 @@ import (
 	"net/http"
 )
 
+// The writers, and they are unexported on purpose.
+//
+// api/bank, api/csm and api/centralbank have no way to answer a request except
+// by returning a value and an error to Handle. That is what makes "every
+// response carries the JSON content type, every error goes through the mapping
+// in errors.go, and nothing writes twice" a fact about the package rather than a
+// convention seventy handlers keep.
+
 // writeJSON writes v as a JSON response with the given status code.
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
@@ -20,18 +28,11 @@ func writeError(w http.ResponseWriter, err error) {
 	writeJSON(w, errorStatus(err), errorBody{Error: err.Error()})
 }
 
-// writeBadRequest reports a malformed request (bad JSON, invalid enum value,
-// missing field) as a 400 with the given message.
+// writeBadRequest reports a malformed request as a 400 with the given message.
+// It is what the middleware uses, which is the one place that refuses a request
+// before any handler is chosen; a handler returns BadRequest instead.
 func writeBadRequest(w http.ResponseWriter, msg string) {
 	writeJSON(w, http.StatusBadRequest, errorBody{Error: msg})
-}
-
-// writeUnprocessable reports a well-formed request that the state refuses, as a
-// 422 with the given message. It is the hand-written twin of the errorStatus
-// arm that maps the domain's business-state sentinels — for the refusals the
-// API itself makes and the domain has no error for.
-func writeUnprocessable(w http.ResponseWriter, msg string) {
-	writeJSON(w, http.StatusUnprocessableEntity, errorBody{Error: msg})
 }
 
 type errorBody struct {
@@ -40,9 +41,12 @@ type errorBody struct {
 
 // decodeJSON decodes the request body into dst, rejecting unknown fields so
 // typos in client payloads surface as errors rather than being silently
-// ignored. A non-nil result should be treated as a 400 by the caller.
+// ignored. The failure is a BadRequest, so HandleBody returns it like any other.
 func decodeJSON(r *http.Request, dst any) error {
 	dec := json.NewDecoder(r.Body)
 	dec.DisallowUnknownFields()
-	return dec.Decode(dst)
+	if err := dec.Decode(dst); err != nil {
+		return BadRequest("%s", err)
+	}
+	return nil
 }

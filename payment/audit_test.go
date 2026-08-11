@@ -183,7 +183,7 @@ func eventTypes(events []ledger.AuditEvent) string {
 // There is no list to read it off now. The two events are in two DATABASES with
 // two counters, so nothing here can order them — see paymentAudit. The claim
 // they carried (a payee is not paid before the reserves move) is a claim about
-// MESSAGES and is measured where the messages are, in mesh; what this test
+// FILES and is measured where the files are, in cmd/server; what this test
 // measures is what each institution's own log contains and in what order, which
 // is the strongest statement four separate logs support.
 //

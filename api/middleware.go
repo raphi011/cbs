@@ -1,6 +1,7 @@
 package api
 
 import (
+	"log/slog"
 	"net/http"
 	"net/url"
 	"time"
@@ -12,8 +13,8 @@ import (
 // recover → logging → CORS → screen the request target → handler, so a panic is
 // caught after the request is logged and CORS headers are still applied to
 // error responses.
-func (s *Server) withMiddleware(h http.Handler) http.Handler {
-	return s.recoverPanic(s.logRequests(s.cors(s.screenRequestTarget(h))))
+func withMiddleware(log *slog.Logger, h http.Handler) http.Handler {
+	return recoverPanic(log, logRequests(log, cors(screenRequestTarget(h))))
 }
 
 // screenRequestTarget refuses a URL whose decoded path or query carries a
@@ -32,7 +33,7 @@ func (s *Server) withMiddleware(h http.Handler) http.Handler {
 // answer a lookup would give with none of the guessing about what the store
 // would have done with it. Identifiers arriving in a request BODY are validated
 // in the domain instead, where they are also stored.
-func (s *Server) screenRequestTarget(next http.Handler) http.Handler {
+func screenRequestTarget(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// r.URL.Path is already percent-decoded, which is the form the handlers
 		// and the store see.
@@ -64,7 +65,7 @@ func (s *Server) screenRequestTarget(next http.Handler) http.Handler {
 // cors allows a browser-based frontend (e.g. a React dev server on a different
 // origin) to call the API. For a local learning tool it allows any origin and
 // short-circuits preflight requests.
-func (s *Server) cors(next http.Handler) http.Handler {
+func cors(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
@@ -78,12 +79,12 @@ func (s *Server) cors(next http.Handler) http.Handler {
 }
 
 // logRequests logs the method, path, status, and duration of each request.
-func (s *Server) logRequests(next http.Handler) http.Handler {
+func logRequests(log *slog.Logger, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
 		next.ServeHTTP(rec, r)
-		s.log.Info("request",
+		log.Info("request",
 			"method", r.Method,
 			"path", r.URL.Path,
 			"status", rec.status,
@@ -94,11 +95,11 @@ func (s *Server) logRequests(next http.Handler) http.Handler {
 
 // recoverPanic turns a panic in a handler into a 500 response instead of
 // crashing the server.
-func (s *Server) recoverPanic(next http.Handler) http.Handler {
+func recoverPanic(log *slog.Logger, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer func() {
 			if rec := recover(); rec != nil {
-				s.log.Error("panic recovered", "error", rec, "path", r.URL.Path)
+				log.Error("panic recovered", "error", rec, "path", r.URL.Path)
 				writeJSON(w, http.StatusInternalServerError, errorBody{Error: "internal server error"})
 			}
 		}()

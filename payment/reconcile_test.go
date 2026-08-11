@@ -20,7 +20,7 @@ import (
 // Calibrating one bank's own reconciliation
 // ---------------------------------------------------------------------------
 //
-// Same method as mesh/recon_test.go, and for the same reason: an instrument
+// Same method as cmd/server/recon_test.go, and for the same reason: an instrument
 // that has never been shown a break is one nobody has any reason to believe.
 // Each test takes a network that reconciles, puts ONE thing wrong in it, and
 // checks that the run says so — and says which account, because a finding that
@@ -168,7 +168,7 @@ func TestABankCatchesItsMirrorLegPostedAgainstTheWrongAmount(t *testing.T) {
 }
 
 // TestABankCatchesAReserveMovedWithNoStatementBehindIt is the damage
-// mesh/recon_test.go's diverged-mirror fixture injects, caught from inside ONE
+// cmd/server/recon_test.go's diverged-mirror fixture injects, caught from inside ONE
 // database.
 //
 // That test needed all five: the bank's reserve and the settlement agent's are
@@ -300,10 +300,11 @@ func TestAMissedStatementIsCaughtByTheNextOne(t *testing.T) {
 // and the money is visibly still in suspense, which is a position and not a
 // defect.
 //
-// It is unreachable in this transport, which delivers exactly once and in order.
-// It becomes reachable AND INVISIBLE the day the mesh gains a lossy one, and
-// what would close it is a periodic statement, which this system does not have.
-// payment/recon catches it today because it can read the agent's register; this
+// It is REACHABLE, because nothing is pushed at a member: a statement waits in
+// the bank's download queue until the bank collects, and a bank that stops
+// collecting stops being told while this run goes on agreeing with itself. What
+// would close it from inside is a periodic statement, which this system does not
+// have. payment/recon catches it because it can read the agent's register; this
 // cannot, and does not pretend to.
 func TestTheLastStatementNeverArrivingIsUndetectableFromInside(t *testing.T) {
 	ctx := context.Background()

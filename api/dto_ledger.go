@@ -1,8 +1,6 @@
 package api
 
 import (
-	"context"
-	"fmt"
 	"time"
 
 	"github.com/raphi011/cbs/ledger"
@@ -11,28 +9,28 @@ import (
 // Wire format for the general-ledger layer: ledgers, subledgers, accounts,
 // transactions, and the requests that create them.
 
-type ledgerDTO struct {
+type LedgerDTO struct {
 	ID        string    `json:"id"`
 	Name      string    `json:"name"`
 	CreatedAt time.Time `json:"createdAt"`
 }
 
-func toLedgerDTO(l ledger.Ledger) ledgerDTO {
-	return ledgerDTO{ID: string(l.ID), Name: l.Name, CreatedAt: l.CreatedAt}
+func ToLedgerDTO(l ledger.Ledger) LedgerDTO {
+	return LedgerDTO{ID: string(l.ID), Name: l.Name, CreatedAt: l.CreatedAt}
 }
 
-type subledgerDTO struct {
+type SubledgerDTO struct {
 	ID        string    `json:"id"`
 	LedgerID  string    `json:"ledgerId"`
 	Name      string    `json:"name"`
 	CreatedAt time.Time `json:"createdAt"`
 }
 
-func toSubledgerDTO(sl ledger.Subledger) subledgerDTO {
-	return subledgerDTO{ID: string(sl.ID), LedgerID: string(sl.LedgerID), Name: sl.Name, CreatedAt: sl.CreatedAt}
+func ToSubledgerDTO(sl ledger.Subledger) SubledgerDTO {
+	return SubledgerDTO{ID: string(sl.ID), LedgerID: string(sl.LedgerID), Name: sl.Name, CreatedAt: sl.CreatedAt}
 }
 
-type accountDTO struct {
+type AccountDTO struct {
 	ID          string `json:"id"`
 	SubledgerID string `json:"subledgerId"`
 	Name        string `json:"name"`
@@ -47,8 +45,8 @@ type accountDTO struct {
 	CreatedAt time.Time `json:"createdAt"`
 }
 
-func toAccountDTO(a ledger.Account) accountDTO {
-	return accountDTO{
+func ToAccountDTO(a ledger.Account) AccountDTO {
+	return AccountDTO{
 		ID:          string(a.ID),
 		SubledgerID: string(a.SubledgerID),
 		Name:        a.Name,
@@ -59,12 +57,12 @@ func toAccountDTO(a ledger.Account) accountDTO {
 	}
 }
 
-// accountBalanceDTO is the response of GET .../accounts/{aid}/balance.
+// AccountBalanceDTO is the response of GET .../accounts/{aid}/balance.
 //
 // Balance is an integer in the account's minor units, so the asset it is
-// denominated in travels with it — the same rule balanceDTO follows on the
+// denominated in travels with it — the same rule BalanceDTO follows on the
 // deposit layer. A number with no asset is not an amount.
-type accountBalanceDTO struct {
+type AccountBalanceDTO struct {
 	AccountID string `json:"accountId"`
 	// Subsidiary is which one the figures are for, absent when they are the
 	// whole account's. It is echoed back because a client asking for one
@@ -80,20 +78,20 @@ type accountBalanceDTO struct {
 	ValueDateBalance int64 `json:"valueDateBalance"`
 }
 
-// subsidiaryBalanceDTO is one subsidiary's share of a control account. The asset
-// travels with the number for accountBalanceDTO's reason: an integer in minor
+// SubsidiaryBalanceDTO is one subsidiary's share of a control account. The asset
+// travels with the number for AccountBalanceDTO's reason: an integer in minor
 // units is not an amount without it.
 //
 // What a subsidiary IS — a deposit account, a facility — is not said here and
 // cannot be: the ledger holds an opaque string, and the layer that knows what it
 // names is the one rendering the link.
-type subsidiaryBalanceDTO struct {
+type SubsidiaryBalanceDTO struct {
 	Subsidiary string `json:"subsidiary"`
 	Asset      string `json:"asset"`
 	Balance    int64  `json:"balance"`
 }
 
-type entryDTO struct {
+type EntryDTO struct {
 	ID        string `json:"id,omitempty"`
 	AccountID string `json:"accountId"`
 	// Subsidiary is what this leg belongs to within a control account — a
@@ -132,10 +130,10 @@ type entryDTO struct {
 	ValueDate *time.Time `json:"valueDate,omitempty"`
 }
 
-type transactionDTO struct {
+type TransactionDTO struct {
 	ID             string            `json:"id"`
 	IdempotencyKey string            `json:"idempotencyKey,omitempty"`
-	Entries        []entryDTO        `json:"entries"`
+	Entries        []EntryDTO        `json:"entries"`
 	BookingDate    time.Time         `json:"bookingDate"`
 	ValueDate      time.Time         `json:"valueDate"`
 	Status         string            `json:"status"`
@@ -145,52 +143,18 @@ type transactionDTO struct {
 	CreatedAt      time.Time         `json:"createdAt"`
 }
 
-// entryAccountIDs collects the distinct account IDs referenced by any entry
-// across one or more transactions, in first-seen order. It is the input to
-// entryAssets, kept separate so a caller with just one transaction can build
-// it without allocating a slice of transactions.
-func entryAccountIDs(txs []ledger.Transaction) []ledger.AccountID {
-	seen := make(map[ledger.AccountID]bool)
-	var ids []ledger.AccountID
-	for _, tx := range txs {
-		for _, e := range tx.Entries {
-			if !seen[e.AccountID] {
-				seen[e.AccountID] = true
-				ids = append(ids, e.AccountID)
-			}
-		}
-	}
-	return ids
-}
-
-// entryAssets resolves the asset of every account referenced by any entry across
-// txs, in one Book.GetAccounts call. One Book.GetAccount per entry would be one
-// BEGIN…COMMIT each, making a listing's cost scale with how many transactions it
-// renders rather than with how much work it does.
-func entryAssets(ctx context.Context, lb *ledger.Book, txs []ledger.Transaction) (map[ledger.AccountID]ledger.AssetCode, error) {
-	ids := entryAccountIDs(txs)
-	accts, err := lb.GetAccounts(ctx, ids)
-	if err != nil {
-		return nil, err
-	}
-	out := make(map[ledger.AccountID]ledger.AssetCode, len(accts))
-	for id, a := range accts {
-		out[id] = a.Asset
-	}
-	return out, nil
-}
-
-// toTransactionDTO renders a transaction, including each entry's asset. An
+// ToTransactionDTO renders a transaction, including each entry's asset. An
 // entry carries no asset of its own — Amount balances per asset precisely
 // because the asset is a property of the account it posts to — so rendering
 // it means resolving each entry's account. assets is the pre-resolved
-// account-to-asset map (see entryAssets); toTransactionDTO does no I/O of its
-// own, so a caller rendering several transactions can resolve the whole
-// batch's accounts once and reuse the map across every call.
-func toTransactionDTO(tx ledger.Transaction, assets map[ledger.AccountID]ledger.AssetCode) transactionDTO {
-	entries := make([]entryDTO, len(tx.Entries))
+// account-to-asset map; ToTransactionDTO does no I/O of its own, so a caller
+// rendering several transactions can resolve the whole batch's accounts once
+// and reuse the map across every call. The resolving is in transaction.go,
+// which is where every file in this package that reads a store lives.
+func ToTransactionDTO(tx ledger.Transaction, assets map[ledger.AccountID]ledger.AssetCode) TransactionDTO {
+	entries := make([]EntryDTO, len(tx.Entries))
 	for i, e := range tx.Entries {
-		entries[i] = entryDTO{
+		entries[i] = EntryDTO{
 			ID:         string(e.ID),
 			AccountID:  string(e.AccountID),
 			Subsidiary: e.Subsidiary,
@@ -206,7 +170,7 @@ func toTransactionDTO(tx ledger.Transaction, assets map[ledger.AccountID]ledger.
 			ValueDate: valueDatePtr(e.ValueDate),
 		}
 	}
-	return transactionDTO{
+	return TransactionDTO{
 		ID:             string(tx.ID),
 		IdempotencyKey: tx.IdempotencyKey,
 		Entries:        entries,
@@ -231,26 +195,26 @@ func valueDatePtr(t time.Time) *time.Time {
 	return &t
 }
 
-// createAccountRequest carries a required asset. There is no default: an
+// CreateAccountRequest carries a required asset. There is no default: an
 // account and its asset are inseparable, and quietly booking a new account in
 // euro because the caller forgot to say is the bug the asset dimension exists
 // to prevent. A missing asset is a 400, not an assumption.
-type createAccountRequest struct {
+type CreateAccountRequest struct {
 	Name  string `json:"name"`
 	Type  string `json:"type"`
 	Asset string `json:"asset"`
 }
 
-type postTransactionRequest struct {
+type PostTransactionRequest struct {
 	IdempotencyKey string            `json:"idempotencyKey"`
-	Entries        []entryDTO        `json:"entries"`
+	Entries        []EntryDTO        `json:"entries"`
 	BookingDate    *time.Time        `json:"bookingDate"`
 	ValueDate      *time.Time        `json:"valueDate"`
 	Description    string            `json:"description"`
 	Metadata       map[string]string `json:"metadata"`
 }
 
-// toDomain converts the request to a ledger.PostTransactionRequest, parsing
+// ToDomain converts the request to a ledger.PostTransactionRequest, parsing
 // each entry's direction. A bad direction string yields an error that the
 // handler maps to 400.
 //
@@ -259,10 +223,10 @@ type postTransactionRequest struct {
 // PostTransaction resolves it there. Substituting req.ValueDate here would
 // duplicate that rule in a second place, and would keep working right up until
 // the two disagreed.
-func (req postTransactionRequest) toDomain() (ledger.PostTransactionRequest, error) {
+func (req PostTransactionRequest) ToDomain() (ledger.PostTransactionRequest, error) {
 	entries := make([]ledger.Entry, len(req.Entries))
 	for i, e := range req.Entries {
-		dir, err := directionFromString(e.Direction)
+		dir, err := DirectionFromString(e.Direction)
 		if err != nil {
 			return ledger.PostTransactionRequest{}, err
 		}
@@ -291,7 +255,7 @@ func (req postTransactionRequest) toDomain() (ledger.PostTransactionRequest, err
 	return out, nil
 }
 
-func accountTypeFromString(s string) (ledger.AccountType, error) {
+func AccountTypeFromString(s string) (ledger.AccountType, error) {
 	switch s {
 	case "Asset":
 		return ledger.Asset, nil
@@ -304,17 +268,17 @@ func accountTypeFromString(s string) (ledger.AccountType, error) {
 	case "Expense":
 		return ledger.Expense, nil
 	default:
-		return 0, fmt.Errorf("invalid account type %q (want Asset, Liability, Equity, Revenue, or Expense)", s)
+		return 0, BadRequest("invalid account type %q (want Asset, Liability, Equity, Revenue, or Expense)", s)
 	}
 }
 
-func directionFromString(s string) (ledger.Direction, error) {
+func DirectionFromString(s string) (ledger.Direction, error) {
 	switch s {
 	case "Debit":
 		return ledger.Debit, nil
 	case "Credit":
 		return ledger.Credit, nil
 	default:
-		return 0, fmt.Errorf("invalid direction %q (want Debit or Credit)", s)
+		return 0, BadRequest("invalid direction %q (want Debit or Credit)", s)
 	}
 }

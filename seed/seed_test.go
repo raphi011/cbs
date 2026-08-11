@@ -3,59 +3,68 @@ package seed
 import (
 	"context"
 	"errors"
-	"log/slog"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/raphi011/cbs/calendar"
 	"github.com/raphi011/cbs/deposit"
 	"github.com/raphi011/cbs/iso20022"
 	"github.com/raphi011/cbs/ledger"
-	"github.com/raphi011/cbs/mesh"
 	"github.com/raphi011/cbs/payment"
 	"github.com/raphi011/cbs/payment/recon"
 	"github.com/raphi011/cbs/store/testenv"
 )
 
-// testMeshConfig names the two institutions that answer this scenario's
-// admissions. Both addresses are real-shaped and neither is a bank's: one BIC is
-// one actor, so an institution sharing an address with a seeded bank would be a
-// routing table with an entry missing, which mesh.Config.validate refuses.
-var testMeshConfig = mesh.Config{
-	CentralBankBIC:   "CBSEDEFFXXX",
-	ClearingHouseBIC: "CSMXFRPPXXX",
+// testCentralBankBIC is the settlement agent every scenario here lodges cash
+// with. It is real-shaped and is no bank's: an institution sharing an address
+// with a seeded bank would be two institutions at one address.
+const testCentralBankBIC iso20022.BIC = "CBSEDEFFXXX"
+
+// testDeployment is the running system a scenario is built into, composed
+// directly instead of carried.
+//
+// Populate's three acts are the ones needing a table no single institution owns
+// (see Deployment). Two of them need nothing else at all here: an admission
+// writes no row, so it is the network's own to make, and the settlement agent's
+// address is configuration. The third reads one institution's table and writes
+// another's, which is exactly what the real one does.
+//
+// What it leaves out is the hop, and nothing here has one to leave out: the seed
+// composes both halves of every conversation itself, so no envelope is marshalled
+// on either side. A lodgement whose camt.050 could not be read is therefore not a
+// failure this fixture can reach. That is the transport's own to prove, and it
+// does.
+type testDeployment struct {
+	nets *payment.Networks
+	now  func() time.Time
 }
 
-// testMesh starts a mesh over a network and stops it when the test ends.
-//
-// Every seed test needs one, because Populate gives each provisioned bank an
-// actor and the scenario it goes on to build is payments between them.
-//
-// Drain FIRST, then Stop. Stop closes every inbox in one step before it joins
-// anybody, so a conversation still in flight when it runs is cut; draining
-// leaves Stop nothing to do but join. Both return dead letters and both are
-// reported — a build that swallowed a handler's failure would leave a test
-// asserting on a scenario that had not finished being built.
-func testMesh(t *testing.T, nets *payment.Networks) *mesh.Mesh {
-	t.Helper()
-	msh, err := mesh.New(nets, testMeshConfig, slog.New(slog.DiscardHandler))
+func newTestDeployment(nets *payment.Networks, now func() time.Time) *testDeployment {
+	return &testDeployment{nets: nets, now: now}
+}
+
+// AddBank writes nothing. A bank's rows are provision.Bank's and are already
+// written by the time this is called; what a deployment adds on top is
+// reachability, and everything below reaches a bank through its own network.
+func (d *testDeployment) AddBank(context.Context, *payment.Bank) error { return nil }
+
+func (d *testDeployment) CentralBankBIC() iso20022.BIC { return testCentralBankBIC }
+
+// RefreshDirectory reads the roster at the clearing house and writes the copy at
+// the subscriber, in that order and in two units of work — which is the whole of
+// what the real one does, because a directory is a file delivered and not a
+// message.
+func (d *testDeployment) RefreshDirectory(ctx context.Context, bic iso20022.BIC) ([]payment.DirectoryEntry, error) {
+	published, err := d.nets.ClearingHouse().ListRosterEntries(ctx)
 	if err != nil {
-		t.Fatalf("mesh.New: %v", err)
+		return nil, err
 	}
-	if err := msh.Start(context.Background()); err != nil {
-		t.Fatalf("mesh.Start: %v", err)
+	subscriber, err := d.nets.Bank(ctx, payment.ParticipantID(bic))
+	if err != nil {
+		return nil, err
 	}
-	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		if err := msh.Drain(ctx); err != nil {
-			t.Errorf("draining at shutdown: %v", err)
-		}
-		if err := msh.Stop(ctx); err != nil {
-			t.Errorf("stopping: %v", err)
-		}
-	})
-	return msh
+	return subscriber.RefreshDirectory(ctx, published)
 }
 
 // testNetwork builds the sample scenario over the store testenv hands it.
@@ -63,10 +72,10 @@ func testMesh(t *testing.T, nets *payment.Networks) *mesh.Mesh {
 // It is what makes the seed assertions (deterministic IDs, conserved reserves,
 // status coverage) claims about the seed rather than about a store, and it is
 // the whole of what a caller of this package assembles for itself: a store, a
-// network, a running mesh, and Populate over the three.
+// set of networks, a deployment, and Populate over the three.
 //
 // testNets is what a seed fixture holds: the clearing house's view for the reads
-// these tests make, plus the factory Populate and the mesh both take. See
+// these tests make, plus the factory Populate and the deployment both take. See
 // payment.Networks.
 type testNets struct {
 	*payment.Network
@@ -101,15 +110,16 @@ func testNetwork(t *testing.T) testNets {
 
 // testNetworkAndClock is testNetwork for the tests that also need to ask what
 // day it is, which after the catalogue is any test resolving a price.
-func testNetworkAndClock(t *testing.T) (testNets, *Dataset) {
+func testNetworkAndClock(t *testing.T) (testNets, *calendar.Clock) {
 	t.Helper()
-	d := New()
-	stores := testenv.NewSet(t, d.Now)
-	nets := payment.NewNetworks(stores, d.Now)
-	if err := d.Populate(context.Background(), nets, testMesh(t, nets)); err != nil {
+	clock := calendar.NewClock(BaseDate)
+	d := New(clock)
+	stores := testenv.NewSet(t, clock.Now)
+	nets := payment.NewNetworks(stores, clock.Now)
+	if err := d.Populate(context.Background(), nets, newTestDeployment(nets, clock.Now)); err != nil {
 		t.Fatalf("populate: %v", err)
 	}
-	return testNets{Network: nets.ClearingHouse(), nets: nets, stores: stores}, d
+	return testNets{Network: nets.ClearingHouse(), nets: nets, stores: stores}, clock
 }
 
 func TestNetworkShape(t *testing.T) {
@@ -369,7 +379,7 @@ func TestRejectedCollectionWasReversedInThePayersBank(t *testing.T) {
 // a dataset this seed can build.
 //
 // So the half-happened state RejectAtCSMTx names is reachable here, as it always
-// was in the mesh, and the guarantee that replaces it is the one a single
+// was over the transport, and the guarantee that replaces it is the one a single
 // institution can still make: RejectAtBankTx transitions THIS bank's copy and
 // reverses THIS bank's leg together, so a bank that cannot give the money back
 // does not record the rejection either. That is the inconsistency that would
@@ -565,7 +575,7 @@ func TestBrunoOverdraftRepricing(t *testing.T) {
 // something.
 func TestSeededCatalogueShowsAllThreePricingCases(t *testing.T) {
 	ctx := context.Background()
-	net, data := testNetworkAndClock(t)
+	net, clock := testNetworkAndClock(t)
 
 	var verde *payment.Bank
 	for _, p := range listParticipants(t, ctx, net) {
@@ -601,7 +611,7 @@ func TestSeededCatalogueShowsAllThreePricingCases(t *testing.T) {
 	if got := int64(repriced.Overdraft.Rate); got != 149_000 {
 		t.Errorf("the reprice = %d, want 149000 (14.9%%)", got)
 	}
-	inForce, err := verde.Catalogue.VersionInForce(ctx, verde.ProductID, ledger.DayStart(data.Now()))
+	inForce, err := verde.Catalogue.VersionInForce(ctx, verde.ProductID, ledger.DayStart(clock.Now()))
 	if err != nil {
 		t.Fatalf("version in force: %v", err)
 	}
@@ -691,9 +701,16 @@ func TestDeterministicIDs(t *testing.T) {
 	}
 }
 
-func TestClockWentLive(t *testing.T) {
+// A mutation made after the scenario is built is dated on the DEPLOYMENT's
+// timeline, where the scenario left it, and not on the wall clock.
+//
+// That is what makes one screen readable. The sample dataset is dated months
+// before today, so a row stamped with real time beside it would put two
+// timelines a year apart on one page — and a reader would have no way to tell a
+// stale seed date from the day the deployment is actually on.
+func TestAMutationAfterTheBuildIsDatedOnTheDeploymentsTimeline(t *testing.T) {
 	ctx := context.Background()
-	net := testNetwork(t)
+	net, clock := testNetworkAndClock(t)
 	first := listParticipants(t, ctx, net)[0]
 	accts, err := first.Deposit.ListAccounts(ctx)
 	if err != nil {
@@ -704,13 +721,15 @@ func TestClockWentLive(t *testing.T) {
 	}
 	ref := payment.PartyRef{Account: accts[0].ID}
 
-	// A mutation after build must be timestamped in real time, not at baseDate.
 	m, err := net.bank(first.ID).CreateMandate(ctx, first.BIC, ref, ref, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if time.Since(m.CreatedAt) > time.Minute {
-		t.Fatalf("mandate CreatedAt = %v, expected ~now (clock did not go live)", m.CreatedAt)
+	if !m.CreatedAt.Equal(clock.Now()) {
+		t.Fatalf("mandate CreatedAt = %v, want the business date %v", m.CreatedAt, clock.Now())
+	}
+	if !m.CreatedAt.After(BaseDate) {
+		t.Fatalf("mandate CreatedAt = %v, want a day the scenario advanced to past the anchor %v", m.CreatedAt, BaseDate)
 	}
 }
 
@@ -754,18 +773,20 @@ func listPayments(t *testing.T, ctx context.Context, net testNets) []payment.Pay
 // second copy of the scenario on top of the first.
 func TestPopulateIsIdempotent(t *testing.T) {
 	ctx := context.Background()
-	d := New()
-	stores := testenv.NewSet(t, d.Now)
-	nets := payment.NewNetworks(stores, d.Now)
+	clock := calendar.NewClock(BaseDate)
+	d := New(clock)
+	stores := testenv.NewSet(t, clock.Now)
+	nets := payment.NewNetworks(stores, clock.Now)
 	net := testNets{Network: nets.ClearingHouse(), nets: nets, stores: stores}
-	msh := testMesh(t, nets)
+	dep := newTestDeployment(nets, clock.Now)
 
-	if err := d.Populate(ctx, nets, msh); err != nil {
+	if err := d.Populate(ctx, nets, dep); err != nil {
 		t.Fatalf("first Populate: %v", err)
 	}
 	participants, payments := listParticipants(t, ctx, net), listPayments(t, ctx, net)
+	built := clock.Now()
 
-	if err := d.Populate(ctx, nets, msh); err != nil {
+	if err := d.Populate(ctx, nets, dep); err != nil {
 		t.Fatalf("second Populate: %v", err)
 	}
 	if got := len(listParticipants(t, ctx, net)); got != len(participants) {
@@ -774,41 +795,40 @@ func TestPopulateIsIdempotent(t *testing.T) {
 	if got := len(listPayments(t, ctx, net)); got != len(payments) {
 		t.Fatalf("payments after reseeding = %d, want %d", got, len(payments))
 	}
-	assertClockIsLive(t, d, "after a second Populate on the same Dataset")
+	if got := clock.Now(); !got.Equal(built) {
+		t.Fatalf("the business date after a second Populate = %v, want %v — the skip moved the clock", got, built)
+	}
 
 	// The case the idempotent skip exists for: a second process opening a store
-	// that outlived the first. Its Dataset is brand new, so its clock starts
-	// frozen at baseDate and Populate builds nothing — and if the skip returned
-	// without releasing the clock, everything this process went on to write
-	// would be timestamped 2025-09-15.
-	second := New()
-	secondNets := payment.NewNetworks(stores, second.Now)
+	// that outlived the first. Its clock is the one calendar.OpenClock read back
+	// from beside the databases — a day well past the anchor and past where this
+	// scenario's own timeline ended — and the skip must leave it exactly there. A
+	// rewind here would put the business date behind books already holding
+	// entries dated later, and every accrual and ageing report after it would be
+	// computed against a day that has been lived through.
+	resumed := BaseDate.AddDate(0, 0, 400)
+	secondClock := calendar.NewClock(resumed)
+	second := New(secondClock)
+	secondNets := payment.NewNetworks(stores, secondClock.Now)
 	secondNet := testNets{Network: secondNets.ClearingHouse(), nets: secondNets, stores: stores}
-	if err := second.Populate(ctx, secondNets, msh); err != nil {
+	if err := second.Populate(ctx, secondNets, newTestDeployment(secondNets, secondClock.Now)); err != nil {
 		t.Fatalf("Populate from a second process: %v", err)
 	}
 	if got := len(listParticipants(t, ctx, secondNet)); got != len(participants) {
 		t.Fatalf("participants seen by the second process = %d, want %d", got, len(participants))
 	}
-	assertClockIsLive(t, second, "after an idempotent skip in a second process")
+	if got := secondClock.Now(); !got.Equal(resumed) {
+		t.Fatalf("the business date after an idempotent skip = %v, want %v — the skip rewound the clock", got, resumed)
+	}
 
 	// And the observable consequence, not just the clock reading: a row written
-	// after the skip must carry a live timestamp.
+	// after the skip carries the day that process resumed on.
 	acct, err := listParticipants(t, ctx, secondNet)[0].OpenCustomerAccount(ctx, "Opened after the skip", "EUR")
 	if err != nil {
 		t.Fatalf("open account after the skip: %v", err)
 	}
-	if age := time.Since(acct.CreatedAt); age > time.Minute {
-		t.Fatalf("account opened after the skip is dated %v (%v ago), expected ~now", acct.CreatedAt, age)
-	}
-}
-
-// assertClockIsLive checks that a Dataset's clock has been released to real
-// time rather than left frozen at baseDate.
-func assertClockIsLive(t *testing.T, d *Dataset, when string) {
-	t.Helper()
-	if age := time.Since(d.Now()); age > time.Minute {
-		t.Fatalf("clock %s reads %v (%v ago), expected ~now — the seed clock never went live", when, d.Now(), age)
+	if !acct.CreatedAt.Equal(resumed) {
+		t.Fatalf("account opened after the skip is dated %v, want %v", acct.CreatedAt, resumed)
 	}
 }
 
@@ -881,13 +901,14 @@ func TestMustAndCheckPanicWithSeedErr(t *testing.T) {
 // exactly — IDs, statuses, amounts and booking dates.
 func TestPopulateAfterResetRebuildsTheSameDataset(t *testing.T) {
 	ctx := context.Background()
-	d := New()
-	stores := testenv.NewSet(t, d.Now)
-	nets := payment.NewNetworks(stores, d.Now)
+	clock := calendar.NewClock(BaseDate)
+	d := New(clock)
+	stores := testenv.NewSet(t, clock.Now)
+	nets := payment.NewNetworks(stores, clock.Now)
 	net := testNets{Network: nets.ClearingHouse(), nets: nets, stores: stores}
-	msh := testMesh(t, nets)
+	dep := newTestDeployment(nets, clock.Now)
 
-	if err := d.Populate(ctx, nets, msh); err != nil {
+	if err := d.Populate(ctx, nets, dep); err != nil {
 		t.Fatalf("Populate: %v", err)
 	}
 	before := listPayments(t, ctx, net)
@@ -898,16 +919,12 @@ func TestPopulateAfterResetRebuildsTheSameDataset(t *testing.T) {
 	if got := len(listParticipants(t, ctx, net)); got != 0 {
 		t.Fatalf("participants after reset = %d, want 0", got)
 	}
-	// The mesh outlives the truncate, so the actors of the banks it just deleted
-	// are still answering to their addresses — and the reseed admits those same
-	// addresses again. Forgetting them is what api.Server.Reset does between the
-	// two for exactly this reason; without it the second Populate is refused the
-	// first bank's BIC.
-	if err := msh.ForgetBanks(ctx); err != nil {
-		t.Fatalf("ForgetBanks: %v", err)
-	}
-
-	if err := d.Populate(ctx, nets, msh); err != nil {
+	// Nothing is reconciled between the truncate and the reseed, and the reseed
+	// admits the same addresses again. That works here because an admission
+	// writes no row this fixture holds; a deployment that had given each bank a
+	// place would have to give the old ones up first, which is the deployment's
+	// own act and is proved where it lives.
+	if err := d.Populate(ctx, nets, dep); err != nil {
 		t.Fatalf("Populate after reset: %v", err)
 	}
 	after := listPayments(t, ctx, net)

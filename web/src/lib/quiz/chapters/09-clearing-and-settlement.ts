@@ -277,17 +277,21 @@ export const chapter: Chapter = {
       explore: { label: "View schemes", href: "/clearing-house/schemes" },
     },
     {
-      kind: "numeric",
+      kind: "mc",
       id: "ch9-q18",
       difficulty: "challenge",
-      concept: "net-positions",
+      concept: "business-day",
       prompt:
-        "In a clearing cycle: Bank A pays Bank B $45,000; Bank B pays Bank A $15,000; Bank B pays Bank C $10,000; Bank C pays Bank A $5,000. What is Bank B's net position in dollars? (Positive means Bank B receives net; enter a positive number if Bank B is a net receiver.)",
-      answer: 20000,
-      unit: { asset: "USD", in: "major" },
-      tolerance: 0,
+        "A clearing day runs three phases in this order: the clearing house closes and nets every open cycle, the settlement agent discharges the net positions, and the clearing house releases each receiving bank's file. What breaks if the first and third are swapped?",
+      options: [
+        "Nothing about the money — only the order the operator's console shows events in",
+        "Receiving banks would credit customers against a cut-off that might still be refused, which is settlement risk invented by an ordering",
+        "The net positions would be computed from the wrong set of payments, so the arithmetic would no longer sum to zero",
+        "The payer's bank would never learn that its own payments settled",
+      ],
       explanation:
-        "Bank B's [[net-positions|net position]] = inflows − outflows = $45,000 − ($15,000 + $10,000) = **+$20,000**. Bank B is a net receiver: its reserve account at the central bank rises by $20,000 at settlement. As a sanity check: Bank A's net is −$25,000, Bank C's is +$5,000; all three sum to zero — the defining property of net positions.",
+        "[[business-day|Settle, then release]] is the ordering the whole day is arranged around. A file released before its cycle settles hands a receiving bank instructions whose funds are not yet final — and a net payer short of reserves is refused *after* several banks have already credited customers. Reversed, the failure is not recoverable by a message: the money is in customers' accounts.\n\nWhat the correct order costs is the receiving bank's ability to say **no**. By the time it looks at a payment the money is in its own [[clearing-suspense|clearing suspense]], so an address it does not hold or a payer it cannot collect from is a [[allows-return|return]] rather than a rejection — which is exactly what those codes are in SEPA, and for exactly this reason.",
+      answer: 1,
     },
     {
       kind: "multi",
@@ -305,21 +309,19 @@ export const chapter: Chapter = {
       ],
       answers: [1, 3, 4],
       explanation:
-        "At the [[payment-lifecycle|settlement]] step: the central bank moves reserves, and that is where [[settlement-finality|finality]] is achieved — the payment can no longer be unwound. The [[creditor-leg]] delivers funds to the payee, and it is posted by the **payee's own bank**, in its own unit of work, once the clearing house has told it that this payment settled. The payer's debit (option A) is the initiation step; net-position computation (option C) is the clearing step.\n\n**Notice how many different institutions' books that list touches, and that no two of them are in the same database.** A payment is [[store-split|three rows]] — the payer's bank's, the payee's bank's and the clearing house's — and the events above are each written by whichever institution performed them, on its own copy. That is why the payer's debit and the payee's credit cannot be one transaction, and why the interval between the reserves moving and the payee being credited is a real [[unreconciled-position|unreconciled position]] rather than something a database could hide.",
+        "At the [[payment-lifecycle|settlement]] step: the central bank moves reserves, and that is where [[settlement-finality|finality]] is achieved — the payment can no longer be unwound. The [[creditor-leg]] delivers funds to the payee, and it is posted by the **payee's own bank**, in its own unit of work, when the clearing house [[business-day|releases]] the instruction to it — which happens only once the cycle is final, and is the first time that bank sees the payment at all. The payer's debit (option A) is the initiation step; net-position computation (option C) is the clearing step.\n\n**Notice how many different institutions' books that list touches, and that no two of them are in the same database.** A payment is [[store-split|three rows]] — the payer's bank's, the payee's bank's and the clearing house's — and the events above are each written by whichever institution performed them, on its own copy. That is why the payer's debit and the payee's credit cannot be one transaction, and why the interval between the reserves moving and the payee being credited is a real [[unreconciled-position|unreconciled position]] rather than something a database could hide.",
       explore: { label: "View settlements", href: "/clearing-house/settlements" },
     },
     {
-      kind: "numeric",
+      kind: "truefalse",
       id: "ch9-q20",
       difficulty: "core",
-      concept: "central-bank-reserves",
+      concept: "target-calendar",
       prompt:
-        "Bank A initiates $80,000 in outbound payments and receives $30,000 in inbound payments during a clearing cycle. After netting, how many dollars of central-bank reserves does Bank A transfer at settlement? (Enter a number of dollars.)",
-      answer: 50000,
-      unit: { asset: "USD", in: "major" },
-      tolerance: 0,
+        "A payment submitted on a Friday afternoon clears and settles over the weekend, because the settlement agent's ledger is a database and databases do not observe holidays.",
+      answer: false,
       explanation:
-        "Bank A's net outflow = $80,000 − $30,000 = **$50,000**. Under [[settlement-model-net|net settlement]], only this net amount moves as [[central-bank-reserves]] — not the $110,000 gross total. This is why netting dramatically reduces the liquidity each participant must hold to cover a full cycle.",
+        "Clearing and settlement run on the settlement agent's calendar — in the euro area [[target-calendar|TARGET]], which is shut at weekends and on six named days. A Friday-afternoon payment waits in its bank's [[payment-hub|hub]] and clears on Monday.\n\nThe weekend still **happens**, though, and that is the half worth remembering: the date advances and every bank still runs its end of day, because [[interest-accrual|interest accrues]] over a weekend — which is the entire reason [[day-count|day-count conventions]] exist. A system that skipped from Friday to Monday would have no Saturday to accrue on.\n\nNote whose calendar it is. German banks are shut on 3 October and TARGET is not, so a payment submitted that morning clears and settles that afternoon: a national holiday closes branches, not the settlement agent.",
     },
     {
       kind: "mc",

@@ -5,8 +5,8 @@ import (
 	"log/slog"
 	"testing"
 
+	"github.com/raphi011/cbs/calendar"
 	"github.com/raphi011/cbs/ledger"
-	"github.com/raphi011/cbs/mesh"
 	"github.com/raphi011/cbs/payment"
 	"github.com/raphi011/cbs/seed"
 	"github.com/raphi011/cbs/store/testenv"
@@ -17,23 +17,22 @@ import (
 // between a debit and the answer to it.
 //
 // It matters because a half-processed payment reads as a bug in the payment
-// rather than as a moment in its life. In the mesh a credit transfer really
-// does pass through that moment — the payer's bank debits, sends its pacs.008,
-// and waits — and Initiated is the status that names it: money gone from the
-// payer, no institution having yet said accept or reject.
+// rather than as a moment in its life. A credit transfer really does pass
+// through that moment — the payer's bank debits, uploads its pacs.008, and
+// waits — and Initiated is the status that names it: money gone from the payer,
+// no institution having yet said accept or reject.
 //
-// The property holds by CONSTRUCTION, and this test drains nothing of its own.
+// The property holds by CONSTRUCTION, and this test carries nothing of its own.
 // Every PAYMENT in the scenario is composed inside ONE unit of work
 // (seed.builder.initiate, and seed.builder.reject for the rejection's two), with
-// the seed playing each institution in turn rather than sending anything: a unit
-// of work has no observable middle, so there is no instant at which a seeded
-// payment is half-processed — not merely no instant after some drain.
+// the seed playing each institution in turn rather than uploading anything: a
+// unit of work has no observable middle, so there is no instant at which a
+// seeded payment is half-processed.
 //
-// The seed IS a mesh participant for one thing, and only one: admitting its
-// banks, which is a conversation and cannot be composed. It drains each
-// admission before the next bank applies (seed.builder.admit), so nothing from
-// that is in flight either by the time Populate returns — and main binds the
-// listeners only afterwards, so no request can arrive during it.
+// Nor is anything left waiting in a queue. The seed uploads no file at all — its
+// three deployment acts are an admission, a directory pull and a read of the
+// settlement agent's address, none of which is a file — so Populate returns a
+// scenario with nothing in flight and nothing pending.
 //
 // Two things are checked, because a status is only half the story. Money is the
 // other half: a rejection that transitioned the payment but never reversed the
@@ -45,32 +44,26 @@ func TestTheSeedLeavesNoPaymentHalfProcessed(t *testing.T) {
 	ctx := context.Background()
 
 	// The store, the network and the seed, exactly as main builds them.
-	data := seed.New()
-	stores := testenv.NewSet(t, data.Now)
-	nets := payment.NewNetworks(stores, data.Now)
+	clock := calendar.NewClock(seed.BaseDate)
+	data := seed.New(clock)
+	stores := testenv.NewSet(t, clock.Now)
+	nets := payment.NewNetworks(stores, clock.Now)
 	// The clearing house's view, for the network-scoped reads this test makes.
 	net := nets.ClearingHouse()
-	msh, err := mesh.New(nets, meshConfig, slog.New(slog.DiscardHandler))
+	cfg := testConfig
+	// Two URLs that reach nothing, and nothing dials them. The seed composes both
+	// halves of every conversation it builds, so this deployment exists only to
+	// give Populate the three acts it asks for — an admission, a directory pull,
+	// and the settlement agent's address. A configuration with no URLs at all is
+	// refused, which is the point: an institution with nowhere to dial can neither
+	// send nor collect.
+	cfg.CentralBankURL = "http://127.0.0.1:1/ebics"
+	cfg.ClearingHouseURL = "http://127.0.0.1:1/ebics"
+	dep, err := NewDeployment(ctx, nets, clock, cfg, data.Populate, slog.New(slog.DiscardHandler))
 	if err != nil {
-		t.Fatalf("building the mesh: %v", err)
+		t.Fatalf("building the deployment: %v", err)
 	}
-	if err := msh.Start(ctx); err != nil {
-		t.Fatalf("starting the mesh: %v", err)
-	}
-	// Drain then Stop, as main does at shutdown, and neither error is discarded:
-	// the seed's payments are the only conversations this test has, and one that
-	// failed would leave the scenario it asserts on half built.
-	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), meshShutdown)
-		defer cancel()
-		if err := msh.Drain(ctx); err != nil {
-			t.Errorf("draining at shutdown: %v", err)
-		}
-		if err := msh.Stop(ctx); err != nil {
-			t.Errorf("stopping: %v", err)
-		}
-	})
-	if err := data.Populate(ctx, nets, msh); err != nil {
+	if err := data.Populate(ctx, nets, dep); err != nil {
 		t.Fatalf("populating the sample dataset: %v", err)
 	}
 

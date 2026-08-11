@@ -82,12 +82,12 @@ type Network struct {
 //
 // It catches an act of the settlement agent's reached through any other
 // institution's handle — which, since these methods are exported, is every
-// caller outside the mesh. Inside the mesh the compiler already catches it,
+// caller outside cmd/server. Inside cmd/server the compiler already catches it,
 // because settlementOps carries the five and bankOps and csmOps carry none.
 //
 // It does NOT catch the central bank posting in the wrong PLACE within its own
 // book, and it never could: a BookID is an ordinary argument and one is as valid
-// as another. That is the recorder's job in mesh/books_test.go.
+// as another. That is the recorder's job in cmd/server/books_test.go.
 func (s *Network) centralBankBook() (*ledger.Book, error) {
 	if s.centralBank == nil {
 		return nil, fmt.Errorf("%w: this is %s, and the central bank's book of accounts is the settlement agent's alone",
@@ -210,7 +210,7 @@ func cbAssetsAccountName(asset ledger.AssetCode) string {
 //
 // id says WHICH institution this is, and every act below reads it rather than
 // taking a participant argument. Most callers do not name one here: Networks is
-// the factory, and it is what api, the mesh and cmd/server hold.
+// the factory, and it is what api and cmd/server hold.
 //
 // # The zero Identity panics
 //
@@ -259,9 +259,9 @@ func (s *Network) Identity() Identity { return s.id }
 //
 // It is exported because a layer built OVER a network has to timestamp too, and
 // a second clock beside this one would be a second answer to the same question:
-// a mesh with its own clock could emit a pacs.008 dated after the payment it
-// carries. There is one clock in this system, and this is how anything above
-// the payment layer reads it.
+// an institution with its own clock could emit a pacs.008 dated after the
+// payment it carries. There is one clock in this system — the deployment's — and
+// this is how anything above the payment layer reads it.
 func (s *Network) Now() time.Time { return s.clock() }
 
 // now is Now, for this package's own use.
@@ -725,8 +725,8 @@ func joiningAssets(assets []ledger.AssetCode) []ledger.AssetCode {
 // euro-only admission draws the bank's own id, one per act that decides from a
 // read, and one per audit event, of which an admission appends four. The gaps
 // between consecutive banks are therefore wide and widen whenever an act is
-// added, which is why api's mesh tests resolve ids from the seed's IBANs instead
-// of naming them.
+// added, which is why the suites that drive a seeded deployment resolve ids from
+// the seed's IBANs instead of naming them.
 func (s *Network) admissionSequenceTx(ctx context.Context, tx Tx) error {
 	_, err := tx.NextID(ctx, s.book(), "adm")
 	return err
@@ -831,7 +831,7 @@ func (s *Network) FoundBankTx(ctx context.Context, tx Tx, name string, bic iso20
 		return nil, err
 	}
 	// Validated at founding rather than at first use. A bank with a malformed
-	// BIC is one the mesh cannot route to and one the other two institutions
+	// BIC is one no file can be addressed to and one the other two institutions
 	// cannot key their rows by — the BIC is the only identifier that crosses
 	// between them — and the moment to refuse it is when the bank is built, not
 	// when the first payment addressed to it fails somewhere else entirely.
@@ -1650,7 +1650,7 @@ func (s *Network) DepositTx(ctx context.Context, tx Tx, participant ParticipantI
 // book, from the camt.050 this returns — see ReceiveLodgementTx. Two books, two
 // units of work, one message each way.
 //
-// # It posts and instructs together, for SubmitAndInstruct's reason
+// # It posts and instructs together, and one act is not two
 //
 // One act and not two. Building the instruction can fail — a bank that cannot
 // name its own settlement account — and a refusal reported after the leg was
@@ -1829,7 +1829,7 @@ func (s *Network) ReceiveLodgement(ctx context.Context, in LodgementInstruction)
 // disagreement about the same field.
 //
 // Each becomes a REFUSING camt.025 rather than an error to the caller, and the
-// prose it travels as is the receipt's Desc. See mesh.centralBank.receiveLodgement.
+// prose it travels as is the receipt's Desc. See cmd/server's centralBank.receiveLodgement.
 //
 // # It is idempotent on the request's reference
 //
@@ -2110,7 +2110,7 @@ func (s *Network) OpenCycleTx(ctx context.Context, tx Tx, scheme SchemeID) (Clea
 // The settlement agent settles a batch and answers about the batch — one pacs.002
 // naming the cycle. Turning that into per-payment news is this institution's job
 // and nobody else's, because nothing on settlementOps can enumerate a cycle's
-// payments (see mesh's tellSettled, which is the caller). So the fan-out and the
+// payments (see ClearingHouse.tellSettled, which is the caller). So the fan-out and the
 // status are one unit of work: a cycle whose copies could not all be marked is
 // not a cycle any bank should be told about.
 //
@@ -2267,7 +2267,8 @@ func (s *Network) CloseCycleTx(ctx context.Context, tx Tx, id CycleID) (Clearing
 // "<cycle>:settle", so even a caller that reached it would move nothing twice.
 //
 // A cycle not closed YET is the clearing house's refusal, since it owns the
-// cut-off and will not build an instruction for an open one (mesh/csm.settle).
+// cut-off and will not build an instruction for an open one
+// (ClearingHouse.CloseCycle).
 // What reaches here from an open cycle is an instruction with no legs, and that
 // is ErrInvalidSettlement. See ErrCycleNotClosed.
 //
@@ -2341,7 +2342,7 @@ func (s *Network) SettleCycleTx(ctx context.Context, tx Tx, id CycleID, instruct
 	// settlement account in this book is a LIABILITY — the central bank owes the
 	// member its reserve — and Book.checkSufficientBalance only guards Asset and
 	// Expense accounts. Without it a cycle whose net payer was short would settle,
-	// leaving the shortfall to surface at the bank as a dead letter.
+	// leaving the shortfall to surface at the bank as a file it cannot book.
 	//
 	// Refusing to take a member's reserve below zero is the central bank
 	// declining to extend uncollateralised intraday credit, which is the decision
@@ -2631,7 +2632,7 @@ func (s *Network) PostSettlementAdvice(ctx context.Context, m AdvisedMovement) (
 // a ledger.Liability, so the receiver's Credit RAISES it and the payer's Debit
 // LOWERS it. The ordering argument for sending the camt.053 BEFORE the ACSC
 // rests on the receiver's suspense going UP first, so that its creditor legs
-// have something to draw on — see mesh.centralBank.advise.
+// have something to draw on — see cmd/server's centralBank.advise.
 //
 // Suspense returns to zero only if the central bank's reserve movement and the
 // clearing house's payment list agree, which is the reconciliation this whole
@@ -2858,7 +2859,7 @@ func (s *Network) SettleAtBankTx(ctx context.Context, tx Tx, id PaymentID) (Paym
 			// because a connection dropped would be wrong.
 			return Payment{}, err
 		}
-		target = accts.Unclaimed.For(string(p.Creditor.Account))
+		target = accts.Unclaimed.For(unclaimedSubsidiary(p))
 		description = "Unclaimed: " + p.Description
 	}
 
@@ -2938,9 +2939,9 @@ type InitiatePaymentRequest struct {
 // SubmitPayment is SubmitPaymentTx in its own unit of work.
 //
 // It runs the bank's half and nothing else, which is why it is NOT what a bank
-// actor calls: a submission that commits and then cannot be turned into a
-// message leaves the payer debited against an instruction nobody will ever
-// answer. SubmitAndInstruct is the pair that cannot do that.
+// actor calls: a submission that commits and then turns out to be unsendable
+// leaves the payer debited against an instruction that will never travel.
+// TakeInstruction is the pair that cannot do that.
 func (s *Network) SubmitPayment(ctx context.Context, req InitiatePaymentRequest) (Payment, error) {
 	var out Payment
 	err := s.store.Update(ctx, func(ctx context.Context, tx Tx) error {
@@ -2951,68 +2952,37 @@ func (s *Network) SubmitPayment(ctx context.Context, req InitiatePaymentRequest)
 	return out, err
 }
 
-// SubmitAndInstruct is the submitting bank's half AND the interbank message it
-// travels on, in ONE unit of work.
+// TakeInstruction is the submitting bank's half AND the proof that what it took
+// can be sent, in ONE unit of work. It is what a bank actor calls.
 //
 // # Why they cannot be two
 //
-// Building the message can FAIL — a payee whose address the instruction never
-// quoted is ErrUnaddressableAccount — and a committed debtor leg behind a
-// refused request debits a payer against an instruction nobody will answer.
-// Everything the instruction needs is therefore resolved while the transaction
-// is still open, so a counterparty this bank cannot address rolls the debit back
-// with it. Nothing is DUPLICATED: there is one address check and it is the
-// message builder's.
+// Nothing goes on a connection here: the instruction joins that bank's hub and
+// travels at the next cut-off, hours later, in a file with everything else
+// waiting. So the moment the file is built is far too late to discover that this
+// payment cannot go in one — the payer has been debited, the API answered 202,
+// and the money is in a clearing suspense against an instruction no file will
+// carry. Everything the message needs is therefore proved while the transaction
+// is still open, and a payee this bank cannot address rolls the debit back with
+// it. See instructableTx, which is the proof, and note that nothing is
+// DUPLICATED: it is the message builder's own check, run early.
 //
-// # The send is still outside
-//
-// This returns the envelope rather than sending it, because sending inside a
-// unit of work is the other half of the same mistake: a message the clearing
-// house could act on against a submission the store then rolled back. The
-// caller sends after this returns. TestARolledBackSubmitSendsNothing is the pin
-// on that half, and mesh.bank.submit is the caller.
-func (s *Network) SubmitAndInstruct(ctx context.Context, req InitiatePaymentRequest, mc MessageContext) (Payment, iso20022.Envelope, error) {
+// It answers no envelope, which is the difference from a network that sent one
+// message per payment. A file belongs to a cut-off and has a group header of its
+// own; what a submission produces is an instruction waiting for one.
+func (s *Network) TakeInstruction(ctx context.Context, req InitiatePaymentRequest) (Payment, error) {
 	var p Payment
-	var env iso20022.Envelope
 	err := s.store.Update(ctx, func(ctx context.Context, tx Tx) error {
 		var err error
 		if p, err = s.SubmitPaymentTx(ctx, tx, req); err != nil {
 			return err
 		}
-		env, err = s.InstructionTx(ctx, tx, p, mc)
-		return err
+		return s.instructableTx(ctx, tx, p)
 	})
 	if err != nil {
-		return Payment{}, iso20022.Envelope{}, err
+		return Payment{}, err
 	}
-	return p, env, nil
-}
-
-// InstructionTx builds the interbank message a submission travels on: a pacs.008
-// for a push, a pacs.003 for a pull.
-//
-// They are two message definitions and not one with a flag because they say
-// different things. A pacs.008 accompanies money that has already left the
-// payer; a pacs.003 asks for money that has not moved, which is why it must
-// carry the MANDATE — the debtor's standing authority for this creditor to
-// collect, and the only element that distinguishes a collection from a demand.
-//
-// The mandate is loaded here rather than carried on the payment because a
-// payment holds its MandateID and nothing else of it; the message needs the
-// document's own terms.
-func (s *Network) InstructionTx(ctx context.Context, tx Tx, p Payment, mc MessageContext) (iso20022.Envelope, error) {
-	scheme, ok := s.scheme(p.Scheme)
-	if !ok {
-		return iso20022.Envelope{}, fmt.Errorf("%w: %s", ErrSchemeNotFound, p.Scheme)
-	}
-	if scheme.Direction() != Pull {
-		return s.CreditTransferMessage(p, mc)
-	}
-	mandate, err := tx.GetMandate(ctx, p.MandateID)
-	if err != nil {
-		return iso20022.Envelope{}, err
-	}
-	return s.DirectDebitMessage(p, mandate, mc)
+	return p, nil
 }
 
 // newPayment is the row an institution writes when a payment first exists in its
@@ -3209,9 +3179,9 @@ func (s *Network) SubmitPaymentTx(ctx context.Context, tx Tx, req InitiatePaymen
 	// their remedies.
 	//
 	// It happens BEFORE the debtor leg is posted, for the reason the name check
-	// does: a payment refused after the payer has been debited is the money bug
-	// SubmitAndInstruct exists to prevent, and an address that will not route
-	// cannot be turned into a message at all.
+	// does: a payment refused after the payer has been debited is a payer short of
+	// money against an instruction nobody will ever answer, and an address that
+	// will not route cannot be turned into a message at all.
 	agent, err := s.routeTx(ctx, tx, counterpartyRef.Identifier, counterparty.Agent)
 	if err != nil {
 		return Payment{}, err
@@ -3226,8 +3196,8 @@ func (s *Network) SubmitPaymentTx(ctx context.Context, tx Tx, req InitiatePaymen
 	// AcceptInboundTx, where the bank executing them is the RECEIVING bank for
 	// that direction, not the submitting one. Filling the details there would
 	// overwrite the counterparty's asserted name with the receiving bank's own
-	// record, after that name has already gone out on the wire in the message
-	// SubmitAndInstruct built from it. Only SubmitPaymentTx knows unambiguously
+	// record, after that name has already gone out on the wire in the file this
+	// bank's next cut-off builds from it. Only SubmitPaymentTx knows unambiguously
 	// which side is its own.
 	if push {
 		account, part, err := s.debtorSideTx(ctx, tx, scheme, &p, sc)
@@ -3325,7 +3295,7 @@ func (s *Network) AcceptInbound(ctx context.Context, id PaymentID, req InitiateP
 // A row that is here and is NOT Initiated is a redelivery that arrived after the
 // payment moved on: the clearing house has taken it into a cycle, or it was
 // rejected and must not be revived by an answer in flight when it died. That is
-// ErrInvalidStateTransition, which mesh's accept turns into a dead letter
+// ErrInvalidStateTransition, which the receiving bank puts in the day's report
 // because there is nobody to answer.
 //
 // It appends payment.initiated, because this is the moment the payment comes
@@ -3355,8 +3325,8 @@ func (s *Network) AcceptInboundTx(ctx context.Context, tx Tx, id PaymentID, req 
 	// never runs. On a pull that silently skips the debtor leg and the collection
 	// then settles, pays the payee and can be returned, out of money nobody took.
 	//
-	// Mesh.Submit refuses an on-us payment, so nothing in the running system
-	// reaches this; the domain has to be right all the same.
+	// A submitting bank's door refuses an on-us payment, so nothing in the
+	// running system reaches this; the domain has to be right all the same.
 	//
 	// What answers it is the debtor leg, which only this half posts. On a push the
 	// receiving half posts nothing at all, so a second delivery to the submitting
@@ -3384,7 +3354,22 @@ func (s *Network) AcceptInboundTx(ctx context.Context, tx Tx, id PaymentID, req 
 		// unlike SubmitPaymentTx, this half must not use them to overwrite
 		// CreditorDetails. See the note above on which side of this row is whose
 		// fact.
-		if _, _, err := s.creditorSideTx(ctx, tx, scheme, &p, sc); err != nil {
+		//
+		// A payee whose account is CLOSED is not a refusal on this side, and it is
+		// the one error from that half this arm swallows. The instruction reaches
+		// a receiving bank only after the cycle carrying it is final, so the money
+		// is here and refusing would strand it; what a bank does with a credit for
+		// an account that cannot take one is HOLD it for the payee, which is
+		// SettleAtBankTx's diversion to unclaimed balances and the whole reason
+		// that account exists. The address is already resolved and written onto p
+		// by the time creditorSideTx makes the check, so nothing this arm needs is
+		// lost with the error.
+		//
+		// It stays a refusal at the SUBMITTING bank, which is creditorSideTx's
+		// other caller: a collection into a closed account is one that bank can
+		// still decline, before anything has moved.
+		if _, _, err := s.creditorSideTx(ctx, tx, scheme, &p, sc); err != nil &&
+			!errors.Is(err, deposit.ErrAccountClosed) {
 			return err
 		}
 	} else {
@@ -3403,48 +3388,210 @@ func (s *Network) AcceptInboundTx(ctx context.Context, tx Tx, id PaymentID, req 
 	return s.appendAuditTx(ctx, tx, ledger.EventPaymentInitiated, string(p.ID), p)
 }
 
+// ReceiveUnapplied is ReceiveUnappliedTx in its own unit of work, which is what
+// a bank working through a released output file needs: one transaction fails on
+// its own, and the rest of the file is unaffected.
+func (s *Network) ReceiveUnapplied(ctx context.Context, id PaymentID, req InitiatePaymentRequest) (Payment, error) {
+	var out Payment
+	err := s.store.Update(ctx, func(ctx context.Context, tx Tx) error {
+		var err error
+		out, err = s.ReceiveUnappliedTx(ctx, tx, id, req)
+		return err
+	})
+	return out, err
+}
+
+// ReceiveUnappliedTx is the receiving bank writing down a payment that has
+// ALREADY SETTLED and that it cannot give to the customer the message names.
+//
+// It is the half AcceptInboundTx runs when the answer is yes. There is no
+// answer of no left to give: the instruction reached this bank only because the
+// cycle carrying it was final, so the reserves have moved and the money is here.
+// What is left is where the bank PUTS it until it can send it back, and a
+// pacs.004 is how it does that (see cmd/server's Bank.receive).
+//
+// # The money is parked, and which account it lands in is the direction
+//
+// The two destinations are the mirror image of each other and they already
+// exist, because a bank that cannot pass money on is the case both were opened
+// for:
+//
+//   - On a PUSH the money arrived. It goes to UNCLAIMED BALANCES, the bank's
+//     liability to whoever is behind the line it could not resolve, exactly as a
+//     credit for a closed account does (SettleAtBankTx). The clearing suspense
+//     returns to zero, which is what says the cut-off is fully applied.
+//   - On a PULL the money left. This bank was net-debited for a collection it
+//     could not fund from the payer, so it funded it itself: RETURNS
+//     RECEIVABLE, the bank's claim, discharged when the return brings the
+//     reserves back (refundTx).
+//
+// # What is deliberately NOT written
+//
+// DebtorLegTx stays empty on the pull, and that is the record rather than an
+// omission: the field says the PAYER WAS DEBITED, and the payer was not. It is
+// what refundTx reads to know that the return has nothing to pay back to them.
+// CreditorLegTx is written on the push, because the creditor leg did post — into
+// a position standing for the payee rather than the payee's own, which is
+// CreditorLegAccount's whole job and is how the clawback finds the money again.
+//
+// # A redelivery is answered with the row
+//
+// The row is the witness, for AcceptInboundTx's reason and with one difference:
+// there is no state left for a second delivery to be too late for, so it comes
+// back as the payment rather than as ErrInvalidStateTransition. A file released
+// twice would otherwise park the money twice.
+func (s *Network) ReceiveUnappliedTx(ctx context.Context, tx Tx, id PaymentID, req InitiatePaymentRequest) (Payment, error) {
+	if _, err := s.self(); err != nil {
+		return Payment{}, err
+	}
+	scheme, ok := s.scheme(req.Scheme)
+	if !ok {
+		return Payment{}, ErrSchemeNotFound
+	}
+	if err := validateInstruction(id, req); err != nil {
+		return Payment{}, err
+	}
+	switch existing, err := tx.GetPayment(ctx, id); {
+	case err == nil:
+		return existing, nil
+	case !errors.Is(err, ErrPaymentNotFound):
+		return Payment{}, err
+	}
+	bank, err := s.selfBankTx(ctx, tx)
+	if err != nil {
+		return Payment{}, err
+	}
+	accts, err := bank.AccountsFor(scheme.Asset())
+	if err != nil {
+		return Payment{}, err
+	}
+
+	p := newPayment(id, req, scheme, s.now())
+	if err := s.appendAuditTx(ctx, tx, ledger.EventPaymentInitiated, string(p.ID), p); err != nil {
+		return Payment{}, err
+	}
+
+	park := ledger.PostTransactionRequest{
+		Description: "Unapplied: " + p.Description,
+		ValueDate:   p.ValueDate,
+		Metadata:    paymentMetadata(&p),
+	}
+	if scheme.Direction() == Push {
+		held := accts.Unclaimed.For(unclaimedSubsidiary(p))
+		// The same key SettleAtBankTx's credit carries, because this IS that leg:
+		// one payment credits one destination in this bank's book once, and which
+		// destination it was does not make it a different posting.
+		park.IdempotencyKey = string(p.ID) + ":credit"
+		park.Entries = []ledger.Entry{
+			{AccountID: accts.Suspense, Amount: p.Amount, Direction: ledger.Debit},
+			{AccountID: held.Account, Subsidiary: held.Subsidiary, Amount: p.Amount, Direction: ledger.Credit},
+		}
+	} else {
+		park.IdempotencyKey = string(p.ID) + ":uncollected"
+		park.Entries = []ledger.Entry{
+			{AccountID: accts.ReturnsReceivable, Amount: p.Amount, Direction: ledger.Debit},
+			{AccountID: accts.Suspense, Amount: p.Amount, Direction: ledger.Credit},
+		}
+	}
+	posted, err := bank.Ledger.PostTransactionTx(ctx, tx, park)
+	if err != nil {
+		return Payment{}, err
+	}
+	if scheme.Direction() == Push {
+		p.CreditorLegTx = posted.ID
+		p.CreditorLegAccount = accts.Unclaimed
+	}
+
+	if err := s.transition(&p, Settled); err != nil {
+		return Payment{}, err
+	}
+	if err := tx.PutPayment(ctx, p); err != nil {
+		return Payment{}, err
+	}
+	if err := s.appendAuditTx(ctx, tx, ledger.EventPaymentSettled, string(p.ID), p); err != nil {
+		return Payment{}, err
+	}
+	return p, nil
+}
+
+// unclaimedSubsidiary is the holder an unclaimed credit is booked under: the
+// payee's own account where this bank resolved one, and the ADDRESS the message
+// quoted where it could not.
+//
+// One claim under two spellings — what does this bank owe whoever is behind this
+// line — and the fallback is what makes the pool answerable for a credit that
+// resolved to nothing at all. Under an empty subsidiary every such credit would
+// pool into one nameless position and a release could not tell two of them
+// apart.
+//
+// SettleAtBankTx and ReceiveUnappliedTx write it and clawbackTx re-derives it,
+// so it is read from here by all three: a payment whose clawback looked in a
+// different position from the one its credit landed in would debit a stranger.
+func unclaimedSubsidiary(p Payment) string {
+	if p.Creditor.Account != "" {
+		return string(p.Creditor.Account)
+	}
+	return p.Creditor.Identifier.Value
+}
+
 // RecordRelayedCreditTransfer is the clearing house writing its own copy of a
 // pacs.008 it is carrying, and RecordRelayedDirectDebit is the same for a
-// pacs.003. Each is RecordRelayedTx over the message, in its own unit of work.
+// pacs.003. Each is RecordRelayed over the file, and answers with one payment
+// per transaction in it.
 //
-// They take the DOCUMENT rather than a request because the clearing house has
+// They take the DOCUMENT rather than requests because the clearing house has
 // nothing else: it holds no register, so there is no resolution for a caller to
 // have made on its behalf and no reason to split the read from the write. The
 // two banks' equivalents do split — see CreditTransferRequest — because the
 // resolution they make is the first of the two questions a receiving bank asks
 // and its failure is answered differently from the second's.
-func (s *Network) RecordRelayedCreditTransfer(ctx context.Context, doc *iso20022.Pacs008) (Payment, error) {
-	req, id, err := s.creditTransferIn(doc)
+func (s *Network) RecordRelayedCreditTransfer(ctx context.Context, doc *iso20022.Pacs008) ([]Payment, error) {
+	txs, err := s.creditTransferIn(doc)
 	if err != nil {
-		return Payment{}, err
+		return nil, err
 	}
-	return s.RecordRelayed(ctx, id, req)
+	return s.RecordRelayed(ctx, txs)
 }
 
 // RecordRelayedDirectDebit is RecordRelayedCreditTransfer's pull mirror.
-func (s *Network) RecordRelayedDirectDebit(ctx context.Context, doc *iso20022.Pacs003) (Payment, error) {
-	req, id, err := s.directDebitIn(doc)
+func (s *Network) RecordRelayedDirectDebit(ctx context.Context, doc *iso20022.Pacs003) ([]Payment, error) {
+	txs, err := s.directDebitIn(doc)
 	if err != nil {
-		return Payment{}, err
+		return nil, err
 	}
-	return s.RecordRelayed(ctx, id, req)
+	return s.RecordRelayed(ctx, txs)
 }
 
-// RecordRelayed is RecordRelayedTx in its own unit of work, taking the
-// instruction already read rather than the message.
+// RecordRelayed is RecordRelayedTx over a file, in ONE unit of work.
 //
-// The two above are what the MESH calls, because the mesh has a message. This is
-// for the caller that has an instruction and no message at all: the seed, which
-// plays every institution in one process before any actor exists and therefore
-// has nothing to send one to. Same act, same row, one fewer translation.
-func (s *Network) RecordRelayed(ctx context.Context, id PaymentID, req InitiatePaymentRequest) (Payment, error) {
-	var out Payment
+// One unit of work for the whole file, because a file the clearing house has
+// half-recorded is one it cannot answer for: it would be carrying transactions
+// it has no row for, and its own duplicate check — the row itself — would let
+// the missing ones through on a replay. The file is accepted entire or it leaves
+// no trace, which is the same rule creditTransferIn applies one step earlier to
+// reading it.
+//
+// The two above are what an institution with a MESSAGE calls. This is for the
+// caller that has instructions and no message at all: the seed, which plays
+// every institution in one process and has nobody to send one to. Same act,
+// same rows, one fewer translation.
+func (s *Network) RecordRelayed(ctx context.Context, txs []InboundTransaction) ([]Payment, error) {
+	out := make([]Payment, 0, len(txs))
 	err := s.store.Update(ctx, func(ctx context.Context, tx Tx) error {
-		var err error
-		out, err = s.RecordRelayedTx(ctx, tx, id, req)
-		return err
+		out = out[:0]
+		for _, in := range txs {
+			p, err := s.RecordRelayedTx(ctx, tx, in.ID, in.Request)
+			if err != nil {
+				return err
+			}
+			out = append(out, p)
+		}
+		return nil
 	})
-	return out, err
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 // RecordRelayedTx is the CLEARING HOUSE's copy of a payment: the row it has to
@@ -3476,7 +3623,7 @@ func (s *Network) RecordRelayed(ctx context.Context, id PaymentID, req InitiateP
 // instruction finds its own copy and returns it unchanged. A copy that is no
 // longer Initiated is a redelivery that arrived after the clearing house had
 // already decided, and it comes back ErrInvalidStateTransition — the same
-// sentinel, for the same reason, and the mesh turns it into a dead letter
+// sentinel, for the same reason, and the clearing house reports it in the day
 // because there is nobody left to answer.
 //
 // It appends payment.initiated to this institution's own log. See
@@ -3596,9 +3743,9 @@ func (s *Network) AcceptAtCSM(ctx context.Context, id PaymentID) (Payment, error
 // TM01 rather than an error returned to a customer.
 //
 // It writes network rows (the payment, the cycle) and appends the acceptance
-// event, which is what makes the act visible to the mesh's book recorder at
+// event, which is what makes the act visible to the book recorder at
 // all: network-scoped writes reach it only through the id allocation and the
-// audit event. See the note in mesh/books_test.go.
+// audit event. See the note in cmd/server/books_test.go.
 //
 // "On receiving the counterparty's ACCP" is a statement about WHEN the clearing
 // house runs this, not a precondition it checks. A payment record does not
@@ -3651,11 +3798,12 @@ func (s *Network) AcceptAtCSMTx(ctx context.Context, tx Tx, id PaymentID) (Payme
 // only here is it one. Every other error is passed through as it arrived: a
 // dropped connection is not a statement about the instruction.
 //
-// A payment refused here has already had its debtor leg posted, and getting the
-// customer's money back is csm.clear's job rather than this one's: it rejects
-// the payment and the pacs.002 makes the payer's bank reverse. That works in one
-// of the two directions and not the other, which is what Mesh.Submit's door
-// guard is for. ErrBankNotAdmitted sets both out.
+// A payment refused here may already have had its debtor leg posted — on a push
+// it has, at submission — and getting the customer's money back is not this
+// half's job: the clearing house rejects the payment and the pacs.002 makes the
+// submitting bank reverse. That works in one of the two directions and not the
+// other, which is what the submitting bank's own door guard is for.
+// ErrBankNotAdmitted sets both out.
 func (s *Network) bothBanksAreMembersTx(ctx context.Context, tx Tx, p Payment) error {
 	scheme, ok := s.Scheme(p.Scheme)
 	if !ok {
@@ -3849,14 +3997,14 @@ func (s *Network) RejectAtCSM(ctx context.Context, id PaymentID, code iso20022.S
 // # This half can happen without the other
 //
 // Between the two halves the payment is Rejected and the customer's money is
-// still in suspense. The mesh does not hide it: a pacs.002 whose reversal fails
-// at the debtor's bank has nobody to answer, so it becomes a dead letter and
-// mesh.Drain returns it —
-// TestARejectionWhoseRefundFailsStandsAndIsDeadLettered forces exactly that.
+// still in suspense. Nothing hides it: a pacs.002 whose reversal fails at the
+// debtor's bank has nobody to answer, so it becomes a problem in the day's
+// report — TestARejectionWhoseRefundFailsStandsAndIsReported forces exactly
+// that.
 //
 // One caller still composes both halves in ONE transaction, so the gap is not
-// open there: the seed, which builds a fixed scenario before any actor is
-// running and has no mesh to send anything through.
+// open there: the seed, which builds a fixed scenario and uploads no files at
+// all.
 //
 // The reason text is validated HERE and not in the other half because this is
 // the half that stores it: RejectReason is persisted on the payment and copied
@@ -3931,13 +4079,13 @@ func (s *Network) RejectAtBank(ctx context.Context, id PaymentID, code iso20022.
 //
 // What it can NOT check is whether the clearing house really made the decision
 // the message reports: the status it reads is its own copy's. See
-// Network.transition, and mesh's csm.relayed for the clearing house's half — it
+// Network.transition, and RejectAtCSMTx for the clearing house's half — it
 // must not send an RJCT about a payment it has not rejected.
 //
 // The refusal names the status rather than returning the bare sentinel, because
-// a dead letter that says which state refused the reversal is the difference
-// between a redelivery and a message that arrived after finality. It wraps
-// ErrInvalidStateTransition, which the mesh dead-letters.
+// a report that says which state refused the reversal is the difference
+// between a redelivery and a file that arrived after finality. It wraps
+// ErrInvalidStateTransition, which reaches the day's report rather than the wire.
 //
 // The code and the free text are the CLEARING HOUSE's, quoted off the pacs.002
 // and stored unchanged. This bank did not decide and does not paraphrase.
@@ -4003,9 +4151,9 @@ func (s *Network) ReverseDebtorLeg(ctx context.Context, p Payment, reason string
 // the payment and does not look at its status, so nothing here would stop it
 // reversing the live debit of a payment that is on its way to settlement. The
 // caller establishes that the payment is rejected: the seed's reject by running
-// the CSM's half first in the same unit of work, and in the mesh the debtor
-// bank's handler, which runs this on a pacs.002 and only for an RJCT — which is
-// the path api takes now.
+// the CSM's half first in the same unit of work, and in a running deployment the
+// debtor bank's handler, which runs this on a collected pacs.002 and only for an
+// RJCT.
 //
 // Running it twice is refused rather than absorbed: the ledger flips the
 // original to Reversed under a conditional store write, so a second reversal of
@@ -4084,13 +4232,13 @@ func (s *Network) SettleReturn(ctx context.Context, in ReturnInstruction) ([]Set
 //
 // # Which is why the payment id is required, and required HERE
 //
-// The key is the only record this actor keeps of anything, so an instruction
-// with no payment id would move reserves between two real banks under
+// The key is the only record this institution keeps of anything, so an
+// instruction with no payment id would move reserves between two real banks under
 // ":return-settle", and every later nameless return would come back
 // ErrReturnAlreadySettled having settled nothing.
 //
 // ReadReturn refuses such a message before an instruction exists, and that is
-// the guard mesh hits. This is not a second copy of it: a ReturnInstruction
+// the guard a collected file hits first. This is not a second copy of it: a ReturnInstruction
 // built any other way would reopen the hole. A guard on the money belongs next
 // to the money.
 func (s *Network) SettleReturnTx(ctx context.Context, tx Tx, in ReturnInstruction) ([]SettlementStatement, error) {
@@ -4129,7 +4277,7 @@ func (s *Network) SettleReturnTx(ctx context.Context, tx Tx, in ReturnInstructio
 	// is very often short by exactly this amount — and answering AM04 would
 	// tell the returning bank its counterparty could not fund a return that in
 	// fact completed. Asked in this order, "you have already sent me this" is
-	// what comes back, which is the answer to dead-letter.
+	// what comes back, which is the answer to report rather than to send.
 	key := string(in.PaymentID) + ":return-settle"
 	switch _, err := tx.GetTransactionByIdempotencyKey(ctx, CentralBankBook, key); {
 	case err == nil:
@@ -4277,7 +4425,7 @@ func (s *Network) PostReturnLeg(ctx context.Context, id PaymentID, reason string
 // own — see the note at the transition below. A bank that is BOTH sides holds
 // both legs and posts them one call at a time, clawback first, because the guard
 // is written as "my leg, not standing" rather than as a choice between two
-// parties. Mesh.Submit refuses such a payment at the door; the domain handles it
+// parties. A submitting bank's door refuses such a payment; the domain handles it
 // anyway, because a rule that holds only because no caller builds the
 // counter-example is a rule nobody is keeping.
 //
@@ -4503,9 +4651,10 @@ func (s *Network) clawbackTx(ctx context.Context, tx Tx, creditor *Bank, accts B
 	// reach a control account. It is the payee either way — their own money on
 	// one, the bank's unclaimed pool held for them on the other — and it is
 	// re-derived from the payment rather than stored beside CreditorLegAccount,
-	// which SettleAtBankTx wrote from this same field. Returns Receivable is the
-	// arm that names nobody: what it records is the bank's own claim.
-	position := from.For(string(p.Creditor.Account))
+	// through the same helper the credit was booked under (unclaimedSubsidiary).
+	// Returns Receivable is the arm that names nobody: what it records is the
+	// bank's own claim.
+	position := from.For(unclaimedSubsidiary(p))
 	if from == accts.ReturnsReceivable {
 		position = from.Total()
 	}
@@ -4537,6 +4686,28 @@ func (s *Network) refundTx(ctx context.Context, tx Tx, debtor *Bank, accts BankA
 	// account rather than the creditor's: this is the payer's own bank, holding
 	// either the payer's money or a refund their closed account would not take.
 	to := accts.Unclaimed.For(string(p.Debtor.Account))
+
+	// Unless the payer was never debited, which is a collection this bank
+	// SETTLED and could not fund from its customer: it stood in for them
+	// (ReceiveUnappliedTx) and what the return discharges is its own claim, not a
+	// refund it owes anybody. Paying the payer here would hand them money they
+	// never lost.
+	//
+	// The field is the whole test and it is exact: the payer's bank posts the
+	// debtor leg at submission on a push and on receipt on a pull, so an empty
+	// one at this bank names the one arrangement that skipped it.
+	if p.DebtorLegTx == "" {
+		return debtor.Ledger.PostTransactionTx(ctx, tx, ledger.PostTransactionRequest{
+			IdempotencyKey: returnLegKey(p.ID, "return-refund", replacing),
+			Description:    "Returns receivable: " + description,
+			Metadata:       paymentMetadata(&p),
+			Entries: []ledger.Entry{
+				{AccountID: accts.Suspense, Amount: p.Amount, Direction: ledger.Debit},
+				{AccountID: accts.ReturnsReceivable, Amount: p.Amount, Direction: ledger.Credit},
+			},
+		})
+	}
+
 	err := debtor.Deposit.CheckCreditTx(ctx, tx, p.Debtor.Account)
 	switch {
 	case err == nil:
@@ -4697,9 +4868,9 @@ func (s *Network) ReverseReturnLeg(ctx context.Context, id PaymentID, reason str
 // individually balanced.
 //
 // So it refuses anything that is not still Settled. The caller this guard exists
-// for is mesh's bank.receiveReturnStatus, which acts on a MESSAGE: a status
+// for is Bank.receiveReturnStatus, which acts on a MESSAGE: a status
 // arriving late, or twice, is the shape that would otherwise unwind half of a
-// return that finished. There it surfaces as a dead letter.
+// return that finished. There it surfaces in the day's report.
 // ErrInvalidStateTransition rather than a new sentinel — reasonTable already
 // classifies it as a defect here rather than a judgement to answer a
 // counterparty with.
@@ -4887,7 +5058,7 @@ func (s *Network) ReserveBalance(ctx context.Context, bic iso20022.BIC, asset le
 // authenticated message on a closed network, and reconciliation against the
 // cycle reports afterwards. The clearing house's side of the same fact is that
 // it must never send an RJCT about a payment it has not rejected, which is a
-// property of csm.relayed and csm.refuseBulk rather than of this table.
+// property of the clearing house's own relay rather than of this table.
 func (s *Network) transition(p *Payment, to PaymentStatus) error {
 	allowed := map[PaymentStatus][]PaymentStatus{
 		Initiated: {Accepted, Rejected},
@@ -5011,8 +5182,9 @@ func (s *Network) ResolveIdentifierTx(ctx context.Context, tx Tx, ident deposit.
 // # Only a NOT-FOUND becomes a domain error
 //
 // This is on the MONEY path — reached from AcceptInboundTx through
-// creditorSideTx/debtorSideTx, so a receiving bank runs it on every message it
-// answers and mesh turns whatever comes back into a pacs.002 through ReasonFor.
+// creditorSideTx/debtorSideTx, so a receiving bank runs it on every transaction
+// in a file it answers and turns whatever comes back into that transaction's
+// line of the pacs.002, through ReasonFor.
 // Collapsing every error into ErrAccountNotInParticipant would make AC01
 // "incorrect account number" the answer to a dropped database connection, so a
 // transient fault at the RECEIVING bank would tell the SENDING bank its

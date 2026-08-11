@@ -14,12 +14,12 @@ import (
 // integer minor units (never floats or strings).
 //
 // Per-resource DTOs live in dto_ledger.go, dto_deposit.go, and dto_payment.go
-// (mirroring the handlers_*.go split). This file holds only the cross-cutting
+// (mirroring the surface packages that read them). This file holds only the
 // types shared across resources.
 
-// auditEventDTO is the wire shape of an audit event. All four layers render
+// AuditEventDTO is the wire shape of an audit event. All four layers render
 // into it; scope says which one produced it.
-type auditEventDTO struct {
+type AuditEventDTO struct {
 	Seq int64  `json:"seq"`
 	ID  string `json:"id"`
 	// BookID is which institution's log this event is in, and it is on the wire
@@ -38,10 +38,10 @@ type auditEventDTO struct {
 	Metadata  map[string]string `json:"metadata,omitempty"`
 }
 
-// toAuditDTO renders an audit event from any layer onto the wire; Scope says
+// ToAuditDTO renders an audit event from any layer onto the wire; Scope says
 // which one produced it.
-func toAuditDTO(e ledger.AuditEvent) auditEventDTO {
-	return auditEventDTO{
+func ToAuditDTO(e ledger.AuditEvent) AuditEventDTO {
+	return AuditEventDTO{
 		Seq:       e.Seq,
 		ID:        e.ID,
 		BookID:    string(e.BookID),
@@ -54,17 +54,17 @@ func toAuditDTO(e ledger.AuditEvent) auditEventDTO {
 	}
 }
 
-// nameRequest, descriptionRequest, and reasonRequest are generic single-field
+// NameRequest, DescriptionRequest, and ReasonRequest are generic single-field
 // request bodies reused across multiple resources.
 
-type nameRequest struct {
+type NameRequest struct {
 	Name string `json:"name"`
 }
 
-type descriptionRequest struct {
+type DescriptionRequest struct {
 	Description string `json:"description"`
 }
 
-type reasonRequest struct {
+type ReasonRequest struct {
 	Reason string `json:"reason"`
 }

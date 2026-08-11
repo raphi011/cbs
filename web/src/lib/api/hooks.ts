@@ -520,17 +520,17 @@ export function useTransfer(pid: string) {
 // Places the bank's vault cash on reserve, which is what actually moves a
 // reserve — so this is where the central bank's queries are invalidated.
 //
-// # The invalidation races the message, deliberately
+// # The invalidation reads a figure that has not moved yet, deliberately
 //
-// The route answers 202: the reserve credit is the central bank's to make, on a
-// camt.050 still in flight, so a re-fetch triggered here may read the reserve
-// before the central bank has posted. In this system it will not, because the mesh
-// delivers synchronously inside one process — but that is a property of the
-// transport rather than of this hook, and a real network would show the old figure
-// briefly.
+// The route answers 202: the reserve credit is the central bank's to make, and
+// it makes it when the business day next runs. The camt.050 is uploaded now and
+// waits in the central bank's inbox, so the re-fetch triggered here reads the
+// reserve BEFORE the central bank has posted — not as a race, but because that
+// is genuinely where the money is.
 //
 // Invalidating anyway is right: the alternative is not invalidating, which leaves
-// a stale figure on screen for ever.
+// a stale figure on screen for ever, and the day's advance invalidates the same
+// keys when the credit actually lands.
 //
 // qk.participant(pid) is the whole of this bank's subtree — ledger and deposit keys
 // nest under it — and it is here because the bank's own Vault Cash and Reserve at
@@ -964,6 +964,27 @@ export function useIdentityDirectory(): {
     // error never becomes a page-level error here.
     error: participants.error ?? null,
   };
+}
+
+// Which day the deployment is on.
+//
+// Every shell reads it, so it is cached like any other query and refetched when
+// a day is advanced or the data is reset — both of which move it.
+export function useClock() {
+  return useQuery({ queryKey: qk.clock(), queryFn: api.getClock });
+}
+
+// Advance the deployment by one business day, then invalidate every query.
+//
+// Every query, because a day moves almost everything: payments clear and settle,
+// reserves move, statements are booked, interest accrues, and the date itself
+// changes. Naming the subset would be naming the whole of the domain.
+export function useAdvanceDay() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: api.advanceDay,
+    onSuccess: () => qc.invalidateQueries(),
+  });
 }
 
 // Reset the whole backend to the sample dataset, then invalidate every query so

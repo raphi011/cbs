@@ -148,7 +148,7 @@ func (s *Network) AgeClearingSuspenseTx(ctx context.Context, tx Tx, asset ledger
 // # Three states, and only the first can be cleared by this bank
 //
 //   - A settled payment whose payee could not be paid, on a PUSH scheme. This
-//     bank is the returner, and Mesh.Return sends it back: PostReturnLegTx
+//     bank is the returner, and a return sends it back: PostReturnLegTx
 //     debits this account with no customer check, because the payee never
 //     received the money and the bank is releasing an obligation rather than
 //     taking money off anybody. Deadline is ReturnWindowDays.

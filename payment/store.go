@@ -184,10 +184,10 @@ type Tx interface {
 	// cycle's net positions into legs, in the order the agent opened the
 	// accounts, and api's GET /reserves reports one row per (member, asset) from
 	// it. Its ordering contract is load-bearing because it decides the entry
-	// order of a settlement transaction that is persisted. ListRosterEntries'
-	// caller is mesh.Mesh.joinRoster, which asks WHO IS A MEMBER rather than
-	// which banks exist, so that a founded and unadmitted bank gets no actor at
-	// startup.
+	// order of a settlement transaction that is persisted. ListRosterEntries is
+	// asked by the deployment at startup and by package provision, and it asks
+	// WHO IS A MEMBER rather than which banks exist, so that a founded and
+	// unadmitted bank is enrolled as a subscriber nowhere.
 	//
 	// GetRosterEntryByIssuer is the roster's secondary lookup, and it exists for
 	// one refusal: two members published under one bank code would make one
@@ -263,7 +263,7 @@ type Tx interface {
 	// rather than a scope over rows that could have been somebody else's. Two
 	// banks advised of one movement write two rows in two databases — see
 	// SettlementAdvice, where that is the whole design — and it is also what
-	// makes the recorder in mesh/books_test.go see a bank reaching its own book
+	// makes the recorder in cmd/server/books_test.go see a bank reaching its own book
 	// when it books a settlement.
 	//
 	// ListSettlementAdvices has two KINDS of reader and they see different

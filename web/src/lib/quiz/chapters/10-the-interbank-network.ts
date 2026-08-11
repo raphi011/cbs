@@ -44,18 +44,18 @@ export const chapter: Chapter = {
       kind: "mc",
       id: "ch10-q3",
       difficulty: "intro",
-      concept: "account-type-asset",
+      concept: "download-queue",
       prompt:
-        "A bank's 'Reserve at Central Bank' appears on its balance sheet as which type of account?",
+        "The clearing house has an output file ready for Bank B. How does it reach Bank B?",
       options: [
-        "Liability — because the central bank controls the reserves",
-        "Equity — because it represents the bank's ownership interest in the central bank",
-        "Asset — because it is the bank's claim on the central bank",
-        "Revenue — because reserves earn interest from the central bank",
+        "The clearing house opens a connection to Bank B and delivers it",
+        "It goes into Bank B's download queue at the clearing house, and stays there until Bank B connects and collects it",
+        "It is broadcast to every member, and each bank ignores the files not addressed to it",
+        "Bank B is notified, and then requests the file by its reference",
       ],
-      answer: 2,
+      answer: 1,
       explanation:
-        "'Reserve at Central Bank' is an [[account-type-asset]]: it represents something of value the bank owns — its claim on the central bank. Just as a customer's bank deposit is the bank's liability, a bank's deposit at the central bank is the bank's asset.",
+        "**Nothing is ever pushed at a member bank.** The file-transfer protocol between a bank and its clearing house — EBICS, which is what German and French banks actually use — has no push at all: the subscriber is always the client, so a result waits in that subscriber's [[download-queue|download queue]] until it comes and asks.\n\nThe queue is not incidental plumbing. It **is** the routing table: routing a file to Bank B *means* putting it in Bank B's queue, so there is no address to look up and no table of who-is-reachable that could disagree with who-is-a-member — being enrolled is what creates the queue.\n\nAnd it makes a real operational failure expressible for the first time: a bank that never collects has customers who are never told the fate of anything, while its queue grows.",
     },
     {
       kind: "truefalse",
@@ -195,30 +195,38 @@ export const chapter: Chapter = {
         "[[clearing-suspense]] is a temporary liability: credited at initiation (Step 1) and debited when Bank A books the cut-off it is told about, leaving a net balance of zero for each settled payment. It returns to zero *after* settlement rather than at it — the central bank commits first and Bank A books its own mirror leg on the `camt.053` it is then sent, so the gap between the two is the [[unreconciled-position|unreconciled position]]. It is a completely separate account from the reserve asset — one captures in-transit obligations; the other is the bank's funded claim on the central bank.",
     },
     {
-      kind: "numeric",
+      kind: "mc",
       id: "ch10-q13",
       difficulty: "core",
-      concept: "net-positions",
+      concept: "bulk-file",
       prompt:
-        "Bank A owes Bank B $500 and Bank B owes Bank A $300 in the same clearing cycle. How many dollars of central-bank reserves actually move at settlement?",
-      answer: 200,
-      unit: { asset: "USD", in: "major" },
-      tolerance: 0,
+        "Bank A uploads one file carrying 400 credit transfers, addressed to customers at three other banks. How many documents does the clearing house produce from it?",
+      options: [
+        "400 — one instruction relayed onward per transaction",
+        "One answer back to Bank A, and three output files — one per receiving bank",
+        "Three — one per receiving bank, and Bank A learns the outcome by asking",
+        "401 — one answer per transaction plus a summary",
+      ],
+      answer: 1,
       explanation:
-        "[[net-positions]] offset each other: Bank B's $300 obligation cancels $300 of Bank A's $500, leaving a **net of $200** flowing from Bank A to Bank B. Only this net amount clears through the central bank — not the $800 gross total.",
+        "One in, one answered, M out. The clearing house answers the whole [[bulk-file|file]] with a **single** `pacs.002` carrying a decision per transaction — whose group status is `PART` when they did not all go the same way — and it **sorts the file by creditor agent**, building one output file per receiving bank.\n\nThat fan-out is what a clearing house is *for*, and it is invisible in any system where a message carries one payment. It does the sort **without reading any record of its own**: a clearing house that had to look a payment up to decide where to send it could not route a file about a payment it does not hold, which in a real network is most of them.\n\nOn a [[scheme-direction-pull|pull]] the sort is by the *debtor's* agent instead — a collection travels towards the money's source — and that one element is the whole difference at this institution.",
     },
     {
-      kind: "numeric",
+      kind: "mc",
       id: "ch10-q14",
       difficulty: "core",
-      concept: "reserve-account",
+      concept: "payment-hub",
       prompt:
-        "Bank A starts the day with a reserve balance of $5,000. In the clearing cycle its net position is −$1,200 (Bank A is a net payer). What is Bank A's reserve balance after settlement?",
-      answer: 3800,
-      unit: { asset: "USD", in: "major" },
-      tolerance: 0,
+        "A customer instructs a transfer and the bank answers 202 with a payment id. What has actually been sent to the clearing house at that moment?",
+      options: [
+        "The instruction, as a pacs.008 — the 202 means it is on its way",
+        "Nothing. The payment is in that bank's hub, waiting for its next cut-off",
+        "A notification that a file will follow, so the clearing house can expect it",
+        "The instruction, but held at the clearing house until the payer's bank confirms",
+      ],
+      answer: 1,
       explanation:
-        "A negative net position means Bank A pays that amount of central-bank reserves. Its [[reserve-account]] balance falls: $5,000 − $1,200 = **$3,800**.",
+        "Nothing has been sent. The bank has run its **own** half — validated the instruction, posted the [[debtor-leg|debtor leg]] on a push — and put the payment in its [[payment-hub|hub]]: the pile of its customers' instructions waiting for the next [[bulk-file|file]]. The payment reads *Initiated*, is in no cycle, and the payee's bank has never heard of it.\n\nThat is a state it **rests in** rather than passes through, because nothing in a bulk scheme happens on a timer. The **cut-off** is what empties the hub, and everything instructed a moment later waits for the next one.\n\nWhat the synchronous half buys is the refusal: an instruction that fails the submitting bank's own checks — no funds, an account that is not the customer's — is refused there and then, rather than accepted and rejected hours later by a message nobody can answer.",
     },
     {
       kind: "mc",
@@ -312,7 +320,7 @@ export const chapter: Chapter = {
       ],
       answers: [0, 1, 3, 4],
       explanation:
-        "Three ledgers move, and they move one after another rather than in lockstep: (1) the **central bank** debits Bank A's reserve liability and credits Bank B's, in its own unit of work, and is [[settlement-finality|final]] there; (2) **Bank A**, told by `camt.053`, closes its [[clearing-suspense]] with a debit and records the outgoing reserves with a credit to its reserve asset; (3) **Bank B**, told by its own `camt.053` and then by a `pacs.002` per payment, debits (raises) its reserve asset and credits Bob's deposit. The entries are the same; the timing is not, and the gap between (1) and the rest is the [[unreconciled-position|unreconciled position]]. Alice's deposit was debited at *initiation* — not at settlement.",
+        "Three ledgers move, and they move one after another rather than in lockstep: (1) the **central bank** debits Bank A's reserve liability and credits Bank B's, in its own unit of work, and is [[settlement-finality|final]] there; (2) **Bank A**, told by `camt.053`, closes its [[clearing-suspense]] with a debit and records the outgoing reserves with a credit to its reserve asset; (3) **Bank B**, which collects its own `camt.053` and then the released instruction — in that order, and from two different institutions' queues — debits (raises) its reserve asset and credits Bob's deposit. The entries are the same; the timing is not, and the gap between (1) and the rest is the [[unreconciled-position|unreconciled position]]. Alice's deposit was debited at *initiation* — not at settlement.",
       explore: { label: "View central bank reserves", href: "/central-bank" },
     },
     {

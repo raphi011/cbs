@@ -14,8 +14,8 @@ import (
 // Wire format for the interbank payment layer: participants, party refs,
 // payments, mandates, clearing cycles, settlements, schemes, and requests.
 
-// participantAccountsDTO is one asset's worth of a bank's internal accounts.
-type participantAccountsDTO struct {
+// ParticipantAccountsDTO is one asset's worth of a bank's internal accounts.
+type ParticipantAccountsDTO struct {
 	Asset    string `json:"asset"`
 	Suspense string `json:"suspense"`
 	Reserve  string `json:"reserve"`
@@ -46,17 +46,17 @@ type participantAccountsDTO struct {
 	Settlement string `json:"settlement"`
 }
 
-// participantDTO renders the internal accounts as a list rather than four flat
+// ParticipantDTO renders the internal accounts as a list rather than four flat
 // fields, because a bank holds one set per asset it operates in.
 //
 // A list rather than an object keyed by code so the order is the API's to
 // choose: Go randomises map iteration, and a wire format that reorders itself
 // between two identical requests is not one a client can diff.
-type participantDTO struct {
+type ParticipantDTO struct {
 	ID   string `json:"id"`
 	Name string `json:"name"`
 	// BIC is this bank's ISO 9362 business identifier code — what a
-	// counterparty addresses it by, and what the mesh routes on.
+	// counterparty addresses it by, and what the clearing house routes on.
 	BIC string `json:"bic"`
 	// ProductID is the bank's default deposit product, created with its chart
 	// of accounts at onboarding. Every deposit account is opened FROM a
@@ -64,13 +64,13 @@ type participantDTO struct {
 	// one it may open accounts from before it can open any.
 	ProductID         string                   `json:"productId"`
 	CustomerSubledger string                   `json:"customerSubledger"`
-	Assets            []participantAccountsDTO `json:"assets"`
+	Assets            []ParticipantAccountsDTO `json:"assets"`
 }
 
-func toParticipantDTO(p *payment.Bank) participantDTO {
-	assets := make([]participantAccountsDTO, 0, len(p.Assets))
+func ToParticipantDTO(p *payment.Bank) ParticipantDTO {
+	assets := make([]ParticipantAccountsDTO, 0, len(p.Assets))
 	for code, accts := range p.Assets {
-		assets = append(assets, participantAccountsDTO{
+		assets = append(assets, ParticipantAccountsDTO{
 			Asset:      string(code),
 			Suspense:   string(accts.Suspense),
 			Reserve:    string(accts.Reserve),
@@ -81,7 +81,7 @@ func toParticipantDTO(p *payment.Bank) participantDTO {
 	}
 	sort.Slice(assets, func(i, j int) bool { return assets[i].Asset < assets[j].Asset })
 
-	return participantDTO{
+	return ParticipantDTO{
 		ID:                string(p.ID),
 		Name:              p.Name,
 		BIC:               string(p.BIC),
@@ -91,24 +91,24 @@ func toParticipantDTO(p *payment.Bank) participantDTO {
 	}
 }
 
-type identifierDTO struct {
+type IdentifierDTO struct {
 	Scheme string `json:"scheme"`
 	Value  string `json:"value"`
 }
 
-// toIdentifierDTOs renders an account's identifiers as a non-nil empty slice
+// ToIdentifierDTOs renders an account's identifiers as a non-nil empty slice
 // rather than nil, so the JSON key is "[]" and not "null" — a web client that
 // renders a list of addresses should not have to distinguish "no identifiers"
 // from "the field was missing".
-func toIdentifierDTOs(idents []deposit.Identifier) []identifierDTO {
-	out := make([]identifierDTO, 0, len(idents))
+func ToIdentifierDTOs(idents []deposit.Identifier) []IdentifierDTO {
+	out := make([]IdentifierDTO, 0, len(idents))
 	for _, i := range idents {
-		out = append(out, identifierDTO{Scheme: string(i.Scheme), Value: i.Value})
+		out = append(out, IdentifierDTO{Scheme: string(i.Scheme), Value: i.Value})
 	}
 	return out
 }
 
-// partyRefDTO is one side of a payment or a mandate: the account, and the
+// PartyRefDTO is one side of a payment or a mandate: the account, and the
 // address quoted to reach it.
 //
 // It carried a `participant` naming the bank, and does not, for the reason
@@ -117,22 +117,22 @@ func toIdentifierDTOs(idents []deposit.Identifier) []identifierDTO {
 // as `debtorAgent`/`creditorAgent` on the enclosing payment or mandate — the same
 // names an instruction already used on the way IN, so the two directions finally
 // agree.
-type partyRefDTO struct {
+type PartyRefDTO struct {
 	Account string `json:"account"`
 	// Identifier is the external address quoted for this party — an IBAN today.
 	// Absent for a party addressed only by its ids.
-	Identifier *identifierDTO `json:"identifier,omitempty"`
+	Identifier *IdentifierDTO `json:"identifier,omitempty"`
 }
 
-func toPartyRefDTO(r payment.PartyRef) partyRefDTO {
-	out := partyRefDTO{Account: string(r.Account)}
+func ToPartyRefDTO(r payment.PartyRef) PartyRefDTO {
+	out := PartyRefDTO{Account: string(r.Account)}
 	if r.Identifier != (deposit.Identifier{}) {
-		out.Identifier = &identifierDTO{Scheme: string(r.Identifier.Scheme), Value: r.Identifier.Value}
+		out.Identifier = &IdentifierDTO{Scheme: string(r.Identifier.Scheme), Value: r.Identifier.Value}
 	}
 	return out
 }
 
-// toDomain converts the wire shape, canonicalising an address a PERSON typed.
+// ToDomain converts the wire shape, canonicalising an address a PERSON typed.
 //
 // This is the front door iban.Parse describes. A customer reads an IBAN off a
 // statement, where it is grouped in fours, and types it in whatever case they
@@ -148,7 +148,7 @@ func toPartyRefDTO(r payment.PartyRef) partyRefDTO {
 // A value that will not parse is passed through UNCHANGED. The refusal is then
 // deposit.Identifier.Validate's, which says what is wrong with the address the
 // caller sent rather than with some tidied-up version of it.
-func (r partyRefDTO) toDomain() payment.PartyRef {
+func (r PartyRefDTO) ToDomain() payment.PartyRef {
 	out := payment.PartyRef{Account: deposit.AccountID(r.Account)}
 	if r.Identifier != nil {
 		value := r.Identifier.Value
@@ -165,14 +165,14 @@ func (r partyRefDTO) toDomain() payment.PartyRef {
 	return out
 }
 
-type paymentDTO struct {
+type PaymentDTO struct {
 	ID       string      `json:"id"`
 	Scheme   string      `json:"scheme"`
 	Asset    string      `json:"asset"`
-	Debtor   partyRefDTO `json:"debtor"`
-	Creditor partyRefDTO `json:"creditor"`
+	Debtor   PartyRefDTO `json:"debtor"`
+	Creditor PartyRefDTO `json:"creditor"`
 	// DebtorAgent and CreditorAgent are the BICs of the two banks, and they are
-	// what says where each party banks now that a partyRefDTO does not.
+	// what says where each party banks now that a PartyRefDTO does not.
 	DebtorAgent   string            `json:"debtorAgent,omitempty"`
 	CreditorAgent string            `json:"creditorAgent,omitempty"`
 	Amount        int64             `json:"amount"`
@@ -191,13 +191,13 @@ type paymentDTO struct {
 	CreatedAt     time.Time         `json:"createdAt"`
 }
 
-// toPaymentDTO renders a payment, including the asset it settles in. A
+// ToPaymentDTO renders a payment, including the asset it settles in. A
 // payment names a scheme, not an asset — the asset is the scheme's, fixed at
 // registration — so rendering it means resolving the scheme. schemes is the
 // network's registered set (payment.Network.ListSchemes), searched by ID
 // rather than threaded through payment.Payment itself, which stays a pure
 // domain record.
-func toPaymentDTO(p payment.Payment, schemes []payment.Scheme) paymentDTO {
+func ToPaymentDTO(p payment.Payment, schemes []payment.Scheme) PaymentDTO {
 	var asset string
 	for _, sc := range schemes {
 		if sc.ID() == p.Scheme {
@@ -205,12 +205,12 @@ func toPaymentDTO(p payment.Payment, schemes []payment.Scheme) paymentDTO {
 			break
 		}
 	}
-	return paymentDTO{
+	return PaymentDTO{
 		ID:            string(p.ID),
 		Scheme:        string(p.Scheme),
 		Asset:         asset,
-		Debtor:        toPartyRefDTO(p.Debtor),
-		Creditor:      toPartyRefDTO(p.Creditor),
+		Debtor:        ToPartyRefDTO(p.Debtor),
+		Creditor:      ToPartyRefDTO(p.Creditor),
 		DebtorAgent:   string(p.DebtorDetails.Agent),
 		CreditorAgent: string(p.CreditorDetails.Agent),
 		Amount:        int64(p.Amount),
@@ -230,34 +230,34 @@ func toPaymentDTO(p payment.Payment, schemes []payment.Scheme) paymentDTO {
 	}
 }
 
-type mandateDTO struct {
+type MandateDTO struct {
 	ID     string      `json:"id"`
-	Debtor partyRefDTO `json:"debtor"`
+	Debtor PartyRefDTO `json:"debtor"`
 	// DebtorAgent is the bank a collection under this mandate is sent to. There
 	// is no creditorAgent beside it and there is no row to fill one from: a
 	// mandate is the creditor's bank's, so the creditor's agent is whichever bank
 	// this listener is bound to. See payment.Mandate.DebtorAgent.
 	DebtorAgent string      `json:"debtorAgent,omitempty"`
-	Creditor    partyRefDTO `json:"creditor"`
+	Creditor    PartyRefDTO `json:"creditor"`
 	Asset       string      `json:"asset"`
 	MaxAmount   int64       `json:"maxAmount"`
 	Status      string      `json:"status"`
 	CreatedAt   time.Time   `json:"createdAt"`
 }
 
-// toMandateDTO renders a mandate, including the asset its MaxAmount is
+// ToMandateDTO renders a mandate, including the asset its MaxAmount is
 // denominated in. A mandate names no scheme — CreateMandate takes none, and the
 // mandate can later be presented to any pull scheme that accepts it — so unlike
-// paymentDTO there is no scheme to resolve an asset from.
+// PaymentDTO there is no scheme to resolve an asset from.
 //
 // It comes off the ROW. Resolving it would read the debtor's bank's deposit
 // register — see payment.Mandate.Asset.
-func toMandateDTO(m payment.Mandate) mandateDTO {
-	return mandateDTO{
+func ToMandateDTO(m payment.Mandate) MandateDTO {
+	return MandateDTO{
 		ID:          string(m.ID),
-		Debtor:      toPartyRefDTO(m.Debtor),
+		Debtor:      ToPartyRefDTO(m.Debtor),
 		DebtorAgent: string(m.DebtorAgent),
-		Creditor:    toPartyRefDTO(m.Creditor),
+		Creditor:    ToPartyRefDTO(m.Creditor),
 		Asset:       string(m.Asset),
 		MaxAmount:   int64(m.MaxAmount),
 		Status:      m.Status.String(),
@@ -265,7 +265,7 @@ func toMandateDTO(m payment.Mandate) mandateDTO {
 	}
 }
 
-type clearingCycleDTO struct {
+type ClearingCycleDTO struct {
 	ID           string           `json:"id"`
 	Scheme       string           `json:"scheme"`
 	Asset        string           `json:"asset"`
@@ -282,16 +282,16 @@ type clearingCycleDTO struct {
 	// settlements are.
 }
 
-// toClearingCycleDTO renders a cycle, including the asset it clears in. A
+// ToClearingCycleDTO renders a cycle, including the asset it clears in. A
 // cycle names a scheme (unlike a mandate), so its asset is resolved the same
-// way toPaymentDTO resolves a payment's: by looking the scheme up in the
+// way ToPaymentDTO resolves a payment's: by looking the scheme up in the
 // network's registered set.
-func toClearingCycleDTO(c payment.ClearingCycle, schemes []payment.Scheme) clearingCycleDTO {
+func ToClearingCycleDTO(c payment.ClearingCycle, schemes []payment.Scheme) ClearingCycleDTO {
 	ids := make([]string, len(c.PaymentIDs))
 	for i, id := range c.PaymentIDs {
 		ids[i] = string(id)
 	}
-	return clearingCycleDTO{
+	return ClearingCycleDTO{
 		ID:           string(c.ID),
 		Scheme:       string(c.Scheme),
 		Asset:        schemeAsset(c.Scheme, schemes),
@@ -304,8 +304,8 @@ func toClearingCycleDTO(c payment.ClearingCycle, schemes []payment.Scheme) clear
 }
 
 // schemeAsset resolves a scheme ID's asset by looking it up in the network's
-// registered set — the same resolution toPaymentDTO inlines for a payment's
-// asset, factored out here so toClearingCycleDTO (and, transitively, a
+// registered set — the same resolution ToPaymentDTO inlines for a payment's
+// asset, factored out here so ToClearingCycleDTO (and, transitively, a
 // settlement via its cycle) can share it.
 func schemeAsset(id payment.SchemeID, schemes []payment.Scheme) string {
 	for _, sc := range schemes {
@@ -316,7 +316,7 @@ func schemeAsset(id payment.SchemeID, schemes []payment.Scheme) string {
 	return ""
 }
 
-type settlementDTO struct {
+type SettlementDTO struct {
 	ID           string           `json:"id"`
 	CycleID      string           `json:"cycleId"`
 	Asset        string           `json:"asset"`
@@ -326,13 +326,13 @@ type settlementDTO struct {
 	SettledAt    time.Time        `json:"settledAt"`
 }
 
-// toSettlementDTO renders a settlement, including the asset it settles.
+// ToSettlementDTO renders a settlement, including the asset it settles.
 //
 // The asset comes off the ROW. Deriving it as settlement -> its cycle -> the
 // cycle's scheme crosses an institution boundary the settlement agent cannot
 // cross — see payment.Settlement.Asset.
-func toSettlementDTO(s payment.Settlement) settlementDTO {
-	return settlementDTO{
+func ToSettlementDTO(s payment.Settlement) SettlementDTO {
+	return SettlementDTO{
 		ID:           string(s.ID),
 		CycleID:      string(s.CycleID),
 		Asset:        string(s.Asset),
@@ -354,7 +354,7 @@ func positionsToMap(in map[iso20022.BIC]ledger.Amount) map[string]int64 {
 	return out
 }
 
-type schemeDTO struct {
+type SchemeDTO struct {
 	ID              string `json:"id"`
 	Asset           string `json:"asset"`
 	Direction       string `json:"direction"`
@@ -364,8 +364,8 @@ type schemeDTO struct {
 	SettlementDelay string `json:"settlementDelay"`
 }
 
-func toSchemeDTO(s payment.Scheme) schemeDTO {
-	return schemeDTO{
+func ToSchemeDTO(s payment.Scheme) SchemeDTO {
+	return SchemeDTO{
 		ID:              string(s.ID()),
 		Asset:           string(s.Asset()),
 		Direction:       s.Direction().String(),
@@ -376,7 +376,7 @@ func toSchemeDTO(s payment.Scheme) schemeDTO {
 	}
 }
 
-// reserveDTO is one bank's reserve at the central bank, in one asset. A bank
+// ReserveDTO is one bank's reserve at the central bank, in one asset. A bank
 // holds one reserve account per asset, so a reserve is only meaningful once
 // the asset is named alongside it.
 //
@@ -386,29 +386,62 @@ func toSchemeDTO(s payment.Scheme) schemeDTO {
 // participant ids, because an id the network allocates is not something a message
 // ever tells anybody (payment.SettlementMember). The name matches
 // directoryEntryDTO's, which changed for the same reason.
-type reserveDTO struct {
+type ReserveDTO struct {
 	Agent   string `json:"agent"`
 	Asset   string `json:"asset"`
 	Reserve int64  `json:"reserve"`
 }
 
-// createMandateRequest names the two accounts and the ceiling, and names no bank.
+// CreateMandateRequest names the two accounts and the ceiling, and names no bank.
 //
 // The address the collection is sent to is DERIVED, from the debtor's own IBAN
 // through this bank's routing directory, and it is derived once — a mandate
 // authorises debits from an account at the bank the debtor signed up against, so
 // the answer is fixed at signature rather than re-asked at every collection. See
 // payment.CreateMandateTx.
-type createMandateRequest struct {
-	Debtor    partyRefDTO `json:"debtor"`
-	Creditor  partyRefDTO `json:"creditor"`
+// SubmittedPaymentDTO is what a bank answers a customer's instruction with: an
+// identifier to ask about, not an outcome.
+//
+// Named for submission and not for acceptance, because since the split the two
+// are different things and this is the first: the 202 is HTTP's "I have taken
+// this in", and the payment it names is Initiated, in no cycle, and not yet
+// seen by the counterparty. Calling the type accepted — as it was while
+// submission produced an Accepted payment — now reads as a claim the response
+// does not make.
+//
+// The clearing house's return route answers with it too, for the same reason and
+// with less choice: a return's outcome is decided four hops away and there is no
+// intermediate resource to describe at all.
+type SubmittedPaymentDTO struct {
+	PaymentID string `json:"paymentId"`
+}
+
+// CutoffDTO is what a bank answers a cut-off with: the order id of every file it
+// uploaded, and nothing about what is in them.
+//
+// Order ids and not payments, because that is the whole of what a cut-off
+// returns. An upload is answered TECHNICALLY — the file arrived and parsed — and
+// what the clearing house makes of the payments inside it comes back on a later
+// download. An operator holding an order id can ask the host what became of that
+// order, which is the question a cut-off leaves open.
+//
+// Several ids, because a bank operating two schemes uploads two files. The list
+// is empty when the hub was empty, which is the ordinary answer on a quiet day
+// and is [] rather than null so a client does not have to tell the two apart.
+type CutoffDTO struct {
+	OrderIDs []string `json:"orderIds"`
+}
+
+type CreateMandateRequest struct {
+	Debtor    PartyRefDTO `json:"debtor"`
+	Creditor  PartyRefDTO `json:"creditor"`
 	MaxAmount int64       `json:"maxAmount"`
 }
 
-type initiatePaymentRequest struct {
+type InitiatePaymentRequest struct {
 	Scheme      string            `json:"scheme"`
-	Debtor      partyRefDTO       `json:"debtor"`
-	Creditor    partyRefDTO       `json:"creditor"`
+	Debtor      PartyRefDTO       `json:"debtor"`
+	Creditor    PartyRefDTO       `json:"creditor"`
 	Amount      int64             `json:"amount"`
 	MandateID   string            `json:"mandateId"`
 	EndToEndID  string            `json:"endToEndId"`
@@ -440,11 +473,11 @@ type initiatePaymentRequest struct {
 	CreditorName string `json:"creditorName,omitempty"`
 }
 
-func (req initiatePaymentRequest) toDomain() payment.InitiatePaymentRequest {
+func (req InitiatePaymentRequest) ToDomain() payment.InitiatePaymentRequest {
 	return payment.InitiatePaymentRequest{
 		Scheme:      payment.SchemeID(req.Scheme),
-		Debtor:      req.Debtor.toDomain(),
-		Creditor:    req.Creditor.toDomain(),
+		Debtor:      req.Debtor.ToDomain(),
+		Creditor:    req.Creditor.ToDomain(),
 		Amount:      ledger.Amount(req.Amount),
 		MandateID:   payment.MandateID(req.MandateID),
 		EndToEndID:  req.EndToEndID,
@@ -464,11 +497,11 @@ func (req initiatePaymentRequest) toDomain() payment.InitiatePaymentRequest {
 	}
 }
 
-type openCycleRequest struct {
+type OpenCycleRequest struct {
 	Scheme string `json:"scheme"`
 }
 
-// lodgementDTO is what POST /lodgements answers: the instruction that went out,
+// LodgementDTO is what POST /lodgements answers: the instruction that went out,
 // and not a balance.
 //
 // It carries no balance BECAUSE the reserve credit has not happened yet — it is
@@ -481,7 +514,7 @@ type openCycleRequest struct {
 // quotes back. Nothing in the store is keyed by it — this system holds no
 // lodgement row — so it is useful for reading the log rather than for a follow-up
 // request, and saying so here is better than implying a GET that does not exist.
-type lodgementDTO struct {
+type LodgementDTO struct {
 	Ref    string `json:"ref"`
 	Asset  string `json:"asset"`
 	Amount int64  `json:"amount"`
@@ -494,8 +527,8 @@ type lodgementDTO struct {
 	Agent string `json:"agent"`
 }
 
-func toLodgementDTO(in payment.LodgementInstruction) lodgementDTO {
-	return lodgementDTO{
+func ToLodgementDTO(in payment.LodgementInstruction) LodgementDTO {
+	return LodgementDTO{
 		Ref:     in.Ref,
 		Asset:   string(in.Asset),
 		Amount:  int64(in.Amount),
@@ -504,10 +537,10 @@ func toLodgementDTO(in payment.LodgementInstruction) lodgementDTO {
 	}
 }
 
-// lodgementRequest is a bank asking its central bank to move vault cash onto the
+// LodgementRequest is a bank asking its central bank to move vault cash onto the
 // bank's reserve account.
 //
-// It names an ASSET where fundRequest above names an account, and the contrast is
+// It names an ASSET where FundRequest above names an account, and the contrast is
 // the whole difference between the two operations. A deposit is about one
 // customer's account, so the asset follows from it and there is nothing for a
 // caller to choose. A lodgement is about the BANK: it moves the bank's own cash,
@@ -521,7 +554,7 @@ func toLodgementDTO(in payment.LodgementInstruction) lodgementDTO {
 // the teller's note about a customer's transaction; a lodgement's counterparty is
 // a central bank, which is told what this is by the message definition, and the
 // posting's own description is written by the domain. See payment.LodgeReservesTx.
-type lodgementRequest struct {
+type LodgementRequest struct {
 	Asset  string `json:"asset"`
 	Amount int64  `json:"amount"`
 }

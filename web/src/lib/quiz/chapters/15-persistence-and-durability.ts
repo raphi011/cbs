@@ -74,10 +74,11 @@ export const chapter: Chapter = {
         "End-of-day snapshots",
         "Audit events",
         "Each account's current balance",
+        "The files waiting in each subscriber's download queue",
       ],
       answers: [0, 1, 2, 3],
       explanation:
-        "Everything the domain actually stores gets a table: transactions, entries, deposit accounts, [[holds]], [[snapshot|snapshots]] and [[audit-trail|audit events]]. A balance is not stored at all — it is [[derived-balance|computed from the entries]] on demand.",
+        "Everything the **domain** stores gets a table: transactions, entries, deposit accounts, [[holds]], [[snapshot|snapshots]] and [[audit-trail|audit events]]. A balance is not stored at all — it is [[derived-balance|computed from the entries]] on demand.\n\nA [[download-queue|download queue]] is not stored either, and that absence is a boundary rather than an oversight. A queue is one institution holding bytes addressed to another, which is only acceptable while those bytes are **opaque to the holder** — and a table of them is a store that institution reads. The first query anybody writes against it is a clearing house looking inside a file it is merely carrying.\n\nWhat it costs is real and is written down rather than hidden: a restart empties every queue, and with it a bank's [[payment-hub|hub]] and any output file the clearing house was holding for a settled cycle.",
     },
     {
       kind: "mc",

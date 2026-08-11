@@ -13,7 +13,7 @@
 // more than they have anything to say about.
 //
 // NewSet opens the whole system — the clearing house's database, the central
-// bank's, and one per member bank on demand. That is what payment, mesh, api,
+// bank's, and one per member bank on demand. That is what payment, api,
 // seed and cmd/server want, because every one of them drives more than one
 // institution and no two of them share a database. The set is what
 // payment.Networks is built over.
@@ -113,7 +113,7 @@ func New(t *testing.T, clock func() time.Time) *sqlite.Store {
 // bank reading another bank's rows finds nothing, and a method reaching for a
 // table its institution's schema does not create is refused by name. That is
 // what makes the split measurable in a test rather than merely intended, and it
-// is why the payment, mesh, api and seed suites take this and not New.
+// is why the payment, api, seed and cmd/server suites take this and not New.
 func NewSet(t *testing.T, clock func() time.Time) *sqlite.Set {
 	t.Helper()
 	set, err := sqlite.OpenSet(context.Background(), "", clock)

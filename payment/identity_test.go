@@ -136,8 +136,8 @@ func TestAMemberBanksActsAreRefusedOnAnyOtherInstitutionsNetwork(t *testing.T) {
 //
 // A Network that held a ledger.Book over CentralBankBook would put the book
 // central-bank money lives in inside every institution in this system. What
-// keeps a bank handler out of it in the mesh is that bankOps names no method
-// that reaches it — a fact about the mesh, not about this package, and all five
+// keeps a bank handler out of it in cmd/server is that bankOps names no method
+// that reaches it — a fact about that package, not about this one, and all five
 // of these are exported. A test fixture, api, seed or payment/recon could call
 // any of them on any network and post reserves.
 //
@@ -230,7 +230,7 @@ func TestANetworkBelongingToNobodyIsRefusedAtConstruction(t *testing.T) {
 //
 // It was live, briefly. Minting a fresh registry per Network is the obvious
 // implementation and it broke two of payment's own translator tests and one of
-// the mesh's, all of which register a scheme on one handle and then act on
+// cmd/server's, all of which register a scheme on one handle and then act on
 // another. See payment.Networks.schemes.
 func TestARegisteredSchemeReachesEveryInstitutionsNetwork(t *testing.T) {
 	sys := testNetwork(t)

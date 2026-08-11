@@ -9,7 +9,7 @@
 // back is an import cycle. translate_test.go's reason-table tests need reasonTable, which
 // is unexported and is meant to stay that way — the table is this package's own
 // classification, not something a caller chooses between. ReasonFor beside it is
-// now exported, because mesh's handlers ask for a code, but that changes nothing
+// now exported, because cmd/server's handlers ask for a code, but that changes nothing
 // here: reasonTable alone keeps the two halves apart. Neither half can move to
 // the other's package, and a test-only export to bridge them would be API
 // surface outliving the reason for it. Go allows both packages in one directory;
@@ -31,6 +31,30 @@ import (
 	. "github.com/raphi011/cbs/payment"
 	"github.com/raphi011/cbs/store/storetest"
 )
+
+// readOne is the single instruction a file of one carries, for the tests that
+// build one payment and assert on what came back out of the message.
+//
+// A read that succeeded always carries at least one transaction — iso20022's
+// own validation refuses a pacs.008 or pacs.003 with none — so the empty case
+// here is only ever reached behind an error the caller is about to check.
+func readOne(txs []InboundTransaction, err error) (InitiatePaymentRequest, error) {
+	if err != nil || len(txs) == 0 {
+		return InitiatePaymentRequest{}, err
+	}
+	return txs[0].Request, nil
+}
+
+// readOneTx is readOne for the tests that are about the REFUSAL rather than the
+// instruction: an address the receiving bank cannot resolve is that
+// transaction's own answer and not the file's error, so it is on the
+// InboundTransaction and readOne throws it away.
+func readOneTx(txs []InboundTransaction, err error) (InboundTransaction, error) {
+	if err != nil || len(txs) == 0 {
+		return InboundTransaction{}, err
+	}
+	return txs[0], nil
+}
 
 // messageNow is the instant the message tests build their headers at.
 //
@@ -125,7 +149,7 @@ func networkWithOneCollection(t *testing.T) (*testSystem, Payment, Mandate) {
 func TestCreditTransferMessageCarriesBothAgentsAndBothIBANs(t *testing.T) {
 	n, p := networkWithOnePayment(t)
 
-	env, err := n.CreditTransferMessage(p, MessageContext{
+	env, err := n.CreditTransferMessage([]Payment{p}, MessageContext{
 		From:  "AURODEFFXXX",
 		To:    "CSMXFRPPXXX",
 		MsgID: "AURO-1",
@@ -170,7 +194,7 @@ func TestCreditTransferMessageCarriesBothAgentsAndBothIBANs(t *testing.T) {
 func TestCreditTransferMessageRefusesAPaymentWithNoAddress(t *testing.T) {
 	n, p := networkWithOnePayment(t)
 	p.Creditor.Identifier = deposit.Identifier{}
-	if _, err := n.CreditTransferMessage(p, MessageContext{From: "AURODEFFXXX", To: "CSMXFRPPXXX", MsgID: "x", Now: time.Now()}); err == nil {
+	if _, err := n.CreditTransferMessage([]Payment{p}, MessageContext{From: "AURODEFFXXX", To: "CSMXFRPPXXX", MsgID: "x", Now: time.Now()}); err == nil {
 		t.Fatal("built a pacs.008 for a payment with no creditor address")
 	}
 }
@@ -183,7 +207,7 @@ func TestCreditTransferMessageRefusesAPaymentWithNoAddress(t *testing.T) {
 func TestCreditTransferMessageRefusesAMalformedIBAN(t *testing.T) {
 	n, p := networkWithOnePayment(t)
 	p.Creditor.Identifier = deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "not an iban"}
-	_, err := n.CreditTransferMessage(p, MessageContext{From: "AURODEFFXXX", To: "CSMXFRPPXXX", MsgID: "x", Now: time.Now()})
+	_, err := n.CreditTransferMessage([]Payment{p}, MessageContext{From: "AURODEFFXXX", To: "CSMXFRPPXXX", MsgID: "x", Now: time.Now()})
 	if !errors.Is(err, ErrUnaddressableAccount) {
 		t.Fatalf("CreditTransferMessage on a malformed IBAN = %v, want ErrUnaddressableAccount", err)
 	}
@@ -196,7 +220,7 @@ func TestCreditTransferMessageRefusesAMalformedIBAN(t *testing.T) {
 func TestCreditTransferMessageWithNoEndToEndIDSaysNOTPROVIDED(t *testing.T) {
 	n, p := networkWithOnePayment(t)
 	p.EndToEndID = ""
-	env, err := n.CreditTransferMessage(p, MessageContext{From: "AURODEFFXXX", To: "CSMXFRPPXXX", MsgID: "x", Now: messageNow})
+	env, err := n.CreditTransferMessage([]Payment{p}, MessageContext{From: "AURODEFFXXX", To: "CSMXFRPPXXX", MsgID: "x", Now: messageNow})
 	if err != nil {
 		t.Fatalf("CreditTransferMessage: %v", err)
 	}
@@ -215,7 +239,7 @@ func TestCreditTransferMessageWithNoEndToEndIDSaysNOTPROVIDED(t *testing.T) {
 // and a translator that used Now would fail here rather than in production.
 func TestCreditTransferMessageSettlesOnTheValueDate(t *testing.T) {
 	n, p := networkWithOnePayment(t)
-	env, err := n.CreditTransferMessage(p, MessageContext{From: "AURODEFFXXX", To: "CSMXFRPPXXX", MsgID: "x", Now: messageNow})
+	env, err := n.CreditTransferMessage([]Payment{p}, MessageContext{From: "AURODEFFXXX", To: "CSMXFRPPXXX", MsgID: "x", Now: messageNow})
 	if err != nil {
 		t.Fatalf("CreditTransferMessage: %v", err)
 	}
@@ -232,7 +256,7 @@ func TestCreditTransferMessageSettlesOnTheValueDate(t *testing.T) {
 func TestCreditTransferMessageNeverAssertsTheZeroSettlementDate(t *testing.T) {
 	n, p := networkWithOnePayment(t)
 	p.ValueDate = time.Time{}
-	env, err := n.CreditTransferMessage(p, MessageContext{From: "AURODEFFXXX", To: "CSMXFRPPXXX", MsgID: "x", Now: messageNow})
+	env, err := n.CreditTransferMessage([]Payment{p}, MessageContext{From: "AURODEFFXXX", To: "CSMXFRPPXXX", MsgID: "x", Now: messageNow})
 	if err != nil {
 		t.Fatalf("CreditTransferMessage: %v", err)
 	}
@@ -253,7 +277,7 @@ func TestCreditTransferMessageNeverAssertsTheZeroSettlementDate(t *testing.T) {
 func TestDirectDebitMessageDatesTheSignatureFromTheMandate(t *testing.T) {
 	n, p, m := networkWithOneCollection(t)
 
-	env, err := n.DirectDebitMessage(p, m, MessageContext{
+	env, err := n.DirectDebitMessage([]Collection{{Payment: p, Mandate: m}}, MessageContext{
 		From: "VERDITMMXXX", To: "CSMXFRPPXXX", MsgID: "VERDE-1", Now: messageNow,
 	})
 	if err != nil {
@@ -291,7 +315,7 @@ func TestDirectDebitMessageDatesTheSignatureFromTheMandate(t *testing.T) {
 // IBAN, said out loud rather than invented. See creditorSchemeIdentification.
 func TestDirectDebitMessageStandsTheCreditorsIBANInForTheCreditorIdentifier(t *testing.T) {
 	n, p, m := networkWithOneCollection(t)
-	env, err := n.DirectDebitMessage(p, m, MessageContext{From: "VERDITMMXXX", To: "CSMXFRPPXXX", MsgID: "x", Now: messageNow})
+	env, err := n.DirectDebitMessage([]Collection{{Payment: p, Mandate: m}}, MessageContext{From: "VERDITMMXXX", To: "CSMXFRPPXXX", MsgID: "x", Now: messageNow})
 	if err != nil {
 		t.Fatalf("DirectDebitMessage: %v", err)
 	}
@@ -689,7 +713,7 @@ func TestCreditTransferMessageRefusesAnUnregisteredScheme(t *testing.T) {
 	n, p := networkWithOnePayment(t)
 	p.Scheme = "sepa.invented"
 
-	_, err := n.CreditTransferMessage(p, MessageContext{From: "AURODEFFXXX", To: "CSMXFRPPXXX", MsgID: "x", Now: messageNow})
+	_, err := n.CreditTransferMessage([]Payment{p}, MessageContext{From: "AURODEFFXXX", To: "CSMXFRPPXXX", MsgID: "x", Now: messageNow})
 	if !errors.Is(err, ErrSchemeNotFound) {
 		t.Fatalf("CreditTransferMessage = %v, want ErrSchemeNotFound", err)
 	}
@@ -702,7 +726,7 @@ func TestCreditTransferMessageRefusesAnUnregisteredScheme(t *testing.T) {
 func TestDirectDebitMessageRefusesACollectionWithNoMandate(t *testing.T) {
 	n, p, _ := networkWithOneCollection(t)
 
-	_, err := n.DirectDebitMessage(p, Mandate{}, MessageContext{From: "VERDITMMXXX", To: "CSMXFRPPXXX", MsgID: "x", Now: messageNow})
+	_, err := n.DirectDebitMessage([]Collection{{Payment: p, Mandate: Mandate{}}}, MessageContext{From: "VERDITMMXXX", To: "CSMXFRPPXXX", MsgID: "x", Now: messageNow})
 	if !errors.Is(err, ErrMandateRequired) {
 		t.Fatalf("DirectDebitMessage = %v, want ErrMandateRequired", err)
 	}
@@ -743,7 +767,7 @@ func TestSettlementMessageRefusesAnEmptyInstruction(t *testing.T) {
 func TestCreditTransferRoundTripsThroughTheWire(t *testing.T) {
 	n, p := networkWithOnePayment(t)
 	ctx := context.Background()
-	env, err := n.CreditTransferMessage(p, MessageContext{
+	env, err := n.CreditTransferMessage([]Payment{p}, MessageContext{
 		From: "AURODEFFXXX", To: "CSMXFRPPXXX", MsgID: "AURO-1", Now: messageNow,
 	})
 	if err != nil {
@@ -758,7 +782,7 @@ func TestCreditTransferRoundTripsThroughTheWire(t *testing.T) {
 		t.Fatalf("Unmarshal: %v", err)
 	}
 
-	got, err := n.bank(p.CreditorDetails.Agent).CreditTransferRequest(ctx, back.Document.(*iso20022.Pacs008))
+	got, err := readOne(n.bank(p.CreditorDetails.Agent).CreditTransferRequest(ctx, back.Document.(*iso20022.Pacs008)))
 	if err != nil {
 		t.Fatalf("CreditTransferRequest: %v", err)
 	}
@@ -822,7 +846,7 @@ func TestCreditTransferRoundTripsThroughTheWire(t *testing.T) {
 func TestDirectDebitRoundTripsThroughTheWire(t *testing.T) {
 	n, p, m := networkWithOneCollection(t)
 	ctx := context.Background()
-	env, err := n.DirectDebitMessage(p, m, MessageContext{
+	env, err := n.DirectDebitMessage([]Collection{{Payment: p, Mandate: m}}, MessageContext{
 		From: "VERDITMMXXX", To: "CSMXFRPPXXX", MsgID: "VERDE-1", Now: messageNow,
 	})
 	if err != nil {
@@ -837,7 +861,7 @@ func TestDirectDebitRoundTripsThroughTheWire(t *testing.T) {
 		t.Fatalf("Unmarshal: %v", err)
 	}
 
-	got, err := n.bank(p.DebtorDetails.Agent).DirectDebitRequest(ctx, back.Document.(*iso20022.Pacs003))
+	got, err := readOne(n.bank(p.DebtorDetails.Agent).DirectDebitRequest(ctx, back.Document.(*iso20022.Pacs003)))
 	if err != nil {
 		t.Fatalf("DirectDebitRequest: %v", err)
 	}
@@ -891,7 +915,7 @@ func TestDirectDebitRoundTripsThroughTheWire(t *testing.T) {
 func TestAReceivingBankDoesNotResolveTheSendersCustomer(t *testing.T) {
 	n, p := networkWithOnePayment(t)
 	ctx := context.Background()
-	env, err := n.CreditTransferMessage(p, MessageContext{From: "AURODEFFXXX", To: "CSMXFRPPXXX", MsgID: "x", Now: messageNow})
+	env, err := n.CreditTransferMessage([]Payment{p}, MessageContext{From: "AURODEFFXXX", To: "CSMXFRPPXXX", MsgID: "x", Now: messageNow})
 	if err != nil {
 		t.Fatalf("CreditTransferMessage: %v", err)
 	}
@@ -901,7 +925,7 @@ func TestAReceivingBankDoesNotResolveTheSendersCustomer(t *testing.T) {
 	unknown := iso20022.IBAN("SE00000000000000000000")
 	doc.FIToFICstmrCdtTrf.CdtTrfTxInf[0].DbtrAcct.Id.IBAN = &unknown
 
-	req, err := n.bank(p.CreditorDetails.Agent).CreditTransferRequest(ctx, doc)
+	req, err := readOne(n.bank(p.CreditorDetails.Agent).CreditTransferRequest(ctx, doc))
 	if err != nil {
 		t.Fatalf("CreditTransferRequest: %v — a receiving bank does not check the sender's customer", err)
 	}
@@ -919,7 +943,7 @@ func TestAReceivingBankDoesNotResolveTheSendersCustomer(t *testing.T) {
 func TestAReceivingBankDoesNotResolveTheSendersCustomerOnAPull(t *testing.T) {
 	n, p, m := networkWithOneCollection(t)
 	ctx := context.Background()
-	env, err := n.DirectDebitMessage(p, m, MessageContext{From: "VERDITMMXXX", To: "CSMXFRPPXXX", MsgID: "x", Now: messageNow})
+	env, err := n.DirectDebitMessage([]Collection{{Payment: p, Mandate: m}}, MessageContext{From: "VERDITMMXXX", To: "CSMXFRPPXXX", MsgID: "x", Now: messageNow})
 	if err != nil {
 		t.Fatalf("DirectDebitMessage: %v", err)
 	}
@@ -927,7 +951,7 @@ func TestAReceivingBankDoesNotResolveTheSendersCustomerOnAPull(t *testing.T) {
 	unknown := iso20022.IBAN("IT00000000000000000000")
 	doc.FIToFICstmrDrctDbt.DrctDbtTxInf[0].CdtrAcct.Id.IBAN = &unknown
 
-	req, err := n.bank(p.DebtorDetails.Agent).DirectDebitRequest(ctx, doc)
+	req, err := readOne(n.bank(p.DebtorDetails.Agent).DirectDebitRequest(ctx, doc))
 	if err != nil {
 		t.Fatalf("DirectDebitRequest: %v — a receiving bank does not check the sender's customer", err)
 	}
@@ -939,7 +963,7 @@ func TestAReceivingBankDoesNotResolveTheSendersCustomerOnAPull(t *testing.T) {
 func TestCreditTransferRequestRefusesAnUnknownIBAN(t *testing.T) {
 	n, p := networkWithOnePayment(t)
 	ctx := context.Background()
-	env, err := n.CreditTransferMessage(p, MessageContext{From: "AURODEFFXXX", To: "CSMXFRPPXXX", MsgID: "x", Now: messageNow})
+	env, err := n.CreditTransferMessage([]Payment{p}, MessageContext{From: "AURODEFFXXX", To: "CSMXFRPPXXX", MsgID: "x", Now: messageNow})
 	if err != nil {
 		t.Fatalf("CreditTransferMessage: %v", err)
 	}
@@ -955,8 +979,13 @@ func TestCreditTransferRequestRefusesAnUnknownIBAN(t *testing.T) {
 	unknown := iso20022.IBAN(mintAt(t, verde, 999_999).Value)
 	doc.FIToFICstmrCdtTrf.CdtTrfTxInf[0].CdtrAcct.Id.IBAN = &unknown
 
-	_, err = n.bank(p.CreditorDetails.Agent).CreditTransferRequest(ctx, doc)
-	if err == nil {
+	// The refusal is the TRANSACTION's and not the file's, which is what lets a
+	// bulk file of a thousand be answered per payee. See InboundTransaction.
+	tx, err := readOneTx(n.bank(p.CreditorDetails.Agent).CreditTransferRequest(ctx, doc))
+	if err != nil {
+		t.Fatalf("CreditTransferRequest refused the whole file: %v", err)
+	}
+	if tx.Refusal == nil {
 		t.Fatal("resolved an IBAN no account holds")
 	}
 	// ErrAccountNotInParticipant is what becomes AC01 "incorrect account
@@ -966,9 +995,9 @@ func TestCreditTransferRequestRefusesAnUnknownIBAN(t *testing.T) {
 	// reasonTable, which is unexported, and networkWithOnePayment needs testenv,
 	// and no one package can reach both. The chain is covered across the two
 	// files rather than in one — and end to end, on the wire, by
-	// mesh's TestCreditTransferToAnUnknownAccountComesBackAsAC01.
-	if !errors.Is(err, ErrAccountNotInParticipant) {
-		t.Errorf("CreditTransferRequest on an unknown IBAN = %v, want ErrAccountNotInParticipant", err)
+	// cmd/server's TestCreditTransferToAnUnknownAccountComesBackAsAC01.
+	if !errors.Is(tx.Refusal, ErrAccountNotInParticipant) {
+		t.Errorf("CreditTransferRequest on an unknown IBAN = %v, want ErrAccountNotInParticipant", tx.Refusal)
 	}
 }
 
@@ -984,7 +1013,7 @@ func TestCreditTransferRequestRefusesAnUnknownIBAN(t *testing.T) {
 func TestCreditTransferRequestRefusesAnAccountThatIsNotAnIBAN(t *testing.T) {
 	n, p := networkWithOnePayment(t)
 	ctx := context.Background()
-	env, err := n.CreditTransferMessage(p, MessageContext{From: "AURODEFFXXX", To: "CSMXFRPPXXX", MsgID: "x", Now: messageNow})
+	env, err := n.CreditTransferMessage([]Payment{p}, MessageContext{From: "AURODEFFXXX", To: "CSMXFRPPXXX", MsgID: "x", Now: messageNow})
 	if err != nil {
 		t.Fatalf("CreditTransferMessage: %v", err)
 	}
@@ -1024,7 +1053,7 @@ func TestCreditTransferRequestRefusesAnAccountThatIsNotAnIBAN(t *testing.T) {
 func TestCreditTransferRequestRefusesAnAddressTwoOfItsOwnAccountsClaim(t *testing.T) {
 	n, p := networkWithOnePayment(t)
 	ctx := context.Background()
-	env, err := n.CreditTransferMessage(p, MessageContext{From: "AURODEFFXXX", To: "CSMXFRPPXXX", MsgID: "x", Now: messageNow})
+	env, err := n.CreditTransferMessage([]Payment{p}, MessageContext{From: "AURODEFFXXX", To: "CSMXFRPPXXX", MsgID: "x", Now: messageNow})
 	if err != nil {
 		t.Fatalf("CreditTransferMessage: %v", err)
 	}
@@ -1047,11 +1076,14 @@ func TestCreditTransferRequestRefusesAnAddressTwoOfItsOwnAccountsClaim(t *testin
 		return tx.PutDepositAccount(ctx, verde.BookID, a)
 	}))
 
-	_, err = n.bank(p.CreditorDetails.Agent).CreditTransferRequest(ctx, env.Document.(*iso20022.Pacs008))
-	if !errors.Is(err, deposit.ErrIdentifierAmbiguous) {
-		t.Fatalf("CreditTransferRequest on a contested address = %v, want ErrIdentifierAmbiguous", err)
+	tx, err := readOneTx(n.bank(p.CreditorDetails.Agent).CreditTransferRequest(ctx, env.Document.(*iso20022.Pacs008)))
+	if err != nil {
+		t.Fatalf("CreditTransferRequest refused the whole file: %v", err)
 	}
-	if errors.Is(err, ErrAccountNotInParticipant) {
+	if !errors.Is(tx.Refusal, deposit.ErrIdentifierAmbiguous) {
+		t.Fatalf("CreditTransferRequest on a contested address = %v, want ErrIdentifierAmbiguous", tx.Refusal)
+	}
+	if errors.Is(tx.Refusal, ErrAccountNotInParticipant) {
 		t.Error("a contested address surfaced as ErrAccountNotInParticipant, which reaches the sender as AC01 \"incorrect account number\" — the number is not the problem")
 	}
 }
@@ -1072,7 +1104,7 @@ func TestCreditTransferRequestRefusesAnAddressTwoOfItsOwnAccountsClaim(t *testin
 func TestCreditTransferRequestDoesNotBlameTheCounterpartyForAStoreFailure(t *testing.T) {
 	n, p := networkWithOnePayment(t)
 	ctx := context.Background()
-	env, err := n.CreditTransferMessage(p, MessageContext{From: "AURODEFFXXX", To: "CSMXFRPPXXX", MsgID: "x", Now: messageNow})
+	env, err := n.CreditTransferMessage([]Payment{p}, MessageContext{From: "AURODEFFXXX", To: "CSMXFRPPXXX", MsgID: "x", Now: messageNow})
 	if err != nil {
 		t.Fatalf("CreditTransferMessage: %v", err)
 	}
@@ -1113,7 +1145,7 @@ func TestCreditTransferRequestDoesNotBlameTheCounterpartyForAStoreFailure(t *tes
 func TestCreditTransferRequestRefusesAMessageInAnotherAsset(t *testing.T) {
 	n, p := networkWithOnePayment(t)
 	ctx := context.Background()
-	env, err := n.CreditTransferMessage(p, MessageContext{From: "AURODEFFXXX", To: "CSMXFRPPXXX", MsgID: "x", Now: messageNow})
+	env, err := n.CreditTransferMessage([]Payment{p}, MessageContext{From: "AURODEFFXXX", To: "CSMXFRPPXXX", MsgID: "x", Now: messageNow})
 	if err != nil {
 		t.Fatalf("CreditTransferMessage: %v", err)
 	}
@@ -1154,20 +1186,20 @@ func TestCreditTransferRequestReadsTheSchemeFromTheCurrency(t *testing.T) {
 	n.RegisterScheme(dollarPush{})
 	ctx := context.Background()
 
-	env, err := n.CreditTransferMessage(p, MessageContext{From: "AURODEFFXXX", To: "CSMXFRPPXXX", MsgID: "x", Now: messageNow})
+	env, err := n.CreditTransferMessage([]Payment{p}, MessageContext{From: "AURODEFFXXX", To: "CSMXFRPPXXX", MsgID: "x", Now: messageNow})
 	assertNoError(t, err)
 	doc := env.Document.(*iso20022.Pacs008)
 
 	// The euro message still resolves to the euro scheme, which is the half that
 	// must not change.
-	req, err := n.bank(p.CreditorDetails.Agent).CreditTransferRequest(ctx, doc)
+	req, err := readOne(n.bank(p.CreditorDetails.Agent).CreditTransferRequest(ctx, doc))
 	assertNoError(t, err)
 	assertEqual(t, "scheme of a euro pacs.008", req.Scheme, SchemeSEPACT)
 
 	// The same message in dollars resolves to the dollar scheme rather than
 	// being refused as a mismatch.
 	doc.FIToFICstmrCdtTrf.CdtTrfTxInf[0].IntrBkSttlmAmt = iso20022.ActiveCurrencyAndAmount{Ccy: "USD", Value: "2500.00"}
-	req, err = n.bank(p.CreditorDetails.Agent).CreditTransferRequest(ctx, doc)
+	req, err = readOne(n.bank(p.CreditorDetails.Agent).CreditTransferRequest(ctx, doc))
 	assertNoError(t, err)
 	assertEqual(t, "scheme of a dollar pacs.008", req.Scheme, SchemeID("usd.ct"))
 	assertEqual(t, "amount in minor units", req.Amount, ledger.Amount(250000))
@@ -1188,7 +1220,7 @@ func TestCreditTransferRequestRefusesAnAmbiguousScheme(t *testing.T) {
 	n.RegisterScheme(secondEuroPush{})
 	ctx := context.Background()
 
-	env, err := n.CreditTransferMessage(p, MessageContext{From: "AURODEFFXXX", To: "CSMXFRPPXXX", MsgID: "x", Now: messageNow})
+	env, err := n.CreditTransferMessage([]Payment{p}, MessageContext{From: "AURODEFFXXX", To: "CSMXFRPPXXX", MsgID: "x", Now: messageNow})
 	assertNoError(t, err)
 
 	_, err = n.bank(p.CreditorDetails.Agent).CreditTransferRequest(ctx, env.Document.(*iso20022.Pacs008))
@@ -1206,7 +1238,7 @@ func TestCreditTransferRequestRefusesAnAmbiguousScheme(t *testing.T) {
 func TestCreditTransferRequestRefusesAnUnknownCurrency(t *testing.T) {
 	n, p := networkWithOnePayment(t)
 	ctx := context.Background()
-	env, err := n.CreditTransferMessage(p, MessageContext{From: "AURODEFFXXX", To: "CSMXFRPPXXX", MsgID: "x", Now: messageNow})
+	env, err := n.CreditTransferMessage([]Payment{p}, MessageContext{From: "AURODEFFXXX", To: "CSMXFRPPXXX", MsgID: "x", Now: messageNow})
 	if err != nil {
 		t.Fatalf("CreditTransferMessage: %v", err)
 	}
@@ -1237,7 +1269,7 @@ func TestCreditTransferRequestReadsNOTPROVIDEDBackAsNoReference(t *testing.T) {
 	ctx := context.Background()
 	p.EndToEndID = ""
 	p.Amount = 1000
-	env, err := n.CreditTransferMessage(p, MessageContext{From: "AURODEFFXXX", To: "CSMXFRPPXXX", MsgID: "x", Now: messageNow})
+	env, err := n.CreditTransferMessage([]Payment{p}, MessageContext{From: "AURODEFFXXX", To: "CSMXFRPPXXX", MsgID: "x", Now: messageNow})
 	if err != nil {
 		t.Fatalf("CreditTransferMessage: %v", err)
 	}
@@ -1245,7 +1277,7 @@ func TestCreditTransferRequestReadsNOTPROVIDEDBackAsNoReference(t *testing.T) {
 		t.Fatalf("the fixture message carries EndToEndId %q, want NOTPROVIDED", got)
 	}
 
-	req, err := n.bank(p.CreditorDetails.Agent).CreditTransferRequest(ctx, env.Document.(*iso20022.Pacs008))
+	req, err := readOne(n.bank(p.CreditorDetails.Agent).CreditTransferRequest(ctx, env.Document.(*iso20022.Pacs008)))
 	if err != nil {
 		t.Fatalf("CreditTransferRequest: %v", err)
 	}
@@ -1285,7 +1317,7 @@ func TestCreditTransferRequestReadsNOTPROVIDEDBackAsNoReference(t *testing.T) {
 func TestCreditTransferRequestRefusesATruncatedFile(t *testing.T) {
 	n, p := networkWithOnePayment(t)
 	ctx := context.Background()
-	env, err := n.CreditTransferMessage(p, MessageContext{From: "AURODEFFXXX", To: "CSMXFRPPXXX", MsgID: "x", Now: messageNow})
+	env, err := n.CreditTransferMessage([]Payment{p}, MessageContext{From: "AURODEFFXXX", To: "CSMXFRPPXXX", MsgID: "x", Now: messageNow})
 	if err != nil {
 		t.Fatalf("CreditTransferMessage: %v", err)
 	}
@@ -1301,31 +1333,128 @@ func TestCreditTransferRequestRefusesATruncatedFile(t *testing.T) {
 	}
 }
 
-// A message carrying two transactions is refused, not partially read.
+// A file carrying two transactions is read as two instructions, in the file's
+// own order.
 //
-// The standard is a bulk format and this system is not: an
-// InitiatePaymentRequest is one payment, so translating the first of two would
-// drop the second silently — a payment that arrived, was acknowledged at the
-// message level, and never happened. The count here AGREES with what arrived,
-// which is what separates this claim from the truncated-file one: a reader that
-// checked NbOfTxs and then took CdtTrfTxInf[0] passes that test and fails this.
-func TestCreditTransferRequestRefusesABulkMessage(t *testing.T) {
+// A bank accumulates behind a cut-off and sends one message carrying everything
+// it has, so a reader that took CdtTrfTxInf[0] and stopped would drop every
+// payment after the first — arrived, acknowledged at the message level, and
+// never happened. The count here AGREES with what arrived, which is what
+// separates this from the truncated-file claim next door.
+func TestCreditTransferRequestReadsEveryTransactionInAFile(t *testing.T) {
 	n, p := networkWithOnePayment(t)
 	ctx := context.Background()
-	env, err := n.CreditTransferMessage(p, MessageContext{From: "AURODEFFXXX", To: "CSMXFRPPXXX", MsgID: "x", Now: messageNow})
+	env, err := n.CreditTransferMessage([]Payment{p}, MessageContext{From: "AURODEFFXXX", To: "CSMXFRPPXXX", MsgID: "x", Now: messageNow})
 	if err != nil {
 		t.Fatalf("CreditTransferMessage: %v", err)
 	}
 	body := &env.Document.(*iso20022.Pacs008).FIToFICstmrCdtTrf
-	body.CdtTrfTxInf = append(body.CdtTrfTxInf, body.CdtTrfTxInf[0])
+	second := body.CdtTrfTxInf[0]
+	second.PmtId = iso20022.PaymentIdentification{TxId: "pay-second", EndToEndId: "e2e-2"}
+	body.CdtTrfTxInf = append(body.CdtTrfTxInf, second)
 	body.GrpHdr.NbOfTxs = "2"
 
-	_, err = n.bank(p.CreditorDetails.Agent).CreditTransferRequest(ctx, env.Document.(*iso20022.Pacs008))
-	if err == nil {
-		t.Fatal("read one payment out of a message carrying two")
+	txs, err := n.bank(p.CreditorDetails.Agent).CreditTransferRequest(ctx, env.Document.(*iso20022.Pacs008))
+	if err != nil {
+		t.Fatalf("CreditTransferRequest over a file of two: %v", err)
 	}
-	if !strings.Contains(err.Error(), "one payment per message") {
-		t.Errorf("error = %v, want it to say this system reads one payment per message", err)
+	if len(txs) != 2 {
+		t.Fatalf("read %d instructions out of a file of two", len(txs))
+	}
+	if txs[0].ID != p.ID || txs[1].ID != "pay-second" {
+		t.Errorf("ids are %s and %s, want %s and pay-second in the file's order", txs[0].ID, txs[1].ID, p.ID)
+	}
+	if txs[1].Request.EndToEndID != "e2e-2" {
+		t.Errorf("the second instruction's reference is %q, want e2e-2", txs[1].Request.EndToEndID)
+	}
+	// Resolution runs on every transaction, not only the one a single-payment
+	// reader would have looked at: an unresolved creditor is an account id the
+	// receiving bank never filled in.
+	if txs[0].Request.Creditor.Account == "" || txs[1].Request.Creditor.Account == "" {
+		t.Errorf("creditors resolved to %q and %q, want this bank's own account on both",
+			txs[0].Request.Creditor.Account, txs[1].Request.Creditor.Account)
+	}
+}
+
+// A file carries every payment given to it, and says how many.
+func TestCreditTransferMessageCarriesEveryPaymentInTheFile(t *testing.T) {
+	n, p := networkWithOnePayment(t)
+	second := p
+	second.ID = "pay-second"
+	second.EndToEndID = "e2e-2"
+
+	env, err := n.CreditTransferMessage([]Payment{p, second},
+		MessageContext{From: "AURODEFFXXX", To: "CSMXFRPPXXX", MsgID: "x", Now: messageNow})
+	if err != nil {
+		t.Fatalf("CreditTransferMessage: %v", err)
+	}
+	body := env.Document.(*iso20022.Pacs008).FIToFICstmrCdtTrf
+	if len(body.CdtTrfTxInf) != 2 {
+		t.Fatalf("the file carries %d transactions, want 2", len(body.CdtTrfTxInf))
+	}
+	if body.GrpHdr.NbOfTxs != "2" {
+		t.Errorf("NbOfTxs is %q, want 2 — the count the sender asserts is the count it sent", body.GrpHdr.NbOfTxs)
+	}
+	if got := body.CdtTrfTxInf[1].PmtId.TxId; got != "pay-second" {
+		t.Errorf("the second transaction is %s, want pay-second in the order given", got)
+	}
+}
+
+// One file, one interbank settlement date. IntrBkSttlmDt is the group's element
+// and there is one of it, so a file whose payments settle on different days
+// would assert a date that is false for some of them.
+func TestAFileCannotAssertTwoSettlementDates(t *testing.T) {
+	n, p := networkWithOnePayment(t)
+	tomorrow := p
+	tomorrow.ID = "pay-second"
+	tomorrow.ValueDate = p.ValueDate.AddDate(0, 0, 1)
+
+	_, err := n.CreditTransferMessage([]Payment{p, tomorrow},
+		MessageContext{From: "AURODEFFXXX", To: "CSMXFRPPXXX", MsgID: "x", Now: messageNow})
+	if err == nil {
+		t.Fatal("built one file asserting two settlement dates")
+	}
+	if !strings.Contains(err.Error(), "settlement dates") {
+		t.Errorf("error = %v, want it to name the two dates that disagreed", err)
+	}
+}
+
+func TestAFileWithNoTransactionsIsNotAMessage(t *testing.T) {
+	n, _ := networkWithOnePayment(t)
+
+	if _, err := n.CreditTransferMessage(nil, MessageContext{From: "AURODEFFXXX", To: "CSMXFRPPXXX", MsgID: "x", Now: messageNow}); err == nil {
+		t.Error("built a pacs.008 carrying nothing")
+	}
+	if _, err := n.DirectDebitMessage(nil, MessageContext{From: "VERDITMMXXX", To: "CSMXFRPPXXX", MsgID: "x", Now: messageNow}); err == nil {
+		t.Error("built a pacs.003 carrying nothing")
+	}
+}
+
+// Each collection in a file travels with its OWN mandate: one debtor's standing
+// authority says nothing about the next one's, so a builder that carried the
+// file's first mandate on every transaction would put an authority on the wire
+// that its debtor never gave.
+func TestEachCollectionInAFileCarriesItsOwnMandate(t *testing.T) {
+	n, p, m := networkWithOneCollection(t)
+	second := p
+	second.ID = "pay-second"
+	other := m
+	other.ID = "mandate-second"
+
+	env, err := n.DirectDebitMessage([]Collection{{Payment: p, Mandate: m}, {Payment: second, Mandate: other}},
+		MessageContext{From: "VERDITMMXXX", To: "CSMXFRPPXXX", MsgID: "x", Now: messageNow})
+	if err != nil {
+		t.Fatalf("DirectDebitMessage: %v", err)
+	}
+	txs := env.Document.(*iso20022.Pacs003).FIToFICstmrDrctDbt.DrctDbtTxInf
+	if len(txs) != 2 {
+		t.Fatalf("the file carries %d collections, want 2", len(txs))
+	}
+	if got := txs[0].DrctDbtTx.MndtRltdInf.MndtId; got != string(m.ID) {
+		t.Errorf("the first collection quotes mandate %s, want %s", got, m.ID)
+	}
+	if got := txs[1].DrctDbtTx.MndtRltdInf.MndtId; got != "mandate-second" {
+		t.Errorf("the second collection quotes mandate %s, want mandate-second", got)
 	}
 }
 
@@ -1336,7 +1465,7 @@ func TestCreditTransferRequestRefusesABulkMessage(t *testing.T) {
 func TestDirectDebitRequestRefusesACollectionWithNoMandate(t *testing.T) {
 	n, p, m := networkWithOneCollection(t)
 	ctx := context.Background()
-	env, err := n.DirectDebitMessage(p, m, MessageContext{From: "VERDITMMXXX", To: "CSMXFRPPXXX", MsgID: "x", Now: messageNow})
+	env, err := n.DirectDebitMessage([]Collection{{Payment: p, Mandate: m}}, MessageContext{From: "VERDITMMXXX", To: "CSMXFRPPXXX", MsgID: "x", Now: messageNow})
 	if err != nil {
 		t.Fatalf("DirectDebitMessage: %v", err)
 	}
@@ -1432,7 +1561,7 @@ func TestATypedAddressReachesTheStoredOne(t *testing.T) {
 
 	// And the message carries that same string, character for character. One
 	// form, so there is nothing for the wire to normalise.
-	env, err := n.CreditTransferMessage(atAurora, MessageContext{From: "AURODEFFXXX", To: "CSMXFRPPXXX", MsgID: "x", Now: messageNow})
+	env, err := n.CreditTransferMessage([]Payment{atAurora}, MessageContext{From: "AURODEFFXXX", To: "CSMXFRPPXXX", MsgID: "x", Now: messageNow})
 	if err != nil {
 		t.Fatalf("CreditTransferMessage: %v", err)
 	}
@@ -1450,7 +1579,7 @@ func TestATypedAddressReachesTheStoredOne(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Unmarshal: %v", err)
 	}
-	got, err := n.bank(verde.BIC).CreditTransferRequest(ctx, back.Document.(*iso20022.Pacs008))
+	got, err := readOne(n.bank(verde.BIC).CreditTransferRequest(ctx, back.Document.(*iso20022.Pacs008)))
 	if err != nil {
 		t.Fatalf("CreditTransferRequest: %v", err)
 	}

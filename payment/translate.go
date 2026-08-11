@@ -77,11 +77,12 @@ var reasonTable = []reasonMapping{
 	// is true of a bank that does not exist and equally true of one this scheme
 	// has not admitted. It is classified in this block rather than below because
 	// it does reach a counterparty — when the PAYEE's bank is the non-member,
-	// csm.clear turns AcceptAtCSMTx's refusal into the RJCT its submitter
-	// reverses on. In the other direction the answer dead-letters, because the
-	// bank to be told is the non-member itself; that direction is refused at
-	// Mesh.Submit's door instead, before any message exists. See
-	// ErrBankNotAdmitted, which sets out both.
+	// the clearing house turns AcceptAtCSMTx's refusal into the RJCT its
+	// submitter reverses on. In the other direction there is nowhere to put the
+	// answer, because the bank to be told is the non-member itself and a
+	// non-member has no download queue; that direction is
+	// refused at the submitting bank's own door instead, before any message
+	// exists. See ErrBankNotAdmitted, which sets out both.
 	{ErrBankNotAdmitted, "ErrBankNotAdmitted", iso20022.StatusReasonBankIdentifierIncorrect},
 	{ErrUnaddressableAccount, "ErrUnaddressableAccount", iso20022.StatusReasonMissingDebtorAccountOrIdentification},
 	{ErrIdentifierMismatch, "ErrIdentifierMismatch", iso20022.StatusReasonMissingDebtorAccountOrIdentification},
@@ -122,6 +123,17 @@ var reasonTable = []reasonMapping{
 	// defect, said about a different field.
 	{ErrCounterpartyNotNamed, "ErrCounterpartyNotNamed", iso20022.StatusReasonNotSpecifiedAgentGenerated},
 
+	// An on-us instruction is the same category again — an instruction this
+	// scheme cannot carry, refused at submission — and MS03 for the same reason:
+	// the code set has nothing for "both of these parties are yours".
+	//
+	// It is the one refusal here that could never reach a counterparty even in
+	// principle, and not merely because no path exists today. The two agents are
+	// one bank, so the message would be addressed to its sender. What the payer
+	// is told instead is api's 422 and the remedy beside it: the same transfer,
+	// as a book transfer. See ErrOnUsPayment.
+	{ErrOnUsPayment, "ErrOnUsPayment", iso20022.StatusReasonNotSpecifiedAgentGenerated},
+
 	// Its sibling, and RC01 rather than MS03 because there IS a code for this
 	// one: "the BIC does not identify a reachable participant" is exactly what
 	// an absent or malformed CdtrAgt/DbtrAgt means. It is classified here
@@ -148,8 +160,9 @@ var reasonTable = []reasonMapping{
 	// Each is a failure of THIS system's own bookkeeping rather than a
 	// judgement about the instruction, so there is nothing truthful to tell
 	// the sender. They are classified here as never reaching a counterparty,
-	// and the mesh is where that classification is acted on: an actor that
-	// gets one dead-letters it rather than putting it on the wire.
+	// and the institutions in cmd/server are where that classification is acted
+	// on: one that gets a file back with such an error records it against the
+	// order id in the day's report rather than uploading an answer.
 	//
 	// ReasonFor itself still cannot tell one of these apart from an error the
 	// table has never heard of at all — both come back MS03 through the same
@@ -158,10 +171,9 @@ var reasonTable = []reasonMapping{
 	// discriminated that way are the ones reached on paths nothing is wrong
 	// with:
 	//
-	//   - ErrInvalidStateTransition, an ordinary redelivery, in four places:
-	//     bank.accept (which is where bank.receiveCreditTransfer and
-	//     receiveDirectDebit both end up), csm.receiveStatus, csm.clear and
-	//     centralBank.receiveReturn.
+	//   - ErrInvalidStateTransition, an ordinary redelivery, in three places:
+	//     a bank applying a released file, the clearing house taking one in, and
+	//     the settlement agent executing a return.
 	//   - ErrNotThisBanksPayment, the ordinary happy path of EVERY push
 	//     settlement. csm.tellSettled fans the ACSC to both banks; the payer's
 	//     bank has no creditor leg, and PostCreditorLeg tells it so. Discarded
@@ -222,8 +234,8 @@ var reasonTable = []reasonMapping{
 
 	// A mandate recorded at a bank that is not its creditor's. It reaches no
 	// message at all: creating one is an operator's request on a bank's own
-	// console, answered with a status code, and nothing in the mesh calls
-	// CreateMandateTx. The empty code is therefore not a judgement about what to
+	// console, answered with a status code, and no file any institution
+	// exchanges carries CreateMandateTx. The empty code is therefore not a judgement about what to
 	// tell a counterparty — there is no conversation this can occur in.
 	{ErrNotThisBanksMandate, "ErrNotThisBanksMandate", ""},
 
@@ -235,8 +247,7 @@ var reasonTable = []reasonMapping{
 	// caller and the callee are the same process, and what went wrong is that
 	// something held a handle belonging to one institution and asked it to
 	// perform another's act. It is a WIRING mistake — the same class as
-	// api.NewServer's missing mesh and NewNetwork's zero Identity, both of which
-	// panic — and it is a returned error here only because the entity a Network
+	// NewNetwork's zero Identity, which panics — and it is a returned error here only because the entity a Network
 	// belongs to is decided far from where an act is called.
 	//
 	// So the empty code, for a sharper version of the reason the three above
@@ -255,8 +266,8 @@ var reasonTable = []reasonMapping{
 	// did — so it takes ErrCycleNotClosed's empty code and ErrCycleNotClosed's
 	// argument: it describes THIS system's state and not a judgement about the
 	// instruction, and MS03 would tell a clearing house that a cycle which in
-	// fact settled was refused. mesh's centralBank.receiveSettlement
-	// discriminates it by name and dead-letters it.
+	// fact settled was refused. The settlement agent's handler discriminates it
+	// by name and reports it instead of answering.
 	//
 	// A separate sentinel because the agent does not read the cycle to find out:
 	// it holds no cycles table, so "have I settled this" is answered out of its own
@@ -326,7 +337,7 @@ var reasonTable = []reasonMapping{
 // two guards are about payment/errors.go — every sentinel declared there must
 // appear, and nothing else may.
 //
-// Both members are AM04, from two different layers, and they are two entries
+// Two of the three are AM04, from two different layers, and they are two entries
 // rather than one because they are two distinct error values that no unwrapping
 // relates: neither wraps the other.
 //
@@ -348,23 +359,28 @@ var reasonTable = []reasonMapping{
 // settlement agent answers, and it is what the receiving system reads to decide
 // whether to re-present or unwind.
 //
+// The third is deposit.ErrAccountClosed, and it is AC04, which the external set
+// has a member for and which is one of the commonest return reasons in SEPA. It
+// is the payee's own bank's refusal of a settled credit — the account exists and
+// will not take one — and it reaches a counterparty because a receiving bank
+// after finality answers with a pacs.004 rather than with silence.
+//
 // A new member belongs here only if the error reaches ReasonFor at all, which
-// means a half that some mesh handler calls really returns it. A push RETURN is
-// the first place in a push flow where deposit's funds sentinel is produced,
-// because it checks whether the payee's account can fund a WITHDRAWAL.
+// means a half that some institution's handler calls really returns it. A push
+// RETURN is the first place in a push flow where deposit's funds sentinel is
+// produced, because it checks whether the payee's account can fund a WITHDRAWAL.
 var borrowedReasons = []reasonMapping{
 	{deposit.ErrInsufficientAvailable, "deposit.ErrInsufficientAvailable", iso20022.StatusReasonInsufficientFunds},
 	{ledger.ErrInsufficientBalance, "ledger.ErrInsufficientBalance", iso20022.StatusReasonInsufficientFunds},
+	{deposit.ErrAccountClosed, "deposit.ErrAccountClosed", iso20022.StatusReasonClosedAccountNumber},
 }
 
 // ReasonFor maps an error to the code a pacs.002 should carry.
 //
 // It is exported because the party that decides an error is worth telling a
 // counterparty about is not this package: it is whoever holds the connection.
-// In this repository that is mesh, whose bank and clearing-house handlers turn
-// a refused half into a rejection on the wire, and which is therefore the first
-// caller this function has ever had. It stayed unexported for as long as it had
-// none.
+// In this repository that is cmd/server, whose bank and clearing-house handlers
+// turn a refused half into a rejection in a file they upload.
 //
 // It unwraps, because the payment layer wraps freely and a table keyed on
 // identity alone would degrade to MS03 for most real failures — silently,
@@ -386,7 +402,7 @@ var borrowedReasons = []reasonMapping{
 // borrowed code rather than falling to MS03. Nothing produces such an error
 // today and TestReasonForEmptyCodeEntriesFallToMS03 pins the direct case; the
 // protection an empty code gives is the CALLER's, made by name before it asks
-// for a code at all, which is what mesh's handlers do with
+// for a code at all, which is what cmd/server's handlers do with
 // ErrInvalidStateTransition. See the note on the empty-code block above.
 func ReasonFor(err error) iso20022.StatusReason {
 	for _, table := range [][]reasonMapping{reasonTable, borrowedReasons} {
@@ -397,6 +413,71 @@ func ReasonFor(err error) iso20022.StatusReason {
 		}
 	}
 	return iso20022.StatusReasonNotSpecifiedAgentGenerated
+}
+
+// Answerable reports whether an error is a judgement about the INSTRUCTION —
+// something a counterparty can be told and can act on — as against a failure of
+// this system's own bookkeeping, which nobody outside it could do anything with.
+//
+// It is the question ReasonFor cannot answer. ReasonFor always produces a code,
+// because a caller that has already decided to answer needs one; MS03 is its
+// floor. So a dropped connection and a payee's closed account come back as codes
+// that look alike, and the caller has to have made the decision first.
+//
+// The tables are what make it: an error classified in either of them was
+// classified BY SOMEBODY, with a comment saying why, and an error in neither has
+// simply never been thought about as something to put on a wire. The empty-code
+// entries are excluded for the same reason ReasonFor excludes them — an empty
+// code IS the decision that this one never reaches a counterparty.
+//
+// What it is for is the receiving bank's half after finality, where the two
+// outcomes are no longer both messages: a judgement becomes a pacs.004 that
+// sends a settled payment back, and a bookkeeping failure becomes a line in the
+// day's report. Returning money on a dropped connection is the mistake this
+// exists to prevent.
+func Answerable(err error) bool {
+	for _, table := range [][]reasonMapping{reasonTable, borrowedReasons} {
+		for _, m := range table {
+			if m.Code != "" && errors.Is(err, m.Err) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// ReturnReasonFor maps an error to the code a pacs.004 should carry.
+//
+// It is ReasonFor's counterpart for the OTHER external set, and it goes through
+// ReasonFor rather than holding a second table: the two sets share their
+// spellings wherever both name the same fact, and a second table would be a
+// second place for one classification to live and drift from.
+//
+// It is not a cast, and the switch is what stops it being one. A status reason
+// with no member of its own in the return set — TM01, FF01, AM05's siblings —
+// becomes MS03, because a pacs.004 may only carry a member of the return set and
+// putting a rejection code in one would be putting a value on the wire that set
+// does not define. iso20022.ReturnReason exists as a distinct type for exactly
+// this reason.
+func ReturnReasonFor(err error) iso20022.ReturnReason {
+	switch ReasonFor(err) {
+	case iso20022.StatusReasonIncorrectAccountNumber:
+		return iso20022.ReturnReasonIncorrectAccountNumber
+	case iso20022.StatusReasonClosedAccountNumber:
+		return iso20022.ReturnReasonClosedAccountNumber
+	case iso20022.StatusReasonInsufficientFunds:
+		return iso20022.ReturnReasonInsufficientFunds
+	case iso20022.StatusReasonDuplication:
+		return iso20022.ReturnReasonDuplication
+	case iso20022.StatusReasonNoMandate:
+		return iso20022.ReturnReasonNoMandate
+	case iso20022.StatusReasonBankIdentifierIncorrect:
+		return iso20022.ReturnReasonBankIdentifierIncorrect
+	case iso20022.StatusReasonMissingDebtorAccountOrIdentification:
+		return iso20022.ReturnReasonMissingDebtorAccountOrIdentification
+	default:
+		return iso20022.ReturnReasonNotSpecifiedAgentGenerated
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -422,7 +503,7 @@ type MessageContext struct {
 	//
 	// It exists because a relay cannot otherwise be honest. The clearing house
 	// passes the settlement agent's refusal of a RETURN straight through to the
-	// bank that asked for one (mesh.csm.receiveReturnStatus): it decides
+	// bank that asked for one (cmd/server's csm.receiveReturnStatus): it decides
 	// nothing, adds nothing, and — with only From to go on — was stamping
 	// itself as the originator of somebody else's refusal. That is precisely
 	// what Orgtr exists to prevent, per iso20022.StatusReasonInformation: a
@@ -731,8 +812,34 @@ func partiesOf(p Payment) (debtor, creditor messageParty) {
 		}
 }
 
-// CreditTransferMessage renders a payment as the pacs.008 that carries it
-// between banks.
+// outbound is one payment and everything a message builder needs that the
+// payment does not carry: both sides as a message names them, the asset its
+// scheme settles in, and, on a pull, the mandate that authorises it.
+type outbound struct {
+	payment  Payment
+	mandate  Mandate
+	debtor   messageParty
+	creditor messageParty
+	asset    ledger.AssetCode
+}
+
+// outboundOf is the one lookup a builder needs — the payment's scheme, for the
+// asset it settles in. partiesOf reads nothing.
+func (s *Network) outboundOf(p Payment) (outbound, error) {
+	asset, err := s.assetOf(p)
+	if err != nil {
+		return outbound{}, err
+	}
+	debtor, creditor := partiesOf(p)
+	return outbound{payment: p, debtor: debtor, creditor: creditor, asset: asset}, nil
+}
+
+// CreditTransferMessage renders a file of payments as the pacs.008 that carries
+// them between banks.
+//
+// A FILE, because that is what a bank sends: instructions accumulate behind a
+// cut-off and one message carries all of them. One payment is the smallest such
+// file and not a different shape.
 //
 // The two AGENTS are the two banks, and the header's To is whoever the message
 // is being handed to next — the clearing house, on the first hop. Those are
@@ -741,13 +848,16 @@ func partiesOf(p Payment) (debtor, creditor messageParty) {
 //
 // It takes neither a context nor a Tx: a payment carries both sides' names and
 // agents, so there is no I/O left here to need a unit of work for.
-func (s *Network) CreditTransferMessage(p Payment, mc MessageContext) (iso20022.Envelope, error) {
-	asset, err := s.assetOf(p)
-	if err != nil {
-		return iso20022.Envelope{}, err
+func (s *Network) CreditTransferMessage(ps []Payment, mc MessageContext) (iso20022.Envelope, error) {
+	out := make([]outbound, 0, len(ps))
+	for _, p := range ps {
+		o, err := s.outboundOf(p)
+		if err != nil {
+			return iso20022.Envelope{}, err
+		}
+		out = append(out, o)
 	}
-	debtor, creditor := partiesOf(p)
-	return creditTransfer(p, debtor, creditor, asset, mc)
+	return creditTransfer(out, mc)
 }
 
 // creditTransfer builds the message from data its caller already holds.
@@ -755,47 +865,20 @@ func (s *Network) CreditTransferMessage(p Payment, mc MessageContext) (iso20022.
 // FuzzTranslate needs: CreditTransferMessage reads no store either (see its
 // own doc), so there is no I/O anywhere on this path for a fuzz input to
 // depend on.
-func creditTransfer(p Payment, debtor, creditor messageParty, asset ledger.AssetCode, mc MessageContext) (iso20022.Envelope, error) {
-	amt, err := amountOf(p.Amount, asset)
-	if err != nil {
-		return iso20022.Envelope{}, err
-	}
-	dbtr, err := namedPartyOf("Dbtr", debtor.Name)
-	if err != nil {
-		return iso20022.Envelope{}, err
-	}
-	dbtrIBAN, err := ibanOf("DbtrAcct", debtor.Identifier)
-	if err != nil {
-		return iso20022.Envelope{}, err
-	}
-	cdtr, err := namedPartyOf("Cdtr", creditor.Name)
-	if err != nil {
-		return iso20022.Envelope{}, err
-	}
-	cdtrIBAN, err := ibanOf("CdtrAcct", creditor.Identifier)
+func creditTransfer(out []outbound, mc MessageContext) (iso20022.Envelope, error) {
+	settled, err := groupSettlementDate(out, mc)
 	if err != nil {
 		return iso20022.Envelope{}, err
 	}
 
-	// The field order is the schema's, and it is the payment's own path: party,
-	// its bank, the other bank, the other party. LclInstrm is absent because
-	// SEPA credit transfer does not populate it, and SeqTp is absent because
-	// pacs.008 has no such element at all — see iso20022.PaymentTypeInformation.
-	txs := []iso20022.CreditTransferTransaction{{
-		PmtId: paymentIdentificationOf(p),
-		PmtTpInf: &iso20022.PaymentTypeInformation{
-			SvcLvl: &iso20022.ServiceLevelChoice{Cd: iso20022.ServiceLevelSEPA},
-		},
-		IntrBkSttlmAmt: amt,
-		ChrgBr:         iso20022.ChargeBearerFollowingServiceLevel,
-		Dbtr:           dbtr,
-		DbtrAcct:       cashAccount(dbtrIBAN),
-		DbtrAgt:        agentOf(debtor.BIC),
-		CdtrAgt:        agentOf(creditor.BIC),
-		Cdtr:           cdtr,
-		CdtrAcct:       cashAccount(cdtrIBAN),
-		RmtInf:         remittanceOf(p.Description),
-	}}
+	txs := make([]iso20022.CreditTransferTransaction, 0, len(out))
+	for _, o := range out {
+		tx, err := creditTransferTx(o)
+		if err != nil {
+			return iso20022.Envelope{}, err
+		}
+		txs = append(txs, tx)
+	}
 
 	doc := &iso20022.Pacs008{FIToFICstmrCdtTrf: iso20022.FIToFICustomerCreditTransfer{
 		GrpHdr: iso20022.CreditTransferGroupHeader{
@@ -807,7 +890,7 @@ func creditTransfer(p Payment, debtor, creditor messageParty, asset ledger.Asset
 			// the element exists. See
 			// TestSettlementMessageNbOfTxsSurvivesATruncatedFile.
 			NbOfTxs:       strconv.Itoa(len(txs)),
-			IntrBkSttlmDt: settlementDateOf(p, mc),
+			IntrBkSttlmDt: settled,
 			SttlmInf:      clearingSettlement(),
 		},
 		CdtTrfTxInf: txs,
@@ -818,7 +901,176 @@ func creditTransfer(p Payment, debtor, creditor messageParty, asset ledger.Asset
 	}, nil
 }
 
-// DirectDebitMessage renders a collection as the pacs.003 that carries it.
+// creditTransferTx is one transaction of a pacs.008.
+//
+// The field order is the schema's, and it is the payment's own path: party, its
+// bank, the other bank, the other party. LclInstrm is absent because SEPA credit
+// transfer does not populate it, and SeqTp is absent because pacs.008 has no
+// such element at all — see iso20022.PaymentTypeInformation.
+func creditTransferTx(o outbound) (iso20022.CreditTransferTransaction, error) {
+	var zero iso20022.CreditTransferTransaction
+
+	amt, err := amountOf(o.payment.Amount, o.asset)
+	if err != nil {
+		return zero, err
+	}
+	dbtr, err := namedPartyOf("Dbtr", o.debtor.Name)
+	if err != nil {
+		return zero, err
+	}
+	dbtrIBAN, err := ibanOf("DbtrAcct", o.debtor.Identifier)
+	if err != nil {
+		return zero, err
+	}
+	cdtr, err := namedPartyOf("Cdtr", o.creditor.Name)
+	if err != nil {
+		return zero, err
+	}
+	cdtrIBAN, err := ibanOf("CdtrAcct", o.creditor.Identifier)
+	if err != nil {
+		return zero, err
+	}
+
+	return iso20022.CreditTransferTransaction{
+		PmtId: paymentIdentificationOf(o.payment),
+		PmtTpInf: &iso20022.PaymentTypeInformation{
+			SvcLvl: &iso20022.ServiceLevelChoice{Cd: iso20022.ServiceLevelSEPA},
+		},
+		IntrBkSttlmAmt: amt,
+		ChrgBr:         iso20022.ChargeBearerFollowingServiceLevel,
+		Dbtr:           dbtr,
+		DbtrAcct:       cashAccount(dbtrIBAN),
+		DbtrAgt:        agentOf(o.debtor.BIC),
+		CdtrAgt:        agentOf(o.creditor.BIC),
+		Cdtr:           cdtr,
+		CdtrAcct:       cashAccount(cdtrIBAN),
+		RmtInf:         remittanceOf(o.payment.Description),
+	}, nil
+}
+
+// groupSettlementDate is the one interbank settlement date a file asserts.
+//
+// IntrBkSttlmDt is the GROUP's element and there is one of it, so a file whose
+// transactions settle on different days says something false about some of
+// them. A cut-off builds one file per scheme and a scheme's value date follows
+// from the scheme, so agreement is how the payments arrive rather than
+// something a caller arranges — and the file that disagrees anyway is refused
+// here instead of being given one of its dates and being wrong about the rest.
+//
+// An EMPTY file is refused in the same breath. There is no date to assert, and
+// a pacs.008 with no transactions is not a quiet day: it is a cut-off that
+// produced a message nobody needed to send.
+func groupSettlementDate(out []outbound, mc MessageContext) (iso20022.ISODate, error) {
+	if len(out) == 0 {
+		return iso20022.ISODate{}, fmt.Errorf("payment: a file with no transactions is not a message")
+	}
+	settled := settlementDateOf(out[0].payment, mc)
+	for _, o := range out[1:] {
+		if d := settlementDateOf(o.payment, mc); !d.Time.Equal(settled.Time) {
+			return iso20022.ISODate{}, fmt.Errorf("payment: one file cannot assert two settlement dates, %s and %s",
+				settled.Time.Format(time.DateOnly), d.Time.Format(time.DateOnly))
+		}
+	}
+	return settled, nil
+}
+
+// InstructionMessage renders one cut-off file: the pacs.008 or pacs.003 a bank
+// hands the clearing house when it reaches its cut-off.
+//
+// One file, one SCHEME, because a scheme decides both the message definition and
+// the asset every amount in the file is denominated in. A bank operating two
+// schemes reaches one cut-off and uploads two files, which is the shape a real
+// hub has: a SEPA credit transfer bulk and a SEPA direct debit bulk are two
+// submissions to the same clearing house on the same morning.
+//
+// It is the only builder that reads a store, and only on a pull: a pacs.003
+// carries each debtor's own mandate and a payment holds nothing of one but its
+// id. The read is a View over the submitting bank's own database — a mandate is
+// held by the CREDITOR's bank in SEPA, which is the bank reaching this cut-off.
+func (s *Network) InstructionMessage(ctx context.Context, ps []Payment, mc MessageContext) (iso20022.Envelope, error) {
+	if len(ps) == 0 {
+		return iso20022.Envelope{}, fmt.Errorf("payment: a file with no transactions is not a message")
+	}
+	scheme, ok := s.scheme(ps[0].Scheme)
+	if !ok {
+		return iso20022.Envelope{}, fmt.Errorf("%w: %s", ErrSchemeNotFound, ps[0].Scheme)
+	}
+	for _, p := range ps[1:] {
+		if p.Scheme != ps[0].Scheme {
+			return iso20022.Envelope{}, fmt.Errorf("payment: one file cannot carry both %s and %s", ps[0].Scheme, p.Scheme)
+		}
+	}
+	if scheme.Direction() != Pull {
+		return s.CreditTransferMessage(ps, mc)
+	}
+	var cs []Collection
+	err := s.store.View(ctx, func(ctx context.Context, tx Tx) error {
+		cs = make([]Collection, 0, len(ps))
+		for _, p := range ps {
+			m, err := tx.GetMandate(ctx, p.MandateID)
+			if err != nil {
+				return err
+			}
+			cs = append(cs, Collection{Payment: p, Mandate: m})
+		}
+		return nil
+	})
+	if err != nil {
+		return iso20022.Envelope{}, err
+	}
+	return s.DirectDebitMessage(cs, mc)
+}
+
+// instructableTx proves that a payment can be put in a file, by building the
+// transaction it would travel as and keeping nothing.
+//
+// Building it is the only honest way to know it can be built. The alternative is
+// a second list of the elements a message needs — both accounts addressable,
+// both parties named, the amount representable in the standard's decimal — and
+// two lists of one rule are two things that drift.
+//
+// It runs at SUBMISSION, inside the unit of work that posts the debtor leg, and
+// that placement is the whole point. The file itself is not built until the
+// cut-off, hours later; a payer debited now against an instruction that turns out
+// to be unsendable then would be short of money against a payment nobody could
+// ever answer. So the refusal happens while the debit can still roll back with
+// it, and the API answers 422.
+//
+// What it costs is one rendering per payment that is thrown away, and the
+// transaction it renders is rendered again at the cut-off. That is the price of
+// the check being the real thing rather than a summary of it.
+func (s *Network) instructableTx(ctx context.Context, tx Tx, p Payment) error {
+	scheme, ok := s.scheme(p.Scheme)
+	if !ok {
+		return fmt.Errorf("%w: %s", ErrSchemeNotFound, p.Scheme)
+	}
+	o, err := s.outboundOf(p)
+	if err != nil {
+		return err
+	}
+	if scheme.Direction() != Pull {
+		_, err = creditTransferTx(o)
+		return err
+	}
+	if o.mandate, err = tx.GetMandate(ctx, p.MandateID); err != nil {
+		return err
+	}
+	_, err = directDebitTx(o)
+	return err
+}
+
+// Collection is a direct debit and the mandate that authorises it.
+//
+// They travel together because a pacs.003 carries the mandate's own terms and a
+// payment holds only its MandateID. A file of collections is a file of pairs,
+// each with its own mandate: one debtor's authority says nothing about the next.
+type Collection struct {
+	Payment Payment
+	Mandate Mandate
+}
+
+// DirectDebitMessage renders a file of collections as the pacs.003 that carries
+// them.
 //
 // It is the mirror of CreditTransferMessage in the one way that matters: the
 // SENDER is the party being paid. A push scheme's message travels with the
@@ -826,47 +1078,85 @@ func creditTransfer(p Payment, debtor, creditor messageParty, asset ledger.Asset
 // agent come first in the transaction and why the mandate has to travel too.
 //
 // It takes neither a context nor a Tx, for the same reason CreditTransferMessage
-// stopped taking them: partiesOf reads nothing, and the mandate — the one piece
-// of I/O this message ever needed — arrives already resolved as m, loaded by
-// InstructionTx's tx.GetMandate before this is called. DirectDebitMessageTx,
-// CreditTransferMessageTx's counterpart, is gone with it for the same reason.
-func (s *Network) DirectDebitMessage(p Payment, m Mandate, mc MessageContext) (iso20022.Envelope, error) {
-	asset, err := s.assetOf(p)
-	if err != nil {
-		return iso20022.Envelope{}, err
+// does not: partiesOf reads nothing, and the mandate — the one piece of I/O this
+// message ever needed — arrives already resolved on the Collection, loaded by
+// InstructionMessage before this is called.
+func (s *Network) DirectDebitMessage(cs []Collection, mc MessageContext) (iso20022.Envelope, error) {
+	out := make([]outbound, 0, len(cs))
+	for _, c := range cs {
+		o, err := s.outboundOf(c.Payment)
+		if err != nil {
+			return iso20022.Envelope{}, err
+		}
+		o.mandate = c.Mandate
+		out = append(out, o)
 	}
-	debtor, creditor := partiesOf(p)
-	return directDebit(p, m, debtor, creditor, asset, mc)
+	return directDebit(out, mc)
 }
 
-func directDebit(p Payment, m Mandate, debtor, creditor messageParty, asset ledger.AssetCode, mc MessageContext) (iso20022.Envelope, error) {
-	amt, err := amountOf(p.Amount, asset)
+func directDebit(out []outbound, mc MessageContext) (iso20022.Envelope, error) {
+	settled, err := groupSettlementDate(out, mc)
 	if err != nil {
 		return iso20022.Envelope{}, err
 	}
-	cdtr, err := namedPartyOf("Cdtr", creditor.Name)
-	if err != nil {
-		return iso20022.Envelope{}, err
+
+	txs := make([]iso20022.DirectDebitTransactionInformation, 0, len(out))
+	for _, o := range out {
+		tx, err := directDebitTx(o)
+		if err != nil {
+			return iso20022.Envelope{}, err
+		}
+		txs = append(txs, tx)
 	}
-	cdtrIBAN, err := ibanOf("CdtrAcct", creditor.Identifier)
+
+	doc := &iso20022.Pacs003{FIToFICstmrDrctDbt: iso20022.FIToFICustomerDirectDebit{
+		GrpHdr: iso20022.DirectDebitGroupHeader{
+			MsgId:         mc.MsgID,
+			CreDtTm:       iso20022.ISODateTime{Time: mc.Now},
+			NbOfTxs:       strconv.Itoa(len(txs)),
+			IntrBkSttlmDt: settled,
+			SttlmInf:      clearingSettlement(),
+		},
+		DrctDbtTxInf: txs,
+	}}
+	return iso20022.Envelope{
+		AppHdr:   mc.header(doc.MessageDefinitionIdentifier()),
+		Document: doc,
+	}, nil
+}
+
+// directDebitTx is one collection of a pacs.003.
+func directDebitTx(o outbound) (iso20022.DirectDebitTransactionInformation, error) {
+	var zero iso20022.DirectDebitTransactionInformation
+
+	p, m := o.payment, o.mandate
+	amt, err := amountOf(p.Amount, o.asset)
 	if err != nil {
-		return iso20022.Envelope{}, err
+		return zero, err
 	}
-	dbtr, err := namedPartyOf("Dbtr", debtor.Name)
+	cdtr, err := namedPartyOf("Cdtr", o.creditor.Name)
 	if err != nil {
-		return iso20022.Envelope{}, err
+		return zero, err
 	}
-	dbtrIBAN, err := ibanOf("DbtrAcct", debtor.Identifier)
+	cdtrIBAN, err := ibanOf("CdtrAcct", o.creditor.Identifier)
 	if err != nil {
-		return iso20022.Envelope{}, err
+		return zero, err
+	}
+	dbtr, err := namedPartyOf("Dbtr", o.debtor.Name)
+	if err != nil {
+		return zero, err
+	}
+	dbtrIBAN, err := ibanOf("DbtrAcct", o.debtor.Identifier)
+	if err != nil {
+		return zero, err
 	}
 	if m.ID == "" {
-		return iso20022.Envelope{}, ErrMandateRequired
+		return zero, ErrMandateRequired
 	}
 
 	local := iso20022.LocalInstrumentCore
 	seq := iso20022.SequenceTypeRecurring
-	txs := []iso20022.DirectDebitTransactionInformation{{
+	return iso20022.DirectDebitTransactionInformation{
 		PmtId: paymentIdentificationOf(p),
 		PmtTpInf: &iso20022.PaymentTypeInformation{
 			SvcLvl:    &iso20022.ServiceLevelChoice{Cd: iso20022.ServiceLevelSEPA},
@@ -903,26 +1193,11 @@ func directDebit(p Payment, m Mandate, debtor, creditor messageParty, asset ledg
 		},
 		Cdtr:     cdtr,
 		CdtrAcct: cashAccount(cdtrIBAN),
-		CdtrAgt:  agentOf(creditor.BIC),
+		CdtrAgt:  agentOf(o.creditor.BIC),
 		Dbtr:     dbtr,
 		DbtrAcct: cashAccount(dbtrIBAN),
-		DbtrAgt:  agentOf(debtor.BIC),
+		DbtrAgt:  agentOf(o.debtor.BIC),
 		RmtInf:   remittanceOf(p.Description),
-	}}
-
-	doc := &iso20022.Pacs003{FIToFICstmrDrctDbt: iso20022.FIToFICustomerDirectDebit{
-		GrpHdr: iso20022.DirectDebitGroupHeader{
-			MsgId:         mc.MsgID,
-			CreDtTm:       iso20022.ISODateTime{Time: mc.Now},
-			NbOfTxs:       strconv.Itoa(len(txs)),
-			IntrBkSttlmDt: settlementDateOf(p, mc),
-			SttlmInf:      clearingSettlement(),
-		},
-		DrctDbtTxInf: txs,
-	}}
-	return iso20022.Envelope{
-		AppHdr:   mc.header(doc.MessageDefinitionIdentifier()),
-		Document: doc,
 	}, nil
 }
 
@@ -1174,8 +1449,8 @@ func (s *Network) ReturnMessage(p Payment, reason iso20022.ReturnReason, text st
 // only thing the receiver has, and it carries no internal identifier of this
 // system's.
 
-// CreditTransferRequest turns a received pacs.008 into a request this system
-// can act on.
+// CreditTransferRequest turns a received pacs.008 into the requests this system
+// can act on: one per transaction in the file, in the file's own order.
 //
 // A pacs.008 travels FROM the debtor's bank, routed by CdtrAgt, so the bank
 // reading it SHOULD be the CREDITOR's, and the creditor is the only party it has
@@ -1191,8 +1466,7 @@ func (s *Network) ReturnMessage(p Payment, reason iso20022.ReturnReason, text st
 // payer who names the wrong bank has the message delivered to that bank, and
 // this function is what refuses it. Own-register resolution is the guard: a
 // sweep would have found the payee at the RIGHT bank and gone on to act on
-// somebody else's customer. See mesh's
-// TestAWrongCounterpartyAgentIsRefusedByTheBankItNames.
+// somebody else's customer.
 //
 // The bank reading the message is this network's own identity, which is what
 // makes "its own register" a property of the handle rather than of what the
@@ -1213,10 +1487,10 @@ func (s *Network) ReturnMessage(p Payment, reason iso20022.ReturnReason, text st
 // reinterpreted, because a receiver that took the sender's currency and some
 // scheme's scale would book a number neither bank wrote down.
 //
-// It returns a REQUEST and not a Payment: nothing here is accepted, deduplicated
-// or posted. That is AcceptInboundTx's job, and the separation is what lets the
-// mesh translate a message without a write and reject it before one.
-func (s *Network) CreditTransferRequest(ctx context.Context, doc *iso20022.Pacs008) (InitiatePaymentRequest, error) {
+// It returns REQUESTS and not Payments: nothing here is accepted, deduplicated
+// or posted. That is AcceptInboundTx's job, and the separation is what lets a
+// receiving bank translate a file without a write and reject it before one.
+func (s *Network) CreditTransferRequest(ctx context.Context, doc *iso20022.Pacs008) ([]InboundTransaction, error) {
 	// Before the message is read at all, and the placement is what makes the
 	// paragraph above exact rather than nearly true. The identity is reached
 	// otherwise only through localPartyIn, at the end, so a MALFORMED pacs.008
@@ -1225,66 +1499,131 @@ func (s *Network) CreditTransferRequest(ctx context.Context, doc *iso20022.Pacs0
 	// thing this guard exists to say. Who is reading is not a question about
 	// what arrived.
 	if _, err := s.self(); err != nil {
-		return InitiatePaymentRequest{}, err
+		return nil, err
 	}
-	req, _, err := s.creditTransferIn(doc)
+	txs, err := s.creditTransferIn(doc)
 	if err != nil {
-		return InitiatePaymentRequest{}, err
+		return nil, err
 	}
 	// The creditor is this bank's own customer on a push; the debtor is the
 	// sending bank's and is recorded, not resolved. creditTransferIn left the
 	// creditor as the ADDRESS the message quoted, which is exactly what this
 	// resolution consumes.
-	if req.Creditor, err = s.localPartyIn(ctx, req.Creditor.Identifier); err != nil {
-		return InitiatePaymentRequest{}, err
+	for i := range txs {
+		if err := s.localSideIn(ctx, &txs[i], &txs[i].Request.Creditor); err != nil {
+			return nil, err
+		}
 	}
-	return req, nil
+	return txs, nil
+}
+
+// InboundTransaction is one transaction read out of a file: what it instructs,
+// the id the SUBMITTING bank minted for it, and — where this bank has already
+// decided it cannot act on this one — why.
+//
+// The id travels beside the request rather than inside it because it is the one
+// thing on the message that is not part of an instruction. Every institution
+// keys its own row by it, and nothing on this path allocates one — see
+// SubmitPaymentTx, the only place in the system that does.
+//
+// # Refusal is what makes a file's answers per transaction
+//
+// A file is READ whole or not at all, and a transaction that cannot be parsed
+// therefore takes the file with it. Resolution is a different question: whether
+// THIS bank holds the address one line quotes says nothing about the next line,
+// and a file of a thousand refused because the seventh names a closed account
+// would tell nine hundred and ninety-nine payers their payees' IBANs were wrong.
+//
+// So an addressing refusal lands here rather than on the return value, and the
+// caller answers that transaction and carries on with the rest. A Refusal is
+// always something this bank can SAY — see localSideIn for what does not
+// qualify.
+type InboundTransaction struct {
+	ID      PaymentID
+	Request InitiatePaymentRequest
+	Refusal error
+}
+
+// localSideIn resolves one transaction's own side, and decides whether a failure
+// belongs to that transaction or to the whole file.
+//
+// Two refusals are about the ADDRESS and about nothing else — this bank holds no
+// such account (AC01), and this bank holds two (MS03) — so each is an answer to
+// the transaction that quoted it and the rest of the file is unaffected.
+//
+// Everything else fails the file, and the distinction is the same one
+// addressedPartyTx draws one level down: a dropped connection or a cancelled
+// context is not news about a payee's IBAN. Reported as a file-level failure it
+// becomes a problem in the day's report and the file is answered by nobody,
+// which is truthful; reported per transaction it would tell a thousand payers
+// their payees' accounts were bad.
+func (s *Network) localSideIn(ctx context.Context, tx *InboundTransaction, side *PartyRef) error {
+	ref, err := s.localPartyIn(ctx, side.Identifier)
+	switch {
+	case err == nil:
+		*side = ref
+		return nil
+	case errors.Is(err, ErrAccountNotInParticipant), errors.Is(err, deposit.ErrIdentifierAmbiguous):
+		tx.Refusal = err
+		return nil
+	default:
+		return err
+	}
 }
 
 // creditTransferIn is everything a pacs.008 SAYS, resolving nobody.
 //
 // It is the half of CreditTransferRequest that needs no register, split out
-// because the clearing house has none and has to record the payment anyway. Both
-// parties come back as the address the message quoted and no account id; the
-// receiving bank's own resolution then replaces its own side, and the clearing
-// house's copy keeps both as they arrived. See RecordRelayedCreditTransfer.
+// because the clearing house has none and has to record the payments anyway.
+// Both parties come back as the address the message quoted and no account id;
+// the receiving bank's own resolution then replaces its own side, and the
+// clearing house's copy keeps both as they arrived. See
+// RecordRelayedCreditTransfer.
 //
-// The PaymentID comes back beside the request because it is the one thing on the
-// message that is not part of an instruction: it was minted by the SUBMITTING
-// bank and is what every institution keys its own row by. Nothing here allocates
-// one — see SubmitPaymentTx, which is the only place in the system that does.
-func (s *Network) creditTransferIn(doc *iso20022.Pacs008) (InitiatePaymentRequest, PaymentID, error) {
+// A transaction that cannot be read fails the WHOLE file, and that is the same
+// argument NbOfTxs exists for: a reader that returned the four transactions it
+// could parse and dropped the fifth would produce a payment that arrived, was
+// acknowledged at the message level, and never happened. A file is accepted
+// entire or refused entire.
+func (s *Network) creditTransferIn(doc *iso20022.Pacs008) ([]InboundTransaction, error) {
 	body := doc.FIToFICstmrCdtTrf
-	tx, err := onlyTransaction("CdtTrfTxInf", body.CdtTrfTxInf, body.GrpHdr.NbOfTxs)
-	if err != nil {
-		return InitiatePaymentRequest{}, "", err
+	if err := checkNbOfTxs("CdtTrfTxInf", body.CdtTrfTxInf, body.GrpHdr.NbOfTxs); err != nil {
+		return nil, err
 	}
-	scheme, amount, err := s.schemeSettling(Push, tx.IntrBkSttlmAmt)
-	if err != nil {
-		return InitiatePaymentRequest{}, "", err
+
+	out := make([]InboundTransaction, 0, len(body.CdtTrfTxInf))
+	for _, tx := range body.CdtTrfTxInf {
+		scheme, amount, err := s.schemeSettling(Push, tx.IntrBkSttlmAmt)
+		if err != nil {
+			return nil, err
+		}
+		dbtrID, err := identifierIn("DbtrAcct", tx.DbtrAcct)
+		if err != nil {
+			return nil, err
+		}
+		cdtrID, err := identifierIn("CdtrAcct", tx.CdtrAcct)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, InboundTransaction{
+			ID: PaymentID(tx.PmtId.TxId),
+			Request: InitiatePaymentRequest{
+				Scheme:          scheme,
+				Debtor:          PartyRef{Identifier: dbtrID},
+				Creditor:        PartyRef{Identifier: cdtrID},
+				Amount:          amount,
+				EndToEndID:      endToEndIn(tx.PmtId.EndToEndId),
+				Description:     remittanceIn(tx.RmtInf),
+				DebtorDetails:   PartyDetails{Agent: agentIn(tx.DbtrAgt), Name: nameIn(tx.Dbtr)},
+				CreditorDetails: PartyDetails{Agent: agentIn(tx.CdtrAgt), Name: nameIn(tx.Cdtr)},
+			},
+		})
 	}
-	dbtrID, err := identifierIn("DbtrAcct", tx.DbtrAcct)
-	if err != nil {
-		return InitiatePaymentRequest{}, "", err
-	}
-	cdtrID, err := identifierIn("CdtrAcct", tx.CdtrAcct)
-	if err != nil {
-		return InitiatePaymentRequest{}, "", err
-	}
-	return InitiatePaymentRequest{
-		Scheme:          scheme,
-		Debtor:          PartyRef{Identifier: dbtrID},
-		Creditor:        PartyRef{Identifier: cdtrID},
-		Amount:          amount,
-		EndToEndID:      endToEndIn(tx.PmtId.EndToEndId),
-		Description:     remittanceIn(tx.RmtInf),
-		DebtorDetails:   PartyDetails{Agent: agentIn(tx.DbtrAgt), Name: nameIn(tx.Dbtr)},
-		CreditorDetails: PartyDetails{Agent: agentIn(tx.CdtrAgt), Name: nameIn(tx.Cdtr)},
-	}, PaymentID(tx.PmtId.TxId), nil
+	return out, nil
 }
 
-// DirectDebitRequest turns a received pacs.003 into a request this system can
-// act on.
+// DirectDebitRequest turns a received pacs.003 into the requests this system can
+// act on: one per collection in the file, in the file's own order.
 //
 // A pacs.003 travels FROM the creditor's bank, routed by DbtrAgt, so the bank
 // reading this message is the DEBTOR's — the mirror of CreditTransferRequest in
@@ -1300,102 +1639,77 @@ func (s *Network) creditTransferIn(doc *iso20022.Pacs008) (InitiatePaymentReques
 // A collection addressed to the wrong bank is refused here, and on a pull that
 // matters more than on a push: the receiving bank is the one that POSTS, so
 // under the sweep a collector who named itself as the payer's bank resolved the
-// payer at the payer's real bank and posted the debit in that bank's book. See
-// mesh's TestAWrongCounterpartyAgentIsRefusedByTheBankItNames, whose pull arm is
-// that exact instruction.
+// payer at the payer's real bank and posted the debit in that bank's book.
 //
 // And it carries a mandate. An empty MndtId is refused here rather than left for
 // SDD.Validate, which would refuse it too: this is another bank's claim on this
 // bank's customer's account, the mandate is the only thing that makes it
 // authorised, and the message that came with no mandate should not become a
 // request that looks like one.
-func (s *Network) DirectDebitRequest(ctx context.Context, doc *iso20022.Pacs003) (InitiatePaymentRequest, error) {
+func (s *Network) DirectDebitRequest(ctx context.Context, doc *iso20022.Pacs003) ([]InboundTransaction, error) {
 	// First, for CreditTransferRequest's reason.
 	if _, err := s.self(); err != nil {
-		return InitiatePaymentRequest{}, err
+		return nil, err
 	}
-	req, _, err := s.directDebitIn(doc)
+	txs, err := s.directDebitIn(doc)
 	if err != nil {
-		return InitiatePaymentRequest{}, err
+		return nil, err
 	}
 	// The debtor is this bank's own customer on a pull; the creditor is the
 	// sending bank's and is recorded, not resolved. See creditTransferIn's
 	// mirror note on what directDebitIn left behind for this line to consume.
-	if req.Debtor, err = s.localPartyIn(ctx, req.Debtor.Identifier); err != nil {
-		return InitiatePaymentRequest{}, err
+	for i := range txs {
+		if err := s.localSideIn(ctx, &txs[i], &txs[i].Request.Debtor); err != nil {
+			return nil, err
+		}
 	}
-	return req, nil
+	return txs, nil
 }
 
 // directDebitIn is everything a pacs.003 SAYS, resolving nobody. It is
-// creditTransferIn's mirror; see that function for why the split exists and what
-// the PaymentID beside the request is.
-func (s *Network) directDebitIn(doc *iso20022.Pacs003) (InitiatePaymentRequest, PaymentID, error) {
+// creditTransferIn's mirror; see that function for why the split exists, what
+// the PaymentID beside each request is, and why a transaction it cannot read
+// fails the whole file.
+func (s *Network) directDebitIn(doc *iso20022.Pacs003) ([]InboundTransaction, error) {
 	body := doc.FIToFICstmrDrctDbt
-	tx, err := onlyTransaction("DrctDbtTxInf", body.DrctDbtTxInf, body.GrpHdr.NbOfTxs)
-	if err != nil {
-		return InitiatePaymentRequest{}, "", err
+	if err := checkNbOfTxs("DrctDbtTxInf", body.DrctDbtTxInf, body.GrpHdr.NbOfTxs); err != nil {
+		return nil, err
 	}
-	scheme, amount, err := s.schemeSettling(Pull, tx.IntrBkSttlmAmt)
-	if err != nil {
-		return InitiatePaymentRequest{}, "", err
-	}
-	mandate := tx.DrctDbtTx.MndtRltdInf.MndtId
-	if mandate == "" {
-		return InitiatePaymentRequest{}, "", fmt.Errorf("%w: DrctDbtTx/MndtRltdInf/MndtId", ErrMandateRequired)
-	}
-	dbtrID, err := identifierIn("DbtrAcct", tx.DbtrAcct)
-	if err != nil {
-		return InitiatePaymentRequest{}, "", err
-	}
-	cdtrID, err := identifierIn("CdtrAcct", tx.CdtrAcct)
-	if err != nil {
-		return InitiatePaymentRequest{}, "", err
-	}
-	return InitiatePaymentRequest{
-		Scheme:          scheme,
-		Debtor:          PartyRef{Identifier: dbtrID},
-		Creditor:        PartyRef{Identifier: cdtrID},
-		Amount:          amount,
-		MandateID:       MandateID(mandate),
-		EndToEndID:      endToEndIn(tx.PmtId.EndToEndId),
-		Description:     remittanceIn(tx.RmtInf),
-		DebtorDetails:   PartyDetails{Agent: agentIn(tx.DbtrAgt), Name: nameIn(tx.Dbtr)},
-		CreditorDetails: PartyDetails{Agent: agentIn(tx.CdtrAgt), Name: nameIn(tx.Cdtr)},
-	}, PaymentID(tx.PmtId.TxId), nil
-}
 
-// onlyTransaction is the receiver's side of NbOfTxs, plus this system's own
-// limit of one payment per message.
-//
-// The count is CHECKED and not recomputed, which is the whole reason the element
-// is a string carrying the sender's assertion — see CreditTransferGroupHeader.
-// TestSettlementMessageNbOfTxsSurvivesATruncatedFile pins that neither the
-// encoder nor the decoder touches it, so a file that lost a transaction in
-// transit arrives saying so; this is the only place in the system that acts on
-// it. A truncated file read as a complete one is a payment that silently never
-// happened.
-//
-// More than one transaction is refused rather than partially read. The standard
-// is a bulk format and this system is not: an InitiatePaymentRequest is one
-// payment, and quietly translating the first of five would drop four.
-//
-// Neither refusal is a sentinel from errors.go, and that is deliberate. There is
-// no condition in this system's own vocabulary for "the file you sent
-// contradicts itself" or "this agent does not do bulk" — the same situation
-// namedPartyOf is in — so both fall to MS03 through ReasonFor's default, which
-// says "this agent could not carry it out". The free text beside the code is
-// where the detail reaches the sender, and it says which count disagreed.
-func onlyTransaction[T any](element string, txs []T, nbOfTxs string) (T, error) {
-	var zero T
-	if err := checkNbOfTxs(element, txs, nbOfTxs); err != nil {
-		return zero, err
+	out := make([]InboundTransaction, 0, len(body.DrctDbtTxInf))
+	for _, tx := range body.DrctDbtTxInf {
+		scheme, amount, err := s.schemeSettling(Pull, tx.IntrBkSttlmAmt)
+		if err != nil {
+			return nil, err
+		}
+		mandate := tx.DrctDbtTx.MndtRltdInf.MndtId
+		if mandate == "" {
+			return nil, fmt.Errorf("%w: DrctDbtTx/MndtRltdInf/MndtId", ErrMandateRequired)
+		}
+		dbtrID, err := identifierIn("DbtrAcct", tx.DbtrAcct)
+		if err != nil {
+			return nil, err
+		}
+		cdtrID, err := identifierIn("CdtrAcct", tx.CdtrAcct)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, InboundTransaction{
+			ID: PaymentID(tx.PmtId.TxId),
+			Request: InitiatePaymentRequest{
+				Scheme:          scheme,
+				Debtor:          PartyRef{Identifier: dbtrID},
+				Creditor:        PartyRef{Identifier: cdtrID},
+				Amount:          amount,
+				MandateID:       MandateID(mandate),
+				EndToEndID:      endToEndIn(tx.PmtId.EndToEndId),
+				Description:     remittanceIn(tx.RmtInf),
+				DebtorDetails:   PartyDetails{Agent: agentIn(tx.DbtrAgt), Name: nameIn(tx.Dbtr)},
+				CreditorDetails: PartyDetails{Agent: agentIn(tx.CdtrAgt), Name: nameIn(tx.Cdtr)},
+			},
+		})
 	}
-	if len(txs) != 1 {
-		return zero, fmt.Errorf("payment: %s carries %d transactions; this system reads one payment per message",
-			element, len(txs))
-	}
-	return txs[0], nil
+	return out, nil
 }
 
 // schemeSettling is which of this network's schemes an inbound message
@@ -1409,8 +1723,8 @@ func onlyTransaction[T any](element string, txs []T, nbOfTxs string) (T, error) 
 // this network's outbound side has always rendered a payment in whatever asset
 // its scheme settles in (amountOf takes the scale from the asset), so a system
 // that could SEND a dollar credit transfer and not RECEIVE one was
-// asymmetrical in a way nothing but a second scheme could reveal. The mesh's
-// two-asset settlement fixture is what revealed it.
+// asymmetrical in a way nothing but a second scheme could reveal. The
+// two-asset settlement fixture in cmd/server is what reveals it.
 //
 // What has NOT changed is that the message does not get to choose. A currency no
 // scheme in this direction settles in is refused rather than reinterpreted,
@@ -1632,7 +1946,8 @@ func remittanceIn(r *iso20022.RemittanceInformation) string {
 // ReadStatus reads a received pacs.002 as what it says about the original
 // message and what it says about each transaction in it.
 //
-// Two return values because they are two different facts, and the mesh acts on
+// Two return values because they are two different facts, and the bank that
+// collected the file acts on
 // them at different granularities: the OriginalMessage is how a status is
 // matched back to something this system sent — there is no other link, which is
 // what makes clearing asynchronous rather than merely delayed — and each report
@@ -1742,12 +2057,12 @@ type ReturnInstruction struct {
 // rejection or a return machine-actionable in a statement or an exception
 // queue, and the text is the part no code can say. The word for "neither was
 // given" is the caller's, because CodeAndText serves two callers answering
-// different questions: mesh.rejectionText, over iso20022.StatusReason, and
-// ReturnReason below, over iso20022.ReturnReason — the sibling external code
+// different questions: cmd/server's rejectionText, over iso20022.StatusReason,
+// and ReturnReason below, over iso20022.ReturnReason — the sibling external code
 // set pacs004.go keeps as a separate type precisely so that a rejection
 // reason cannot be used as a return reason with nothing to notice. It lives
-// here rather than in mesh because ReturnReason does, and mesh already
-// imports payment; mesh.rejectionText calls through to this rather than
+// here rather than beside its caller because ReturnReason does, and cmd/server
+// already imports payment; rejectionText calls through to this rather than
 // keeping its own copy of the same four lines.
 func CodeAndText(code, text, none string) string {
 	switch {
@@ -1765,9 +2080,9 @@ func CodeAndText(code, text, none string) string {
 // ReturnReason is what a return is described as where a CUSTOMER's money
 // moves: the reason the returning bank gave, code and text.
 //
-// It lives here rather than in mesh because ReadReturn needs this exact reading
-// for ReturnInstruction.Reason, and mesh cannot be imported from this package.
-// mesh.receiveReturn calls straight through to it.
+// It lives here rather than beside its caller because ReadReturn needs this
+// exact reading for ReturnInstruction.Reason, and cmd/server cannot be imported
+// from this package. Bank.receiveReturn calls straight through to it.
 //
 // The two CUSTOMER legs, and not the reserve reversal between the two banks.
 // PostReturnLegTx writes this into the payer's refund and into the payee's
@@ -1863,12 +2178,23 @@ func ReadReturn(doc *iso20022.Pacs004) ([]ReturnInstruction, error) {
 	return ins, nil
 }
 
-// checkNbOfTxs holds a sender to its own count. It is onlyTransaction's first
-// half, split out for the messages this system reads in bulk — a settlement
-// instruction is many legs by nature, and ReadReturn's pacs.004 is shaped for
-// several returns per file even though this system's own mesh only ever
-// sends one — so the count matters for both and the one-transaction limit
-// does not apply to either.
+// checkNbOfTxs holds a sender to its own count, and every reader of a file
+// begins with it.
+//
+// The count is CHECKED and not recomputed, which is the whole reason the element
+// is a string carrying the sender's assertion — see CreditTransferGroupHeader. A
+// receiver that recomputed it would never notice a truncated file, and a
+// truncated file read as a complete one is a payment that silently never
+// happened. TestSettlementMessageNbOfTxsSurvivesATruncatedFile pins that neither
+// the encoder nor the decoder touches it, so a file that lost a transaction in
+// transit arrives saying so.
+//
+// Neither refusal is a sentinel from errors.go, and that is deliberate. There is
+// no condition in this system's own vocabulary for "the file you sent
+// contradicts itself" — the same situation namedPartyOf is in — so both fall to
+// MS03 through ReasonFor's default, which says "this agent could not carry it
+// out". The free text beside the code is where the detail reaches the sender,
+// and it says which count disagreed.
 func checkNbOfTxs[T any](element string, txs []T, nbOfTxs string) error {
 	declared, err := strconv.Atoi(nbOfTxs)
 	if err != nil {
@@ -1918,12 +2244,11 @@ type SettlementLeg struct {
 //
 // # It lives here because two callers have to agree
 //
-// It was mesh's csm.settlementLegs and had one. The settlement agent works from
-// the LEGS now rather than from the cycle — it holds no cycles table, and
-// SettleCycleTx was reading one out of the clearing house's database — so the
-// seed, which plays every institution and sends no messages, has to produce
-// exactly what the pacs.009 would have carried. Two renderings of one intent are
-// two things that can drift, and this is the one that decides what settles.
+// The settlement agent works from the LEGS rather than from the cycle, because
+// it holds no cycles table. So two callers have to produce the same legs: the
+// clearing house, which renders them into a pacs.009, and the seed, which plays
+// every institution and uploads no files at all. Two renderings of one intent
+// are two things that can drift, and this is the one that decides what settles.
 func SettlementLegsOf(c ClearingCycle, asset ledger.AssetCode, centralBank iso20022.BIC) []SettlementLeg {
 	legs := make([]SettlementLeg, 0, len(c.NetPositions))
 	// A cycle's positions are keyed by BIC and a leg is addressed by BIC, so there
@@ -2169,8 +2494,9 @@ type AdvisedMovement struct {
 // central bank posts exactly one netting movement per member per cycle, so a
 // statement carrying two is one this reader has no rule for — and posting the
 // first while dropping the second would move a bank's reserve mirror by the wrong
-// amount with nothing anywhere recording it. It is onlyTransaction's argument,
-// made about a different message.
+// amount with nothing anywhere recording it. It is the argument creditTransferIn
+// makes for refusing a file entire, made about a message that carries one entry
+// by nature rather than by accumulation.
 //
 // A statement with no CLBD balance is refused for the reason camt.053 was chosen
 // over camt.054: without it there is nothing to check a posting against, and a
@@ -2430,7 +2756,8 @@ func ReadLodgement(hdr iso20022.AppHdr, doc *iso20022.Camt050) (LodgementInstruc
 // by ReceiveLodgementTx and settlementAccountTx — which quote a BIC, an asset and
 // two account ids, and can exceed 140 characters between them. A document that
 // would not marshal is worse than a shortened reason: the member would be told
-// nothing at all, and the servicer's handler would dead-letter its own answer.
+// nothing at all, and the servicer's handler would report its own answer as a
+// file it could not build.
 //
 // So this truncates, and it truncates VISIBLY, with an ellipsis, so that a reader
 // of a shortened reason can tell it was shortened. The limit is called out on

@@ -200,10 +200,10 @@
 //     renders and reads every one of them: the payment family (pacs.008,
 //     pacs.003, pacs.002, pacs.004, pacs.009), the statement a settlement agent
 //     sends its members (camt.053), and the pair a member lodges reserves with
-//     (camt.050, camt.025). Package mesh carries them between institutions as
-//     marshalled bytes, so they are parsed on arrival rather than passed as
-//     structs. Admitting a bank travels on none of them — it is four direct
-//     acts, and package provision is what runs them.
+//     (camt.050, camt.025). They travel between institutions as marshalled
+//     bytes over a file transport, so they are parsed on arrival rather than
+//     passed as structs. Admitting a bank travels on none of them — it is four
+//     direct acts, and package provision is what runs them.
 //
 //     Absent: pain.001/pain.008 customer initiation (an instruction arrives
 //     over this repository's REST API instead), the rest of the camt reporting
@@ -215,10 +215,13 @@
 //     vendor, so it passes only where somebody has fetched them into
 //     iso20022/testdata/xsd and no document is validated at RUNTIME anywhere.
 //
-//     Nor is there any batching of customer payments: a pacs.008 or pacs.003
-//     built here carries exactly one transaction and one arriving with several
-//     is refused, which is why pacs.002's PART group status is built and never
-//     produced.
+//     Interbank messages are BULK — a pacs.008 or pacs.003 carries as many
+//     transactions as its sender accumulated before the cut-off, and one
+//     pacs.002 answers the whole file with a decision per transaction, which is
+//     what makes PART reachable. What is not batched is the CUSTOMER's half:
+//     instructions arrive over REST one at a time, so a corporate handing its
+//     bank one pain.001 carrying its payroll has no analogue here. Nor is there
+//     more than one cut-off in a business day, where SEPA runs several.
 //
 //   - An address is checked for STRUCTURE and never for existence. An IBAN's
 //     length, country structure and both kinds of check digit are enforced

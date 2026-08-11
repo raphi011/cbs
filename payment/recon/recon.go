@@ -18,7 +18,7 @@
 //
 // # It is the successor to the book recorder
 //
-// mesh/books_test.go's recordingStores watches which ledger book each unit of
+// cmd/server/books_test.go's recordingStores watches which ledger book each unit of
 // work reached and fails a test when one reaches somebody else's. Its whole
 // subject is a CROSSING, and the store split made most crossings impossible
 // rather than merely wrong. What the split cannot see is the defect class that
@@ -79,7 +79,8 @@
 // # It is test-only by convention and not by compiler
 //
 // It is an ordinary package because the suites that want it are in three
-// packages (mesh, seed and payment's own callers) and a _test.go file cannot be
+// packages (cmd/server, seed and payment's own callers) and a _test.go file
+// cannot be
 // imported. Nothing in cmd/ or api/ may call it and nothing does: an institution
 // running this would be an institution reading everybody's books. store/storetest
 // and store/testenv are here for the same reason and under the same rule.
@@ -257,8 +258,9 @@ func Check(tb testing.TB, nets *payment.Networks) *Report {
 // of this code — a real supervisor reading five banks' books reads them one at a
 // time too — but it means a run against a network that is still moving can
 // report a difference that closed a moment later. Every caller in this
-// repository drains the mesh first, and a caller that does not should expect to
-// see the transport rather than the ledgers.
+// repository runs it between business days, when nothing is in flight, and a
+// caller that reads mid-day should expect to see files in queues rather than the
+// ledgers.
 func Reconcile(ctx context.Context, nets *payment.Networks) (*Report, error) {
 	snap, err := take(ctx, nets)
 	if err != nil {

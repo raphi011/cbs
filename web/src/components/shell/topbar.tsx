@@ -4,6 +4,7 @@ import Link from "next/link";
 import { BookOpen } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import { BusinessDay } from "@/components/business-day";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { useConceptPanel } from "@/components/concept-panel-provider";
 import { IdentityPicker } from "./identity-picker";
@@ -31,9 +32,14 @@ function ConceptTrigger() {
 // with a sidebar renders its own `Brand` there and must not get a second
 // wordmark, but a sidebar-less shell — the lobby, Learn, a customer's
 // account — has nowhere else to put one, and the ruling is that the lobby is
-// always one click away from every shell. Either way this is also the
-// identity picker plus the theme toggle, sitting here rather than in the
-// sidebar so it is reachable from every shell, sidebar or not.
+// always one click away from every shell. Either way this is also the business
+// date, the identity picker and the theme toggle, sitting here rather than in
+// the sidebar so they are reachable from every shell, sidebar or not.
+//
+// The business date is here for a stronger reason than reachability: every date
+// on every screen is the deployment's, about a year behind the wall clock, so a
+// shell that did not show which day it is on would be read wrong. See
+// BusinessDay.
 export function Topbar({
   mobile = false,
   mobileSidebar,
@@ -59,6 +65,7 @@ export function Topbar({
         </Link>
       )}
       <div className="ml-auto flex items-center gap-2">
+        <BusinessDay />
         {mobile && <ConceptTrigger />}
         <IdentityPicker />
         <ThemeToggle />

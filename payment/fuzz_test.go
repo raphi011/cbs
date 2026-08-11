@@ -31,8 +31,9 @@ type fuzzInput struct {
 //
 // It stops one step short of CreditTransferMessage and no further: that method
 // takes the two sides off the payment — partiesOf, which reads nothing — and
-// then calls creditTransfer, and this calls creditTransfer with two messageParty
-// values supplied directly. What is skipped is a struct copy. Everything the
+// then calls creditTransfer, and this calls creditTransfer with the two
+// messageParty values supplied directly, as a file of one. What is skipped is a
+// struct copy. Everything the
 // translator decides — ibanOf, namedParty, amountOf, the header, the whole
 // message tree — is on this path. A wrapper that assembled a CashAccount itself,
 // rather than going through ibanOf, would be a second translator and would test
@@ -57,7 +58,7 @@ func buildCreditTransfer(in fuzzInput) (iso20022.Envelope, error) {
 		Identifier: deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: in.CreditorIBAN},
 	}
 	mc := MessageContext{From: "AURODEFFXXX", To: "CSMXFRPPXXX", MsgID: "FUZZ-1", Now: in.Now}
-	return creditTransfer(p, debtor, creditor, "EUR", mc)
+	return creditTransfer([]outbound{{payment: p, debtor: debtor, creditor: creditor, asset: "EUR"}}, mc)
 }
 
 // FuzzTranslate drives the translation boundary: a payment becomes a message,

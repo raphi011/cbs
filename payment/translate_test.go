@@ -289,8 +289,8 @@ func TestReadStatusSeparatesGroupFromTransaction(t *testing.T) {
 
 	// The GROUP half. All three fields point BACKWARDS at the message being
 	// reported on — never at this report, whose own MsgId is VERDE-1. A reader
-	// that took the status report's own header here would hand the mesh an
-	// identifier that matches nothing it ever sent.
+	// that took the status report's own header here would hand the collecting bank
+	// an identifier that matches nothing it ever sent.
 	if got.MsgID != orig.MsgID {
 		t.Errorf("original message id = %q, want %q", got.MsgID, orig.MsgID)
 	}

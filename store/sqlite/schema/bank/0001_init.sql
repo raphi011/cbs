@@ -9,7 +9,7 @@
 --
 -- The boundary between institutions IS THE DDL. One schema holding all 31 tables
 -- would make it a convention instead — measurable only by a recorder watching
--- which book each unit of work reached, as mesh/books_test.go does — and a
+-- which book each unit of work reached, as cmd/server/books_test.go does — and a
 -- crossing would be a row nobody should have read. Here it is a table that is
 -- not there.
 --
@@ -321,6 +321,20 @@ CREATE TABLE slot_accounts (
 ) STRICT;
 
 CREATE TABLE transactions (
+    -- WHAT DAY IT IS IS NOT IN THIS DATABASE, and that absence is the canonical
+    -- statement of it — the other two schemas name it and do not restate it.
+    --
+    -- booking_date below is stamped from the DEPLOYMENT's business date, which
+    -- lives in a small file beside these databases and in none of them. A bank's
+    -- database holding one would be that bank's OPINION about what day it is,
+    -- and two banks could then disagree — a state no clearing system has, and
+    -- one this schema should not be able to reach. There is therefore no
+    -- business_date table, no singleton row, and nothing here a restart could
+    -- read a date back out of.
+    --
+    -- What that costs is exact: an ephemeral deployment starts at the seed's
+    -- base date every time, and a deployment with a directory resumes from the
+    -- file. Neither is a property of any institution's books.
     book_id         TEXT NOT NULL REFERENCES books (id) ON DELETE CASCADE,
     id              TEXT NOT NULL,
     idempotency_key TEXT NOT NULL,
@@ -1478,7 +1492,7 @@ CREATE TABLE payments (
     -- is a claim:
     --
     --   * cycle_id is NOT here. A BANK HAS NO CYCLES. It is not that the column
-    --     would be empty — nothing in mesh/bank.go names a cycle at all, and the
+    --     would be empty — nothing in cmd/server/bank.go names a cycle at all, and the
     --     cycles table is in another institution's database. What a bank learns
     --     about a cut-off is a settlement_advices row quoting a reference it
     --     cannot resolve, and that table says so in as many words.
@@ -1486,6 +1500,20 @@ CREATE TABLE payments (
     --     return_clawback_tx and return_refund_tx are here and NOT at the
     --     clearing house, which posts nothing and holds no book of accounts.
     --   * The two agent columns mean something narrower here; see debtor_agent.
+    --
+    -- WHAT IS NOT HERE IN EITHER SHAPE IS THE HUB. A payment this bank has
+    -- accepted from its customer and not yet put in a file is Initiated with its
+    -- debtor leg posted, and there is no column, no table and no flag saying it
+    -- is waiting for the next cut-off. The hub is a list in the bank's memory,
+    -- because the file it becomes is the transport's and not the ledger's.
+    --
+    -- What a restart costs is therefore visible only as an absence: instructions
+    -- whose debtor legs ARE committed, so the money is in clearing suspense
+    -- against a file that will never be built. That is recorded rather than
+    -- fixed. Storing the hub would make the queue a table three institutions
+    -- could be tempted to read, and payment/recon is the instrument for the
+    -- break, because a suspense that has not returned to zero is exactly what it
+    -- looks for.
     --
     -- NEITHER SHAPE HAS debtor_participant OR creditor_participant. They would
     -- name each party's bank as a ParticipantID beside an agent column naming the
@@ -1562,7 +1590,7 @@ CREATE TABLE payments (
     -- 2016, the originating bank derives the routing. A WRONG counterparty agent
     -- is therefore not refused at submission: the message is delivered to the
     -- bank it names, which resolves the address in its own register, does not
-    -- find it and answers AC01. See mesh/books_test.go's
+    -- find it and answers AC01. See cmd/server/books_test.go's
     -- TestAWrongCounterpartyAgentIsRefusedByTheBankItNames.
     --
     -- Stored rather than joined even for the own side, and the reason is what

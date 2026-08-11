@@ -1,7 +1,6 @@
 package api
 
 import (
-	"fmt"
 	"time"
 
 	"github.com/raphi011/cbs/interest"
@@ -11,10 +10,10 @@ import (
 // Wire format for the product catalogue: entries, their effective-dated
 // versions, and the requests that create them.
 
-// productDTO is a catalogue entry. Kind crosses as a string for the reason
-// facilityDTO's does: an integer whose meaning a client learns from
+// ProductDTO is a catalogue entry. Kind crosses as a string for the reason
+// FacilityDTO's does: an integer whose meaning a client learns from
 // documentation is an integer a client renders wrong.
-type productDTO struct {
+type ProductDTO struct {
 	ID   string `json:"id"`
 	Name string `json:"name"`
 	Kind string `json:"kind"`
@@ -26,8 +25,8 @@ type productDTO struct {
 	CreatedAt time.Time `json:"createdAt"`
 }
 
-func toProductDTO(p product.Product) productDTO {
-	return productDTO{
+func ToProductDTO(p product.Product) ProductDTO {
+	return ProductDTO{
 		ID:        string(p.ID),
 		Name:      p.Name,
 		Kind:      p.Kind.String(),
@@ -36,7 +35,7 @@ func toProductDTO(p product.Product) productDTO {
 	}
 }
 
-// productVersionDTO is one row of a product's effective-dated timeline.
+// ProductVersionDTO is one row of a product's effective-dated timeline.
 //
 // It carries the publication state explicitly rather than leaving a client to
 // infer it from a zero timestamp, and carries the hash because a client showing
@@ -45,7 +44,7 @@ func toProductDTO(p product.Product) productDTO {
 //
 // effectiveFrom is the day the version starts pricing and createdAt is when it
 // was drafted — the booking-date/value-date distinction applied to a price.
-type productVersionDTO struct {
+type ProductVersionDTO struct {
 	ProductID      string     `json:"productId"`
 	EffectiveFrom  time.Time  `json:"effectiveFrom"`
 	Rate           int64      `json:"rate"`
@@ -58,8 +57,8 @@ type productVersionDTO struct {
 	CreatedAt      time.Time  `json:"createdAt"`
 }
 
-func toProductVersionDTO(v product.Version) productVersionDTO {
-	out := productVersionDTO{
+func ToProductVersionDTO(v product.Version) ProductVersionDTO {
+	out := ProductVersionDTO{
 		ProductID:      string(v.ProductID),
 		EffectiveFrom:  v.EffectiveFrom,
 		Rate:           int64(v.Overdraft.Rate),
@@ -77,21 +76,21 @@ func toProductVersionDTO(v product.Version) productVersionDTO {
 	return out
 }
 
-// createProductRequest names a product. It has no price: DraftVersion and
+// CreateProductRequest names a product. It has no price: DraftVersion and
 // PublishVersion give it one, and until then no account can be opened from it.
-type createProductRequest struct {
+type CreateProductRequest struct {
 	Name string `json:"name"`
 	Kind string `json:"kind"`
 }
 
-// draftVersionRequest is a price for one effective day, unpublished.
+// DraftVersionRequest is a price for one effective day, unpublished.
 //
 // effectiveFrom may point into the past — only PUBLICATION is forward-only, and
 // refusing a backdated draft would only mean the refusal arrived at a less
 // useful moment. There is no limit field, and the absence is the design: a limit
 // is an underwriting decision about one customer, so product.OverdraftPricing
 // cannot express one.
-type draftVersionRequest struct {
+type DraftVersionRequest struct {
 	EffectiveFrom  time.Time `json:"effectiveFrom"`
 	Rate           int64     `json:"rate"`
 	UnarrangedRate int64     `json:"unarrangedRate"`
@@ -102,14 +101,14 @@ type draftVersionRequest struct {
 // Enum parsing
 // ---------------------------------------------------------------------------
 
-// kindFromString parses a product kind, so an unknown one is a 400 naming the
+// KindFromString parses a product kind, so an unknown one is a 400 naming the
 // field rather than a silent CurrentAccount — the same reason
-// facilityKindFromString exists.
-func kindFromString(s string) (product.Kind, error) {
+// FacilityKindFromString exists.
+func KindFromString(s string) (product.Kind, error) {
 	switch s {
 	case "CurrentAccount":
 		return product.CurrentAccount, nil
 	default:
-		return 0, fmt.Errorf("invalid product kind %q (want CurrentAccount)", s)
+		return 0, BadRequest("invalid product kind %q (want CurrentAccount)", s)
 	}
 }

@@ -9,7 +9,7 @@ import (
 
 // The book transfer: two of this bank's own customers, one posting, nobody told.
 //
-// It is the act mesh.ErrOnUsPayment sends a caller to. Both accounts are in this
+// It is the act payment.ErrOnUsPayment sends a caller to. Both accounts are in this
 // register's book by construction — a register spans one — so no obligation
 // between institutions exists, there is nothing for a clearing house to net,
 // nothing for a settlement agent to move, and no statement that could tell this
