@@ -164,3 +164,20 @@ Three things about the store are worth knowing before changing anything near it:
   the code underneath behaves; only a file, under WAL, lets a reader past an
   uncommitted writer. Anything you measure about ordering must open a file.
   `TestTheRetryBudgetOutlastsASlowWriter` is the one that does.
+
+## Agent skills
+
+### Issue tracker
+
+Issues live in this repo's GitHub Issues (`raphi011/cbs`), driven via the `gh`
+CLI. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+The five canonical roles, each label string equal to its name. See
+`docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: `CONTEXT.md` and `docs/adr/` at the repo root. See
+`docs/agents/domain.md`.
