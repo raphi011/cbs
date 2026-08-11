@@ -27,6 +27,7 @@ import (
 	"github.com/raphi011/cbs/mesh"
 	"github.com/raphi011/cbs/payment"
 	"github.com/raphi011/cbs/provision"
+	"github.com/raphi011/cbs/seed"
 	"github.com/raphi011/cbs/store/storetest"
 	"github.com/raphi011/cbs/store/testenv"
 )
@@ -104,7 +105,7 @@ func bankSurface(s *server, pid string) http.Handler {
 //
 // Drain FIRST, then Stop, at cleanup, and both errors are reported. See
 // newAPIHarness in mesh_test.go, which says why at length.
-func newServer(t *testing.T, populate func(context.Context, *payment.Networks, *mesh.Mesh) error) *server {
+func newServer(t *testing.T, populate func(context.Context, *payment.Networks, seed.Deployment) error) *server {
 	t.Helper()
 	return newServerOverStore(t, nil, populate)
 }
@@ -113,7 +114,7 @@ func newServer(t *testing.T, populate func(context.Context, *payment.Networks, *
 // that needs to hold a unit of work open. gate may be nil, which is every other
 // caller.
 func newServerOverStore(t *testing.T, gate *gatedStores,
-	populate func(context.Context, *payment.Networks, *mesh.Mesh) error) *server {
+	populate func(context.Context, *payment.Networks, seed.Deployment) error) *server {
 
 	t.Helper()
 	clock := func() time.Time { return fixedTime }
@@ -156,7 +157,7 @@ func newServerOverStore(t *testing.T, gate *gatedStores,
 // every bank actor before it truncates and does not re-register them afterwards,
 // so a baseline that wrote its rows and stopped would rebuild a network whose
 // banks answer every read and carry no payment.
-func admitForPopulate(ctx context.Context, nets *payment.Networks, msh *mesh.Mesh,
+func admitForPopulate(ctx context.Context, nets *payment.Networks, msh seed.Deployment,
 	name string, bic iso20022.BIC) (*payment.Bank, error) {
 
 	bank, err := provision.Bank(ctx, nets, provision.BankSpec{
@@ -1272,7 +1273,7 @@ func TestResetEmptiesState(t *testing.T) {
 	// real one, so booting and resetting are the same call — and it asks "has
 	// anything been built here already" of the DEPLOYMENT rather than of an
 	// institution, because no institution holds a list of banks.
-	baseline := func(ctx context.Context, nets *payment.Networks, msh *mesh.Mesh) error {
+	baseline := func(ctx context.Context, nets *payment.Networks, msh seed.Deployment) error {
 		existing, err := nets.Stores().Banks(ctx)
 		if err != nil {
 			return err
@@ -1342,7 +1343,7 @@ func TestResetSurvivesAClientDisconnect(t *testing.T) {
 		populateRan bool
 		populateCtx error
 	)
-	baseline := func(ctx context.Context, nets *payment.Networks, msh *mesh.Mesh) error {
+	baseline := func(ctx context.Context, nets *payment.Networks, msh seed.Deployment) error {
 		populateRan = true
 		populateCtx = ctx.Err()
 		existing, err := nets.Stores().Banks(ctx)
@@ -1394,7 +1395,7 @@ func TestResetSurvivesAClientDisconnect(t *testing.T) {
 // a single reset unsafe. Eight resets against a durable store produced twelve
 // participants where there should have been four.
 func TestConcurrentResetsLeaveExactlyOneDataset(t *testing.T) {
-	baseline := func(ctx context.Context, nets *payment.Networks, msh *mesh.Mesh) error {
+	baseline := func(ctx context.Context, nets *payment.Networks, msh seed.Deployment) error {
 		existing, err := nets.Stores().Banks(ctx)
 		if err != nil {
 			return err
@@ -3140,7 +3141,7 @@ func anotherAccountAtSameBank(t *testing.T, h *server, pid string) string {
 func TestDirectoryResolvesItsOwnCustomer(t *testing.T) {
 	var pid payment.ParticipantID
 	var aliceAddress string
-	srv := newServer(t, func(ctx context.Context, nets *payment.Networks, msh *mesh.Mesh) error {
+	srv := newServer(t, func(ctx context.Context, nets *payment.Networks, msh seed.Deployment) error {
 		p, err := admitForPopulate(ctx, nets, msh, "Aurora Bank", "BANKDEFFXXX")
 		if err != nil {
 			return err
@@ -3190,7 +3191,7 @@ func TestDirectoryUnknownIBANIs404(t *testing.T) {
 func TestDirectoryDoesNotAnswerForAnotherBanksCustomer(t *testing.T) {
 	var asker payment.ParticipantID
 	var aliceAddress string
-	srv := newServer(t, func(ctx context.Context, nets *payment.Networks, msh *mesh.Mesh) error {
+	srv := newServer(t, func(ctx context.Context, nets *payment.Networks, msh seed.Deployment) error {
 		holder, err := admitForPopulate(ctx, nets, msh, "Aurora Bank", "AURODEFFXXX")
 		if err != nil {
 			return err

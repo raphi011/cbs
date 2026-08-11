@@ -12,7 +12,6 @@ import (
 	"github.com/raphi011/cbs/iso20022"
 	"github.com/raphi011/cbs/ledger"
 	"github.com/raphi011/cbs/lending"
-	"github.com/raphi011/cbs/mesh"
 	"github.com/raphi011/cbs/payment"
 	"github.com/raphi011/cbs/product"
 	"github.com/raphi011/cbs/provision"
@@ -42,23 +41,25 @@ func New() *Dataset { return &Dataset{clock: newClock(baseDate)} }
 func (d *Dataset) Now() time.Time { return d.clock.now() }
 
 // Populate builds the full sample scenario (see the package doc) into the
-// network's store, provisioning its banks and giving each one an actor on the
-// mesh it is given.
+// network's store, provisioning its banks and giving each one its place in the
+// deployment it is given.
 //
-// # Why it takes a mesh
+// # Why it takes a deployment
 //
-// Writing a bank's three rows needs no mesh at all — see provision.Bank — but a
-// bank with rows and no inbox can neither send nor be sent to, and this scenario
-// is payments: an opening deposit is lodged, a cycle is settled, a collection is
-// answered. Every one of those is a message between two actors.
+// Writing a bank's three rows needs no deployment at all — see provision.Bank —
+// but a bank with rows and no place in the network can neither send nor be sent
+// to, and this scenario is payments: an opening deposit is lodged, a cycle is
+// settled, a collection is answered. Every one of those is a conversation
+// between two institutions.
 //
-// So the mesh must be RUNNING before this is called: it is built and started
-// over an unseeded store, and its roster read finds nothing because the banks it
+// So the deployment must be RUNNING before this is called: it is built over an
+// unseeded store, and what it reads there finds nothing because the banks it
 // would find are the ones this is about to write.
 //
-// It is not optional and there is no nil path. A Populate with no mesh could
-// write four banks' rows and would leave every one of them unreachable, which is
-// a scenario in which no payment in it can be made — see builder.provision.
+// It is not optional and there is no nil path. A Populate with no deployment
+// could write four banks' rows and would leave every one of them unreachable,
+// which is a scenario in which no payment in it can be made — see
+// builder.provision.
 //
 // It is idempotent: a store that already holds participants is left alone. That
 // is what makes it safe to call on every boot — against a database that
@@ -96,14 +97,14 @@ func (d *Dataset) Now() time.Time { return d.clock.now() }
 // boundary, since its caller — the server's reset handler — has an error to
 // report and a request to answer. Any other panic is re-raised with its stack
 // intact; see recoverBuild.
-func (d *Dataset) Populate(ctx context.Context, nets *payment.Networks, msh *mesh.Mesh) (err error) {
+func (d *Dataset) Populate(ctx context.Context, nets *payment.Networks, dep Deployment) (err error) {
 	// Registered first, so it runs last: whether the scenario was built now,
 	// was already there, or failed halfway, the clock is released before
 	// Populate returns.
 	defer d.clock.goLive()
 
-	if msh == nil {
-		return errors.New("seed: no mesh, so no bank in this scenario could be admitted to the scheme")
+	if dep == nil {
+		return errors.New("seed: no deployment, so no bank in this scenario could be admitted to the scheme")
 	}
 
 	// "Has anything been built here already", asked of the DEPLOYMENT rather than
@@ -131,7 +132,7 @@ func (d *Dataset) Populate(ctx context.Context, nets *payment.Networks, msh *mes
 
 	d.clock.rewind(baseDate)
 	b := &builder{
-		ctx: ctx, nets: nets, mesh: msh, clock: d.clock,
+		ctx: ctx, nets: nets, dep: dep, clock: d.clock,
 		cats: map[payment.ParticipantID]catalogue{},
 	}
 	b.build()
@@ -187,8 +188,10 @@ type builder struct {
 	// here — initiate, reject, returnPayment, settle — still run several
 	// institutions' halves inside ONE unit of work, and each half says whose it
 	// is.
-	nets  *payment.Networks
-	mesh  *mesh.Mesh
+	nets *payment.Networks
+	// dep is the running system: the five acts the builder cannot perform for
+	// itself, because each needs more than one institution. See Deployment.
+	dep   Deployment
 	clock *clock
 	// cats holds each bank's product IDs, keyed by participant: the
 	// catalogue is book-scoped, so every bank has its own Basic and Premium and
@@ -253,7 +256,7 @@ func check(err error) {
 
 // provision writes one bank's three rows — its own, its settlement account in
 // the central bank's book, its roster entry in the clearing house's — and gives
-// it an actor on this mesh.
+// it its place in the network.
 //
 // The two steps are different kinds of thing and are spelled separately: the
 // rows are what the three institutions hold, and the actor is an inbox on a bus.
@@ -267,7 +270,7 @@ func (b *builder) provision(name string, bic iso20022.BIC, country iban.Country,
 	bank := must(provision.Bank(b.ctx, b.nets, provision.BankSpec{
 		Name: name, BIC: bic, Country: country, Assets: assets,
 	}))
-	check(b.mesh.AddBank(b.ctx, bank))
+	check(b.dep.AddBank(b.ctx, bank))
 	return bank
 }
 
@@ -276,9 +279,9 @@ func (b *builder) provision(name string, bic iso20022.BIC, country iban.Country,
 //
 // It is no part of provisioning a bank and is not a message: nothing is queued
 // and nobody answers later. What it does is read the roster as it stands and
-// replace this bank's copy with it. See mesh.Mesh.RefreshDirectory.
+// replace this bank's copy with it. See Deployment.RefreshDirectory.
 func (b *builder) subscribe(p *payment.Bank) {
-	must(b.mesh.RefreshDirectory(b.ctx, p.BIC))
+	must(b.dep.RefreshDirectory(b.ctx, p.BIC))
 }
 
 // seedAsset is the asset the whole sample scenario is denominated in.
@@ -445,8 +448,8 @@ func (b *builder) fund(p *payment.Bank, acct deposit.Account, amount ledger.Amou
 // means a failure in the central bank's half surfaces as this seed failing rather
 // than as a dead letter discovered later.
 func (b *builder) lodge(p *payment.Bank, amount ledger.Amount) {
-	must(b.mesh.Lodge(b.ctx, p.BIC, "EUR", amount))
-	check(b.mesh.Drain(b.ctx))
+	must(b.dep.Lodge(b.ctx, p.BIC, "EUR", amount))
+	check(b.dep.Drain(b.ctx))
 }
 
 // initiate runs all three halves of an initiation — the submitting bank's, the
@@ -671,7 +674,7 @@ func (b *builder) settle(id payment.CycleID) {
 	if !ok {
 		check(fmt.Errorf("seed: no scheme %q to settle %s under: %w", closed.Scheme, id, payment.ErrSchemeNotFound))
 	}
-	legs := payment.SettlementLegsOf(closed, scheme.Asset(), b.mesh.CentralBankBIC())
+	legs := payment.SettlementLegsOf(closed, scheme.Asset(), b.dep.CentralBankBIC())
 
 	_, statements := must2(b.cb().SettleCycle(b.ctx, id, legs))
 	b.advise(statements)

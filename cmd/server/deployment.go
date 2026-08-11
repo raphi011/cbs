@@ -8,6 +8,7 @@ import (
 
 	"github.com/raphi011/cbs/mesh"
 	"github.com/raphi011/cbs/payment"
+	"github.com/raphi011/cbs/seed"
 )
 
 // A Deployment is every institution this process holds, and the only thing a
@@ -62,12 +63,12 @@ type Deployment struct {
 	// populate rebuilds the sample dataset. It must be idempotent: the process
 	// calls it at boot and Reset calls it again after clearing the store.
 	//
-	// It is handed the MESH as well as the networks, because admitting a bank is
-	// a conversation between three institutions and a reseed that founded its
-	// banks without one would rebuild a network in which nobody can be paid. Reset
-	// passes its own mesh rather than letting the builder close over one, so the
-	// mesh a reseed admits into cannot be a different mesh from the one the reset
-	// drained and forgot the old banks from.
+	// It is handed a seed.Deployment as well as the networks, because admitting a
+	// bank is a conversation between three institutions and a reseed that founded
+	// its banks without one would rebuild a network in which nobody can be paid.
+	// Reset passes its own mesh rather than letting the builder close over one, so
+	// what a reseed admits into cannot be a different transport from the one the
+	// reset drained and forgot the old banks from.
 	//
 	// It takes the FACTORY and not one institution's network, and that is why it
 	// is here rather than on any of the three: building the sample dataset is
@@ -75,7 +76,7 @@ type Deployment struct {
 	// cycles closed and settled — and the seed says so act by act (see
 	// seed.builder). It is not an institution's act and there is no institution to
 	// perform it as.
-	populate func(context.Context, *payment.Networks, *mesh.Mesh) error
+	populate func(context.Context, *payment.Networks, seed.Deployment) error
 
 	// resetMu serializes Reset. See the method for why one unit of work cannot
 	// do the job instead. There is one Deployment behind every listener, so one
@@ -101,7 +102,7 @@ type Deployment struct {
 // NewDeployment performs no I/O — the caller populates the network before
 // serving — so a store that is unavailable fails where it can be reported rather
 // than inside a constructor with no error to return.
-func NewDeployment(nets *payment.Networks, msh *mesh.Mesh, populate func(context.Context, *payment.Networks, *mesh.Mesh) error, log *slog.Logger) *Deployment {
+func NewDeployment(nets *payment.Networks, msh *mesh.Mesh, populate func(context.Context, *payment.Networks, seed.Deployment) error, log *slog.Logger) *Deployment {
 	if msh == nil {
 		panic("server: a Deployment needs a mesh; without one nothing here has a way to carry a payment past the bank it was handed to")
 	}
@@ -109,7 +110,7 @@ func NewDeployment(nets *payment.Networks, msh *mesh.Mesh, populate func(context
 		log = slog.Default()
 	}
 	if populate == nil {
-		populate = func(context.Context, *payment.Networks, *mesh.Mesh) error { return nil }
+		populate = func(context.Context, *payment.Networks, seed.Deployment) error { return nil }
 	}
 	return &Deployment{nets: nets, mesh: msh, populate: populate, log: log}
 }
