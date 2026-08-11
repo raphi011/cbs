@@ -9,7 +9,6 @@ import (
 	"github.com/raphi011/cbs/iso20022"
 	"github.com/raphi011/cbs/ledger"
 	"github.com/raphi011/cbs/lending"
-	"github.com/raphi011/cbs/mesh"
 	"github.com/raphi011/cbs/payment"
 	"github.com/raphi011/cbs/product"
 )
@@ -232,16 +231,16 @@ func errorStatus(err error) int {
 		// An on-us payment is well formed, names two real accounts and is a
 		// perfectly legitimate thing to want; what refuses it is that this route
 		// does not carry it. Both parties bank at one institution, so nothing
-		// clears — see mesh.ErrOnUsPayment. The same category as an unaddressable
+		// clears — see payment.ErrOnUsPayment. The same category as an unaddressable
 		// account, and the reason it is mapped here rather than in the handler
 		// (as mesh.ErrAddressTaken is): two handlers submit through Mesh.Submit,
 		// and a rule written twice is a rule that can differ by route.
-		errors.Is(err, mesh.ErrOnUsPayment),
+		errors.Is(err, payment.ErrOnUsPayment),
 		// A payment to or from a bank the scheme has not admitted is the same
 		// category again: the request is well formed, both accounts are real, and
 		// what refuses it is that this route does not carry it — a founded bank
 		// has a licence and a book and no place in a clearing scheme. It is
-		// mapped here rather than in the handler for mesh.ErrOnUsPayment's stated
+		// mapped here rather than in the handler for payment.ErrOnUsPayment's stated
 		// reason, and it arrives here from Mesh.Submit; the clearing house's own
 		// copy of the refusal is asked after the 202 has been answered and is
 		// reported as a rejected payment, not as a status. See

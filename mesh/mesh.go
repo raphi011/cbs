@@ -35,32 +35,6 @@ var ErrUnknownBIC = wire.ErrUnknownBIC
 // wire.ErrAddressTaken.
 var ErrAddressTaken = wire.ErrAddressTaken
 
-// ErrOnUsPayment is a submission whose payer and payee bank at the SAME
-// institution.
-//
-// It is a statement about the ROUTE and not about the payment. Two customers of
-// one bank paying each other is an ordinary thing to want; what it is not is a
-// CLEARING payment. Nothing leaves the bank, so there is no interbank obligation
-// for a clearing house to net, no reserves for a settlement agent to move, and
-// no camt.053 that could tell a bank about a book it already holds. A real bank
-// recognises the beneficiary as its own and books the transfer between two of
-// its own deposit accounts; it never reaches a scheme at all.
-//
-// Submitted to clearing anyway, it produced three separate wrong answers, each
-// in a different institution — a cycle that settled nothing and stranded at
-// Cleared, a reserve mirror moved by an amount the central bank's own record did
-// not move, and a returning bank refusing its own customer's unconditional
-// refund because it was the returner on both legs. See Mesh.Submit, where it is
-// refused, and payment.PostReturnLegTx, which states the return's rule so that
-// it does not depend on this refusal holding.
-//
-// A sentinel and not just a message because the layer above has a remedy for
-// it: api answers 422 and the caller asks its bank for a book transfer instead,
-// which is deposit.Register.TransferTx and, over HTTP, POST /transfers on that
-// bank's own port. So this is a signpost rather than a dead end — the same
-// address, on the route that carries it.
-var ErrOnUsPayment = errors.New("mesh: both parties bank at the same institution, which is a book transfer and not a clearing payment")
-
 // Config names the two institutions. Member banks are discovered from the
 // participant roster; the central bank and the clearing house have no store
 // row, so their identities are configured.

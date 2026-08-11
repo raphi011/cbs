@@ -52,7 +52,7 @@ func (s *Server) registerDepositRoutes(mux *router) {
 // An address that resolves anywhere else is not a transfer at all; it is a
 // payment, and POST /payments is where it goes. The two routes state one rule
 // from opposite sides: this one refuses an address that is not here, and
-// submission refuses one that is (mesh.ErrOnUsPayment).
+// submission refuses one that is (payment.ErrOnUsPayment).
 func (s *Server) handleTransfer(w http.ResponseWriter, r *http.Request) {
 	p, ok := s.participant(w, r)
 	if !ok {

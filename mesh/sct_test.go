@@ -382,7 +382,7 @@ func TestACreditTransferForABankTheMeshCannotRouteToIsRC01(t *testing.T) {
 	p := h.submitCreditTransfer(t)
 	h.drain(t)
 
-	env, err := h.net.CreditTransferMessage(p,
+	env, err := h.net.CreditTransferMessage([]payment.Payment{p},
 		payment.MessageContext{From: h.debtorBIC, To: h.cfg.ClearingHouseBIC, MsgID: "ct-x", Now: testTime})
 	if err != nil {
 		t.Fatalf("CreditTransferMessage: %v", err)
@@ -476,7 +476,7 @@ func TestABulkCreditTransferIsRefusedByTheClearingHouse(t *testing.T) {
 	p := h.submitCreditTransfer(t)
 	h.drain(t)
 
-	env, err := h.net.CreditTransferMessage(p,
+	env, err := h.net.CreditTransferMessage([]payment.Payment{p},
 		payment.MessageContext{From: h.debtorBIC, To: h.cfg.ClearingHouseBIC, MsgID: "ct-bulk", Now: testTime})
 	if err != nil {
 		t.Fatalf("CreditTransferMessage: %v", err)
@@ -546,7 +546,7 @@ func TestABulkCollectionIsRefusedByTheClearingHouse(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetMandate: %v", err)
 	}
-	env, err := h.net.DirectDebitMessage(p, mandate,
+	env, err := h.net.DirectDebitMessage([]payment.Collection{{Payment: p, Mandate: mandate}},
 		payment.MessageContext{From: h.creditorBIC, To: h.cfg.ClearingHouseBIC, MsgID: "dd-bulk", Now: testTime})
 	if err != nil {
 		t.Fatalf("DirectDebitMessage: %v", err)
@@ -662,7 +662,7 @@ func TestAnOnUsPaymentIsRefusedBeforeItReachesAClearingHouse(t *testing.T) {
 				CreditorDetails: payment.PartyDetails{Agent: h.debtorBIC, Name: other.Name},
 				DebtorDetails:   payment.PartyDetails{Agent: h.debtorBIC, Name: h.debtorAcct.Name},
 			})
-			if !errors.Is(err, ErrOnUsPayment) {
+			if !errors.Is(err, payment.ErrOnUsPayment) {
 				t.Fatalf("Submit = %v, want it refused as an on-us payment", err)
 			}
 			// The refusal names the bank, because a caller holding several

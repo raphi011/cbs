@@ -215,7 +215,7 @@ func initiate(ctx context.Context, sys *testSystem, req InitiatePaymentRequest) 
 	if err := sys.bank(receiverOf(sys, p)).AcceptInbound(ctx, p.ID, relayed); err != nil {
 		return Payment{}, err
 	}
-	if _, err := sys.RecordRelayed(ctx, p.ID, relayed); err != nil {
+	if _, err := sys.RecordRelayed(ctx, []InboundTransaction{{ID: p.ID, Request: relayed}}); err != nil {
 		return Payment{}, err
 	}
 	return sys.AcceptAtCSM(ctx, p.ID)
@@ -3836,7 +3836,7 @@ func networkWithASubmittedPayment(t *testing.T) (*testSystem, Payment) {
 	n, req := networkWithTwoBanks(t)
 	p, err := n.submit(ctx, req)
 	assertNoError(t, err)
-	_, err = n.RecordRelayed(ctx, p.ID, relayedFrom(p))
+	_, err = n.RecordRelayed(ctx, []InboundTransaction{{ID: p.ID, Request: relayedFrom(p)}})
 	assertNoError(t, err)
 	return n, p
 }
@@ -3960,7 +3960,7 @@ func TestTheClearingHouseWillNotClearForANonMember(t *testing.T) {
 			// it can take a payment into a cycle — and which it writes from the
 			// instruction it relayed, asking nothing about membership. The
 			// roster check is the ACCEPTANCE's, below. See RecordRelayedTx.
-			_, err = sys.RecordRelayed(ctx, p.ID, relayedFrom(p))
+			_, err = sys.RecordRelayed(ctx, []InboundTransaction{{ID: p.ID, Request: relayedFrom(p)}})
 			assertNoError(t, err)
 
 			_, err = sys.AcceptAtCSM(ctx, p.ID)
@@ -4070,7 +4070,7 @@ func TestTheClearingHouseWillNotClearInAnAssetAMemberWasNotAdmittedIn(t *testing
 	assertNoError(t, sys.bank(receiverOf(sys, p)).AcceptInbound(ctx, p.ID, relayedFrom(p)))
 	// The clearing house's own copy first; see the same step in
 	// TestTheClearingHouseWillNotClearForANonMember.
-	_, err = sys.RecordRelayed(ctx, p.ID, relayedFrom(p))
+	_, err = sys.RecordRelayed(ctx, []InboundTransaction{{ID: p.ID, Request: relayedFrom(p)}})
 	assertNoError(t, err)
 
 	_, err = sys.AcceptAtCSM(ctx, p.ID)
@@ -4765,7 +4765,7 @@ func TestReverseDebtorLegIsANoOpWhenNoLegWasPosted(t *testing.T) {
 	assertEqual(t, "debtor leg after submitting a collection", p.DebtorLegTx, "")
 	// The clearing house's own copy, which it must be holding before it can
 	// refuse one. See networkWithASubmittedPayment.
-	_, err = n.RecordRelayed(ctx, p.ID, relayedFrom(p))
+	_, err = n.RecordRelayed(ctx, []InboundTransaction{{ID: p.ID, Request: relayedFrom(p)}})
 	assertNoError(t, err)
 
 	_, err = n.RejectAtCSM(ctx, p.ID, iso20022.StatusReasonNoMandate, "no usable mandate")

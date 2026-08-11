@@ -152,11 +152,13 @@ func (c *csm) relayCreditTransfer(ctx context.Context, from iso20022.BIC, env is
 	if n := len(body.CdtTrfTxInf); n != 1 {
 		return c.refuseBulk(from, orig, "CdtTrfTxInf", n)
 	}
-	p, err := c.ops.RecordRelayedCreditTransfer(ctx, doc)
+	ps, err := c.ops.RecordRelayedCreditTransfer(ctx, doc)
 	if err != nil {
 		return fmt.Errorf("mesh: %s cannot carry %s: %w", c.bic, ref.TxId, err)
 	}
-	return c.relayRecorded(ctx, from, env, doc, orig, ref, body.CdtTrfTxInf[0].CdtrAgt.FinInstnId.BICFI, p)
+	// One transaction, refused above if it were not, so one recorded payment and
+	// one destination.
+	return c.relayRecorded(ctx, from, env, doc, orig, ref, body.CdtTrfTxInf[0].CdtrAgt.FinInstnId.BICFI, ps[0])
 }
 
 // relayRecorded is the second half of carrying an instruction: send it on, and
@@ -227,11 +229,12 @@ func (c *csm) relayDirectDebit(ctx context.Context, from iso20022.BIC, env iso20
 	if n := len(body.DrctDbtTxInf); n != 1 {
 		return c.refuseBulk(from, orig, "DrctDbtTxInf", n)
 	}
-	p, err := c.ops.RecordRelayedDirectDebit(ctx, doc)
+	ps, err := c.ops.RecordRelayedDirectDebit(ctx, doc)
 	if err != nil {
 		return fmt.Errorf("mesh: %s cannot carry %s: %w", c.bic, ref.TxId, err)
 	}
-	return c.relayRecorded(ctx, from, env, doc, orig, ref, body.DrctDbtTxInf[0].DbtrAgt.FinInstnId.BICFI, p)
+	// One transaction, for relayCreditTransfer's reason.
+	return c.relayRecorded(ctx, from, env, doc, orig, ref, body.DrctDbtTxInf[0].DbtrAgt.FinInstnId.BICFI, ps[0])
 }
 
 // relayReturn hands a return on to the SETTLEMENT AGENT, and keeps a copy for

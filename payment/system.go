@@ -2991,6 +2991,10 @@ func (s *Network) SubmitAndInstruct(ctx context.Context, req InitiatePaymentRequ
 // InstructionTx builds the interbank message a submission travels on: a pacs.008
 // for a push, a pacs.003 for a pull.
 //
+// One submission is a file of one. The builders take files because that is what
+// a bank sends after a cut-off, and a single instruction going out on its own is
+// the smallest of them rather than a different message.
+//
 // They are two message definitions and not one with a flag because they say
 // different things. A pacs.008 accompanies money that has already left the
 // payer; a pacs.003 asks for money that has not moved, which is why it must
@@ -3006,13 +3010,13 @@ func (s *Network) InstructionTx(ctx context.Context, tx Tx, p Payment, mc Messag
 		return iso20022.Envelope{}, fmt.Errorf("%w: %s", ErrSchemeNotFound, p.Scheme)
 	}
 	if scheme.Direction() != Pull {
-		return s.CreditTransferMessage(p, mc)
+		return s.CreditTransferMessage([]Payment{p}, mc)
 	}
 	mandate, err := tx.GetMandate(ctx, p.MandateID)
 	if err != nil {
 		return iso20022.Envelope{}, err
 	}
-	return s.DirectDebitMessage(p, mandate, mc)
+	return s.DirectDebitMessage([]Collection{{Payment: p, Mandate: mandate}}, mc)
 }
 
 // newPayment is the row an institution writes when a payment first exists in its
@@ -3405,46 +3409,62 @@ func (s *Network) AcceptInboundTx(ctx context.Context, tx Tx, id PaymentID, req 
 
 // RecordRelayedCreditTransfer is the clearing house writing its own copy of a
 // pacs.008 it is carrying, and RecordRelayedDirectDebit is the same for a
-// pacs.003. Each is RecordRelayedTx over the message, in its own unit of work.
+// pacs.003. Each is RecordRelayed over the file, and answers with one payment
+// per transaction in it.
 //
-// They take the DOCUMENT rather than a request because the clearing house has
+// They take the DOCUMENT rather than requests because the clearing house has
 // nothing else: it holds no register, so there is no resolution for a caller to
 // have made on its behalf and no reason to split the read from the write. The
 // two banks' equivalents do split — see CreditTransferRequest — because the
 // resolution they make is the first of the two questions a receiving bank asks
 // and its failure is answered differently from the second's.
-func (s *Network) RecordRelayedCreditTransfer(ctx context.Context, doc *iso20022.Pacs008) (Payment, error) {
-	req, id, err := s.creditTransferIn(doc)
+func (s *Network) RecordRelayedCreditTransfer(ctx context.Context, doc *iso20022.Pacs008) ([]Payment, error) {
+	txs, err := s.creditTransferIn(doc)
 	if err != nil {
-		return Payment{}, err
+		return nil, err
 	}
-	return s.RecordRelayed(ctx, id, req)
+	return s.RecordRelayed(ctx, txs)
 }
 
 // RecordRelayedDirectDebit is RecordRelayedCreditTransfer's pull mirror.
-func (s *Network) RecordRelayedDirectDebit(ctx context.Context, doc *iso20022.Pacs003) (Payment, error) {
-	req, id, err := s.directDebitIn(doc)
+func (s *Network) RecordRelayedDirectDebit(ctx context.Context, doc *iso20022.Pacs003) ([]Payment, error) {
+	txs, err := s.directDebitIn(doc)
 	if err != nil {
-		return Payment{}, err
+		return nil, err
 	}
-	return s.RecordRelayed(ctx, id, req)
+	return s.RecordRelayed(ctx, txs)
 }
 
-// RecordRelayed is RecordRelayedTx in its own unit of work, taking the
-// instruction already read rather than the message.
+// RecordRelayed is RecordRelayedTx over a file, in ONE unit of work.
 //
-// The two above are what the MESH calls, because the mesh has a message. This is
-// for the caller that has an instruction and no message at all: the seed, which
-// plays every institution in one process before any actor exists and therefore
-// has nothing to send one to. Same act, same row, one fewer translation.
-func (s *Network) RecordRelayed(ctx context.Context, id PaymentID, req InitiatePaymentRequest) (Payment, error) {
-	var out Payment
+// One unit of work for the whole file, because a file the clearing house has
+// half-recorded is one it cannot answer for: it would be carrying transactions
+// it has no row for, and its own duplicate check — the row itself — would let
+// the missing ones through on a replay. The file is accepted entire or it leaves
+// no trace, which is the same rule creditTransferIn applies one step earlier to
+// reading it.
+//
+// The two above are what an institution with a MESSAGE calls. This is for the
+// caller that has instructions and no message at all: the seed, which plays
+// every institution in one process and has nobody to send one to. Same act,
+// same rows, one fewer translation.
+func (s *Network) RecordRelayed(ctx context.Context, txs []InboundTransaction) ([]Payment, error) {
+	out := make([]Payment, 0, len(txs))
 	err := s.store.Update(ctx, func(ctx context.Context, tx Tx) error {
-		var err error
-		out, err = s.RecordRelayedTx(ctx, tx, id, req)
-		return err
+		out = out[:0]
+		for _, in := range txs {
+			p, err := s.RecordRelayedTx(ctx, tx, in.ID, in.Request)
+			if err != nil {
+				return err
+			}
+			out = append(out, p)
+		}
+		return nil
 	})
-	return out, err
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 // RecordRelayedTx is the CLEARING HOUSE's copy of a payment: the row it has to

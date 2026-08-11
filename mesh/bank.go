@@ -305,8 +305,9 @@ func returnReasonOf(env iso20022.Envelope) string {
 // Two questions, asked in this order, and the order is what decides the code the
 // sender gets back.
 //
-// First: can this message be resolved to an instruction at all? That is
-// CreditTransferRequest, which resolves the CREDITOR — this bank's own
+// First: can this message be resolved to instructions at all? That is
+// CreditTransferRequest, which resolves the CREDITOR of every transaction in
+// the file — this bank's own
 // customer, the only party a pacs.008 routed here by CdtrAgt gives this bank
 // any standing to look up — BY ADDRESS, IN THIS BANK'S OWN REGISTER. It is the
 // question a real receiving bank asks first, because until it is answered the
@@ -340,22 +341,29 @@ func (b *bank) receiveCreditTransfer(ctx context.Context, from iso20022.BIC, hdr
 	}
 	// Unmarshal refuses a pacs.008 with no transactions (iso20022's
 	// FIToFICustomerCreditTransfer.validate), so there is always a first one to
-	// refer back by. More than one is refused below, by CreditTransferRequest.
+	// refer back by when the FILE is what is being refused.
 	ref := body.CdtTrfTxInf[0].PmtId
 
-	req, err := b.ops.CreditTransferRequest(ctx, doc)
+	txs, err := b.ops.CreditTransferRequest(ctx, doc)
 	if err != nil {
 		return b.answer(from, orig, ref, err)
 	}
-	return b.accept(ctx, from, orig, ref, req)
+	// One request per transaction, in the file's own order, so the reference
+	// each is answered under is the transaction's own rather than the file's.
+	for i, in := range txs {
+		if err := b.accept(ctx, from, orig, body.CdtTrfTxInf[i].PmtId, in.Request); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // receiveDirectDebit is the PAYER's bank answering a collection, and it is the
 // mirror of receiveCreditTransfer in every way except the one that matters.
 //
 // The two questions are the same two, in the same order. First, can this message
-// be resolved to an instruction at all — DirectDebitRequest, which resolves the
-// DEBTOR — this bank's own customer, the party a pacs.003 routed here by
+// be resolved to instructions at all — DirectDebitRequest, which resolves the
+// DEBTOR of every collection in the file — this bank's own customer, the party a pacs.003 routed here by
 // DbtrAgt gives this bank standing over — BY ADDRESS, in this bank's own
 // register, for the whole of the reason receiveCreditTransfer's doc gives. The
 // CREDITOR is the sending bank's customer and is not resolved, for the same
@@ -388,20 +396,30 @@ func (b *bank) receiveDirectDebit(ctx context.Context, from iso20022.BIC, hdr is
 	}
 	// Unmarshal refuses a pacs.003 with no transactions (iso20022's
 	// FIToFICustomerDirectDebit.validate), so there is always a first one to
-	// refer back by. More than one is refused below, by DirectDebitRequest.
+	// refer back by when the FILE is what is being refused.
 	ref := body.DrctDbtTxInf[0].PmtId
 
-	req, err := b.ops.DirectDebitRequest(ctx, doc)
+	txs, err := b.ops.DirectDebitRequest(ctx, doc)
 	if err != nil {
 		return b.answer(from, orig, ref, err)
 	}
-	return b.accept(ctx, from, orig, ref, req)
+	// Per transaction, for receiveCreditTransfer's reason.
+	for i, in := range txs {
+		if err := b.accept(ctx, from, orig, body.DrctDbtTxInf[i].PmtId, in.Request); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
-// accept runs the receiving bank's own half and answers with the result. It is
-// the second of the two questions both receive handlers ask, and it is shared
-// because the direction changes what the half DOES and not what this actor does
-// about it.
+// accept runs the receiving bank's own half for ONE transaction and answers with
+// the result. It is the second of the two questions both receive handlers ask,
+// and it is shared because the direction changes what the half DOES and not what
+// this actor does about it.
+//
+// One transaction at a time, because the answer is about a transaction: a file
+// where the second collection overdraws its payer and the first does not has two
+// different outcomes to report, and there is no single answer to a file.
 //
 // The REQUEST goes through it: this bank has no row for the payment, so what the
 // resolution produced IS the payment, written here under the id the message

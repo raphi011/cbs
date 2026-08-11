@@ -514,7 +514,7 @@ func (b *builder) initiate(req payment.InitiatePaymentRequest) payment.Payment {
 	// And the CLEARING HOUSE, which has to be carrying the payment before it can
 	// take it into a cycle. In the mesh this is the moment it relays the
 	// instruction on; here there is nothing to relay, so the record stands alone.
-	must(b.csm().RecordRelayed(b.ctx, p.ID, relayed))
+	must(b.csm().RecordRelayed(b.ctx, []payment.InboundTransaction{{ID: p.ID, Request: relayed}}))
 	accepted := must(b.csm().AcceptAtCSM(b.ctx, p.ID))
 
 	// And the SUBMITTING bank is told, which is the act this composite was

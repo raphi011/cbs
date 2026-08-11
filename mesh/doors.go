@@ -68,7 +68,7 @@ import (
 // settlement agent has anything to settle. That refusal is this system declining
 // a ROUTE and not the payment; a book transfer between two customers of one bank
 // is a real product and a different one, performed by the bank's own register.
-// See ErrOnUsPayment.
+// See payment.ErrOnUsPayment.
 //
 // A payment to or from a bank the scheme has NOT ADMITTED is refused in the same
 // place — see payment.ErrBankNotAdmitted.
@@ -82,8 +82,9 @@ func (m *Mesh) Submit(ctx context.Context, req payment.InitiatePaymentRequest) (
 	// Both customers bank at the same institution, so the movement is between two
 	// of that bank's own deposit accounts: no interbank obligation exists, so
 	// there is nothing to clear and nothing to settle, and a real bank books it
-	// internally without a scheme ever hearing about it. See ErrOnUsPayment for
-	// the three things this system did instead when one was submitted anyway.
+	// internally without a scheme ever hearing about it. See
+	// payment.ErrOnUsPayment for the three things this system did instead when
+	// one was submitted anyway.
 	//
 	// Refused HERE, at the one door every submission comes through — api's two
 	// handlers and this package's own tests all reach the mesh this way — and
@@ -109,7 +110,7 @@ func (m *Mesh) Submit(ctx context.Context, req payment.InitiatePaymentRequest) (
 	// a bank fills its own from its own register. See payment.PartyRef.
 	if req.DebtorDetails.Agent != "" && req.DebtorDetails.Agent == req.CreditorDetails.Agent {
 		return payment.Payment{}, fmt.Errorf("mesh: %s is both the payer's bank and the payee's for this instruction: %w",
-			req.DebtorDetails.Agent, ErrOnUsPayment)
+			req.DebtorDetails.Agent, payment.ErrOnUsPayment)
 	}
 	// And a payment one of whose banks the scheme has not admitted.
 	//
@@ -209,7 +210,7 @@ func (m *Mesh) Submit(ctx context.Context, req payment.InitiatePaymentRequest) (
 		switch _, err := b.ops.ResolveIdentifier(wire.WithActor(ctx, b.bic), counterparty.Identifier); {
 		case err == nil:
 			return payment.Payment{}, fmt.Errorf("mesh: %s holds both the payer's account and the payee's for this instruction: %w",
-				b.bic, ErrOnUsPayment)
+				b.bic, payment.ErrOnUsPayment)
 		case errors.Is(err, deposit.ErrIdentifierNotFound):
 			// The ordinary case: the payee is somebody else's customer, which is
 			// the only thing this bank can conclude and the only thing it needs to.

@@ -89,8 +89,12 @@ type bankOps interface {
 	// row for the payment — the submitting bank's row is in the submitting
 	// bank's database — so the request the resolution just produced is not a
 	// check to be thrown away, it IS the payment. See payment.AcceptInboundTx.
-	CreditTransferRequest(ctx context.Context, doc *iso20022.Pacs008) (payment.InitiatePaymentRequest, error)
-	DirectDebitRequest(ctx context.Context, doc *iso20022.Pacs003) (payment.InitiatePaymentRequest, error)
+	//
+	// Both read a FILE and answer with one transaction per instruction in it,
+	// each carrying the id the submitting bank minted. A file this bank cannot
+	// read is refused entire — see payment.creditTransferIn.
+	CreditTransferRequest(ctx context.Context, doc *iso20022.Pacs008) ([]payment.InboundTransaction, error)
+	DirectDebitRequest(ctx context.Context, doc *iso20022.Pacs003) ([]payment.InboundTransaction, error)
 	AcceptInbound(ctx context.Context, id payment.PaymentID, req payment.InitiatePaymentRequest) error
 
 	// ResolveIdentifier is the on-us check, and it is the one method here the
@@ -247,8 +251,8 @@ type csmOps interface {
 	// They take the DOCUMENT, unlike a bank's pair, because this institution has
 	// no register: there is no resolution for a caller to have made on its behalf,
 	// so there is no reason to split the read from the write.
-	RecordRelayedCreditTransfer(ctx context.Context, doc *iso20022.Pacs008) (payment.Payment, error)
-	RecordRelayedDirectDebit(ctx context.Context, doc *iso20022.Pacs003) (payment.Payment, error)
+	RecordRelayedCreditTransfer(ctx context.Context, doc *iso20022.Pacs008) ([]payment.Payment, error)
+	RecordRelayedDirectDebit(ctx context.Context, doc *iso20022.Pacs003) ([]payment.Payment, error)
 
 	AcceptAtCSM(ctx context.Context, id payment.PaymentID) (payment.Payment, error)
 	RejectAtCSM(ctx context.Context, id payment.PaymentID, code iso20022.StatusReason, reason string) (payment.Payment, error)

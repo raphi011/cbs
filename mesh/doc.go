@@ -346,7 +346,7 @@
 // SubmitPaymentTx answers payment.ErrBankCodeUnknown before either leg posts —
 // earlier than this door, and by an institution that never has to ask anybody.
 // PAYING is payment.ErrBankNotAdmitted, in two places: Mesh.Submit refuses at
-// the door, beside ErrOnUsPayment and for that guard's reason (Submit is
+// the door, beside payment.ErrOnUsPayment and for that guard's reason (Submit is
 // synchronous, so a refusal any later has a committed debtor leg to unwind), and
 // AcceptAtCSMTx refuses again from the clearing house's own roster row, which is
 // the institution whose judgement it is. payment's
