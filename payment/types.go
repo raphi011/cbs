@@ -479,7 +479,7 @@ type ClearingCycle struct {
 	// computed by the clearing house and sent to the settlement agent, whose
 	// settlement_members are keyed by BIC and by nothing else. A position naming a
 	// participant id would have been a set of figures about banks the recipient
-	// could not identify — which is what mesh.csm.settlementLegs' id-to-BIC lookup
+	// could not identify — which is what cmd/server's csm.settlementLegs' id-to-BIC lookup
 	// was for, and it is gone. See cycles in store/sqlite/schema/csm/0001_init.sql.
 	NetPositions map[iso20022.BIC]ledger.Amount
 

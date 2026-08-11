@@ -6,7 +6,6 @@ import (
 	"testing"
 
 	"github.com/raphi011/cbs/ledger"
-	"github.com/raphi011/cbs/mesh"
 	"github.com/raphi011/cbs/payment"
 	"github.com/raphi011/cbs/seed"
 	"github.com/raphi011/cbs/store/testenv"
@@ -50,7 +49,7 @@ func TestTheSeedLeavesNoPaymentHalfProcessed(t *testing.T) {
 	nets := payment.NewNetworks(stores, data.Now)
 	// The clearing house's view, for the network-scoped reads this test makes.
 	net := nets.ClearingHouse()
-	msh, err := mesh.New(nets, meshConfig, slog.New(slog.DiscardHandler))
+	msh, err := NewMesh(nets, meshConfig, slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatalf("building the mesh: %v", err)
 	}

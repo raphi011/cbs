@@ -152,7 +152,7 @@ func movedTo(old string) (operator, pattern string) {
 		// default. The pre-split route SETTLED: it called SettleCycle and moved
 		// reserves. This one instructs — it re-sends the pacs.009 for a cycle
 		// the central bank refused, because otherwise a refusal is terminal
-		// (mesh.csm.settle). Settling itself is still no operator's act on any
+		// (csm.settle). Settling itself is still no operator's act on any
 		// surface, and the intermediate POST /settlements on the central bank
 		// stays deleted; TestNoRouteSettlesACycle is the pin on both halves.
 		return "clearing-house", old
@@ -684,7 +684,7 @@ func TestABankRefusesAnInstructionItIsNotTheDebtorFor(t *testing.T) {
 //
 // One shared *payment.Network has one register, so GET /directory/accounts on
 // two banks' ports would resolve in the same one — one bank reading another
-// bank's customers, one layer above where the recorder in mesh/books_test.go can
+// bank's customers, one layer above where the recorder in books_test.go can
 // see it, because this layer is not an actor.
 //
 // So each institution binds its own network. This reads that back off the three

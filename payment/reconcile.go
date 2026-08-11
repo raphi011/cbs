@@ -181,7 +181,7 @@ func (s *Network) ReconcileTx(ctx context.Context, tx Tx, asset ledger.AssetCode
 //   - a mirror leg posted in the WRONG DIRECTION OR AMOUNT — the advice says one
 //     figure and the leg moved another;
 //   - a reserve moved by something with NO STATEMENT behind it, which is exactly
-//     the damage mesh/recon_test.go's diverged-mirror fixture injects and which
+//     the damage cmd/server/recon_test.go's diverged-mirror fixture injects and which
 //     needed five databases to catch until this existed;
 //   - a statement MISSED and then superseded by one that did arrive: the bank
 //     books the later movement onto a reserve that never took the earlier one,

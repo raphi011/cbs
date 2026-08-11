@@ -35,7 +35,7 @@ type Identity struct {
 }
 
 // role is the kind of institution, and there are exactly three because the mesh
-// has exactly three actors and mesh/ops.go is their enumeration: bankOps,
+// has exactly three actors and cmd/server/ops.go is their enumeration: bankOps,
 // csmOps, settlementOps.
 //
 // It is unexported, and the three constructors below are the only way to name

@@ -503,7 +503,7 @@ CREATE TABLE settlement_positions (
     -- looks open — this table is a child of settlements, plainly this
     -- institution's, and a bank plausibly wants a settlement-position row per
     -- cycle — and what settles it is asking what reads one: every reader is this
-    -- institution's or the operator console's, and nothing in mesh/bank.go names
+    -- institution's or the operator console's, and nothing in cmd/server/bank.go names
     -- a position at all. What a bank holds is a settlement_advices row, its own
     -- record of the movement it was told about.
     --

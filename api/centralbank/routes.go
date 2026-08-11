@@ -36,7 +36,7 @@ func Routes(inst Institution) *api.Router {
 	// There is no POST here, and its absence is the shape of what the mesh
 	// changed. A settlement is performed on INSTRUCTION: the clearing house reaches
 	// a cut-off, sends a pacs.009, and the central bank's actor answers ACSC or
-	// RJCT/AM04 (mesh.centralBank). A route that let a human do it beside that
+	// RJCT/AM04 (cmd/server's centralBank). A route that let a human do it beside that
 	// would be a second way to settle the same cycle, racing the first.
 	//
 	// So the two reads below are what is left, and they are the point of keeping

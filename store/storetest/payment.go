@@ -1931,7 +1931,7 @@ func settlementAdviceIsScopedToTheBankThatWasAdvised(t *testing.T, st, other pay
 	// The book ARGUMENT is the scope; the Book FIELD is the row's record of it.
 	//
 	// This is the only method in payment.Tx that carries a book twice, and
-	// mesh/books_test.go's recorder relies on the two being the same thing: its
+	// cmd/server/books_test.go's recorder relies on the two being the same thing: its
 	// override notes the argument alone, and structCarriedBooks["PutSettlementAdvice"]
 	// cites this subtest as the evidence that nothing else could be recorded.
 	// The store holds it by construction — its INSERT writes book_id from the

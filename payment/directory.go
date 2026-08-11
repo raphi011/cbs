@@ -39,7 +39,7 @@ func (s *Network) RefreshDirectory(ctx context.Context, published []RosterEntry)
 // # It is handed the roster rather than reading one
 //
 // A member cannot open the clearing house's database, so the rows arrive from
-// outside the domain — mesh.Mesh.RefreshDirectory is what carries them, standing
+// outside the domain — cmd/server's Mesh.RefreshDirectory is what carries them, standing
 // in for the file a subscriber downloads. What this act decides is not where
 // they came from but WHAT SURVIVES the copy, and that is a domain ruling:
 //

@@ -1,4 +1,4 @@
-package mesh
+package main
 
 import (
 	"context"
@@ -104,7 +104,7 @@ type meshHarness struct {
 	net  *payment.Network
 
 	mesh *Mesh
-	cfg  Config
+	cfg  MeshConfig
 
 	debtor   *payment.Bank
 	creditor *payment.Bank
@@ -334,10 +334,10 @@ func newHarness(t *testing.T, opts harnessOptions) *meshHarness {
 	// The observer goes in through the CONFIG, which is the only way in: the
 	// transport takes it at construction and reads it only from actor
 	// goroutines, so there is no moment after this at which writing it would be
-	// safe. See Config.Observe.
+	// safe. See MeshConfig.Observe.
 	cfg := h.cfg
 	cfg.Observe = h.record
-	if h.mesh, err = New(h.nets, cfg, slog.New(slog.DiscardHandler)); err != nil {
+	if h.mesh, err = NewMesh(h.nets, cfg, slog.New(slog.DiscardHandler)); err != nil {
 		t.Fatalf("New: %v", err)
 	}
 	if err := h.mesh.Start(ctx); err != nil {
@@ -731,7 +731,7 @@ func (h *meshHarness) forgetMessages() {
 // It is the only way to see the system MID-CONVERSATION. Everything a message
 // does leaves a trace afterwards and a drain is how a test waits for it; nothing
 // else can say what was true at the moment a bank was told something. See
-// mesh.Config.Observe, which is the same hook one layer down and which records
+// MeshConfig.Observe, which is the same hook one layer down and which records
 // what an observer must not do — above all, wait for anything that itself waits
 // for the mesh.
 func (h *meshHarness) watch(fn func(to, from iso20022.BIC, raw []byte)) {

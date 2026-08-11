@@ -1,4 +1,4 @@
-package mesh
+package main
 
 import (
 	"context"
@@ -42,7 +42,7 @@ var ErrAddressTaken = wire.ErrAddressTaken
 // Without these two the header's Fr and To would be meaningful for banks and
 // invented for the institutions, which is the sort of half-modelled thing this
 // repository tries not to ship.
-type Config struct {
+type MeshConfig struct {
 	CentralBankBIC   iso20022.BIC
 	ClearingHouseBIC iso20022.BIC
 
@@ -78,7 +78,7 @@ type Config struct {
 // entry, and the second actor would be the first one's duplicate — silently, at
 // startup, in a system where the whole point of the central bank being separate
 // from the clearing house is that clearing and settlement are different jobs.
-func (c Config) validate() error {
+func (c MeshConfig) validate() error {
 	if err := c.CentralBankBIC.Validate(); err != nil {
 		return fmt.Errorf("mesh: central bank BIC: %w", err)
 	}
@@ -124,7 +124,7 @@ type Mesh struct {
 	// each is a question about its own rows.
 	clearingHouse *payment.Network
 
-	cfg Config
+	cfg MeshConfig
 	log *slog.Logger
 
 	// msgSeq numbers the messages this mesh emits. See nextMsgID.
@@ -167,7 +167,7 @@ type Mesh struct {
 // nets may be nil. A mesh with no networks has no roster and therefore no member
 // banks, which is what the tests about routing and registration use: they need
 // no store at all.
-func New(nets *payment.Networks, cfg Config, log *slog.Logger) (*Mesh, error) {
+func NewMesh(nets *payment.Networks, cfg MeshConfig, log *slog.Logger) (*Mesh, error) {
 	if err := cfg.validate(); err != nil {
 		return nil, err
 	}

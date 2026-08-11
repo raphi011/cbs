@@ -29,7 +29,7 @@ import (
 //
 // # Every method has a caller
 //
-// It grew handler by handler, as mesh/ops.go's three interfaces did and for the
+// It grew handler by handler, as cmd/server/ops.go's three interfaces did and for the
 // same reason: an interface written ahead of its callers is a guess, and a guess
 // here is a wrong boundary that then looks authoritative.
 //

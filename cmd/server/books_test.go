@@ -1,4 +1,4 @@
-package mesh
+package main
 
 import (
 	"bytes"
@@ -2372,7 +2372,7 @@ type Tx interface {
 // refusals: the shape that must NOT be refused.
 //
 // A book behind an unexported field is not a blind spot, it is out of reach —
-// recordingTx is written in package mesh and cannot name it. Refusing it would
+// recordingTx is written in package main and cannot name it. Refusing it would
 // be noise, and expensive noise: payment.Bank reaches four books this
 // way, through the live handles whose types keep their book unexported, and a
 // parser that refused those would refuse the real repository on every run.
@@ -2396,7 +2396,7 @@ type Tx interface {
 	w := walkTxChain(root, module, "probe")
 	if len(w.refusals) != 0 {
 		t.Errorf("the parser refused a book behind an unexported field: %v.\n"+
-			"It cannot be named from package mesh, so there is no decision to force.", w.refusals)
+			"It cannot be named from package main, so there is no decision to force.", w.refusals)
 	}
 	assertNoCandidate(t, w, "Hidden")
 }
@@ -2591,7 +2591,7 @@ func txBookCandidates(t *testing.T) []bookMethod {
 // failures.
 func realChainWalk(t *testing.T) *chainWalk {
 	t.Helper()
-	w := walkTxChain("..", modulePath(t), "payment")
+	w := walkTxChain(repoRoot(t), modulePath(t), "payment")
 	for _, r := range w.refusals {
 		t.Error(r)
 	}
@@ -2868,7 +2868,7 @@ func (w *chainWalk) carriesBook(ref typeRef, visited map[string]bool) bool {
 // exportedField reports whether a struct field is one the decorator could name.
 //
 // The traversal follows exported fields only, and that is a statement about
-// reachability rather than a convenience. recordingTx is written in package mesh
+// reachability rather than a convenience. recordingTx is written in package main
 // and cannot name an unexported field of a type from anywhere else, so a book
 // reachable only through one is not a path the recorder could ever take — there
 // is nothing to "decide", which is what a refusal is for.
@@ -3061,11 +3061,36 @@ func fileImports(file *ast.File) map[string]string {
 	return out
 }
 
+// repoRoot is the directory holding go.mod, found by walking up from the
+// directory the test binary runs in — which is always the package's own.
+//
+// It is found rather than spelled, because a relative depth is a fact about
+// where this file sits and not about the repository. A ".." that is one level
+// short reports a missing go.mod, which reads as a broken checkout rather than
+// as a file that moved.
+func repoRoot(t *testing.T) string {
+	t.Helper()
+	dir, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("working directory: %v", err)
+	}
+	for {
+		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
+			return dir
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			t.Fatalf("no go.mod at or above %s", dir)
+		}
+		dir = parent
+	}
+}
+
 // modulePath is this repository's module path, read from go.mod so that an
 // import path can be turned into a directory without hard-coding it.
 func modulePath(t *testing.T) string {
 	t.Helper()
-	b, err := os.ReadFile(filepath.Join("..", "go.mod"))
+	b, err := os.ReadFile(filepath.Join(repoRoot(t), "go.mod"))
 	if err != nil {
 		t.Fatalf("reading go.mod: %v", err)
 	}

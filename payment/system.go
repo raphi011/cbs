@@ -87,7 +87,7 @@ type Network struct {
 //
 // It does NOT catch the central bank posting in the wrong PLACE within its own
 // book, and it never could: a BookID is an ordinary argument and one is as valid
-// as another. That is the recorder's job in mesh/books_test.go.
+// as another. That is the recorder's job in cmd/server/books_test.go.
 func (s *Network) centralBankBook() (*ledger.Book, error) {
 	if s.centralBank == nil {
 		return nil, fmt.Errorf("%w: this is %s, and the central bank's book of accounts is the settlement agent's alone",
@@ -1829,7 +1829,7 @@ func (s *Network) ReceiveLodgement(ctx context.Context, in LodgementInstruction)
 // disagreement about the same field.
 //
 // Each becomes a REFUSING camt.025 rather than an error to the caller, and the
-// prose it travels as is the receipt's Desc. See mesh.centralBank.receiveLodgement.
+// prose it travels as is the receipt's Desc. See cmd/server's centralBank.receiveLodgement.
 //
 // # It is idempotent on the request's reference
 //
@@ -2631,7 +2631,7 @@ func (s *Network) PostSettlementAdvice(ctx context.Context, m AdvisedMovement) (
 // a ledger.Liability, so the receiver's Credit RAISES it and the payer's Debit
 // LOWERS it. The ordering argument for sending the camt.053 BEFORE the ACSC
 // rests on the receiver's suspense going UP first, so that its creditor legs
-// have something to draw on — see mesh.centralBank.advise.
+// have something to draw on — see cmd/server's centralBank.advise.
 //
 // Suspense returns to zero only if the central bank's reserve movement and the
 // clearing house's payment list agree, which is the reconciliation this whole
@@ -2970,7 +2970,7 @@ func (s *Network) SubmitPayment(ctx context.Context, req InitiatePaymentRequest)
 // unit of work is the other half of the same mistake: a message the clearing
 // house could act on against a submission the store then rolled back. The
 // caller sends after this returns. TestARolledBackSubmitSendsNothing is the pin
-// on that half, and mesh.bank.submit is the caller.
+// on that half, and cmd/server's bank.submit is the caller.
 func (s *Network) SubmitAndInstruct(ctx context.Context, req InitiatePaymentRequest, mc MessageContext) (Payment, iso20022.Envelope, error) {
 	var p Payment
 	var env iso20022.Envelope
@@ -3618,7 +3618,7 @@ func (s *Network) AcceptAtCSM(ctx context.Context, id PaymentID) (Payment, error
 // It writes network rows (the payment, the cycle) and appends the acceptance
 // event, which is what makes the act visible to the mesh's book recorder at
 // all: network-scoped writes reach it only through the id allocation and the
-// audit event. See the note in mesh/books_test.go.
+// audit event. See the note in cmd/server/books_test.go.
 //
 // "On receiving the counterparty's ACCP" is a statement about WHEN the clearing
 // house runs this, not a precondition it checks. A payment record does not

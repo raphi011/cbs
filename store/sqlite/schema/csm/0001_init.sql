@@ -8,7 +8,7 @@
 -- One database holding every table makes that claim invisible: every
 -- institution's payment.Network reaches every book, and the only thing asserting
 -- that the clearing house stays out of them is a measurement in
--- mesh/books_test.go, which goes on passing if the assertion is deleted. Here it
+-- cmd/server/books_test.go, which goes on passing if the assertion is deleted. Here it
 -- is a fact about the schema — a statement naming accounts in this database is
 -- not a policy violation, it is a syntax error against a table that does not
 -- exist.

@@ -18,7 +18,7 @@
 //
 // # It is the successor to the book recorder
 //
-// mesh/books_test.go's recordingStores watches which ledger book each unit of
+// cmd/server/books_test.go's recordingStores watches which ledger book each unit of
 // work reached and fails a test when one reaches somebody else's. Its whole
 // subject is a CROSSING, and the store split made most crossings impossible
 // rather than merely wrong. What the split cannot see is the defect class that

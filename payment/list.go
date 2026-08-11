@@ -103,7 +103,7 @@ func (s *Network) GetBank(ctx context.Context, id ParticipantID) (*Bank, error) 
 //
 // It is what a handler asking about SOMEBODY ELSE gets, and the whole of it.
 // Nothing about it is a ledger handle, and until it existed the callers all got
-// one — mesh/ops.go carried GetParticipant on two of its three interfaces and
+// one — cmd/server/ops.go carried GetParticipant on two of its three interfaces and
 // every caller of it took the BIC off a value carrying the named bank's live
 // Ledger, Deposit and Catalogue.
 //
@@ -145,7 +145,7 @@ func (s *Network) GetRosterEntryByBIC(ctx context.Context, bic iso20022.BIC) (Ro
 //
 // It is what says WHO IS A MEMBER, which is a different question from who has a
 // bank row: a bank founded and not yet admitted has a row and no entry here.
-// mesh.Mesh.joinRoster is the caller, and asking this rather than ListBanks is
+// cmd/server's Mesh.joinRoster is the caller, and asking this rather than ListBanks is
 // what stops a founded, unadmitted bank being given an actor at startup.
 func (s *Network) ListRosterEntries(ctx context.Context) ([]RosterEntry, error) {
 	var out []RosterEntry

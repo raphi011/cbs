@@ -723,7 +723,7 @@ func (b *builder) initSCT(dp *payment.Bank, d deposit.Account, cp *payment.Bank,
 		// refilled from its own row either way (payment.SubmitPaymentTx), so
 		// naming it changes nothing about the payment — what it buys is that the
 		// seed's requests still say which bank submits, which is what initiate
-		// below reads and what mesh.Mesh.Submit's on-us guard compares.
+		// below reads and what cmd/server's Mesh.Submit's on-us guard compares.
 		DebtorDetails:   payment.PartyDetails{Agent: dp.BIC, Name: d.Name},
 		CreditorDetails: payment.PartyDetails{Agent: cp.BIC, Name: c.Name},
 	})

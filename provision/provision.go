@@ -19,7 +19,7 @@
 // It puts nothing on a wire, gives no bank an actor and opens no listener. A
 // deployment that wants a bank other banks can reach provisions first and starts
 // second, because what makes a bank reachable is a port and an inbox, and
-// neither is a row. See mesh.Mesh.AddBank and cmd/server.
+// neither is a row. See cmd/server's Mesh.AddBank and cmd/server.
 //
 // # The gap between the acts
 //

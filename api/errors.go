@@ -108,7 +108,7 @@ func errorStatus(err error) int {
 		// "participant does not hold accounts in this asset: EUR in Bank A".
 		//
 		// It does not reach a settlement route, because there is none: settling is
-		// performed on instruction (mesh.centralBank), so that refusal goes back to
+		// performed on instruction (cmd/server's centralBank), so that refusal goes back to
 		// the clearing house as a pacs.002. Nor the reserve routes, which report a
 		// missing account as a missing row (see api/centralbank.reserveRows).
 		errors.Is(err, payment.ErrParticipantAssetNotFound),

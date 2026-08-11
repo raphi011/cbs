@@ -118,7 +118,7 @@ func (s *surface) handleResolveBankCode(r *http.Request) (any, error) {
 // It goes through the MESH rather than through this listener's own network,
 // because the roster is the clearing house's table in the clearing house's
 // database and no bank may open it. What the mesh stands in for is the vendor
-// delivering a file; see mesh.Mesh.RefreshDirectory.
+// delivering a file; see cmd/server's Mesh.RefreshDirectory.
 //
 // It answers 200 with the new copy rather than 202, and that is the difference
 // between this and every other route here that reaches two institutions. A

@@ -24,7 +24,6 @@ import (
 	"github.com/raphi011/cbs/interest"
 	"github.com/raphi011/cbs/iso20022"
 	"github.com/raphi011/cbs/ledger"
-	"github.com/raphi011/cbs/mesh"
 	"github.com/raphi011/cbs/payment"
 	"github.com/raphi011/cbs/provision"
 	"github.com/raphi011/cbs/seed"
@@ -49,7 +48,7 @@ var fixedTime = time.Date(2025, 1, 15, 12, 0, 0, 0, time.UTC)
 type server struct {
 	dep  *Deployment
 	nets *payment.Networks
-	mesh *mesh.Mesh
+	mesh *Mesh
 }
 
 func (s *server) CentralBankRoutes() http.Handler {
@@ -98,7 +97,7 @@ func bankSurface(s *server, pid string) http.Handler {
 // carries a payment past the bank it was handed to. Started BEFORE populate,
 // which is the order cmd/server uses: a reseed gives each bank it provisions an
 // actor through the mesh's own door, so the transport has to be running first.
-// mesh.Start's roster read therefore finds nothing, and every bank in these tests
+// Mesh.Start's roster read therefore finds nothing, and every bank in these tests
 // gets its actor from Mesh.AddBank. That is why two banks in one test may not
 // share a BIC: two actors on one address is a routing table with one entry, and
 // the mesh refuses it.
@@ -125,12 +124,12 @@ func newServerOverStore(t *testing.T, gate *gatedStores,
 	}
 	nets := payment.NewNetworks(stores, clock)
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	msh, err := mesh.New(nets, testMeshConfig, log)
+	msh, err := NewMesh(nets, testMeshConfig, log)
 	if err != nil {
-		t.Fatalf("mesh.New: %v", err)
+		t.Fatalf("NewMesh: %v", err)
 	}
 	if err := msh.Start(context.Background()); err != nil {
-		t.Fatalf("mesh.Start: %v", err)
+		t.Fatalf("Mesh.Start: %v", err)
 	}
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -937,7 +936,7 @@ func TestPaymentDTOsCarryAsset(t *testing.T) {
 // There is no HTTP route for it any more, and that is the change rather than a
 // gap in this harness. Settling is performed on INSTRUCTION now: the clearing
 // house reaches a cut-off, sends a pacs.009, and the central bank's actor
-// answers (mesh.centralBank). POST /settlements was the console button that did
+// answers (centralBank). POST /settlements was the console button that did
 // it out of band, and it is gone, because a human settling a cycle beside the
 // instruction would be a second way to settle the same one.
 //
@@ -2048,7 +2047,7 @@ func TestAuditDefaultLimitApplies(t *testing.T) {
 	// No drain between closes, and the exact count at :1605 depends on that
 	// being safe: every cycle here nets to nothing (no payment was ever put in
 	// it), and instructSettlement declines to send a pacs.009 for an empty net
-	// (mesh/csm.go:550-552) — so no settlement chain starts and no third event
+	// (csm.go) — so no settlement chain starts and no third event
 	// per pair ever lands. A fixture change that puts one payment into any of
 	// these cycles turns this exact count into a race against that chain.
 	for range 51 {
@@ -3567,8 +3566,8 @@ func TestPaymentAddressingRefusalsAre422(t *testing.T) {
 	// creditorSideTx (payment/system.go:1544) re-derives the same address and
 	// AcceptInboundTx (payment/system.go:1400) skips the write when nothing
 	// changed. The two cases above that quote no creditor address prove a push
-	// of that shape is refused synchronously inside the mesh — mesh.Submit ->
-	// bank.submit (mesh/bank.go:128) -> payment.SubmitAndInstruct, where the
+	// of that shape is refused synchronously inside the mesh — Mesh.Submit ->
+	// bank.submit (bank.go) -> payment.SubmitAndInstruct, where the
 	// message is now built in the same unit of work as the leg — so there is no
 	// path through this route on which a creditor back-fill is ever attempted,
 	// let alone reachable. There is no api-level test for that back-fill, and

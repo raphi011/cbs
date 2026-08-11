@@ -6,7 +6,6 @@ import (
 	"log/slog"
 	"sync"
 
-	"github.com/raphi011/cbs/mesh"
 	"github.com/raphi011/cbs/payment"
 	"github.com/raphi011/cbs/seed"
 )
@@ -58,7 +57,7 @@ type Deployment struct {
 	// It is not optional. A deployment with no mesh has no way to carry a payment
 	// past the first institution, so NewDeployment refuses one at construction
 	// rather than leaving four handlers to fail on their first request.
-	mesh *mesh.Mesh
+	mesh *Mesh
 
 	// populate rebuilds the sample dataset. It must be idempotent: the process
 	// calls it at boot and Reset calls it again after clearing the store.
@@ -102,7 +101,7 @@ type Deployment struct {
 // NewDeployment performs no I/O — the caller populates the network before
 // serving — so a store that is unavailable fails where it can be reported rather
 // than inside a constructor with no error to return.
-func NewDeployment(nets *payment.Networks, msh *mesh.Mesh, populate func(context.Context, *payment.Networks, seed.Deployment) error, log *slog.Logger) *Deployment {
+func NewDeployment(nets *payment.Networks, msh *Mesh, populate func(context.Context, *payment.Networks, seed.Deployment) error, log *slog.Logger) *Deployment {
 	if msh == nil {
 		panic("server: a Deployment needs a mesh; without one nothing here has a way to carry a payment past the bank it was handed to")
 	}
@@ -147,7 +146,7 @@ func (d *Deployment) Log() *slog.Logger { return d.log }
 // reseed would race those same handlers for the tables it is rebuilding. The
 // result is not an error, it is a scenario with extra rows in it.
 //
-// Draining is the ONLY way an in-flight conversation finishes: mesh.Stop cuts
+// Draining is the ONLY way an in-flight conversation finishes: Mesh.Stop cuts
 // them, and there is nothing here to stop anyway — the mesh outlives the reset,
 // exactly as the store does. Drain needs no deadline of its own, because the
 // admin route already gives the whole operation one.

@@ -9,7 +9,7 @@
 --
 -- The boundary between institutions IS THE DDL. One schema holding all 31 tables
 -- would make it a convention instead — measurable only by a recorder watching
--- which book each unit of work reached, as mesh/books_test.go does — and a
+-- which book each unit of work reached, as cmd/server/books_test.go does — and a
 -- crossing would be a row nobody should have read. Here it is a table that is
 -- not there.
 --
@@ -1478,7 +1478,7 @@ CREATE TABLE payments (
     -- is a claim:
     --
     --   * cycle_id is NOT here. A BANK HAS NO CYCLES. It is not that the column
-    --     would be empty — nothing in mesh/bank.go names a cycle at all, and the
+    --     would be empty — nothing in cmd/server/bank.go names a cycle at all, and the
     --     cycles table is in another institution's database. What a bank learns
     --     about a cut-off is a settlement_advices row quoting a reference it
     --     cannot resolve, and that table says so in as many words.
@@ -1562,7 +1562,7 @@ CREATE TABLE payments (
     -- 2016, the originating bank derives the routing. A WRONG counterparty agent
     -- is therefore not refused at submission: the message is delivered to the
     -- bank it names, which resolves the address in its own register, does not
-    -- find it and answers AC01. See mesh/books_test.go's
+    -- find it and answers AC01. See cmd/server/books_test.go's
     -- TestAWrongCounterpartyAgentIsRefusedByTheBankItNames.
     --
     -- Stored rather than joined even for the own side, and the reason is what

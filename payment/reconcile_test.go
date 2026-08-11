@@ -20,7 +20,7 @@ import (
 // Calibrating one bank's own reconciliation
 // ---------------------------------------------------------------------------
 //
-// Same method as mesh/recon_test.go, and for the same reason: an instrument
+// Same method as cmd/server/recon_test.go, and for the same reason: an instrument
 // that has never been shown a break is one nobody has any reason to believe.
 // Each test takes a network that reconciles, puts ONE thing wrong in it, and
 // checks that the run says so — and says which account, because a finding that
@@ -168,7 +168,7 @@ func TestABankCatchesItsMirrorLegPostedAgainstTheWrongAmount(t *testing.T) {
 }
 
 // TestABankCatchesAReserveMovedWithNoStatementBehindIt is the damage
-// mesh/recon_test.go's diverged-mirror fixture injects, caught from inside ONE
+// cmd/server/recon_test.go's diverged-mirror fixture injects, caught from inside ONE
 // database.
 //
 // That test needed all five: the bank's reserve and the settlement agent's are

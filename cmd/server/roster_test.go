@@ -1,4 +1,4 @@
-package mesh
+package main
 
 import (
 	"context"
@@ -49,7 +49,7 @@ func TestStartGivesEveryParticipantAnActor(t *testing.T) {
 		"Aurora Bank": "AURODEFFXXX",
 		"Banca Verde": "VERDITMMXXX",
 	})
-	m, err := New(net, testConfig, slog.New(slog.DiscardHandler))
+	m, err := NewMesh(net, testConfig, slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -127,7 +127,7 @@ func TestStartGivesAHalfProvisionedBankNoActor(t *testing.T) {
 		t.Fatalf("FoundBank Nordhaven: %v", err)
 	}
 
-	m, err := New(nets, testConfig, slog.New(slog.DiscardHandler))
+	m, err := NewMesh(nets, testConfig, slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}

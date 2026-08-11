@@ -1424,7 +1424,7 @@ func TestSettleCycleRollsBackEveryLayer(t *testing.T) {
 	// No settlement was recorded, and the cycle is still Closed rather than
 	// Settled — which is what leaves the operation retriable once the member is
 	// funded. Retrying it is not this layer's act: in the mesh the clearing
-	// house re-sends the pacs.009 (POST /cycles/{cid}/settle, mesh.csm.settle),
+	// house re-sends the pacs.009 (POST /cycles/{cid}/settle, cmd/server's csm.settle),
 	// and SettleCycleTx's CycleClosed guard is what makes asking twice safe.
 	settlements, err := net.cb().ListSettlements(ctx)
 	assertNoError(t, err)
@@ -3877,7 +3877,7 @@ func TestSubmitLeavesAPushPaymentInitiatedAndOutOfAnyCycle(t *testing.T) {
 }
 
 // TestTheClearingHouseWillNotClearForANonMember is the clearing house's half of
-// the guard mesh.Mesh.Submit also makes at its own door.
+// the guard cmd/server's Mesh.Submit also makes at its own door.
 //
 // It is here and not only there because these acts are separately callable —
 // seed/seed.go composes them directly and every fixture above does too — so a
@@ -4482,7 +4482,7 @@ func (s failingUpdateStore) Update(ctx context.Context, fn func(context.Context,
 //
 // Collapsing every error from checkPartyTx's two reads into a domain sentinel —
 // `if err != nil { return ErrAccountNotInParticipant }` — is on the MONEY path:
-// AcceptInboundTx runs it through creditorSideTx/debtorSideTx, mesh/bank.go's
+// AcceptInboundTx runs it through creditorSideTx/debtorSideTx, cmd/server/bank.go's
 // answer hands whatever comes back to ReasonFor, and AC01 "incorrect account
 // number" goes out in a pacs.002. So a dropped connection at the RECEIVING bank
 // would tell the SENDING bank its customer's IBAN was wrong — and on a push the

@@ -140,9 +140,9 @@ func validateFunds(ctx context.Context, p *Payment, sc SchemeContext) error {
 // And a party who is both — a payment from a bank to itself — would make a
 // negation ambiguous, while these two rules stay total.
 //
-// It takes the two AGENTS rather than a Payment, which is how mesh.submitterOf —
+// It takes the two AGENTS rather than a Payment, which is how cmd/server's submitterOf —
 // its counterpart in both senses, the other party and the other role — is
-// written, and that one has to be: mesh.Mesh.Submit chooses a submitter from a
+// written, and that one has to be: cmd/server's Mesh.Submit chooses a submitter from a
 // request, and a request is not yet a payment.
 //
 // It hands back the ADDRESS rather than a party ref, because what all four

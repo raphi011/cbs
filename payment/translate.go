@@ -433,7 +433,7 @@ type MessageContext struct {
 	//
 	// It exists because a relay cannot otherwise be honest. The clearing house
 	// passes the settlement agent's refusal of a RETURN straight through to the
-	// bank that asked for one (mesh.csm.receiveReturnStatus): it decides
+	// bank that asked for one (cmd/server's csm.receiveReturnStatus): it decides
 	// nothing, adds nothing, and — with only From to go on — was stamping
 	// itself as the originator of somebody else's refusal. That is precisely
 	// what Orgtr exists to prevent, per iso20022.StatusReasonInformation: a

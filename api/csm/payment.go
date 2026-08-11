@@ -300,7 +300,7 @@ func (s *surface) handleCloseCycle(r *http.Request) (api.ClearingCycleDTO, error
 // The central bank refuses a batch whose net payer cannot cover it — AM04, one
 // unit of work, nothing posted — and there is nobody to tell: every payment is
 // exactly where the cut-off left it, so a bank told "rejected" would try to
-// reverse a debit that must not be reversed (see mesh.csm.receiveSettlementStatus).
+// reverse a debit that must not be reversed (see cmd/server's csm.receiveSettlementStatus).
 // What is left is a cycle that is Closed with no settlement, its payments
 // Cleared, every payer debited into their own bank's clearing suspense and every
 // payee unpaid — and no state transition out of that, for any object, through

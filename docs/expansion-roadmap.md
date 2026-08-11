@@ -39,7 +39,9 @@ Three constraints apply to everything below.
 - `payment` — one institution's handle on the interbank network. SEPA CT and DD,
   `Initiated → Accepted → Cleared → Settled` **per copy**. `payment.Networks`
   mints one `Network` per institution.
-- `iso20022`, `mesh` — the messages, and the N+2 actors that exchange them.
+- `iso20022`, `mesh/wire` — the messages, and the delivery that carries them.
+  The N+2 actors that exchange them are `cmd/server`'s, because which
+  institutions a deployment has is that deployment's and not a library's.
 - `payment/recon` — the reconciliation harness, test-only by convention: the one
   instrument that opens every institution's database at once, precisely because
   no actor in the system may. Its narrow sibling is `payment.Network.Reconcile`,

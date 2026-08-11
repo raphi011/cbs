@@ -21,7 +21,7 @@ import (
 //
 // It is also why the writers in respond.go are unexported. A surface package
 // cannot answer a request except through Handle, so the guarantee is enforced
-// rather than trusted — the same move mesh/ops.go makes one layer down.
+// rather than trusted — the same move cmd/server/ops.go makes one layer down.
 //
 // # A nil response is 204 No Content
 //

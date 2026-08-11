@@ -1,11 +1,43 @@
-// Package mesh is the interbank network: it carries ISO 20022 messages between
-// the institutions of this system, and decides which institution runs which half
-// of each flow.
+// Command server runs the core-banking REST API.
 //
-// It exists to make the message the interface. Before it, a bank learned the
-// fate of a payment by calling a function that returned it; after it, no actor
-// in this package is TOLD that a payment was accepted except by receiving a
-// pacs.002 saying so. Everything else here follows from taking that seriously.
+// It opens a store, builds a payment.Network over it, seeds it with a
+// comprehensive sample dataset (multiple banks, accounts, payments, clearing
+// cycles and settlements) and serves it over HTTP. It can also be reset to the
+// sample dataset at runtime via POST /admin/reset. This is a learning and
+// prototyping tool, not a production service.
+//
+// # Which stores
+//
+// Without DATABASE_URL (or -database) the server runs on ephemeral SQLite
+// databases: zero setup, and every restart starts from the seeded scenario
+// again. With one, -database is a DIRECTORY and the data outlives the process.
+//
+// A DIRECTORY, because there is no one database to name. Each institution holds
+// its own — the clearing house's, the central bank's, and one per member bank
+// named by that bank's BIC — so the flag names the place they live rather than
+// the file. The set of banks is the set of files in it, which is why a restart
+// needs no counter and no registry: see store/sqlite.Set.
+//
+// Neither the server nor the developer needs a database server — nothing in
+// `make dev`, `make run` or `go test ./...` ever did, and now nothing anywhere
+// does.
+//
+// Seeding is idempotent, so the same wiring serves both: Populate creates the
+// scenario against an empty store and returns without touching a populated one,
+// which is what makes a restart against a file a no-op rather than a second copy
+// of every bank.
+//
+// # The interbank network
+//
+// The three institutions and the flows between them are here, in bank.go,
+// csm.go, centralbank.go and ops.go, with the composition root in mesh.go and
+// deployment.go. They are this deployment's orchestration rather than a library
+// some other system could use, which is what puts them in a command.
+//
+// It exists to make the message the interface. A bank does not learn the fate of
+// a payment by calling a function that returns it; no actor here is TOLD that a
+// payment was accepted except by receiving a pacs.002 saying so. Everything else
+// below follows from taking that seriously.
 //
 // The DELIVERY underneath — inboxes, goroutines, the in-flight counter, Drain
 // and the dead letters — is mesh/wire, which carries bytes and knows nothing
@@ -19,7 +51,6 @@
 // bank.receiveStatus does, and trusts it over the message it just received — but
 // that copy is a record of what this bank was told. See "Five databases,
 // likewise" below.
-//
 // # Actors
 //
 // A mesh owns two institutions and one actor per bank it has been told about.
@@ -138,7 +169,7 @@
 // clearing house rejects a collection the payer's bank has already accepted, the
 // bank waiting for an answer and the bank holding the money are two DIFFERENT
 // banks — so the rejection goes to both, and the condition for the second is
-// exactly that there is money to give back. See mesh.csm's receiveStatus.
+// exactly that there is money to give back. See csm's receiveStatus.
 //
 // # Settlement
 //
@@ -379,7 +410,7 @@
 // worth waiting for. The mechanism, and the one non-deterministic assertion in
 // either package, are wire's.
 //
-// # What this mesh is not
+// # What this transport is not
 //
 // Delivery is exactly-once and in order, because the transport is a queue
 // inside one process, and nothing here applies backpressure. Both are
@@ -395,7 +426,7 @@
 // state. What the mesh models is the SHAPE of interbank messaging — who may know
 // what, and when — not its infrastructure. They do NOT share a store; see below.
 //
-// The clock is literally one: every header this package stamps is dated from
+// The clock is literally one: every header this command stamps is dated from
 // payment.Network.Now, the same source the payments themselves are booked from
 // (see Mesh.now). A mesh with a clock of its own would be a second answer to
 // what time it is, and under the frozen clock the tests run on the two would be
@@ -431,6 +462,6 @@
 // mechanism above is about what one institution may REACH; payment/recon is
 // about whether the institutions that reached nothing of each other's still
 // agree — a bank's reserve against the central bank's liability to it, a cycle
-// against the settlement that discharged it. mesh/recon_test.go is where it is
+// against the settlement that discharged it. recon_test.go is where it is
 // calibrated.
-package mesh
+package main

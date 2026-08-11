@@ -105,7 +105,7 @@ import (
 // the boundary in the DDL is what makes "the clearing house has no ledger" a
 // fact about the database rather than a claim one test asserts.
 //
-// The three values are the three actors in mesh/ops.go — bankOps, csmOps,
+// The three values are the three actors in cmd/server/ops.go — bankOps, csmOps,
 // settlementOps — and there is no fourth. In particular there is no shape
 // holding every table: the monolith that one existed as died with this task,
 // and re-adding it would restore the ability to write a statement that spans two
@@ -217,7 +217,7 @@ var ErrNotInThisShape = errors.New("sqlite: this store's schema holds no such ta
 // a bank's network reaching into the central bank's book gets a silent not-found
 // — an empty listing, a zero balance, a "ledger not found" three layers away —
 // and the only instrument that could see it is the book recorder in
-// mesh/books_test.go, which watches mesh actors and is therefore blind to
+// cmd/server/books_test.go, which watches mesh actors and is therefore blind to
 // anything that never becomes a message.
 //
 // It does not replace the recorder and the recorder gets STRONGER beside it. The
