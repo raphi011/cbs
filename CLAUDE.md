@@ -47,6 +47,11 @@ load-bearing, and a measured number with what was measured.
 The banking/accounting/payments content is duplicated, by design, across:
 
 - `README.md` — the authoritative source.
+- `CONTEXT.md` — **not** a fifth copy: a disambiguation table, one line and an
+  `_Avoid_` list per term, holding only which word wins where several name the
+  same thing. It carries no argument and no explanation; when a term here and a
+  term there disagree, the README is right and this file is stale. Renaming a
+  domain concept is an edit to it.
 - `web/src/components/hint-content.ts` — distilled from the README.
 - `web/src/lib/quiz/chapters/*.ts` — the 18-chapter quiz.
 - `store/sqlite/schema/{bank,csm,centralbank}/0001_init.sql` — the relational
