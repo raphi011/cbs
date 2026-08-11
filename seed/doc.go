@@ -13,11 +13,11 @@
 // after a reset) are timestamped live. It is the dataset the server boots from
 // and resets to.
 //
-// It builds into a network AND through a mesh, and needs both running. Admitting
-// a bank is a conversation between three institutions, so the four banks here
-// apply through the mesh's own door and wait for the scheme to answer, exactly
-// as a bank admitted over HTTP does. Everything else — accounts, payments,
-// cycles, settlements — is composed directly, one unit of work at a time, and
-// deliberately so: a fixture is an outcome, and a conversation carried out at
-// startup could not promise a fixed one.
+// It builds into a network AND through a mesh, and needs both running. The four
+// banks here are provisioned — three rows apiece, in three institutions'
+// databases — and then given actors, because a bank with rows and no inbox
+// cannot be paid. Everything else — accounts, payments, cycles, settlements — is
+// composed directly, one unit of work at a time, and deliberately so: a fixture
+// is an outcome, and a conversation carried out at startup could not promise a
+// fixed one.
 package seed

@@ -49,7 +49,7 @@ func TestABankAdmittedAfterTheLastRefreshCannotBePaidUntilTheNextOne(t *testing.
 	// Its admission is the whole conversation and it finishes: it holds a
 	// settlement account, it is in the roster, and it has a customer with an
 	// address of its own.
-	joiner := h.admit(t, "Nordhaven Bank", "NORDSESSXXX", euroOnly)
+	joiner := h.provision(t, "Nordhaven Bank", "NORDSESSXXX", euroOnly)
 	h.drain(t)
 	joiner = h.getBank(t, joiner.ID)
 	if joiner.Status != payment.BankMember {

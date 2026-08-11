@@ -22,6 +22,7 @@ import (
 	"github.com/raphi011/cbs/ledger"
 	"github.com/raphi011/cbs/mesh"
 	"github.com/raphi011/cbs/payment"
+	"github.com/raphi011/cbs/provision"
 	"github.com/raphi011/cbs/store/storetest"
 	"github.com/raphi011/cbs/store/testenv"
 )
@@ -113,34 +114,26 @@ func newServerOverStore(t *testing.T, gate *gatedStores,
 	return NewServer(nets, msh, populate, log).as(nets.ClearingHouse())
 }
 
-// admitForPopulate is what a reseed here uses to make a bank: the mesh's own
-// door, then a wait for the scheme to answer.
+// admitForPopulate is what a reseed here uses to make a bank: its three rows,
+// then an actor on the mesh.
 //
-// Each baseline admits through Mesh.Admit rather than writing the member row
-// itself. api.Server.Reset forgets every bank actor before it truncates and does
-// not re-register them afterwards, so a reseed that wrote its rows directly
-// would rebuild a network whose banks answer every read and carry no payment.
-// Going through Admit is what gives each one its actor in the same call that
-// founds it.
-//
-// It drains per bank, for the reason seed.builder.admit gives: network ids come
-// from one counter, and a conversation still running while the next bank is
-// founded moves that bank's id.
+// The second half is what a reseed cannot leave out. api.Server.Reset forgets
+// every bank actor before it truncates and does not re-register them afterwards,
+// so a baseline that wrote its rows and stopped would rebuild a network whose
+// banks answer every read and carry no payment.
 func admitForPopulate(ctx context.Context, nets *payment.Networks, msh *mesh.Mesh,
 	name string, bic iso20022.BIC) (*payment.Bank, error) {
 
-	founded, err := msh.Admit(ctx, name, bic, storetest.FixtureCountry, nil)
+	bank, err := provision.Bank(ctx, nets, provision.BankSpec{
+		Name: name, BIC: bic, Country: storetest.FixtureCountry,
+	})
 	if err != nil {
 		return nil, err
 	}
-	if err := msh.Drain(ctx); err != nil {
+	if err := msh.AddBank(ctx, bank); err != nil {
 		return nil, err
 	}
-	net, err := nets.Bank(ctx, founded.ID)
-	if err != nil {
-		return nil, err
-	}
-	return net.GetBank(ctx, founded.ID)
+	return bank, nil
 }
 
 // drainServer waits for the mesh behind a Server built by newServer to go quiet.

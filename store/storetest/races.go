@@ -89,9 +89,9 @@ func RunSystemRaces(t *testing.T, newStores func(*testing.T) payment.Stores) {
 	// What serializes it is each act's OWN first statement: an id allocation, whose
 	// write makes that transaction the database's writer.
 	//
-	// An admission is not one transaction any more. It is four, at three
-	// institutions, with messages between them, and Admit drives four separate
-	// Updates per bank. So there is no single first statement, and what reaches
+	// An admission is not one transaction. It is four, at three institutions,
+	// and Admit drives four separate Updates per bank. So there is no single
+	// first statement, and what reaches
 	// the find-or-create is payment.OpenSettlementAccountTx on its own — which
 	// draws its own id first, through payment.admissionSequenceTx, for exactly
 	// this reason. That function records what the act does without it: 60 runs

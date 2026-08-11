@@ -1542,7 +1542,7 @@ func TestTakingCashInReachesNoOtherInstitution(t *testing.T) {
 	h := newMeshHarness(t)
 	ctx := context.Background()
 
-	solo := h.admit(t, "Solo Bank", "SOLODEFFXXX", []ledger.AssetCode{"EUR"})
+	solo := h.provision(t, "Solo Bank", "SOLODEFFXXX", []ledger.AssetCode{"EUR"})
 	h.drain(t)
 	solo = h.getBank(t, solo.ID)
 

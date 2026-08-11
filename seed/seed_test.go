@@ -28,9 +28,8 @@ var testMeshConfig = mesh.Config{
 
 // testMesh starts a mesh over a network and stops it when the test ends.
 //
-// Every seed test needs one now, because Populate admits its banks through the
-// mesh's own door and a bank that has not had its conversation holds no
-// settlement account.
+// Every seed test needs one, because Populate gives each provisioned bank an
+// actor and the scenario it goes on to build is payments between them.
 //
 // Drain FIRST, then Stop. Stop closes every inbox in one step before it joins
 // anybody, so a conversation still in flight when it runs is cut; draining

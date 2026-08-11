@@ -15,6 +15,7 @@ import (
 	"github.com/raphi011/cbs/mesh"
 	"github.com/raphi011/cbs/payment"
 	"github.com/raphi011/cbs/product"
+	"github.com/raphi011/cbs/provision"
 )
 
 // baseDate anchors the deterministic seed timeline. Everything built before the
@@ -41,25 +42,23 @@ func New() *Dataset { return &Dataset{clock: newClock(baseDate)} }
 func (d *Dataset) Now() time.Time { return d.clock.now() }
 
 // Populate builds the full sample scenario (see the package doc) into the
-// network's store, admitting its banks through the mesh it is given.
+// network's store, provisioning its banks and giving each one an actor on the
+// mesh it is given.
 //
 // # Why it takes a mesh
 //
-// Because admission is a conversation, and a bank that has not had one is not a
-// member: it holds no settlement account, so the very first thing this scenario
-// does after opening its accounts — paying an opening deposit in — has nowhere
-// to credit. The seeded dataset goes through the mesh's own door for its
-// admissions and is answered by the same two actors that answer an operator's
-// POST /members.
+// Writing a bank's three rows needs no mesh at all — see provision.Bank — but a
+// bank with rows and no inbox can neither send nor be sent to, and this scenario
+// is payments: an opening deposit is lodged, a cycle is settled, a collection is
+// answered. Every one of those is a message between two actors.
 //
-// So the mesh must be RUNNING before this is called, which reverses the order
-// cmd/server used: the mesh is built and started over an unseeded store, and its
-// roster read finds nothing because the banks it would find are the ones this is
-// about to admit.
+// So the mesh must be RUNNING before this is called: it is built and started
+// over an unseeded store, and its roster read finds nothing because the banks it
+// would find are the ones this is about to write.
 //
 // It is not optional and there is no nil path. A Populate with no mesh could
-// found four banks and would leave every one of them Founded, which is a
-// scenario in which no payment in it can be made — see builder.admit.
+// write four banks' rows and would leave every one of them unreachable, which is
+// a scenario in which no payment in it can be made — see builder.provision.
 //
 // It is idempotent: a store that already holds participants is left alone. That
 // is what makes it safe to call on every boot — against a database that
@@ -252,63 +251,32 @@ func check(err error) {
 	}
 }
 
-// admit puts one bank through the mesh's own door and waits for the scheme to
-// answer.
+// provision writes one bank's three rows — its own, its settlement account in
+// the central bank's book, its roster entry in the clearing house's — and gives
+// it an actor on this mesh.
 //
-// It is the whole conversation: Mesh.Admit founds the bank, gives it an actor
-// and sends one acmt.007 per asset; the central bank opens the settlement
-// account and answers acmt.010; the clearing house writes the routing entry and
-// relays acmt.011; the bank records what it was told. What comes back from Admit
-// is a FOUNDED bank, because none of that has happened yet, so this drains and
-// re-reads the row — a bank that is still Founded holds no settlement account,
-// and the next thing this scenario does is pay an opening deposit in.
+// The two steps are different kinds of thing and are spelled separately: the
+// rows are what the three institutions hold, and the actor is an inbox on a bus.
+// Neither is a message, so nothing here waits for an answer, and the ids the
+// dataset comes out with are the ids of four calls made in order on one
+// goroutine. TestDeterministicIDs is the assertion that two builds agree.
 //
-// # One admission at a time, because the ids have to be reproducible
-//
-// The drain is here, per bank, rather than once after all four — and that is a
-// property of the SEED rather than of admission. Every network id in this system
-// comes from one counter per book, so a conversation still running while the
-// next bank is founded draws its audit ids from the same sequence as that bank's
-// own id, and the dataset's participant ids move.
-//
-// Measured rather than argued: with a single drain after all four admissions,
-// twelve builds under GOMAXPROCS=2 with the race detector on gave the FOURTH
-// bank an id that differed from the other eleven builds' once. Twelve more at
-// GOMAXPROCS=1 and twelve at GOMAXPROCS=8 did not reproduce it, which is exactly
-// why one clean run is not evidence here. No id is quoted because none of the
-// ids in that experiment is one this code produces — that is the finding.
-//
-// Draining per bank makes each conversation finish before the next Admit
-// begins, and the four sequential calls this replaces had that for free.
-//
-// What it costs is a scenario built one bank at a time instead of four in
-// flight. Nothing wants the concurrency: this is a fixture, and the property it
-// must have is that two builds of it are the same dataset. TestDeterministicIDs
-// is the assertion of that property, and the numbers above are also a warning
-// about it: it compares two builds in one process, so a divergence that appears
-// in one build out of twelve is one it reports rarely rather than reliably.
-func (b *builder) admit(name string, bic iso20022.BIC, country iban.Country, assets []ledger.AssetCode) *payment.Bank {
-	founded := must(b.mesh.Admit(b.ctx, name, bic, country, assets))
-	check(b.mesh.Drain(b.ctx))
-
-	// The bank's own row, out of the bank's own database. It was read through
-	// the clearing house's network while there was one store; the clearing
-	// house's schema has no banks table.
-	bank := must(b.bank(founded.BIC).GetBank(b.ctx, founded.ID))
-	if bank.Status != payment.BankMember {
-		check(fmt.Errorf("%s is %q after its admission conversation, want %q",
-			bank.BIC, bank.Status, payment.BankMember))
-	}
+// The bank that comes back holds its settlement account, which the next thing
+// this scenario does — pay an opening deposit in — needs.
+func (b *builder) provision(name string, bic iso20022.BIC, country iban.Country, assets []ledger.AssetCode) *payment.Bank {
+	bank := must(provision.Bank(b.ctx, b.nets, provision.BankSpec{
+		Name: name, BIC: bic, Country: country, Assets: assets,
+	}))
+	check(b.mesh.AddBank(b.ctx, bank))
 	return bank
 }
 
 // subscribe is one bank pulling the scheme's routing directory, through the same
 // door an operator's POST /directory/banks/refresh goes through.
 //
-// It is not part of admission and is not a message: nothing is queued and nobody
-// answers later, so there is no drain here where admit needs one. What it does
-// is read the roster as it stands and replace this bank's copy with it. See
-// mesh.Mesh.RefreshDirectory.
+// It is no part of provisioning a bank and is not a message: nothing is queued
+// and nobody answers later. What it does is read the roster as it stands and
+// replace this bank's copy with it. See mesh.Mesh.RefreshDirectory.
 func (b *builder) subscribe(p *payment.Bank) {
 	must(b.mesh.RefreshDirectory(b.ctx, p.BIC))
 }
@@ -465,9 +433,9 @@ func (b *builder) fund(p *payment.Bank, acct deposit.Account, amount ledger.Amou
 // That makes it the one place in this file where the seed does NOT compose the
 // halves itself. initiate composes three, and its doc explains why — the seed runs
 // before any actor exists. By the time funding happens the actors DO exist: every
-// bank in this scenario has been admitted through mesh.Admit already, which is
-// what gave it the settlement account this lodgement quotes. So there is a real
-// conversation available and the seed uses it.
+// bank in this scenario has been provisioned and given one already, and
+// provisioning is what gave it the settlement account this lodgement quotes. So
+// there is a real conversation available and the seed uses it.
 //
 // # It drains
 //
@@ -778,11 +746,11 @@ func (b *builder) initSDD(dp *payment.Bank, d deposit.Account, cp *payment.Bank,
 
 func (b *builder) build() {
 	// --- Banks -------------------------------------------------------------
-	// Each bank joins the network as a euro bank, and joining is a conversation:
-	// founding opens its suspense and reserve accounts in its own book, the
-	// central bank opens its settlement account in the central bank's, and the
-	// clearing house puts it in the roster. See builder.admit, which waits for
-	// each one to finish before the next bank applies.
+	// Each bank joins the network as a euro bank, and joining is three rows in
+	// three databases: founding opens its suspense and reserve accounts in its
+	// own book, the central bank opens its settlement account in the central
+	// bank's, and the clearing house puts it in the roster. See
+	// builder.provision.
 	euro := []ledger.AssetCode{seedAsset}
 	// Each bank issues addresses in the country its BIC names, under a bank code
 	// of its country's own width — eight digits in Germany, five in Italy and
@@ -794,24 +762,24 @@ func (b *builder) build() {
 	// each country's registry allocates from its own range, and Italy's and
 	// France's are both five digits wide. A bank code is unique within a COUNTRY
 	// and nowhere else, which is why every table keyed by one is keyed by the pair.
-	aurora := b.admit("Aurora Bank", "AURODEFFXXX", iban.DE, euro)
-	verde := b.admit("Banca Verde", "VERDITMMXXX", iban.IT, euro)
-	nord := b.admit("Nordhaven Bank", "NORDSESSXXX", iban.SE, euro)
-	soleil := b.admit("Crédit Soleil", "SOLEFRPPXXX", iban.FR, euro)
+	aurora := b.provision("Aurora Bank", "AURODEFFXXX", iban.DE, euro)
+	verde := b.provision("Banca Verde", "VERDITMMXXX", iban.IT, euro)
+	nord := b.provision("Nordhaven Bank", "NORDSESSXXX", iban.SE, euro)
+	soleil := b.provision("Crédit Soleil", "SOLEFRPPXXX", iban.FR, euro)
 
 	// --- Each bank subscribes to the routing directory ---------------------
 	//
-	// A fifth act, and nobody's part of an admission. Being in the roster is what
-	// makes a bank REACHABLE; holding a copy of the roster is what makes it able
-	// to reach anybody, and the two are separate because the copy is pulled by
-	// each member on its own account. Nothing has told Aurora that Soleil exists
-	// until Aurora asks.
+	// A separate act, and no part of provisioning a bank. Being in the roster is
+	// what makes a bank REACHABLE; holding a copy of the roster is what makes it
+	// able to reach anybody, and the two are separate because the copy is pulled
+	// by each member on its own account. Nothing has told Aurora that Soleil
+	// exists until Aurora asks.
 	//
-	// It runs after all four are admitted because this seed wants a scenario where
-	// every bank can pay every other. Refreshing inside admit would give Aurora a
-	// directory holding only itself, Verde one holding two, and a dataset whose
-	// payments worked or did not depending on the order the banks joined — which
-	// is real behaviour, and is measured in mesh rather than baked into the
+	// It runs after all four are written because this seed wants a scenario where
+	// every bank can pay every other. Refreshing inside provision would give
+	// Aurora a directory holding only itself, Verde one holding two, and a dataset
+	// whose payments worked or did not depending on the order the banks joined —
+	// which is real behaviour, and is measured in mesh rather than baked into the
 	// fixture every other suite reads.
 	for _, p := range []*payment.Bank{aurora, verde, nord, soleil} {
 		b.subscribe(p)

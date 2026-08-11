@@ -350,7 +350,7 @@ func TestAStaleDirectoryIsReportedAndIsNotABreak(t *testing.T) {
 	h := reconciled(t)
 
 	// A third member, admitted and published, and nobody has pulled since.
-	joiner := h.admit(t, "Nordhaven Bank", "NORDSESSXXX", euroOnly)
+	joiner := h.provision(t, "Nordhaven Bank", "NORDSESSXXX", euroOnly)
 	h.drain(t)
 
 	// It PASSES. recon.Check fails the test on every break, so calling it here is

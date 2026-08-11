@@ -13,6 +13,7 @@ import (
 	"github.com/raphi011/cbs/iso20022"
 	"github.com/raphi011/cbs/ledger"
 	"github.com/raphi011/cbs/payment"
+	"github.com/raphi011/cbs/provision"
 	"github.com/raphi011/cbs/store/storetest"
 	"github.com/raphi011/cbs/store/testenv"
 )
@@ -359,28 +360,23 @@ func newHarness(t *testing.T, opts harnessOptions) *meshHarness {
 		}
 	})
 
-	// Admit returns a FOUNDED bank: the scheme's answer arrives later, at two
-	// other actors, as a message. So the fixture drains and reads both banks
-	// back, because everything after this point — a customer account with a
-	// settlement reference behind it, a deposit that credits a reserve — needs
-	// the admission to have finished. A test that asserted on what Admit
-	// returned would be asserting on a bank the scheme had not answered about.
-	h.debtor = h.admit(t, "Aurora Bank", "AURODEFFXXX", assets)
-	h.creditor = h.admit(t, "Banca Verde", "VERDITMMXXX", assets)
-	h.drain(t)
-	// And a fifth act, which is nobody's part of an admission: each of them pulls
-	// the scheme's routing directory. Being in the roster is what makes a bank
+	// Both banks' rows are written before anything else, because everything after
+	// this point — a customer account with a settlement reference behind it, a
+	// deposit that credits a reserve — needs a bank the other two institutions
+	// have already answered about.
+	h.debtor = h.provision(t, "Aurora Bank", "AURODEFFXXX", assets)
+	h.creditor = h.provision(t, "Banca Verde", "VERDITMMXXX", assets)
+	// And a separate act that no provisioning performs: each of them pulls the
+	// scheme's routing directory. Being in the roster is what makes a bank
 	// reachable; holding a copy of the roster is what makes it able to reach
 	// anybody, and nothing publishes one. A fixture that skipped this would have
 	// two members neither of which could address the other — which is a real state
 	// and is what TestABankAdmittedAfterTheLastRefreshCannotBePaidUntilTheNextOne
 	// is about.
 	h.subscribeAll(t)
-	h.debtor = h.getBank(t, h.debtor.ID)
-	h.creditor = h.getBank(t, h.creditor.ID)
 	for _, p := range []*payment.Bank{h.debtor, h.creditor} {
 		if p.Status != payment.BankMember {
-			t.Fatalf("%s is %q after the admission conversation, want %q", p.BIC, p.Status, payment.BankMember)
+			t.Fatalf("%s is %q once provisioned, want %q", p.BIC, p.Status, payment.BankMember)
 		}
 	}
 
@@ -449,15 +445,13 @@ func newHarness(t *testing.T, opts harnessOptions) *meshHarness {
 		}
 	}
 
-	// The fixture's own conversation is forgotten, so that a test counting
-	// messages counts its own.
+	// The fixture's own traffic is forgotten, so that a test counting messages
+	// counts its own.
 	//
-	// Building the fixture puts messages on the wire — four per bank, since
-	// admission is a conversation. Tests that count from zero are counting what
+	// Building the fixture puts messages on the wire — a lodgement is a real
+	// camt.050/camt.025 round trip. Tests that count from zero are counting what
 	// they provoked, which is right: the fixture is a NETWORK, not something under
-	// test. It is the same forgetting h.rec.reset() does for books, and the tests
-	// that assert on the admission conversation take their own mark and admit their
-	// own bank (see mesh/admission_test.go).
+	// test. It is the same forgetting h.rec.reset() does for books.
 	h.forgetMessages()
 
 	if opts.openCycles {
@@ -475,19 +469,28 @@ func newHarness(t *testing.T, opts harnessOptions) *meshHarness {
 	return h
 }
 
-// admit puts one bank through the mesh's own door and fails the test if the
-// application is refused.
+// provision writes one bank's three rows and gives it an actor on this mesh.
 //
-// It does NOT drain: what comes back is a Founded bank, and the fixture drains
-// once for both of them. See newHarness.
-func (h *meshHarness) admit(t *testing.T, name string, bic iso20022.BIC, assets []ledger.AssetCode) *payment.Bank {
+// The two steps are separate because they are different kinds of thing: the rows
+// are what the three institutions hold, and the actor is an inbox on a bus. A
+// deployment does the same in the same order — see provision.Bank and AddBank —
+// and neither is a message, so there is nothing here to drain.
+//
+// It does NOT subscribe. What comes back is a bank the roster carries and no
+// other member's copy has yet, which is the state
+// TestABankAdmittedAfterTheLastRefreshCannotBePaidUntilTheNextOne is about. A
+// fixture that wants members able to address each other calls subscribeAll.
+func (h *meshHarness) provision(t *testing.T, name string, bic iso20022.BIC, assets []ledger.AssetCode) *payment.Bank {
 	t.Helper()
-	p, err := h.mesh.Admit(context.Background(), name, bic, storetest.FixtureCountry, assets)
+	ctx := context.Background()
+	p, err := provision.Bank(ctx, h.nets, provision.BankSpec{
+		Name: name, BIC: bic, Country: storetest.FixtureCountry, Assets: assets,
+	})
 	if err != nil {
-		t.Fatalf("Admit %s (%s): %v", name, bic, err)
+		t.Fatalf("provisioning %s (%s): %v", name, bic, err)
 	}
-	if p.Status != payment.BankFounded {
-		t.Fatalf("Admit returned %s as %q; the scheme's answer arrives as a message, not from this call", bic, p.Status)
+	if err := h.mesh.AddBank(ctx, p); err != nil {
+		t.Fatalf("AddBank %s: %v", bic, err)
 	}
 	return p
 }
