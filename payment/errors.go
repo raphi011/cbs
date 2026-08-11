@@ -127,6 +127,16 @@ var (
 	// the door guard removed. That asymmetry is precisely why the door guard is
 	// the one that carries the paying direction.
 	//
+	// # Nothing can reach it today, and it stays
+	//
+	// Which banks a deployment has is decided before the process starts and every
+	// one of them is provisioned in full, so no submission can name a bank the
+	// clearing house does not route to. That is a claim about today's CALLERS and
+	// not an invariant — the halves are separately callable, which is the point
+	// above — and what it would let through is the settlement measured above.
+	// payment/recon's partiesAreMembers asks of the books what these two guards
+	// ask of a submission, so the claim is checked rather than asserted.
+	//
 	// reasonTable gives it RC01 — this repository's own gloss for that code is
 	// "the BIC does not identify a reachable participant", which is the whole of
 	// what this says.

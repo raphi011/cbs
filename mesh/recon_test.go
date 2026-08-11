@@ -258,6 +258,116 @@ func TestTheHarnessCatchesAnAdmissionThatHalfHappened(t *testing.T) {
 	assertBreakAbout(t, report, "the clearing house", "this deployment has no bank at")
 }
 
+// TestTheHarnessCatchesABankProvisionedInEveryBookButItsOwn is the gap
+// provisioning cannot close, measured.
+//
+// The bank's second act needs the account numbers the settlement agent
+// allocated, so it cannot commit until the agent has: two commits in the bank's
+// own book with two other institutions' commits between them. A crash in that
+// interval leaves a bank the agent holds an account for and the clearing house
+// routes to, whose own row records nothing — and that is not a domain state with
+// a name. It is a provisioning failure to retry, and this is what finds it.
+//
+// From inside, every book is consistent. The agent holds an account it opened,
+// the clearing house routes to an address it admitted, and the bank's own row is
+// a founded bank's, which is a perfectly ordinary thing to be. It takes all
+// three at once for any of it to be wrong.
+//
+// The allocation is left alone rather than rolled back with the rest. This
+// fixture's customers hold addresses minted under it, so a bank without it could
+// not have them; what the damage is about is the settlement references, which
+// are what the gap leaves empty.
+func TestTheHarnessCatchesABankProvisionedInEveryBookButItsOwn(t *testing.T) {
+	h := reconciled(t)
+
+	row := *h.getBank(t, payment.ParticipantID(h.debtorBIC))
+	for asset, accts := range row.Assets {
+		accts.Settlement = ""
+		row.Assets[asset] = accts
+	}
+	row.AdmissionRef = ""
+	h.putBank(t, row)
+
+	report := reconcile(t, h.nets)
+	assertBreakAbout(t, report, string(h.debtorBIC),
+		"records no settlement account and the settlement agent holds accounts for it")
+	assertBreakAbout(t, report, string(h.debtorBIC),
+		"records no settlement account and the clearing house routes payments to it")
+}
+
+// TestTheHarnessCatchesABankQuotingAnAccountTheAgentDidNotOpen is the third row
+// read rather than counted.
+//
+// Both institutions hold a number for one account and neither can see the
+// other's. The bank quotes its own when it lodges cash and when it checks an
+// arriving statement; the agent quotes its own when it settles a cut-off. Two
+// different numbers is a reserve credited in one account and moved in another,
+// with every balance on both sides looking exactly as it should.
+//
+// It is the defect payment.Bank.AdmissionRef was added after measuring: an
+// acknowledgement naming a member's own address, quoting an admission it had
+// never heard of, moved that member's settlement reference onto an account the
+// agent had not opened for it. The guard refuses the message; nothing looks at
+// the state a message that got through would leave.
+//
+// The damage is the OTHER member's real reserve account, not an invented one. A
+// nonsense value would be caught by the arm above it — an asset the agent opened
+// nothing in — and would say nothing about the case that matters, which is a
+// real account in the agent's book belonging to somebody else.
+func TestTheHarnessCatchesABankQuotingAnAccountTheAgentDidNotOpen(t *testing.T) {
+	h := reconciled(t)
+
+	row := *h.getBank(t, payment.ParticipantID(h.debtorBIC))
+	accts := row.Assets["EUR"]
+	accts.Settlement = h.getSettlementMember(t, h.creditorBIC).Accounts["EUR"]
+	row.Assets["EUR"] = accts
+	h.putBank(t, row)
+
+	report := reconcile(t, h.nets)
+	assertBreakAbout(t, report, string(h.debtorBIC), "and the settlement agent holds")
+}
+
+// TestTheHarnessCatchesAPaymentTakenForABankTheRosterDoesNotCarry is
+// payment.ErrBankNotAdmitted's counterpart, and it exists because that refusal
+// is now unreachable by construction.
+//
+// Which banks a deployment has is decided before the process starts and every
+// one of them is provisioned in full, so nothing can submit for a bank the
+// clearing house does not route to. That is a claim about today's callers rather
+// than an invariant, and the cost of it being wrong is on record: one non-member
+// in a cut-off took the whole settlement down, because the instruction turns net
+// positions into addresses through the roster and could not build one. Every
+// other member's payments stuck at Cleared, their payees unpaid, their payers'
+// money in suspense.
+//
+// The party is a real bank the settlement agent answered and the clearing house
+// never admitted — the one state in which a bank has customers with money and no
+// route to anybody — rather than an address this deployment has no bank at. An
+// address with nothing behind it is a different defect and has its own arm.
+//
+// The payment is left at Accepted, which is where the refusal sits: the clearing
+// house has taken it and no cut-off has been built from it yet. So the harness
+// reports the two things that are wrong and neither is a bank missing a copy of
+// a payment it was never told about.
+func TestTheHarnessCatchesAPaymentTakenForABankTheRosterDoesNotCarry(t *testing.T) {
+	h := reconciled(t)
+	outsider := h.admitWithoutTheRoster(t, "Nordhaven Bank", "NORDSESSXXX")
+
+	taken := h.onlySettledPayment(t)
+	taken.ID = "pay_for_a_non_member"
+	taken.Status = payment.Accepted
+	taken.CreditorDetails.Agent = outsider.BIC
+	h.putClearingHousePayment(t, taken)
+
+	report := reconcile(t, h.nets)
+	assertBreakAbout(t, report, "the clearing house",
+		"this scheme's roster does not carry")
+	// And the bank itself, which is the other half of the same state: the agent
+	// holds an account for an address the clearing house routes nothing to.
+	assertBreakAbout(t, report, string(outsider.BIC),
+		"the clearing house does not route to it")
+}
+
 // TestTheHarnessCatchesTwoBanksDisagreeingAboutOnePayment is the check that a
 // payment being three rows does not license the three from saying different
 // things.
@@ -615,9 +725,9 @@ func (h *meshHarness) onlySettledPayment(t *testing.T) payment.Payment {
 	return found[0]
 }
 
-// The four row writes. Each opens the institution's OWN store and writes a row
-// no act of that institution would have written, which is the only way to reach
-// the states above; see the note at the top of this file.
+// The row writes. Each opens the institution's OWN store and writes a row no act
+// of that institution would have written, which is the only way to reach the
+// states above; see the note at the top of this file.
 
 func (h *meshHarness) putCycle(t *testing.T, c payment.ClearingCycle) {
 	t.Helper()
@@ -651,6 +761,16 @@ func (h *meshHarness) putPayment(t *testing.T, bic iso20022.BIC, p payment.Payme
 	t.Helper()
 	h.write(t, h.store(t, bic), string(bic), func(ctx context.Context, tx payment.Tx) error {
 		return tx.PutPayment(ctx, p)
+	})
+}
+
+// putBank writes a member's own record of itself, into that member's own
+// database. It is the only row here whose writer and whose subject are the same
+// institution, which is what makes the states it reaches invisible from outside.
+func (h *meshHarness) putBank(t *testing.T, b payment.Bank) {
+	t.Helper()
+	h.write(t, h.store(t, b.BIC), string(b.BIC), func(ctx context.Context, tx payment.Tx) error {
+		return tx.PutBank(ctx, b)
 	})
 }
 

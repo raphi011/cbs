@@ -270,6 +270,7 @@ func Reconcile(ctx context.Context, nets *payment.Networks) (*Report, error) {
 	snap.cyclesAndSettlementsAgree(rep)
 	snap.partiesHoldTheirCopy(rep)
 	snap.admissionWroteItsThreeRows(rep)
+	snap.partiesAreMembers(rep)
 	snap.addressesResolveToTheirIssuer(rep)
 	snap.rosterAgreesWithTheRegistry(rep)
 	snap.directoriesAgainstTheRoster(rep)
@@ -906,6 +907,29 @@ func (s *snapshot) admissionWroteItsThreeRows(rep *Report) {
 				"this bank's own row settles %v through the settlement agent and the clearing house does not route to it",
 				recorded)
 		}
+		// And the NUMBERS, which is the third row read rather than counted. The
+		// two arms above ask whether the settlement agent holds anything for this
+		// bank; this asks whether it is the same account. A bank quotes its own
+		// copy when it lodges cash and when it checks an arriving statement, and
+		// the agent quotes its own when it settles a cut-off, so two different
+		// numbers is a reserve raised in one account and moved in another with
+		// neither institution able to see the other's.
+		if hasAccount {
+			for _, asset := range recorded {
+				own := view.row.Assets[asset].Settlement
+				held, opened := member.Accounts[asset]
+				switch {
+				case !opened:
+					rep.breakf(string(bic),
+						"this bank settles %s through %s and the settlement agent has opened it no account in that asset",
+						asset, own)
+				case own != held:
+					rep.breakf(string(bic),
+						"this bank settles %s through %s and the settlement agent holds %s for it; a lodgement would credit one account and a cut-off would move the other",
+						asset, own, held)
+				}
+			}
+		}
 		if hasAccount && routed {
 			settled := slices.Sorted(maps.Keys(member.Accounts))
 			admitted := slices.Sorted(slices.Values(entry.Assets))
@@ -927,6 +951,47 @@ func (s *snapshot) admissionWroteItsThreeRows(rep *Report) {
 		if _, deployed := s.banks[bic]; !deployed {
 			rep.breakf("the clearing house",
 				"payments are routed to %s, an address this deployment has no bank at", bic)
+		}
+	}
+}
+
+// partiesAreMembers holds every payment the clearing house has taken against the
+// roster it took it under.
+//
+// This is payment.ErrBankNotAdmitted's counterpart, and it exists because that
+// refusal is now unreachable by construction. Which banks a deployment has is
+// decided before the process starts and every one of them is provisioned in
+// full, so no submission can name a bank the clearing house does not route to —
+// but that is a claim about today's callers and not an invariant, and the cost
+// of it being wrong is on record: one non-member in a cut-off took the WHOLE
+// settlement down, because the instruction turns net positions into addresses
+// through the roster and could not build one. Every other member's payments
+// stuck at Cleared, their payees unpaid and their payers' money in suspense.
+//
+// From Accepted onwards, because that is where the refusal sits: a payment the
+// clearing house has taken has passed it, and one it rejected never did. The
+// ASSET half of the same guard is not asked here — a cycle names a scheme and
+// what asset a scheme settles in is a running process's answer rather than a
+// database's — and it is asked where the asset is knowable, in
+// admissionWroteItsThreeRows' comparison of what the agent opened against what
+// the roster publishes.
+func (s *snapshot) partiesAreMembers(rep *Report) {
+	for _, p := range s.payments {
+		switch p.Status {
+		case payment.Accepted, payment.Cleared, payment.Settled, payment.Returned:
+		default:
+			continue
+		}
+		parties := []iso20022.BIC{p.DebtorDetails.Agent, p.CreditorDetails.Agent}
+		if parties[0] == parties[1] {
+			parties = parties[:1]
+		}
+		for _, bic := range parties {
+			if _, routed := s.roster[bic]; !routed {
+				rep.breakf("the clearing house",
+					"payment %s is %s and names %s as a party, an address this scheme's roster does not carry; a cut-off holding it can be netted and not settled",
+					p.ID, p.Status, bic)
+			}
 		}
 	}
 }
