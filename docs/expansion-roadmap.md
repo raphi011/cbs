@@ -4,7 +4,9 @@ What is left to build, in the order it should be built.
 
 This file is forward-looking. What each shipped sub-project decided, reversed and
 learned is in its spec under `specs/` and in `git log`; the index at the bottom is
-only enough to resolve a cross-reference by number.
+only enough to resolve a cross-reference by number. A decision that outlives the
+sub-project that produced it — one a later reader has to know about before
+changing the shape of anything near it — is in [`docs/adr/`](adr/).
 
 **Status legend:** `todo` · `spec` (design agreed, spec written) · `plan`
 (implementation plan written) · `wip`
@@ -19,9 +21,10 @@ domain carried through all layers the way the existing ones are.
 Three constraints apply to everything below.
 
 - **Domain knowledge stays consistent across layers.** `README.md` is
-  authoritative; `web/src/components/hint-content.ts`, the quiz chapters under
-  `web/src/lib/quiz/chapters/`, and the schema comments in
-  `store/sqlite/schema/` all have to move with it. See `CLAUDE.md`.
+  authoritative; `CONTEXT.md`, `web/src/components/hint-content.ts`, the quiz
+  chapters under `web/src/lib/quiz/chapters/`, and the schema comments in
+  `store/sqlite/schema/` all have to move with it. A decision that outlives its
+  sub-project goes in `docs/adr/`. See `CLAUDE.md`.
 - **Nothing requires setup.** A fresh checkout runs the whole suite with no
   database, no Docker and no toolchain. Every new entity still needs to be in
   `store/storetest`.
@@ -39,12 +42,19 @@ Three constraints apply to everything below.
 - `payment` — one institution's handle on the interbank network. SEPA CT and DD,
   `Initiated → Accepted → Cleared → Settled` **per copy**. `payment.Networks`
   mints one `Network` per institution.
-- `iso20022`, `mesh/wire` — the messages, and the delivery that carries them.
-  The N+2 actors that exchange them are `cmd/server`'s, because which
-  institutions a deployment has is that deployment's and not a library's.
+- `iso20022`, `ebics` — the messages, and the file transport that carries them.
+  `ebics` carries bytes and knows no ISO 20022: order types, order ids, return
+  codes and one ordered download queue per enrolled subscriber. Nothing is ever
+  pushed at a member bank.
+- `calendar` — the TARGET settlement calendar and the deployment's clock. Which
+  days money can move on, and what day this deployment thinks it is.
+- `cmd/server` — the three institutions, the composition root and the business
+  day. They are this deployment's orchestration rather than a library some other
+  system could use, which is what puts them in a command; which institutions a
+  deployment has is that deployment's business and not a library's.
 - `payment/recon` — the reconciliation harness, test-only by convention: the one
   instrument that opens every institution's database at once, precisely because
-  no actor in the system may. Its narrow sibling is `payment.Network.Reconcile`,
+  no institution in the system may. Its narrow sibling is `payment.Network.Reconcile`,
   one bank over its own database, which reports **breaks** on the reserve and
   **positions with ages** on the clearing suspense, because only the first of the
   two accounts closes into an identity from inside.
@@ -116,79 +126,108 @@ about what a 500 may disclose.
 
 ## The build sequence
 
-1. **21, EBICS and the business day.** First, because it replaces the transport
-   every item below is built on, and because the business date it brings is a
-   prerequisite the other four have each been paying for separately.
-2. **7c, the message log.** The last piece of sub-project 7, and it makes every
+**21, EBICS and the business day, has shipped**, and it was first for two
+reasons that now hold for everything below: it replaced the transport every item
+here is built on, and the business date it brought is a prerequisite the other
+four had each been paying for separately.
+
+1. **7c, the message log.** The last piece of sub-project 7, and it makes every
    flow already shipped visible. Cheaper after 21, which gives it files to show
    rather than one message per payment.
-3. **Instant payments.** The one place the settlement orchestrator has to grow.
-4. **Card transactions.** Additive on top of holds and the existing net path.
-5. **Reserve adequacy.** Wanted by both 3 and 4, and worth little before either.
-6. **Crypto**, then **FX** — the two undecided-scope domains, largest last.
+2. **Instant payments.** The one place the settlement orchestrator has to grow.
+3. **Card transactions.** Additive on top of holds and the existing net path.
+4. **Reserve adequacy.** Wanted by both 2 and 3, and worth little before either.
+5. **Crypto**, then **FX** — the two undecided-scope domains, largest last.
 
 ### The on-us book transfer — `done`
 
 `deposit.Register.TransferTx`, and `POST /transfers` on a bank's own port. It is
 the `deposit` layer's act rather than the `payment` layer's, because nothing
 about it needs to know what an institution is: it touches the two customers' own
-GL accounts, and a register spans one book. `Mesh.Submit` refuses the on-us
-*payment* unchanged — the two are different products and the payer chooses one.
+GL accounts, and a register spans one book. A submitting bank's door refuses the
+on-us *payment* unchanged — the two are different products and the payer chooses
+one.
 
 What it does NOT cover is the standing order: a transfer that happens on a date
 has a lifecycle of its own, and nothing here holds an instruction between the day
 it is given and the day it runs.
 
 Two defects found under sub-project 8 remain reachable only through an
-arrangement `Mesh.Submit` refuses, and this work did not change that —
+arrangement a submitting bank's door refuses, and this work did not change that —
 `AcceptInboundTx`'s witness is the ROW, which is false when the same bank also
 submitted, and `PostReturnLegTx` decides which leg is last by position in a
 conversation one institution does not have. Both are closed and both are still
 proved through the store rather than through a path a caller can reach.
 
-### 1. EBICS batches, the institutions in `cmd/server`, and the business day — `wip`
+### EBICS batches, the institutions in `cmd/server`, and the business day — `done`
 
 Sub-project 21.
 [`2026-08-11-ebics-and-the-business-day-design.md`](../specs/2026-08-11-ebics-and-the-business-day-design.md).
-Nine tasks, and the largest since 8. It deletes `mesh`, which 7b built, the way §9
+Nine tasks, and the largest since 8. It deleted `mesh`, which 7b built, the way §9
 deleted the two store backends §8 built.
 
-`docs/sepa-real-world.md` is in this tree and contradicts the mesh on every
-mechanical claim it makes: bulk clearing is *"store-and-forward file transfer against
-a cutoff clock"* and *"EBICS has no push at all — the bank polls for its downloads"*.
-7b built the opposite — N+2 actors with inboxes, one message per payment, delivery
-that always succeeds. 21 keeps what 7b was for, the message being the interface, and
-replaces everything underneath it.
+`docs/sepa-real-world.md` contradicted the mesh on every mechanical claim it made:
+bulk clearing is *"store-and-forward file transfer against a cutoff clock"* and
+*"EBICS has no push at all — the bank polls for its downloads"*. 7b had built the
+opposite — N+2 actors with inboxes, one message per payment, delivery that always
+succeeds. 21 kept what 7b was for, the message being the interface, and replaced
+everything underneath it.
 
-Three deliveries. **The top level becomes library and `cmd/server` becomes glue** —
-`mesh` is three things wearing one name and `api` is a composition root pretending to
-be a request handler; each institution gets a struct with its own routes and its own
-EBICS side. **The transport becomes EBICS** — uploads, per-subscriber download queues,
-order types and order ids; `mesh` and `mesh/wire` are deleted, and so is the actor
-table, because enrolment is what creates a queue and there is nothing left to keep in
-step with the roster. **The deployment owns a clock, and advancing it runs a business
-day** — cutoff, clearing, settlement, advice and end-of-day in one explicit list, on a
-TARGET calendar.
+Three deliveries landed. **The top level is library and `cmd/server` is glue** —
+`api` split three ways over interfaces each sub-package declares, and each
+institution has a struct with its own routes and its own EBICS side.
+**The transport is EBICS** — uploads, per-subscriber download queues, order types
+and order ids; there is no actor table, because enrolment is what creates a queue.
+**The deployment owns a clock, and advancing it runs a business day** — the
+refresh, the cut-off, the clearing, the netting, settlement, release, each bank's
+collection and each bank's end of day, in one explicit list, on a TARGET calendar.
 
-The third is what makes the first two cheap, and it was not asked for. With an
-operator-driven day the system has **no background goroutines at all**, so `Drain` —
-the thing that makes every test in this repository able to say "submit, drain, assert"
-— needs no replacement rather than a test-only substitute. `AdvanceDay` returns when
-the day is done.
+The third is what made the first two cheap, and it was not asked for. There are
+**no background goroutines under this process at all**, so `Drain` — the thing
+that let every test say "submit, drain, assert" — needed no replacement rather
+than a test-only substitute. The suite says "submit, advance a day, assert" and
+`AdvanceDay` returns when the day is done.
 
-Claims two items filed elsewhere. *A business date*, below, asks for exactly this roll
-event and names the case it gets wrong today: a transfer submitted after cut-off
-before a holiday weekend. And the deferred note that batched bulks and a cutoff timer
-are *reachable for the first time but unclaimed* — task 7 claims both, and
-`pacs.002`'s `GrpSts: PART` stops being built and unused. `pacs.028`, listed beside
-them, stays unclaimed.
+Two decisions outlive the sub-project and are recorded as such:
+[ADR-0001](adr/0001-the-deployment-owns-the-clock.md), the deployment owns the
+clock, and [ADR-0002](adr/0002-settle-before-release.md), the clearing house
+settles before it releases.
 
-It does **not** claim the threading half of *A business date* — assigning the date at
-command acceptance and carrying it — which is the `BusinessDate` type under
-*Structural work*, and is a compiler-guided rename across four packages that has no
-business being inside a transport swap.
+**Task 8 was the one that changed the domain rather than the plumbing.** Settling
+before releasing moved every receiving bank's objection from a `pacs.002` reject
+to a `pacs.004` return — which is what those codes are in SEPA — and left the
+clearing house as the only institution that rejects anything. A payee whose
+account is closed is taken on and sent back rather than refused, which is what
+made the unclaimed-balances ageing feature reachable at all.
 
-### 2. 7c, the message log — `todo`
+It claimed two items filed elsewhere. The roll half of *A business date* below,
+including the case that item named: a transfer submitted after cut-off before a
+holiday weekend. And the deferred note that batched bulks and a cut-off timer
+were *reachable for the first time but unclaimed* — task 7 claimed both, and
+`pacs.002`'s `GrpSts: PART` is produced. `pacs.028`, listed beside them, stays
+unclaimed.
+
+It did **not** claim the threading half of *A business date* — assigning the date
+at command acceptance and carrying it — which is the `BusinessDate` type under
+*Structural work*, and is a compiler-guided rename across four packages that had
+no business being inside a transport swap.
+
+**Three things it leaves behind**, none of them a surprise and each written where
+it bites rather than only here:
+
+- **The clearing house's held output files are in memory.** A restart between a
+  cycle settling and its files being released loses shares whose reserves have
+  already moved, and no receiving bank is ever handed the instructions it has to
+  apply. The fix is a table in that institution's own database; the absence is
+  argued inside `csm/0001_init.sql`'s `cycles` statement.
+- **A bank's payment hub is in memory too**, so a restart loses instructions
+  whose debtor legs are committed — money in clearing suspense against a file
+  that will never be built. `payment/recon` is the instrument that finds it.
+- **One cut-off per business day**, where SEPA runs several settlement cycles.
+  Adding more is a loop over a list of times, and it is deliberately out of
+  scope: the calendar had to exist before a time of day within it meant anything.
+
+### 1. 7c, the message log — `todo`
 
 The last of sub-project 7, and the only reason §7 is not `done`. Envelopes
 persisted so a payment screen can show the XML that actually moved, carried
@@ -198,7 +237,7 @@ Cheap relative to what it exposes: every flow already shipped becomes something 
 reader can watch rather than infer. It is also the natural home for anything that
 wants to explain a `pacs.002` reason code at the point it was returned.
 
-### 3. Instant payments — `todo`
+### 2. Instant payments — `todo`
 
 Real-time **gross** settlement, 24/7. Each payment settles individually and
 immediately instead of being batched into a clearing cycle. (*Instant* and
@@ -224,7 +263,7 @@ the right shape for instant rails, and adopting it for a `Gross` scheme while
 keeping the current shape for `Net` is a real fork in the payment layer, not a
 detail. The earmark primitive already exists: it is a `deposit` hold.
 
-### 4. Card transactions — `todo`
+### 3. Card transactions — `todo`
 
 An **authorise → capture → clear → settle** flow. The authorisation is a
 `deposit` hold (`CreateHold`) reserving the cardholder's available balance;
@@ -239,7 +278,7 @@ front-end work, recorded as out of scope by 6b and unclaimed since.
 Wants the **hold expiry sweep** below first, or ships a hold state machine that
 is less honest than it looks.
 
-### 5. Reserve adequacy — `todo`
+### 4. Reserve adequacy — `todo`
 
 Check a bank's reserves before its net settlement is allowed to post. Motivated
 by both of the two items above and worth little before either: today every
@@ -251,7 +290,7 @@ the `camt.051` that would pull liquidity back the other way. **This system lodge
 cash and never withdraws it**, which is the current reason `camt.051` is refused
 by name in `iso20022/doc.go`.
 
-### 6. Crypto — `todo`
+### 5. Crypto — `todo`
 
 Scope deliberately undecided. Ranges from custody balances denominated in
 non-fiat units — nearly free today, BTC is a known asset at scale 8 and works —
@@ -276,7 +315,7 @@ child table keyed `(participant_id, asset)`; and `interest` is asset-agnostic, s
 a crypto-denominated facility needs no new arithmetic — only an asset inside the
 cap.
 
-### 7. FX / exchange — `todo`
+### 6. FX / exchange — `todo`
 
 Trades against two assets, rate handling, spread recognized as revenue, position
 and exposure accounts, settlement conventions.
@@ -413,9 +452,9 @@ timing, which is the nondeterminism idempotency exists to kill.
 
 ### A business date
 
-There is no business date, no roll event, no banking calendar and no TARGET or
-holiday handling anywhere. `PostTransactionTx` assigns `bookingDate = s.now()`
-when the caller supplies none.
+`PostTransactionTx` assigns `bookingDate = s.now()` when the caller supplies
+none, and every layer below the deployment reads a clock rather than being handed
+a date.
 
 Booking dates should advance by an explicit, logged business-date roll rather
 than by the server clock crossing midnight — assigned once at command acceptance
@@ -428,11 +467,18 @@ Pairs with the `BusinessDate` type under *Structural work* — same problem
 approached from the code side, and doing either alone leaves the other's cost
 in place.
 
-**The roll half is §21's**, which gives the deployment a clock, a TARGET calendar and
-an explicit advance that runs a business day. What stays here is the threading: the
-date assigned at command acceptance and carried, so nothing downstream calls
-`today()`. §21 does not do it, and makes it worth doing — a rule about what nothing
-downstream may call needs a roll event to be a rule about.
+**The roll half shipped with §21**, which gave the deployment a clock, a TARGET
+calendar and an explicit advance that runs a business day — see
+[ADR-0001](adr/0001-the-deployment-owns-the-clock.md). So the first paragraph
+above is out of date in one respect and kept because the rest of it is not: there
+IS a business date now, and the worked case — a transfer submitted after cut-off
+before a holiday weekend — is buildable in the seed.
+
+What stays here is the **threading**: the date assigned at command acceptance and
+carried, so nothing downstream calls `today()` for accounting purposes. §21 did
+not do it, and made it worth doing — a rule about what nothing downstream may
+call needs a roll event to be a rule about, and now there is one to enforce it
+against.
 
 ### Blocks as rows, not a status field
 

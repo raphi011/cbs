@@ -135,7 +135,7 @@ say about. `NewSet` opens the whole system, which is what `payment`, `seed` and
 
 **Nothing in the domain may read across two institutions**, and the instrument
 that checks the books agree anyway is `payment/recon` — the reconciliation
-harness, which opens all N+2 databases at once precisely because no actor in the
+harness, which opens all N+2 databases at once precisely because no institution in the
 system may. It is test-only by convention: `cmd/server/recon_test.go` calibrates
 it against five deliberately broken states and `seed` runs it over the widest
 deployment. If a change could make two institutions' books disagree, that is the
@@ -176,6 +176,13 @@ alternative it rejected and what that cost live **there**, which is why a commen
 in the code states the rule and not the history. Read the relevant record before
 changing the shape of anything; write one before a change large enough to need
 phasing.
+
+`docs/adr/` is narrower and outlives the sub-project that produced it: one
+numbered record per decision a later reader has to know about before changing the
+shape of anything near it. A spec is a plan with phasing; an ADR is a ruling in
+the present tense. If you find yourself wanting to write "this used to work the
+other way" beside the code, that is what an ADR is for. `docs/adr/README.md`
+holds the index and the distinction.
 
 ## Agent skills
 
