@@ -13,3 +13,7 @@
 # The ISO 20022 message schemas the golden-file check validates against.
 # Redistributed under ISO's terms; not this repository's to vendor.
 iso20022/testdata/xsd/
+
+# Per-machine design-hook state: absolute paths and a session id, rewritten on
+# every edit. The critique snapshots beside it are checked in; this is not.
+.impeccable/hook.cache.json
