@@ -29,9 +29,10 @@ import (
 //
 // THREE BASE URLS ARE THE WHOLE ADDRESS BOOK. A member bank holds both, the
 // clearing house holds the central bank's, and the settlement agent holds none
-// because it dials nobody. There is no actor table to keep in step with the
-// roster: a file reaches a subscriber by being put in that subscriber's download
-// queue, and enrolment is what creates one.
+// because it dials nobody. Nothing here maps a BIC to somewhere to reach it, and
+// nothing has to: a file reaches a subscriber by being put in that subscriber's
+// download queue, and enrolment is what creates one. A directory of who is
+// reachable would be a second answer to a question the roster already answers.
 type Config struct {
 	CentralBankBIC   iso20022.BIC
 	ClearingHouseBIC iso20022.BIC
@@ -167,9 +168,8 @@ type Deployment struct {
 // Every bank with a database gets a Bank, because a bank founded and not yet
 // admitted still has a book and customers to serve; only the banks the clearing
 // house's roster names are ENROLLED at the two hosts, because enrolment is what
-// creates a download queue and a queue is what makes a bank reachable. That is
-// the same fact stated once instead of an actor table kept in step with a roster
-// by hand.
+// creates a download queue and a queue is what makes a bank reachable. So
+// membership and reachability are ONE fact rather than two kept in step by hand.
 //
 // The clearing house enrols at the settlement agent for the same reason a bank
 // does: it uploads settlement instructions and collects the answers.

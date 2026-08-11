@@ -455,11 +455,11 @@ SEPA Direct Debit [[allows-return|allows returns]] because the debtor did not in
 6. the CSM releases the held pacs.004 to the
    other bank
 
-each bank then takes its own inbox in order:
-it books its reserve mirror from (4), and the
-other bank goes on to post its customer leg
-from (6) — the second leg, and what turns the
-payment Returned
+each bank then COLLECTS, the settlement
+agent first: it books its reserve mirror from
+(4), and the other bank goes on to post its
+customer leg from (6) — the second leg, and
+what turns the payment Returned
 \`\`\`
 
 The clearing house **holds** that \`pacs.004\` between steps 2 and 6 rather than relaying it straight through: a bank that posted its leg against a return the settlement agent then refused would have moved a customer's money for nothing. On an \`RJCT\` the held message is dropped and only the answer goes out. The returning bank then **unwinds its own leg** by [[reversal|reversing]] the posting, so its customer is back where the return found them.

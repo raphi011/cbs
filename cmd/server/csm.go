@@ -147,10 +147,11 @@ func (c *ClearingHouse) Return(ctx context.Context, id payment.PaymentID, reason
 // enqueue addresses one document to one subscriber by putting it in that
 // subscriber's download queue.
 //
-// This is the whole of routing. There is no URL to look up and no actor table
-// that can fall out of step with the roster: a party with no enrolment has no
-// queue, and a file addressed to it has nowhere to go — which is where RC01
-// comes from now, one refusal instead of two facts that could disagree.
+// This is the whole of routing. There is no URL to look up and nothing that can
+// fall out of step with the roster: a party with no enrolment has no queue, and a
+// file addressed to it has nowhere to go. That is where RC01 comes from — one
+// refusal, rather than a reachability answer and a membership answer that could
+// disagree.
 //
 // Writing to a queue cannot fail on the RECIPIENT's account, which is the one
 // improvement worth naming: a statement fan-out can no longer be truncated by an
