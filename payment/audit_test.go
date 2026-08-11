@@ -578,7 +578,7 @@ func TestParticipantAuditPayloadDropsLiveHandles(t *testing.T) {
 //
 // The audit log is this system's only immutable record, and admission stopped
 // being one unit of work. participant.added is written by the bank founding
-// ITSELF, so its payload is a Founded bank with no settlement account numbers on
+// ITSELF, so its payload is a bank with no settlement account numbers on
 // it — honest about what founding did and silent about everything after. Without
 // the other three, the settlement account numbers an admission produces would
 // exist in no immutable record at all: the bank's row carries the current value

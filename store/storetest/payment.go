@@ -98,16 +98,15 @@ func RunPayment(t *testing.T, newStore func(*testing.T, ledger.BookID) payment.S
 		assertEqual(t, "bic in listings", string(listed[0].BIC), string(auroraBIC))
 		assertEqual(t, "suspense account", string(got.Assets["EUR"].Suspense), "200.200.001")
 		assertEqual(t, "reserve account", string(got.Assets["EUR"].Reserve), "100.200.001")
+		// The settlement account number, in both queries, because a store can lose
+		// a column in one and not the other. Emptiness is how a bank's own row says
+		// the scheme has not answered it yet, so a store that drops this one hands
+		// back a bank that has been admitted and reads as though it has not.
 		assertEqual(t, "settlement account", string(got.Assets["EUR"].Settlement), "200.100.001")
+		assertEqual(t, "settlement account in listings", string(listed[0].Assets["EUR"].Settlement), "200.100.001")
 		assertEqual(t, "created at", got.CreatedAt.Equal(early), true)
-		// Status is asserted on its own because it is the field whose default is not
-		// safe. A Bank read back with Status "" is neither Founded nor a Member, and
-		// both readers of it would take the wrong branch. Asserted in the listing
-		// too, because a store can lose a column in one query and not the other.
-		assertEqual(t, "status", string(got.Status), "Member")
-		assertEqual(t, "status in listings", string(listed[0].Status), "Member")
-		// The admission this bank recorded a membership under, asserted for the
-		// same reason and in both queries. It is what RecordMembershipTx compares
+		// The admission it recorded that account under, asserted for the same
+		// reason and in both queries. It is what RecordMembershipTx compares
 		// an arriving acknowledgement against, so a store that drops it leaves
 		// every member accepting an acknowledgement from any admission at all —
 		// which was measured to move a bank's settlement reference onto an
@@ -1523,9 +1522,9 @@ func RunCentralBankPayment(t *testing.T, newStore func(*testing.T) payment.Store
 // Payment helpers
 // ---------------------------------------------------------------------------
 
-// bankRow is one bank's own record of itself, admitted: Member rather than
-// Founded, because that is what every bank in this suite's other cases is and
-// the status a store drops has to be a status it was given.
+// bankRow is one bank's own record of itself, admitted: it carries a settlement
+// reference and the admission it recorded one under, because a column a store
+// drops has to be a column it was given something to hold.
 //
 // It is keyed by the only identifier it has: a bank's ParticipantID, its BIC and
 // its BookID are one value, so this takes one and fills all three. A fixture
@@ -1540,7 +1539,6 @@ func bankRow(bic iso20022.BIC, name string, createdAt time.Time) payment.Bank {
 		BookID:            ledger.BookID(bic),
 		CustomerSubledger: "100",
 		ProductID:         "prd_basic",
-		Status:            payment.BankMember,
 		AdmissionRef:      "adm-" + string(id),
 		Assets: map[ledger.AssetCode]payment.BankAccounts{
 			"EUR": {Suspense: "200.200.001", Reserve: "100.200.001", Settlement: "200.100.001"},

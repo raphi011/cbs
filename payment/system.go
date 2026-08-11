@@ -483,7 +483,8 @@ func (s *Network) centralBankAssetsAccountTx(ctx context.Context, tx Tx, asset l
 // row and from no bank's.
 //
 // A member the agent holds nothing for is ErrSettlementMemberNotFound, which is
-// the true state of a bank that is founded and not yet admitted. A member it
+// the true state of a bank that is founded and not yet admitted, and the answer
+// nothing else in this system is entitled to give. A member it
 // holds accounts for but not in this asset is ErrParticipantAssetNotFound, the
 // same sentinel Bank.AccountsFor gives for the same question asked of the bank's
 // own accounts: settling a dollar position through a euro reserve is the error
@@ -803,14 +804,15 @@ func (s *Network) RecordMembership(ctx context.Context, in AdmissionAcknowledgem
 // customer account is opened from — because there is no such thing as an
 // unpriced deposit account, and a bank that cannot open one is not yet a bank.
 //
-// The bank comes out Founded, and that is a whole state rather than half of
-// one. Its own book is unrestricted — it opens customer accounts, publishes
-// products, adds ledgers. What it cannot do is FUND one: DepositTx raises the
-// bank's reserve at the central bank in the same unit of work, and no settlement
-// agent holds an account for it to raise, so the deposit is refused by name
+// The bank this act leaves behind is a whole thing rather than half of one. Its
+// own book is unrestricted — it opens customer accounts, publishes products,
+// adds ledgers. What it cannot do is FUND one: DepositTx raises the bank's
+// reserve at the central bank in the same unit of work, and no settlement agent
+// holds an account for it to raise, so the deposit is refused by name
 // (ErrSettlementMemberNotFound). Nor is it in any routing directory, so nothing
 // it takes part in can settle. That is what a bank is between its licence and
-// its scheme membership, and it is what an interrupted admission leaves behind.
+// its scheme membership, and it is what an interrupted provisioning leaves
+// behind.
 //
 // Assets[asset].Settlement is EMPTY on every set of accounts it writes. The
 // settlement account is another institution's to open and its number is
@@ -821,9 +823,9 @@ func (s *Network) RecordMembership(ctx context.Context, in AdmissionAcknowledgem
 // participant.added audit event.
 //
 // That event is about the FOUNDING and is silent about everything after it: the
-// bank it carries is Founded and its settlement references are empty, because at
-// the moment it is written no settlement agent has opened one. The other three
-// acts each append their own.
+// settlement references on the bank it carries are empty, because at the moment
+// it is written no settlement agent has opened one. The other three acts each
+// append their own.
 func (s *Network) FoundBankTx(ctx context.Context, tx Tx, name string, bic iso20022.BIC, country iban.Country, assets []ledger.AssetCode) (*Bank, error) {
 	if err := ledger.ValidateText("name", name); err != nil {
 		return nil, err
@@ -1003,7 +1005,6 @@ func (s *Network) FoundBankTx(ctx context.Context, tx Tx, name string, bic iso20
 		BookID:            bookID,
 		CustomerSubledger: customers.ID,
 		ProductID:         basic.ID,
-		Status:            BankFounded,
 		Assets:            accounts,
 		CreatedAt:         s.now(),
 	}
@@ -1241,8 +1242,8 @@ func (s *Network) allocateBankCodeTx(ctx context.Context, tx Tx, country iban.Co
 // malformed BIC is the KEY of the roster row AdmitMemberTx writes.
 //
 // An empty account list makes the per-account arms below not execute at all,
-// which WEDGES both institutions: a Member that settles through no account and a
-// roster entry that clears in no scheme, after which the true acknowledgement is
+// which WEDGES both institutions: an admitted bank that settles through no
+// account and a roster entry that clears in no scheme, after which the true acknowledgement is
 // refused for ever by the guards those two rows now carry.
 //
 // # It is one function and it runs before the id
@@ -1405,8 +1406,9 @@ func (s *Network) AdmitMemberTx(ctx context.Context, tx Tx, in AdmissionAcknowle
 // The bank learns its settlement account numbers here and nowhere else. They are
 // another institution's account ids, and this is the account holder's note of
 // them — the way a customer knows their own IBAN without holding the bank's
-// ledger. The bank becomes a Member in the same write, because being told the
-// account exists is what being admitted consists of.
+// Recording them is what being admitted consists of, from this bank's side: an
+// empty settlement reference is how its own row says the scheme has not answered
+// yet, and there is no second field that says it again.
 //
 // # Which bank, and which admission
 //
@@ -1418,21 +1420,20 @@ func (s *Network) AdmitMemberTx(ctx context.Context, tx Tx, in AdmissionAcknowle
 // The BIC answers WHICH BANK and not WHICH ADMISSION, and two admissions can
 // quote one BIC. So Bank.AdmissionRef — the reference this bank itself accepted
 // — is compared too; without it, an acknowledgement naming this bank's own BIC
-// and quoting a reference it never heard of would move a Member's settlement
-// reference onto a forged account. It is not the clearing house's guard
+// and quoting a reference it never heard of would move an admitted bank's
+// settlement reference onto a forged account. It is not the clearing house's guard
 // duplicated: that one decides between two INSTITUTIONS contending for an
 // address, from a row in another database.
 //
 // # It records or extends
 //
-// A bank that is already a Member is EXTENDED rather than refused. An admission
-// re-driven after an interruption quotes the same reference and repeats the
-// accounts already recorded, and refusing the second pass would make whatever the
-// first pass wrote the final state with no way to finish it.
+// A bank that has already recorded one is EXTENDED rather than refused. An
+// admission re-driven after an interruption quotes the same reference and repeats
+// the accounts already recorded, and refusing the second pass would make whatever
+// the first pass wrote the final state with no way to finish it.
 //
-// A bank that is still Founded accepts whatever reference arrives, because it
-// has accepted none — which is what makes re-driving an interrupted admission
-// work. The id drawn before the read is here for the reason it is in the other
+// A bank that has recorded none accepts whatever reference arrives — which is
+// what makes re-driving an interrupted admission work. The id drawn before the read is here for the reason it is in the other
 // two acts; see admissionSequenceTx.
 //
 // # An account for an asset this bank does not operate in is skipped
@@ -1442,17 +1443,17 @@ func (s *Network) AdmitMemberTx(ctx context.Context, tx Tx, in AdmissionAcknowle
 // to put such a number and it is not an error either — the servicer is answering
 // about its own book. What the bank records is what it can use.
 //
-// It cannot be ALL of them: that would take the bank to Member and burn its
-// AdmissionRef, leaving a member that settles through nothing and refuses its
-// own true acknowledgement for ever. So the act counts what it filed and refuses
+// It cannot be ALL of them: that would burn the bank's AdmissionRef, leaving a
+// member that settles through nothing and refuses its own true acknowledgement
+// for ever. So the act counts what it filed and refuses
 // zero, with checkAcknowledgement's sentinel, because it is the same fact about
 // the message.
 //
 // # The two guards below are about the STATE, not the message
 //
 // Neither is a message checkAcknowledgement would refuse: they are what this ACT
-// would leave behind — a Member with a settlement reference it never learned,
-// and a Member with a reference moved off the account the settlement agent
+// would leave behind — an admitted bank with a settlement reference it never
+// learned, and one with a reference moved off the account the settlement agent
 // actually holds. The second is ErrSettlementAccountReplaced, and it compares
 // rather than forbids, because an acknowledgement repeats accounts already
 // recorded and equal is an extension.
@@ -1543,7 +1544,6 @@ func (s *Network) RecordMembershipTx(ctx context.Context, tx Tx, in AdmissionAck
 		return nil, fmt.Errorf("%w: it names %v and %s operates in none of them",
 			ErrAdmittedAccountUnusable, slices.Sorted(maps.Keys(in.Accounts)), self)
 	}
-	bank.Status = BankMember
 	bank.AdmissionRef = in.Ref
 	if err := tx.PutBank(ctx, *bank); err != nil {
 		return nil, err
@@ -1555,7 +1555,7 @@ func (s *Network) RecordMembershipTx(ctx context.Context, tx Tx, in AdmissionAck
 	// carries are built from its fields, and its deposit register is built from
 	// its Issuer — which was empty when this bank was read a few lines above and
 	// is not now. A caller handed the stale binding would hold a bank that is a
-	// Member of a scheme and cannot address an account, which is the state this
+	// member of a scheme and cannot address an account, which is the state this
 	// act exists to end.
 	return s.bind(*bank), nil
 }

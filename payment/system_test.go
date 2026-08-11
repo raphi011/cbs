@@ -299,7 +299,7 @@ func setupTwoBanks(t *testing.T, sys *testSystem) (a, b *Bank, alice, bob deposi
 //
 // It goes through storetest.Admit, which runs the four acts in order with no mesh
 // to carry the messages between them. The conversation itself is tested in
-// mesh; what these tests need is a bank that is a Member.
+// mesh; what these tests need is a bank the scheme has admitted.
 //
 // # The address is an argument now, and it had to become one
 //
@@ -1986,9 +1986,6 @@ func TestFoundingABankTouchesNoOtherInstitution(t *testing.T) {
 		return err
 	})
 
-	if b.Status != BankFounded {
-		t.Errorf("a founded bank has status %q, want %q", b.Status, BankFounded)
-	}
 	if got := b.Assets[testAsset].Settlement; got != "" {
 		t.Errorf("a founded bank names settlement account %q; it has not asked for one yet", got)
 	}
@@ -2247,8 +2244,8 @@ func TestABankRefusesAnAcknowledgementOfAnotherAdmission(t *testing.T) {
 //   - NOTHING RECORDED. The loop skips an asset the bank does not operate in,
 //     which is right — the servicer answers about its own book — and an
 //     acknowledgement in which EVERY asset is one of those skipped every account
-//     and still made the bank a Member and still burned its AdmissionRef, so its
-//     true acknowledgement was refused for ever afterwards. checkAcknowledgement
+//     and still burned the bank's AdmissionRef, so its true acknowledgement was
+//     refused for ever afterwards. checkAcknowledgement
 //     refuses an EMPTY account list for exactly that consequence; this is the
 //     same consequence reached with a non-empty one.
 //
@@ -2313,13 +2310,12 @@ func TestABankRefusesAnAcknowledgementThatWouldLeaveItWrong(t *testing.T) {
 		if !errors.Is(err, ErrAdmittedAccountUnusable) {
 			t.Fatalf("recording an acknowledgement in an asset this bank has none of: %v, want ErrAdmittedAccountUnusable", err)
 		}
-		// The whole point: the bank is still Founded and its reference is still
-		// free, so the acknowledgement it is actually waiting for is still
+		// The whole point: the bank has still recorded nothing and its reference is
+		// still free, so the acknowledgement it is actually waiting for is still
 		// accepted.
 		after := mustGetBank(t, ctx, sys, bank.ID)
-		if after.Status != BankFounded {
-			t.Errorf("the refused acknowledgement left the bank %v, want %v", after.Status, BankFounded)
-		}
+		assertEqual(t, "the settlement account after the refusal",
+			string(after.Assets[testAsset].Settlement), "")
 		assertEqual(t, "the admission after the refusal", after.AdmissionRef, "")
 		assertNoError(t, record(sys, bank.ID, real))
 		assertEqual(t, "the admission it was waiting for",
@@ -2360,12 +2356,12 @@ func TestABankRefusesAnAcknowledgementThatWouldLeaveItWrong(t *testing.T) {
 //
 // Measured on the acts, with the four lines this test exists for removed:
 //
-//	PROBE1 after an ack with no ref: err=<nil> status="Member" ref="" settlement="200.100.001"
+//	PROBE1 after an ack with no ref: err=<nil> ref="" settlement="200.100.001"
 //	PROBE2 forged ack err=<nil> -> settlement="acc_bogus" ref="someone-elses-admission"
 //	PROBE3 second institution quoting an empty ref on the same BIC: err=<nil>
 //
-// The first line is the reset — a Member indistinguishable from a bank that has
-// accepted nothing — and the second is the overwrite it reopens, which is
+// The first line is the reset — an admitted bank indistinguishable from one that
+// has accepted nothing — and the second is the overwrite it reopens, which is
 // exactly what TestABankRefusesAnAcknowledgementOfAnotherAdmission stops when
 // the reference is real. The third is the same hole seen by the clearing house:
 // two institutions on one BIC, both quoting nothing, comparing equal.
@@ -2394,8 +2390,8 @@ func TestAnAcknowledgementQuotingNoAdmissionIsRefusedByBothActs(t *testing.T) {
 		Accounts: map[ledger.AssetCode]ledger.AccountID{testAsset: "200.100.001"},
 	}
 
-	// The BANK. A membership recorded under no admission is a Member whose row
-	// reads as "accepted nothing", which is the reset.
+	// The BANK. A membership recorded under no admission is a row that settles
+	// through a real account and reads as "accepted nothing", which is the reset.
 	err := sys.bank(bank.BIC).Store().Update(ctx, func(ctx context.Context, tx Tx) error {
 		_, err := sys.bank(bank.BIC).RecordMembershipTx(ctx, tx, noRef)
 		return err
@@ -2404,8 +2400,8 @@ func TestAnAcknowledgementQuotingNoAdmissionIsRefusedByBothActs(t *testing.T) {
 		t.Errorf("the bank recorded a membership under no admission: %v, want ErrAdmissionNotIdentified", err)
 	}
 	got := mustGetBank(t, ctx, sys, bank.ID)
-	if got.Status == BankMember && got.AdmissionRef == "" {
-		t.Error("the bank is a Member with no reference; its own guard reads that as having accepted nothing")
+	if got.Assets[testAsset].Settlement != "" && got.AdmissionRef == "" {
+		t.Error("the bank settles through an account under no reference; its own guard reads that as having accepted nothing")
 	}
 
 	// The CLEARING HOUSE. Two institutions on one address, both quoting nothing,
@@ -2456,12 +2452,12 @@ func TestAnAcknowledgementQuotingNoAdmissionIsRefusedByBothActs(t *testing.T) {
 //
 // An acknowledgement naming no account is the shape that looks harmless in
 // isolation: the row it writes has nothing in it, which reads like doing
-// nothing. Measured, it is not. The bank becomes a Member that settles through
-// no account and the roster entry clears in no scheme, and then the TRUE
+// nothing. Measured, it is not. The bank records a membership that settles
+// through no account and the roster entry clears in no scheme, and then the TRUE
 // acknowledgement is refused for ever, by the admission-reference guard each of
 // those rows now carries:
 //
-//	PROBE6  bank, ack with NO accounts:   err=<nil> status="Member" ref="impostor-adm" settlement=""
+//	PROBE6  bank, ack with NO accounts:   err=<nil> ref="impostor-adm" settlement=""
 //	PROBE6b the REAL ack then arrives:    err=…recorded its membership under "impostor-adm"…
 //	PROBE7  roster, ack with NO accounts: err=<nil> entry={BIC:… Assets:[] AdmissionRef:impostor-adm}
 //	PROBE7b the REAL ack then arrives:    err=…is admitted under "impostor-adm"…
@@ -2551,8 +2547,8 @@ func TestAnUnusableAcknowledgementIsRefusedByBothActs(t *testing.T) {
 			// Neither institution wrote anything, and — the load-bearing half —
 			// the real acknowledgement still goes through. A refusal that left a
 			// row behind would wedge the admission it was protecting.
-			if got := mustGetBank(t, ctx, sys, bank.ID); got.Status != BankFounded {
-				t.Errorf("the bank is %q after the refusal, want %q", got.Status, BankFounded)
+			if got := mustGetBank(t, ctx, sys, bank.ID); got.Assets[testAsset].Settlement != "" {
+				t.Errorf("the bank settles through %q after the refusal", got.Assets[testAsset].Settlement)
 			}
 			mustUpdate(t, ctx, sys, func(ctx context.Context, tx Tx) error {
 				_, err := sys.AdmitMemberTx(ctx, tx, real)
@@ -2563,8 +2559,8 @@ func TestAnUnusableAcknowledgementIsRefusedByBothActs(t *testing.T) {
 				return err
 			})
 			admitted := mustGetBank(t, ctx, sys, bank.ID)
-			assertEqual(t, "the bank after the true acknowledgement", string(admitted.Status), "Member")
-			assertEqual(t, "its settlement reference", string(admitted.Assets[testAsset].Settlement), "200.100.001")
+			assertEqual(t, "its settlement reference after the true acknowledgement",
+				string(admitted.Assets[testAsset].Settlement), "200.100.001")
 		})
 	}
 }
@@ -2608,9 +2604,6 @@ func TestABankCannotRecordAnotherBanksMembership(t *testing.T) {
 	// because somebody else read its acknowledgement.
 	for _, want := range []*Bank{aurora, verde} {
 		got := mustGetBank(t, ctx, sys, want.ID)
-		if got.Status != BankFounded {
-			t.Errorf("%s is %q after a refused recording, want %q", got.Name, got.Status, BankFounded)
-		}
 		if got.Assets[testAsset].Settlement != "" {
 			t.Errorf("%s now names settlement account %q", got.Name, got.Assets[testAsset].Settlement)
 		}
@@ -2622,7 +2615,6 @@ func TestABankCannotRecordAnotherBanksMembership(t *testing.T) {
 		return err
 	})
 	got := mustGetBank(t, ctx, sys, aurora.ID)
-	assertEqual(t, "Aurora's status once it has recorded its admission", got.Status, BankMember)
 	assertEqual(t, "the settlement account Aurora recorded", got.Assets[testAsset].Settlement, "200.100.001")
 }
 
@@ -4017,8 +4009,8 @@ func TestTheClearingHouseWillNotClearForANonMember(t *testing.T) {
 // The state it refuses is the PARTLY-ADMITTED one, and it is reachable rather
 // than hypothetical. One request asks for one currency, so a two-asset
 // admission asks the settlement agent twice and commits twice; if it
-// answers for one and refuses the other, the bank is a Member with internal
-// accounts in both assets and a settlement account in one. Its customers can
+// answers for one and refuses the other, the bank is left with internal accounts
+// in both assets and a settlement account in one. Its customers can
 // hold accounts in the asset it was not admitted in, both banks' own halves pass
 // — each checks the account against the SCHEME's asset, and both accounts are in
 // it — and the payment would go into a cycle whose pacs.009 the clearing house
@@ -4048,8 +4040,8 @@ func TestTheClearingHouseWillNotClearInAnAssetAMemberWasNotAdmittedIn(t *testing
 	assertNoError(t, err)
 	half, err = sys.bank(half.BIC).RecordMembership(ctx, ack)
 	assertNoError(t, err)
-	if half.Status != BankMember {
-		t.Fatalf("the half-admitted bank is %v; this test needs a Member", half.Status)
+	if half.Assets[testAsset].Settlement == "" {
+		t.Fatal("the half-admitted bank holds no settlement account; this test needs it admitted in one asset")
 	}
 	entry, err := sys.GetRosterEntryByBIC(ctx, half.BIC)
 	assertNoError(t, err)

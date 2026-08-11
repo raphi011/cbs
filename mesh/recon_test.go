@@ -238,14 +238,14 @@ func TestTheHarnessCatchesACutOffOnlyTheClearingHouseThinksSettled(t *testing.T)
 }
 
 // TestTheHarnessCatchesAnAdmissionThatHalfHappened is the walk
-// payment.BankStatus asks for by name.
+// payment.BankAccounts.Settlement asks for by name.
 //
-// That doc records why there is no Applied state between Founded and Member:
-// nothing would read it, and what "the request is out" is worth knowing for is a
-// STUCK admission — which needs a reconciliation walking both ends rather than a
-// column on one of them. One admission writes three rows in three databases and
-// each institution can see exactly one of them, so a bank routed to that no
-// scheme ever admitted is invisible to all three.
+// That doc records why no column says how far through provisioning a bank got:
+// the settlement references say it already, and what a STUCK provisioning needs
+// is both ends held against each other rather than a second field on one of
+// them. One admission writes three rows in three databases and each institution
+// can see exactly one of them, so a bank routed to that no scheme ever admitted
+// is invisible to all three.
 func TestTheHarnessCatchesAnAdmissionThatHalfHappened(t *testing.T) {
 	h := reconciled(t)
 

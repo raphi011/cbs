@@ -225,8 +225,8 @@ type RosterEntry struct {
 	// admitted in the scheme's asset. The case that makes it load-bearing is the
 	// PARTLY-ADMITTED bank: one request asks for one currency, so a two-asset
 	// admission commits twice, and an agent that answers one and refuses the
-	// other leaves a Member with internal accounts in both assets and a
-	// settlement account in one. Nothing else would refuse its payments in the
+	// other leaves a bank with internal accounts in both assets and a settlement
+	// account in one. Nothing else would refuse its payments in the
 	// other asset, and the cut-off could not build their pacs.009.
 	//
 	// Being a slice, it is ORDERED and it can REPEAT, and the store must answer

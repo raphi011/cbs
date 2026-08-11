@@ -51,8 +51,8 @@ func TestABankAdmittedAfterTheLastRefreshCannotBePaidUntilTheNextOne(t *testing.
 	joiner := h.provision(t, "Nordhaven Bank", "NORDSESSXXX", euroOnly)
 	h.drain(t)
 	joiner = h.getBank(t, joiner.ID)
-	if joiner.Status != payment.BankMember {
-		t.Fatalf("the joining bank is %q after its admission, want %q", joiner.Status, payment.BankMember)
+	if joiner.Assets["EUR"].Settlement == "" {
+		t.Fatal("the joining bank holds no settlement account after its admission")
 	}
 	if _, err := h.net.GetRosterEntryByBIC(ctx, joiner.BIC); err != nil {
 		t.Fatalf("the joining bank is not in the roster: %v", err)

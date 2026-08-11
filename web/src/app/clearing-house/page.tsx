@@ -35,11 +35,12 @@ export default function ClearingHouse() {
   const { data: settlements } = useSettlements();
   const isProvisioned = useIsProvisioned();
 
-  // Members, not banks. Admission is a conversation, so a bank can be in this
-  // list and not be a member of anything yet: the card below says which, and a
-  // stat labelled "Member banks" that counted applicants too would be the one
-  // number on this page that was not true.
-  const members = (participants ?? []).filter((p) => p.status === "Member").length;
+  // Members, not banks. Provisioning writes three rows at three institutions and
+  // commits four times, so a bank can be in this list before the scheme has
+  // answered it: the card below says which, and a stat labelled "Member banks"
+  // that counted those too would be the one number on this page that was not
+  // true.
+  const members = (participants ?? []).filter(isAdmitted).length;
   const openCycles = (cycles ?? []).filter((c) => c.status === "Open").length;
   const inFlight = (payments ?? []).filter((p) => IN_FLIGHT.has(p.status)).length;
   const settlementCount = (settlements ?? []).length;
@@ -49,7 +50,7 @@ export default function ClearingHouse() {
       <PageHeader
         title="Clearing house"
         hint="clearing-vs-settlement"
-        description="An interbank payment network running on a double-entry ledger. The banks it clears for meet at the central bank to settle. A bank founded and not yet admitted is listed here as well, and is not one of them yet."
+        description="An interbank payment network running on a double-entry ledger. The banks it clears for meet at the central bank to settle. A bank the scheme has not answered is listed here as well, and is not one of them yet."
       />
 
       <HowMoneyMoves />
@@ -70,8 +71,8 @@ export default function ClearingHouse() {
 
       <section className="space-y-3">
         {/* Banks, not members. The STAT above counts members and this list does
-            not filter: a founded bank belongs on the console the network's
-            membership is watched from, and its card says what it is. */}
+            not filter: a bank the scheme has not answered belongs on the console
+            the network's membership is watched from, and its card says so. */}
         <h2 className="text-sm font-medium text-muted-foreground">Banks</h2>
         {error ? (
           <ErrorState error={error} onRetry={() => refetch()} />
@@ -84,15 +85,13 @@ export default function ClearingHouse() {
         ) : participants && participants.length === 0 ? (
           <Card>
             <CardContent className="py-10 text-sm text-muted-foreground">
-              {/* No "create participant" button, because founding a bank is
-                  not this institution's act and it has no route for one:
-                  POST /members is served by the central bank's listener alone.
-                  What this one does in an admission is decide whether to relay
-                  the application and write its routing entry from the
-                  settlement agent's answer — see /central-bank. */}
-              No participants yet. A bank is founded at the central bank&rsquo;s
-              console, not here; this list is where it is seen becoming a
-              member.
+              {/* No "create participant" button, and no route behind one at any
+                  listener. Which banks a deployment has is the deployment's
+                  decision, made before the process starts; what this institution
+                  does about one is write the routing entry it clears through. */}
+              No banks yet. Which banks this network has is settled when the
+              deployment is provisioned, not from a console; this list is where
+              they are seen becoming members.
             </CardContent>
           </Card>
         ) : (
@@ -112,16 +111,15 @@ export default function ClearingHouse() {
 }
 
 // One bank's card: name, id, and where it has got to. No reserve figure — see
-// the file-level comment above. Unprovisioned banks are shown, not linked:
+// the file-level comment above. Banks with no listener are shown, not linked:
 // entering one would mean a console whose every request 502s, the same rule the
 // lobby and the identity picker already follow.
 //
-// A FOUNDED bank says so instead of claiming membership. It is a bank whose
-// application the scheme has not answered — no settlement account, no routing
-// entry — and it is an ordinary state rather than a broken one, because
-// admission is a conversation between three institutions and this list is read
-// from one of them. "Member of the network" is not true of every bank in this
-// list, because founding and joining are two commits.
+// A bank the scheme has not answered says so instead of claiming membership — no
+// settlement account, no routing entry — and that is an ordinary state rather
+// than a broken one, because provisioning commits four times at three
+// institutions and this list is read from one of them. "Member of the network"
+// is not true of every bank in it.
 function ParticipantCard({
   participant: p,
   provisioned,
@@ -141,8 +139,8 @@ function ParticipantCard({
       </CardHeader>
       <CardContent>
         <p className="text-sm text-muted-foreground">
-          {p.status !== "Member"
-            ? "Founded. The scheme has not answered its application: it can open customer accounts but not fund them, and a payment to or from it is refused until the answer arrives."
+          {!isAdmitted(p)
+            ? "The scheme has not answered this bank: it can open customer accounts but not fund them, and a payment to or from it is refused until the answer arrives."
             : provisioned
               ? "Member of the network."
               : "Awaiting provisioning."}
@@ -151,6 +149,18 @@ function ParticipantCard({
     </Card>
   );
   return provisioned ? <Link href={homeFor({ persona: "bank", pid: p.id })}>{body}</Link> : body;
+}
+
+// A bank the scheme has answered: its own row names the settlement account the
+// agent opened for it. Nothing on the wire says so more directly — there is no
+// status field, and an empty settlement reference is what says the answer has
+// not arrived. See ParticipantAccounts.settlement.
+//
+// `some` and not `every`: one application asks for one currency, so a bank in two
+// assets is answered twice and one answered in one of them is a member of the
+// network in that one.
+function isAdmitted(p: Participant): boolean {
+  return p.assets.some((a) => a.settlement !== "");
 }
 
 // Compact single-metric card for the "at a glance" row.

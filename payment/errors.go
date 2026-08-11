@@ -387,8 +387,8 @@ var (
 	//
 	// The EMPTY LIST is the third arm and the one that cost most, because it is
 	// the value that makes the other two not apply: a loop over no accounts
-	// refuses nothing. Recorded, it wedges both institutions — a Member that
-	// settles through no account, a roster entry that clears in no scheme, and
+	// refuses nothing. Recorded, it wedges both institutions — an admitted bank
+	// that settles through no account, a roster entry that clears in no scheme, and
 	// the true acknowledgement then refused for ever by the admission-reference
 	// guards those two rows now carry.
 	//
@@ -398,8 +398,8 @@ var (
 	//
 	// An acknowledgement naming accounts only in assets the bank operates in none
 	// of is the empty list again, reached with a non-empty one: every account is
-	// skipped, nothing is filed, and the bank would become a Member settling
-	// through nothing with its AdmissionRef spent. RecordMembershipTx refuses it
+	// skipped, nothing is filed, and the bank would be left settling through
+	// nothing with its AdmissionRef spent. RecordMembershipTx refuses it
 	// and checkAcknowledgement cannot, because the same message is perfectly
 	// usable to the CLEARING HOUSE — that institution records what the servicer
 	// opened and never asks the bank what it holds.

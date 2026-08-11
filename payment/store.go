@@ -311,8 +311,9 @@ type Tx interface {
 //     the store, not data, and there is no column that could hold a *ledger.Book
 //     — a store that kept them would be handing back a Bank wired to whatever it
 //     was wired to when it was written. The Network rebinds them on the way out.
-//     Bank.Status IS data and must survive: a bank read back with Status ""
-//     is neither Founded nor a Member.
+//     Bank.AdmissionRef and the settlement account numbers ARE data and must
+//     survive: they are what a bank's own row says about its admission, and a
+//     store that drops either hands back a bank that has recorded nothing.
 //     (BankRoundTripsAndDropsLiveHandles.)
 //
 //   - The BIC-keyed rows are keyed by BIC, and their collections replace rather

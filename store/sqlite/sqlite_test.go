@@ -246,6 +246,10 @@ func TestSchemaArgumentsReachSqliteMaster(t *testing.T) {
 			// A column that is NOT here, which is the only kind of argument the
 			// split adds and the only kind with nothing at all to hang on.
 			{"payments", "cycle_id is NOT here. A BANK HAS NO CYCLES"},
+			// A column that is not here because another one already says it:
+			// bank_assets.settlement being empty is how far through provisioning
+			// a bank got, and a status beside it would say so twice.
+			{"banks", "There is NO column here saying how far through provisioning"},
 		}},
 		{CentralBank, payment.CentralBankBook, []struct{ object, argument string }{
 			{"ledgers", "A note on what is NOT here: UNIQUE (book_id, name)"},

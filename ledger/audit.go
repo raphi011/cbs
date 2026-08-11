@@ -96,9 +96,9 @@ const (
 	// RecordMembershipTx.
 	//
 	// EventParticipantAdded is the FOUNDING and nothing after it. Its payload is
-	// a Founded bank whose settlement account numbers are empty, because at the
-	// moment it is written no settlement agent has opened one — which is what
-	// makes the other three worth having rather than derivable.
+	// a bank whose settlement account numbers are empty, because at the moment it
+	// is written no settlement agent has opened one — which is what makes the
+	// other three worth having rather than derivable.
 	EventParticipantAdded = "participant.added"
 	// EventBankCodeAllocated is the settlement agent's OTHER act, keyed by the
 	// applicant's BIC and made in the same unit of work: a national registry
@@ -126,8 +126,7 @@ const (
 	EventMemberAdmitted = "member.admitted"
 	// EventMembershipRecorded is the bank's second act, keyed by the bank's own
 	// id because this is the bank's own row. Its payload is the bank as it now
-	// stands — a Member, with the settlement account numbers it has just been
-	// told. It is the pair to EventParticipantAdded and the reason that one can
+	// stands, with the settlement account numbers it has just been told. It is the pair to EventParticipantAdded and the reason that one can
 	// stay silent about everything the founding did not know.
 	EventMembershipRecorded = "membership.recorded"
 	// EventDirectoryRefreshed is a member bank taking delivery of a snapshot of

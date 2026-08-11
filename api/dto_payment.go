@@ -30,7 +30,19 @@ type participantAccountsDTO struct {
 	// account as a word and an unknown one as an opaque id, so leaving it out makes
 	// every customer's cash-in read as a bare account number — see
 	// buildKnownAccounts in web/src/lib/statement.ts, this field's only consumer.
-	VaultCash  string `json:"vaultCash"`
+	VaultCash string `json:"vaultCash"`
+	// Settlement is this bank's account in the SETTLEMENT AGENT's book, and the
+	// only account here that is not in the bank's own. It is the account holder's
+	// note of a number another institution allocated it.
+	//
+	// It is also what says how far through provisioning a bank got, and there is
+	// no separate field saying so. Empty means no settlement agent has opened an
+	// account for this bank in this asset: it has a book, a chart of accounts and
+	// a product, it opens no customer account at all because no registry has
+	// allocated it a bank code, it cannot put its vault cash on reserve, and a
+	// payment to it dies at the payer's bank because no roster carries its
+	// address. A whole state rather than a broken one, and what a deployment
+	// whose provisioning stopped part-way leaves behind.
 	Settlement string `json:"settlement"`
 }
 
@@ -46,36 +58,6 @@ type participantDTO struct {
 	// BIC is this bank's ISO 9362 business identifier code — what a
 	// counterparty addresses it by, and what the mesh routes on.
 	BIC string `json:"bic"`
-	// Status is "Founded" or "Member", and it is the field that says which of the
-	// two a client is holding.
-	//
-	// A founded bank has a book, a chart of accounts and a product, and that part
-	// of it is unrestricted: it publishes products and adds ledgers. What it
-	// cannot do is anything that needs something another institution gives out,
-	// and the sharpest of those is an ADDRESS — no registry has allocated it a
-	// bank code, so it can open no customer account at all (deposit.ErrNoIssuer).
-	// It cannot lodge cash on reserve either, because no settlement agent holds an
-	// account for it, and no cut-off it took part in could settle, because the
-	// instruction turns net positions into addresses through a roster it is not
-	// in.
-	//
-	// It cannot be PAID, and the refusal is the payer's bank's rather than this
-	// scheme's: a bank in no roster is in nobody's copy of one, so an address
-	// under its code resolves to nothing and the payment dies before either leg
-	// posts (payment.ErrBankCodeUnknown). Paying is refused separately, of the
-	// submitting side, by payment.ErrBankNotAdmitted at Mesh.Submit and again at
-	// the clearing house — and both halves are needed, because the mesh routes on
-	// an ACTOR TABLE that is filled independently of any roster, so nothing about
-	// the transport makes such a bank unreachable.
-	//
-	// A client can SEE it because the four acts commit separately: a deployment
-	// whose provisioning stopped part-way leaves a bank whose own row says one
-	// thing and whose two counterparties' rows say another.
-	//
-	// It is a string of the domain's own values rather than a boolean, because
-	// "not a member" is not one condition: an admission can stop halfway, and a
-	// bool would have to be widened on the day it names one.
-	Status string `json:"status"`
 	// ProductID is the bank's default deposit product, created with its chart
 	// of accounts at onboarding. Every deposit account is opened FROM a
 	// product, so a client that has just created a bank needs to be told which
@@ -103,7 +85,6 @@ func toParticipantDTO(p *payment.Bank) participantDTO {
 		ID:                string(p.ID),
 		Name:              p.Name,
 		BIC:               string(p.BIC),
-		Status:            string(p.Status),
 		ProductID:         string(p.ProductID),
 		CustomerSubledger: string(p.CustomerSubledger),
 		Assets:            assets,

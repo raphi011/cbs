@@ -854,18 +854,18 @@ func (s *snapshot) partiesHoldTheirCopy(rep *Report) {
 // other: the bank's own record of itself, the settlement agent's account, and
 // the clearing house's routing entry.
 //
-// This is the reconciliation payment.BankStatus's doc asks for by name. There is
-// no Applied state between Founded and Member because nothing would read it, and
-// what "the request is out" is worth knowing for is a STUCK admission — which
-// needs a walk of both ends rather than a column on one of them. This is that
-// walk: a bank calling itself a Member that no agent holds an account for, or an
-// agent holding an account for a bank the clearing house does not route to, is
-// an admission that half happened.
+// This is the walk payment.BankAccounts.Settlement's doc names. Nothing records
+// how far through provisioning a bank got — the settlement references on its own
+// row are that record, and a status column beside them would say it twice. What
+// a stuck provisioning needs instead is both ends held against each other: a
+// bank quoting a settlement account no agent holds, or an agent holding one for
+// a bank the clearing house does not route to, is provisioning that half
+// happened, and neither end can see it alone.
 //
 // The per-asset comparison is the partly-admitted bank, which
 // payment.RosterEntry.Assets records as the case its own reader exists for: one
 // request asks for one currency, so a two-asset admission commits twice and an
-// agent that answers one and refuses the other leaves a Member with internal
+// agent that answers one and refuses the other leaves a bank with internal
 // accounts in both assets and a settlement account in one.
 func (s *snapshot) admissionWroteItsThreeRows(rep *Report) {
 	for _, bic := range s.order {
@@ -873,41 +873,47 @@ func (s *snapshot) admissionWroteItsThreeRows(rep *Report) {
 		member, hasAccount := s.members[bic]
 		entry, routed := s.roster[bic]
 
-		switch view.row.Status {
-		case payment.BankMember:
-			if !hasAccount {
-				rep.breakf(string(bic),
-					"this bank's own row says it is a %s and the settlement agent holds no account for it",
-					payment.BankMember)
+		// What this bank's own row says it has been admitted in: the assets it
+		// holds a settlement reference for. None of them, and the scheme has not
+		// answered it — which is a whole state and not a broken one.
+		var recorded []ledger.AssetCode
+		for _, asset := range assetsOf(view.row) {
+			if view.row.Assets[asset].Settlement != "" {
+				recorded = append(recorded, asset)
 			}
-			if !routed {
-				rep.breakf(string(bic),
-					"this bank's own row says it is a %s and the clearing house does not route to it",
-					payment.BankMember)
-			}
-			if hasAccount && routed {
-				settled := slices.Sorted(maps.Keys(member.Accounts))
-				admitted := slices.Sorted(slices.Values(entry.Assets))
-				if !slices.Equal(settled, admitted) {
-					rep.breakf(string(bic),
-						"the clearing house routes this bank in %v and the settlement agent holds accounts for it in %v; a cut-off in the difference could be cleared and not settled",
-						admitted, settled)
-				}
-			}
-		case payment.BankFounded:
+		}
+
+		if len(recorded) == 0 {
 			if hasAccount {
 				rep.breakf(string(bic),
-					"this bank's own row says it is only %s and the settlement agent holds accounts for it in %v",
-					payment.BankFounded, slices.Sorted(maps.Keys(member.Accounts)))
+					"this bank's own row records no settlement account and the settlement agent holds accounts for it in %v",
+					slices.Sorted(maps.Keys(member.Accounts)))
 			}
 			if routed {
 				rep.breakf(string(bic),
-					"this bank's own row says it is only %s and the clearing house routes payments to it",
-					payment.BankFounded)
+					"this bank's own row records no settlement account and the clearing house routes payments to it")
 			}
-		default:
-			rep.breakf(string(bic), "this bank's own row carries the status %q, which is neither %s nor %s",
-				view.row.Status, payment.BankFounded, payment.BankMember)
+			continue
+		}
+
+		if !hasAccount {
+			rep.breakf(string(bic),
+				"this bank's own row settles %v through the settlement agent and the agent holds no account for it",
+				recorded)
+		}
+		if !routed {
+			rep.breakf(string(bic),
+				"this bank's own row settles %v through the settlement agent and the clearing house does not route to it",
+				recorded)
+		}
+		if hasAccount && routed {
+			settled := slices.Sorted(maps.Keys(member.Accounts))
+			admitted := slices.Sorted(slices.Values(entry.Assets))
+			if !slices.Equal(settled, admitted) {
+				rep.breakf(string(bic),
+					"the clearing house routes this bank in %v and the settlement agent holds accounts for it in %v; a cut-off in the difference could be cleared and not settled",
+					admitted, settled)
+			}
 		}
 	}
 

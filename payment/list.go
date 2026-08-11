@@ -36,10 +36,11 @@ import (
 // are written against Tx.ListBanks and because a listing that cannot span
 // institutions is harmless; nothing in this package calls it.
 //
-// Founding is still what writes the row, so a bank the scheme has not answered
-// for is here carrying Status Founded — which is the difference from the
-// clearing house's roster. GetRosterEntryByBIC below is that narrower question,
-// answered from the table admission writes rather than from this one.
+// Founding is what writes the row, so a bank the scheme has not answered for is
+// here with its settlement references empty — which is the difference from the
+// clearing house's roster, where it is absent entirely. GetRosterEntryByBIC
+// below is that narrower question, answered from the table admission writes
+// rather than from this one.
 //
 // The returned Banks carry live Ledger and Deposit handles bound to the
 // network's store, so a caller can go straight from a listing to a bank's books.

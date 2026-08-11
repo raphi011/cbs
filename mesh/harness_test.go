@@ -375,8 +375,10 @@ func newHarness(t *testing.T, opts harnessOptions) *meshHarness {
 	// is about.
 	h.subscribeAll(t)
 	for _, p := range []*payment.Bank{h.debtor, h.creditor} {
-		if p.Status != payment.BankMember {
-			t.Fatalf("%s is %q once provisioned, want %q", p.BIC, p.Status, payment.BankMember)
+		for asset, accts := range p.Assets {
+			if accts.Settlement == "" {
+				t.Fatalf("%s operates in %s and holds no settlement account for it once provisioned", p.BIC, asset)
+			}
 		}
 	}
 

@@ -1165,34 +1165,29 @@ CREATE TABLE banks (
     -- which surfaces as "product not found" several layers away from the store
     -- that lost it.
     product_id         TEXT NOT NULL,
-    -- How far through admission this bank is: Founded, or Member.
-    -- A Founded bank has a licence, a book and a chart of accounts and no place
-    -- in a scheme — it can open customer accounts and take cash in, which lands
-    -- in its own vault_cash, and it cannot LODGE that cash, because putting it on
-    -- reserve needs the central bank to credit an account in the central bank's
-    -- own book and no settlement agent holds one for it. That refusal used to sit
-    -- on the deposit and said such a bank could not be funded at all, which was
-    -- true of the code and false about banking. That is a true state and not a
-    -- broken one, because a bank exists before it joins a scheme. It is also
-    -- what an interrupted admission leaves behind, which is what makes
+    -- There is NO column here saying how far through provisioning this bank is.
+    -- bank_assets.settlement is empty until the settlement agent has opened an
+    -- account and the bank has been told its number, and a status beside it would
+    -- say the same thing a second time. What that emptiness means is a bank with
+    -- a licence, a book and a chart of accounts and no place in a scheme: it can
+    -- open customer accounts and take cash in, which lands in its own vault_cash,
+    -- and it cannot LODGE that cash, because putting it on reserve needs the
+    -- central bank to credit an account in the central bank's own book and no
+    -- settlement agent holds one for it. A true state and not a broken one, and
+    -- what an interrupted provisioning leaves behind — which is what makes
     -- re-driving one safe.
-    -- There is no third value, and specifically no Applied between them: it
-    -- would record that a request is out and nothing would read it. What "the
-    -- request is out" is worth knowing for is a stuck admission, and finding
-    -- those means walking both ends against each other rather than reading a
-    -- column on one of them.
-    -- TEXT rather than the INTEGER every other status column in this schema is,
-    -- because payment.BankStatus is a string type and not an iota enum.
-    -- No CHECK constraint, for the reason accounts.asset carries none: the set
-    -- lives in Go, and a CHECK would put it in two places and make adding a
-    -- third state a migration.
-    status             TEXT NOT NULL,
-    -- The acmt Refs/PrcId of the admission this bank recorded a membership
+    -- The failure worth catching is not visible from inside this database at all:
+    -- a bank quoting a settlement account no agent holds, or an agent holding one
+    -- for a bank the clearing house does not route to, is three institutions'
+    -- rows disagreeing. Finding those means walking all three against each other,
+    -- which is payment/recon and not a column here.
+    --
+    -- The reference of the admission this bank recorded a membership
     -- under: what it accepted, and not what any other institution says about it.
-    -- NOT NULL and empty while the bank is Founded, because it has accepted
+    -- NOT NULL and empty until it has recorded one, because it has accepted
     -- nothing yet.
     -- It is the only thing that can refuse an acknowledgement belonging to
-    -- another admission. One acmt.007 asks for one currency, so a bank joining
+    -- another admission. One application asks for one currency, so a bank joining
     -- in two assets is answered twice and RecordMembershipTx has to record or
     -- extend rather than refuse a second answer — which without this column
     -- leaves it unable to tell the second answer of THIS admission from an

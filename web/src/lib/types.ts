@@ -331,38 +331,22 @@ export interface ParticipantAccounts {
   // every deposit — which is why it must be in this list rather than merely on
   // the wire. Moving it onto reserve is a LODGEMENT, a separate act.
   vaultCash: string;
+  // This bank's account in the settlement agent's book — the only one here that
+  // is not in the bank's own.
+  //
+  // It is also what says whether the scheme has answered this bank, and there is
+  // no separate `status` field that says it again. Empty means no settlement
+  // agent holds an account for it in this asset, which is an ordinary state: it
+  // opens customer accounts, publishes products and takes cash deposits (POST
+  // /deposits answers 200 and the cash lands in vaultCash), and it cannot LODGE
+  // that cash, because only the central bank can credit an account in the
+  // central bank's book — POST /lodgements is the 422. Nothing it takes part in
+  // can settle either, a settlement instruction naming its members through a
+  // routing directory this bank is not in. What still ROUTES to it is the mesh's
+  // actor table, so a payment addressed to one clears like any other and the
+  // cut-off carrying it is what fails.
   settlement: string;
 }
-
-// A bank's place in the scheme. "Founded" is a bank with a book, a chart of
-// accounts and customers, that no settlement agent holds an account for.
-// "Member" is one the scheme has admitted.
-//
-// A founded bank runs its own book, and that part is unrestricted: it opens
-// customer accounts, publishes products and adds ledgers, all measured against a
-// bank held in this state. What it cannot do is anything needing another
-// institution. It CAN take a cash deposit: a bank's counter has nothing to do
-// with its central bank account, so cash in lands in this bank's own vault and
-// POST /deposits answers 200.
-//
-// What it cannot do is LODGE that cash — put it on reserve — because only the
-// central bank can credit an account in the central bank's book. POST /lodgements
-// is the 422, and it names the reserve account this bank cannot name. And nothing it
-// takes part in can settle, because a settlement instruction names its members
-// through the routing directory this bank is not in.
-//
-// It is NOT that nothing routes to a founded bank: the backend routes on the
-// mesh's actor table rather than on the directory, so a payment addressed to one
-// clears like any other and the cut-off carrying it is what fails.
-//
-// Both are ordinary states. Admission is a conversation between three
-// institutions, so POST /members answers 202 with a founded bank and the
-// scheme's answer arrives afterwards — a bank read straight back may still be
-// Founded and be perfectly healthy.
-//
-// A string union of the backend's own values, so a state added there is a
-// compile error here rather than a screen quietly rendering nothing.
-export type ParticipantStatus = "Founded" | "Member";
 
 export interface Participant {
   id: string;
@@ -373,7 +357,6 @@ export interface Participant {
   // became a screen — the roster is keyed by BIC and carries no name, so joining
   // the two is the only way to show a member's name beside its address.
   bic: string;
-  status: ParticipantStatus;
   // The bank's default deposit product, created with its chart of accounts at
   // onboarding. It is what the open-account form offers.
   productId: string;

@@ -122,9 +122,6 @@ describe("buildKnownAccounts", () => {
       id: "bank_1",
       name: "Bank",
       bic: "BANKDEFFXXX",
-      // A member, because these fixtures have a settlement account: a founded
-      // bank is admitted but not yet joined and holds none.
-      status: "Member",
       productId: "prd_1",
       customerSubledger: "sub_1",
       assets: [
@@ -155,9 +152,6 @@ describe("buildKnownAccounts", () => {
       id: "bank_1",
       name: "Bank",
       bic: "BANKDEFFXXX",
-      // A member, because these fixtures have a settlement account: a founded
-      // bank is admitted but not yet joined and holds none.
-      status: "Member",
       productId: "prd_1",
       customerSubledger: "sub_1",
       assets: [

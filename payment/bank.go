@@ -13,55 +13,6 @@ import (
 	"github.com/raphi011/cbs/product"
 )
 
-// BankStatus is how far through admission a bank is.
-//
-// There are two values and there is no third. An Applied state between them
-// would record that a request is out and nothing would read it, which is the
-// field-nothing-reads shape this repository refuses. What "the
-// request is out" is worth knowing for is a stuck admission, which needs a
-// reconciliation that walks both ends rather than a column on one of them.
-//
-// That walk is payment/recon: an admission writes three rows in three
-// databases, each institution can see exactly one of them, and the harness is
-// what holds the three against each other. A bank calling itself a Member that
-// no settlement agent holds an account for is what a half-happened admission
-// looks like from outside all three, and it is not visible from inside any.
-type BankStatus string
-
-const (
-	// BankFounded is a bank with a licence, a book, a chart of accounts and a
-	// product, and no place in a scheme. It has applied to a national registry
-	// for the bank code its customers' addresses would carry and has not been
-	// answered, so it can open no customer account at all: every deposit account
-	// here is opened with an address, an address is minted under a bank code, and
-	// this bank has no range to give one out of (deposit.ErrNoIssuer).
-	//
-	// That is what a bank between its licence and its allocation really is, and
-	// it is stricter than it sounds only because the two arrive together here —
-	// one message asks a settlement agent for a reserve account and a registry for
-	// a code, and one answer carries both. So a founded bank cannot lodge cash
-	// either, and would have none to lodge: no settlement agent holds an account
-	// for it (LodgeReservesTx, ErrSettlementMemberNotFound) and it has no
-	// customer who could have paid any in.
-	//
-	// It is in no routing directory either, so nothing it takes part in can
-	// settle — what a transport does and does not enforce about that is measured
-	// in mesh/doc.go's admission section rather than asserted here.
-	//
-	// It is a legitimate state and not a broken one — a bank exists before it
-	// joins a scheme — and it is what an interrupted admission leaves behind.
-	//
-	// FoundBankTx is what writes it, and it commits before the other three acts
-	// run. So this state exists on every admission and not only on an interrupted
-	// one — which is the whole difference between founding and joining being one
-	// commit and being four.
-	BankFounded BankStatus = "Founded"
-
-	// BankMember is a bank the scheme has admitted: the settlement agent holds an
-	// account for it and the clearing house routes to it.
-	BankMember BankStatus = "Member"
-)
-
 // BankAccounts are the internal accounts a bank needs for one asset:
 //
 //   - Suspense (Liability): an in-transit account holding funds that have left
@@ -106,8 +57,15 @@ const (
 // names no account in anybody else's. What quotes this number is the LODGEMENT
 // that moves the cash onward, and that is a message rather than a posting.
 //
-// It is empty on a founded bank. The number is something the bank has to be
-// told, and RecordMembershipTx is where being told lands.
+// It is empty until RecordMembershipTx: the account is another institution's to
+// open and its number is something this bank has to be told.
+//
+// Emptiness is also the only record there is of how far through provisioning a
+// bank has got, and there is deliberately no column for that. A status field
+// would say what this one already says, and the failure worth catching is not
+// visible from inside any single institution anyway — a bank quoting settlement
+// accounts no agent holds is what a half-provisioned deployment looks like from
+// outside all three. payment/recon is the walk that sees it.
 type BankAccounts struct {
 	Suspense ledger.AccountID
 	Reserve  ledger.AccountID
@@ -187,8 +145,8 @@ type BankAccounts struct {
 	Settlement ledger.AccountID
 }
 
-// Bank is one bank's own record of itself: its book, its chart of accounts, the
-// product it opens customer accounts from, and how far through admission it is.
+// Bank is one bank's own record of itself: its book, its chart of accounts, and
+// the product it opens customer accounts from.
 //
 // It is the first of the three rows admission writes, and the only one this
 // institution owns. The central bank writes a SettlementMember for the account
@@ -278,16 +236,6 @@ type Bank struct {
 	// no such thing as an unpriced deposit account.
 	ProductID product.ID
 
-	// Status is how far through admission this bank is. See BankStatus: a
-	// Founded bank can open customer accounts and take cash in, and cannot lodge
-	// that cash on reserve.
-	//
-	// The zero value is neither, which is why every writer sets it explicitly
-	// and storetest asserts it survives the round trip: a bank read back with
-	// Status "" is not a bank that has not applied, it is a bank whose store
-	// dropped a column.
-	Status BankStatus
-
 	// AdmissionRef is the reference of the admission this bank recorded a
 	// membership under: what it accepted, not what anybody else says about it.
 	//
@@ -302,7 +250,7 @@ type Bank struct {
 	//
 	// It was measured rather than reasoned about. Without this field, an
 	// acknowledgement naming this bank's own BIC, quoting an admission reference
-	// it had never heard of and carrying an invented account, moved a Member
+	// it had never heard of and carrying an invented account, moved an admitted
 	// bank's euro settlement reference from the central bank's real account to
 	// the forged one — leaving the bank's own row disagreeing with the settlement
 	// agent's about which account it holds, and DepositTx reads the bank's.
@@ -320,8 +268,8 @@ type Bank struct {
 	// accepted, and comparing against it needs nobody else's store. That the two
 	// agree in a healthy system is a consequence rather than
 	//
-	// Empty on a Founded bank, because nothing has been accepted yet.
-	// RecordMembershipTx is the only writer.
+	// Empty until RecordMembershipTx, because nothing has been accepted yet. That
+	// act is the only writer.
 	AdmissionRef string
 
 	// Assets holds one set of internal accounts per asset the bank operates in,

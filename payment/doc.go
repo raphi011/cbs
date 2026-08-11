@@ -142,10 +142,10 @@
 //
 //   - FoundBankTx is the BANK building itself — its book, its chart of
 //     accounts, its internal accounts per asset, its default deposit product.
-//     It comes out Founded, which is a bank with a licence and no place in a
-//     scheme: it can open customer accounts and take cash in, which lands in
-//     its own vault, and it cannot LODGE that cash — putting it on reserve
-//     needs the central bank to credit an account in the central bank's book.
+//     What comes out is a bank with a licence and no place in a scheme: it can
+//     open customer accounts and take cash in, which lands in its own vault,
+//     and it cannot LODGE that cash — putting it on reserve needs the central
+//     bank to credit an account in the central bank's book.
 //   - OpenSettlementAccountTx is the SETTLEMENT AGENT opening one account, in
 //     one asset, in its own book, and recording that it holds it. Idempotent
 //     per (BIC, asset), because one request asks for one currency and a
@@ -155,7 +155,8 @@
 //     rather than the bank's own word, because scheme membership follows the
 //     settlement account.
 //   - RecordMembershipTx is the BANK's second act: writing down the account
-//     numbers it has been told, and becoming a Member.
+//     numbers it has been told, which is what its own row has to say it is
+//     admitted.
 //
 // Nothing in this package composes them. What runs them in order is package
 // provision, which stands outside the domain and calls each institution's act

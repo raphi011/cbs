@@ -127,9 +127,9 @@ func errorStatus(err error) int {
 		// error is written by this same function — so a seed that could produce
 		// this sentinel would produce a 422 from the reset route too. It cannot,
 		// and that is a property of the seed rather than of the code's shape:
-		// seed.builder provisions each bank through package provision and refuses
-		// to build any further unless the bank came back a Member, so every reserve
-		// the scenario funds or settles already has an account behind it. The reserve routes are the remaining readers,
+		// seed.builder provisions each bank through package provision and stops
+		// rather than building further if any of the four acts fails, so every
+		// reserve the scenario funds or settles already has an account behind it. The reserve routes are the remaining readers,
 		// and they report a missing account as a missing row.
 		errors.Is(err, payment.ErrSettlementMemberNotFound),
 		errors.Is(err, lending.ErrFacilityClosed),

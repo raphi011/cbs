@@ -18,8 +18,7 @@ import (
 // It is the SETTLEMENT AGENT's read and not the clearing house's: the csm shape
 // has no banks table, and the roster is not a substitute — a bank founded and
 // not yet admitted has no roster entry and is precisely the bank this listing
-// exists to show, since participantDTO.Status is what tells "Founded" from
-// "Member" apart.
+// exists to show, its empty settlement references being what says so.
 //
 // payment.Stores.Banks is the question with an answer: every bank whose DATABASE
 // exists. Its doc says nothing in the domain calls it and nothing should — an
