@@ -141,25 +141,30 @@ func TestARedeliveredStatementBooksTheMirrorLegOnce(t *testing.T) {
 // TestARedeliveredSettlementStatusPaysThePayeeOnce is the witness on
 // SettleAtBankTx's Settled guard.
 //
-// Same shape as the statement above and a different message: the clearing house's
-// per-payment ACSC, replayed. csm.tellSettled's dedup rationale leans on this
-// guard — it argues that a fan-out sending the same advice twice would still
-// leave the money right, and only the conversation wrong — so the guard it leans
-// on needs a witness of its own.
+// Same shape as the statement above and a different message: the clearing
+// house's per-payment ACSC, replayed.
+//
+// It is a COLLECTION rather than a credit transfer, and that is the whole
+// fixture. Only one bank is sent an ACSC now — the one that submitted — and on a
+// push that bank has no leg to post, so a replay there would have nothing to
+// double. On a pull the submitter IS the creditor's bank: it asked, and it holds
+// the leg that pays its own customer. That is the one arrangement where a
+// redelivered advice could pay somebody twice, and it is the one this guard
+// exists for.
 //
 // It returns the payment rather than refusing for a reason the comment there
 // gives: transitioning twice is what ErrInvalidStateTransition reports, and that
 // would tell a handler that did nothing wrong that it failed.
 func TestARedeliveredSettlementStatusPaysThePayeeOnce(t *testing.T) {
 	h := newHarness(t)
-	p := h.submitCreditTransfer(t)
-	h.work(t)
-	h.closeCycle(t)
-	h.work(t)
+	p := h.settledCollection(t)
 
-	before := h.payment(t, p.ID)
+	before := h.bankPayment(t, h.creditorBIC, p.ID)
 	if before.Status != payment.Settled {
 		t.Fatalf("status = %v, want Settled; there is no redelivery to test otherwise", before.Status)
+	}
+	if before.CreditorLegTx == "" {
+		t.Fatal("the payee's bank posted no creditor leg, so a replay has nothing to double")
 	}
 	payeeBefore := h.balance(t, h.creditorPID, h.creditorAcct.ID)
 	suspenseBefore := h.suspense(t, h.creditorPID)
@@ -174,7 +179,7 @@ func TestARedeliveredSettlementStatusPaysThePayeeOnce(t *testing.T) {
 	if got := h.suspense(t, h.creditorPID); got != suspenseBefore {
 		t.Errorf("the payee's bank's suspense is %d after a replayed ACSC, want the unchanged %d", got, suspenseBefore)
 	}
-	after := h.payment(t, p.ID)
+	after := h.bankPayment(t, h.creditorBIC, p.ID)
 	if after.CreditorLegTx != before.CreditorLegTx {
 		t.Errorf("the creditor leg is now %q, want the original %q", after.CreditorLegTx, before.CreditorLegTx)
 	}

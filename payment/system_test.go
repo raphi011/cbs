@@ -4597,14 +4597,29 @@ func TestAcceptInboundRefusesAPaymentThatIsNoLongerInitiated(t *testing.T) {
 		mustGetPaymentAt(t, ctx, receiver, p.ID).Status, Rejected)
 }
 
-func TestAcceptInboundRefusesAClosedCreditorAccount(t *testing.T) {
+// A payee whose account is CLOSED is taken on rather than refused, and the money
+// is diverted when the leg posts.
+//
+// It is the one refusal from the creditor's half that this side swallows, and
+// the reason is WHEN it runs: a receiving bank is handed the instruction only
+// after the cycle carrying it is final, so refusing would strand money that is
+// already in its clearing suspense. What a bank does with a credit for an
+// account that cannot take one is hold it for the payee — SettleAtBankTx's
+// diversion to unclaimed balances, which is the whole reason that account
+// exists, and which TestSettleDivertsACreditAClosedAccountCannotTake measures.
+//
+// The same refusal at the SUBMITTING bank stands: see
+// TestMandateIsCheckedAtSubmissionAndFundsOnReceipt for the half that still
+// bites.
+func TestAcceptInboundTakesOnAPayeeWhoseAccountHasClosed(t *testing.T) {
+	ctx := context.Background()
 	n, p := networkWithASubmittedPayment(t)
 	closeCreditorAccount(t, n, p)
+	receiver := n.bank(receiverOf(n, p))
 
-	err := n.bank(receiverOf(n, p)).AcceptInbound(context.Background(), p.ID, relayedFrom(p))
-	if !errors.Is(err, deposit.ErrAccountClosed) {
-		t.Fatalf("AcceptInbound = %v, want the closed-account error", err)
-	}
+	assertNoError(t, receiver.AcceptInbound(ctx, p.ID, relayedFrom(p)))
+	assertEqual(t, "the receiving bank's own copy",
+		mustGetPaymentAt(t, ctx, receiver, p.ID).Status, Initiated)
 }
 
 // The creditor's bank holds the mandate, so it validates it — synchronously,

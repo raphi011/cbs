@@ -200,10 +200,11 @@ func NewDeployment(ctx context.Context, nets *payment.Networks, clock *calendar.
 	}
 	d.csm = &ClearingHouse{
 		d: d, net: nets.ClearingHouse(), ops: nets.ClearingHouse(),
-		bic:  cfg.ClearingHouseBIC,
-		host: ebics.NewServer(),
-		cb:   ebics.NewClient(ebics.SubscriberID(cfg.ClearingHouseBIC), cfg.CentralBankURL),
-		held: map[payment.PaymentID]heldReturn{},
+		bic:    cfg.ClearingHouseBIC,
+		host:   ebics.NewServer(),
+		cb:     ebics.NewClient(ebics.SubscriberID(cfg.ClearingHouseBIC), cfg.CentralBankURL),
+		held:   map[payment.PaymentID]heldReturn{},
+		output: map[payment.CycleID][]pendingFile{},
 	}
 	d.cb.host.Enrol(ebics.SubscriberID(cfg.ClearingHouseBIC))
 

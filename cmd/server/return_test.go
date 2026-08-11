@@ -312,51 +312,40 @@ func TestAReturnedCollectionIsSentByThePayersBank(t *testing.T) {
 	}
 }
 
-// TestABankRefusesToReturnAPaymentThatHasNotSettled is the guard the returning
-// bank makes before any message exists, and the reason it is not left to the
-// settlement agent.
+// TestABankCannotReturnAPaymentItHasNotBeenHanded is what a return before
+// finality now runs into, and it is a stronger refusal than the guard it
+// replaces.
 //
-// payment.PostReturnLegTx refuses it too, with ErrInvalidStateTransition — and
-// that sentinel is the one payment's reasonTable gives the empty code, because
-// it describes a defect in this system rather than a judgement about anyone's
-// instruction. An actor that received it must dead-letter it, so a return sent
-// for a payment that has not settled would be answered by nobody at all and the
-// operator who asked for it would hear nothing. Refused here, it is the caller's
-// answer, and it names the status — which is the whole of what the handler's own
-// guard adds over the domain's.
+// The bank that returns a payment is the one that RECEIVED the instruction, and
+// it receives that instruction only once the cycle carrying it has settled. So
+// before the cut-off there is no copy at that bank to return FROM: the refusal is
+// not "this payment is in the wrong state", it is "this bank has never heard of
+// this payment", which is the truth and is what the caller is told.
 //
-// And nothing goes on the wire, which is the second half of the claim: a refusal
-// that had already sent the pacs.004 would have the settlement agent settling
-// reserves for a payment this bank knew was not returnable. Nothing downstream
-// would catch it, because the settlement agent does not read the payment at all
-// — it acts on what the message says.
+// # Why the state guard is still there, and what still reaches it
 //
-// # The status it names is ITS OWN, and on a push that is Initiated
+// bank.returnPayment refuses anything that is not Settled before it builds a
+// message, and that arm is reached by a payment that has already been RETURNED —
+// asking twice. payment.PostReturnLegTx refuses it too, with
+// ErrInvalidStateTransition, and that sentinel is the one payment's reasonTable
+// gives the empty code: an institution that received such a return could only
+// dead-letter it, so the operator who asked would hear nothing. Refused at the
+// door, it is the caller's answer and it names the status.
 //
-// The returning bank here is the PAYEE's, and the payee's bank is the one that
-// ANSWERED the pacs.008. Only the bank waiting for an answer is sent the ACCP —
-// the submitter, which on a push is the payer's bank — so this bank's copy sits
-// at Initiated all the way to settlement while the clearing house's says
-// Accepted. Both are right, and the refusal quotes the only one this bank can
-// honestly cite. It said Accepted while all three institutions read one row;
-// there is no such row, and a bank that named a status it cannot see would be
-// reporting somebody else's record as its own.
-//
-// The status the CLEARING HOUSE holds is asserted separately below, off its own
-// copy, because "the refused return changed nothing" is a claim about the
-// network and not about the bank that refused.
-func TestABankRefusesToReturnAPaymentThatHasNotSettled(t *testing.T) {
+// And nothing goes on the wire either way, which is the second half of the
+// claim: a refusal that had already sent the pacs.004 would have the settlement
+// agent settling reserves for a payment this bank knew was not returnable.
+// Nothing downstream would catch it, because the settlement agent does not read
+// the payment at all — it acts on what the message says.
+func TestABankCannotReturnAPaymentItHasNotBeenHanded(t *testing.T) {
 	h := newHarness(t)
 	p := h.submitCreditTransfer(t)
 	h.work(t) // accepted and in a cycle, but no cut-off has been reached
 
 	before := h.messagesSeen()
 	err := h.returnErr(p.ID, iso20022.ReturnReasonClosedAccountNumber, "account closed")
-	if !errors.Is(err, payment.ErrInvalidStateTransition) {
-		t.Fatalf("Return = %v, want the illegal transition refused to the caller", err)
-	}
-	if !strings.Contains(err.Error(), "Initiated") {
-		t.Errorf("the refusal %q does not say what this BANK records the payment as", err)
+	if !errors.Is(err, payment.ErrPaymentNotFound) {
+		t.Fatalf("Return = %v, want the payee's bank saying it holds no such payment", err)
 	}
 	h.work(t)
 	if got := h.messagesSeen(); got != before {
@@ -364,6 +353,36 @@ func TestABankRefusesToReturnAPaymentThatHasNotSettled(t *testing.T) {
 	}
 	if got := h.payment(t, p.ID); got.Status != payment.Accepted {
 		t.Errorf("the refused return moved the payment to %v", got.Status)
+	}
+}
+
+// TestABankRefusesToReturnAPaymentTwice is the state guard bank.returnPayment
+// makes before any message exists.
+//
+// It is the arm that survives settling before releasing: a payment that is
+// already Returned is the one shape a returning bank can be asked about and must
+// decline, and the refusal names the status this BANK records rather than
+// anybody else's — it holds its own copy and can read no other.
+func TestABankRefusesToReturnAPaymentTwice(t *testing.T) {
+	h := newHarness(t)
+	p := h.settledPayment(t)
+	h.returnPayment(t, p.ID, iso20022.ReturnReasonClosedAccountNumber, "account closed")
+	h.work(t)
+	if got := h.payment(t, p.ID); got.Status != payment.Returned {
+		t.Fatalf("the fixture payment is %v, want Returned — there is no second return to refuse otherwise", got.Status)
+	}
+
+	before := h.messagesSeen()
+	err := h.returnErr(p.ID, iso20022.ReturnReasonClosedAccountNumber, "account closed")
+	if !errors.Is(err, payment.ErrInvalidStateTransition) {
+		t.Fatalf("Return = %v, want the illegal transition refused to the caller", err)
+	}
+	if !strings.Contains(err.Error(), "Returned") {
+		t.Errorf("the refusal %q does not say what this BANK records the payment as", err)
+	}
+	h.work(t)
+	if got := h.messagesSeen(); got != before {
+		t.Errorf("a refused return put %d messages on the wire, want none", got-before)
 	}
 }
 

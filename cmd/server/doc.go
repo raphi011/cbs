@@ -84,14 +84,33 @@
 //
 // A member bank does not hand the clearing house a payment. It ACCUMULATES its
 // customers' instructions in a hub and, at its cut-off, uploads one file per
-// scheme carrying all of them; the clearing house sorts that file by creditor
-// agent and hands each receiving bank one file of its own; that bank answers
-// with ONE pacs.002 carrying a decision per transaction, whose group status is
-// PART when they did not all go the same way.
+// scheme carrying all of them; the clearing house validates that file and
+// answers it with ONE pacs.002 carrying a decision per transaction, whose group
+// status is PART when they did not all go the same way; and it sorts the file by
+// creditor agent into one share per receiving bank, which it holds until the
+// cycle carrying them has SETTLED.
 //
-// So the counts along a chain are 1 in, M out, M back, 1 home, and none of the
-// four institutions sees the same file. That fan-out is what a clearing house is
-// FOR, and it is invisible in a network where every message carries one payment.
+// So the counts along a chain are 1 in, 1 answered, M out, and none of the four
+// institutions sees the same file. That fan-out is what a clearing house is FOR,
+// and it is invisible in a network where every message carries one payment.
+//
+// # Settle, then release
+//
+// A receiving bank is handed its instructions only once the funds behind them
+// are final. Nothing reaches it before the cut-off has settled at the settlement
+// agent, and nothing reaches it at all if that cut-off is refused.
+//
+// Reverse those two and settlement risk is invented: a bank would be crediting
+// customers against a batch that might still fail. What the order costs is the
+// receiving bank's ability to say NO — by the time it looks at the payment the
+// money is in its clearing suspense — so its refusals are RETURNS. AC01 for an
+// address it does not hold and AM04 for a payer it cannot collect from are
+// pacs.004s, not pacs.002s, which is what they are in SEPA and for this reason.
+//
+// The only institution that rejects anything is therefore the clearing house,
+// and it does so before any money has moved: an unroutable destination (RC01), a
+// member the roster does not admit for the scheme's asset, a scheme with no
+// cut-off window open (TM01).
 //
 // day.go's schedule is the four flows below in one list. Two things it
 // deliberately does not do: it does not run a cycle on a day TARGET is shut, and
@@ -115,13 +134,16 @@
 //
 // # The credit transfer flow
 //
-// A SEPA credit transfer is four files and three decisions, and no two of them
-// are made by the same institution:
+// A SEPA credit transfer is one file up, one answer back, and one file out —
+// and the cut-off sits between the second and the third:
 //
-//	payer's bank  --pacs.008-->  clearing house  --pacs.008-->  payee's bank
-//	payer's bank  <--pacs.002--  clearing house  <--pacs.002--  payee's bank
+//	payer's bank  --pacs.008-->  clearing house
+//	payer's bank  <--pacs.002--  clearing house      (ACCP or RJCT, per transaction)
+//	                             clearing house  ==  the cycle settles  ==>
+//	                             clearing house  --pacs.008-->  payee's bank
+//	payer's bank  <--pacs.002--  clearing house      (ACSC, per payment)
 //
-// Reading that clockwise:
+// Reading that down:
 //
 //   - The PAYER'S BANK takes the instruction. Deployment.Submit runs that half
 //     synchronously, so a customer whose instruction fails their own bank's
@@ -132,21 +154,21 @@
 //     day, and uploads one file per scheme. What the upload answers is
 //     TECHNICAL: an order id means the file arrived. What the far side thinks
 //     arrives on a later download.
-//   - The CLEARING HOUSE sorts the file by the creditor agent each transaction
-//     names, and puts each receiving bank's share in that bank's download queue.
-//     It reads no store to do that: a clearing house that had to look a payment
-//     up to decide where to send it could not route a file about a payment it
-//     does not hold, which in a real network is every file.
+//   - The CLEARING HOUSE records the file, takes each transaction into the open
+//     cycle for its scheme, and answers the submitter per transaction. It also
+//     sorts the file by the creditor agent each transaction names and BUILDS
+//     each receiving bank's share — which it does not send. It reads no store to
+//     sort: a clearing house that had to look a payment up to decide where to
+//     send it could not route a file about a payment it does not hold, which in
+//     a real network is every file.
+//   - The CYCLE settles, and only then does the CLEARING HOUSE put each share in
+//     its bank's download queue. A transaction an operator rejected in the
+//     meantime is cut out of the share; a cut-off the settlement agent refuses
+//     releases nothing at all.
 //   - The PAYEE'S BANK resolves each transaction by ADDRESS — that is what
-//     produces AC01 for an account number nobody holds — checks its own half,
-//     and answers ACCP or RJCT per transaction, in one status file.
-//   - The CLEARING HOUSE clears each answer: an acceptance goes into the open
-//     cycle for its scheme, and a payment with no window open is refused with
-//     TM01, because the CYCLE's cut-off is the clearing house's and no bank
-//     refuses its own customer's instruction on account of it. Then it queues
-//     the answer for the bank that submitted — which, a file having been sorted,
-//     is a group-by rather than a forward.
-//   - The PAYER'S BANK, on a rejection, gives the payer their money back.
+//     produces AC01 for an account number nobody holds — writes its own copy and
+//     credits its customer out of the clearing suspense the statement filled.
+//     What it cannot apply it HOLDS and sends back, in a pacs.004.
 //
 // Which institution runs which half is decided entirely by which queue the file
 // was in. That, rather than the XML, is what this transport is for.
@@ -160,12 +182,14 @@
 //
 // # The direct debit flow
 //
-// A SEPA direct debit is the same four files and the same three decisions, made
-// by the same institutions in the same order — with the two banks swapped and
-// the money moving at a different point in the chain:
+// A SEPA direct debit is the same three hops in the same order, with the two
+// banks swapped and the money moving at a different point in the chain:
 //
-//	payee's bank  --pacs.003-->  clearing house  --pacs.003-->  payer's bank
-//	payee's bank  <--pacs.002--  clearing house  <--pacs.002--  payer's bank
+//	payee's bank  --pacs.003-->  clearing house
+//	payee's bank  <--pacs.002--  clearing house      (ACCP or RJCT, per transaction)
+//	                             clearing house  ==  the cycle settles  ==>
+//	                             clearing house  --pacs.003-->  payer's bank
+//	payee's bank  <--pacs.002--  clearing house      (ACSC, per payment)
 //
 // The PAYEE'S BANK submits, because a collection is the payee asking for what it
 // is owed, and its submission MOVES NOTHING: the account being collected from is
@@ -180,26 +204,27 @@
 // two are separate Go types for exactly this reason.
 // payment.SDD.ValidateMandate says so at the layer that owns the limit.
 //
-// The CLEARING HOUSE routes it to the DEBTOR's agent, the element that names the
+// The CLEARING HOUSE sorts it by the DEBTOR's agent, the element that names the
 // bank holding the payer, because a pull travels towards the money's source
 // while a push travels towards its destination. That one element is the whole
 // difference in this institution.
 //
-// The PAYER'S BANK collects it, and this is the half that moves money. It
-// resolves by address exactly as a payee's bank does on a push, and then posts
-// the debtor leg — because this is the first moment any institution in the
-// system has been able to look at the account being collected from. AM04, an
-// account that cannot cover the amount, can only ever be said here.
+// The PAYER'S BANK collects it after the cut-off has settled, and this is the
+// half that moves money. It resolves by address exactly as a payee's bank does
+// on a push, and then posts the debtor leg — because this is the first moment
+// any institution in the system has been able to look at the account being
+// collected from.
+//
+// This is the clearest case there is for settling before releasing. The payer's
+// bank was net-debited at the cut-off whatever its customer's balance turns out
+// to be, so AM04 — a shortfall no other institution can see — is discovered with
+// the money already gone. It cannot refuse; it stands in for the payer out of
+// its own pocket (payment.ReceiveUnappliedTx books the claim) and asks for the
+// money back with a pacs.004.
 //
 // The rule that covers both flows, and that neither one on its own would tell
 // you, is that the DEBTOR's bank posts the debtor leg. Which bank that is stays
 // the same; whether it is submitting or answering is what the direction decides.
-//
-// One consequence is worth stating because it has no push counterpart. When the
-// clearing house rejects a collection the payer's bank has already accepted, the
-// bank waiting for an answer and the bank holding the money are two DIFFERENT
-// banks — so the rejection goes to both, and the condition for the second is
-// exactly that there is money to give back. See ClearingHouse.tell.
 //
 // # Settlement
 //
@@ -210,12 +235,17 @@
 //	clearing house  --pacs.009-->  settlement agent
 //	settlement agent --camt.053--> each member whose net position moved
 //	clearing house  <--pacs.002--  settlement agent
-//	clearing house  --pacs.002-->  the submitter and the payee's bank, per payment
+//	clearing house  --pacs.008-->  each receiving bank, its share of a file
+//	clearing house  --pacs.002-->  the submitter, per payment
 //
-// Those two fan-outs are what a member's half of a cut-off is made of, and
-// between them nothing of it is left in the settlement agent's unit of work: the
-// camt.053 carries the MIRROR leg and the per-payment ACSC carries the CREDITOR
-// leg (Bank.receiveStatus, payment.SettleAtBankTx).
+// Those fan-outs are what a member's half of a cut-off is made of, and between
+// them nothing of it is left in the settlement agent's unit of work: the
+// camt.053 carries the MIRROR leg and the released instruction carries the
+// CREDITOR leg (Bank.apply, payment.SettleAtBankTx).
+//
+// Two banks hear different things and each hears what it needs. The submitter
+// asked a question and gets ACSC, the answer to it. The receiving bank asked
+// nothing and gets the instruction itself, which is both its news and its work.
 //
 // The camt.053 is what makes the MIRROR LEG the member's own act. A bank's
 // clearing suspense holds money that has left a customer and not yet settled
@@ -236,20 +266,21 @@
 //
 // The mirror leg has to be booked before the creditor legs draw on it, and the
 // two files that carry them sit in DIFFERENT queues at DIFFERENT institutions —
-// the statement at the settlement agent, the ACSC at the clearing house. Two
-// connections share no ordering, so nothing about the order they were written in
-// survives.
+// the statement at the settlement agent, the released instruction at the
+// clearing house. Two connections share no ordering, so nothing about the order
+// they were written in survives.
 //
 // What guarantees it is the BANK's own collection order: the settlement agent
 // first, then the clearing house. That is more honest than what it replaces. The
 // ordering was never a property of the network; it was a property of there being
 // one queue. Now it is a decision a bank makes about its own operations, in one
-// place — see CentralBank.advise and AdvanceDay's phase 7 — and a bank that made
+// place — see CentralBank.advise and Deployment.clear's last phase — and a bank
+// that made
 // the other decision would post creditor legs against a suspense whose mirror
 // leg had not yet moved.
 //
 // Two cut-offs share the word and are a phase apart. A BANK's turns its hub into
-// files (Bank.Cutoff); the CLEARING HOUSE's turns a batch of accepted payments
+// files (Bank.Cutoff); the CLEARING HOUSE's turns a batch of validated payments
 // into net positions. Neither arrives in a queue: each comes in from outside a
 // business day the way a customer's instruction does, so ClearingHouse.CloseCycle
 // runs the clearing house's half synchronously and then uploads. The day engine
@@ -282,27 +313,25 @@
 // yet booked its half has an unreconciled position rather than a claim on
 // anyone. See payment.SettleCycle.
 //
-// The CLEARING HOUSE fans the acceptance out, per payment, to the bank that
-// submitted it AND to the payee's bank. The settlement agent could not: it
-// answers about a CYCLE and holds no way to look a payment up, which is the
-// shape of "a central bank never sees an individual payment".
+// The CLEARING HOUSE turns the acceptance into per-payment news, and the
+// settlement agent could not: it answers about a CYCLE and holds no way to look
+// a payment up, which is the shape of "a central bank never sees an individual
+// payment".
 //
-// Two recipients because they are told it for two reasons. The submitter has an
-// instruction outstanding and this closes it; the CREDITOR's bank has a leg to
-// post, and posting it is what pays the payee. On a pull they are the same
-// institution and there is one file. Only the creditor's bank may act —
-// payment.ErrNotThisBanksPayment refuses the other, and on a push that refusal
-// is the ordinary case rather than a fault.
+// One recipient for the ACSC — the bank that SUBMITTED, whose instruction it
+// closes. The other bank is handed the instruction itself in the same breath,
+// and that file is both its news and the leg it has to post. See
+// ClearingHouse.tellSettled.
 //
-// A REFUSAL is fanned out to nobody, and that asymmetry is the one thing here
-// worth stating twice. Nothing was posted, so every payment is exactly where the
-// cut-off left it — Cleared, with the payer's money still in its own bank's
-// clearing suspense — and a bank told "rejected" would try to reverse a debtor
-// leg that must not be reversed. There is nothing truthful to tell a bank,
-// because nothing about its payments changed. What changed is the cycle, and the
-// cycle is where the failure shows: still Closed, with no settlement against it.
-// The remedy is the operator's: fund the short member, and ask the clearing
-// house to instruct settlement again.
+// A REFUSAL releases NOTHING and is fanned out to nobody, and that asymmetry is
+// the one thing here worth stating twice. Nothing was posted, so every payment is
+// exactly where the cut-off left it — Cleared, with the payer's money still in
+// its own bank's clearing suspense — the receiving banks' shares are still held
+// at the clearing house, and no bank has been asked to credit anybody. There is
+// nothing truthful to tell a bank, because nothing about its payments changed.
+// What changed is the cycle, and the cycle is where the failure shows: still
+// Closed, with no settlement against it. The remedy is the operator's: fund the
+// short member, and ask the clearing house to instruct settlement again.
 //
 // # The return
 //
@@ -310,7 +339,7 @@
 // only flow here that starts at the bank which ANSWERED rather than the one that
 // submitted, and the only one in which a message a BANK composed is carried past
 // the clearing house — the document travels unchanged, with only the header
-// replaced, as ClearingHouse.relay always does.
+// replaced, as every hop through that institution does.
 //
 //	payee's bank  --pacs.004-->  clearing house  --pacs.004-->  settlement agent
 //	                             both banks      <--camt.053--  settlement agent
@@ -325,6 +354,12 @@
 // cannot apply, and the debtor bank returns a collection its customer disputes.
 // So it is the payee's bank on a push and the payer's on a pull — exactly the
 // opposite end from the one that submitted, in both directions.
+//
+// Most returns in this system are asked for by that bank the moment it is handed
+// the instruction, because that is when it discovers it cannot apply it: an
+// address it does not hold, a payer it cannot collect from. An operator asking
+// for one afterwards is the same act down the same route — see
+// Deployment.Return.
 //
 // Its half MOVES MONEY. The returning bank posts the leg it owns BEFORE it
 // composes the message — the clawback if it is the creditor's bank, the refund
@@ -362,11 +397,12 @@
 // the file arrives.
 //
 // The refusals are split by whether anyone could be TOLD, and there are three
-// kinds. A payment that has not settled cannot be returned, and the returning
-// bank refuses that before the message exists — because ErrInvalidStateTransition
-// is classified as never reaching a counterparty, so a pacs.004 uploaded for one
-// would be answered by nobody and the operator who asked would hear nothing at
-// all. A push clawback the returning bank cannot fund is refused the same way,
+// kinds. A payment the returning bank has never been handed does not exist as
+// far as that bank is concerned, and one it has already returned cannot be
+// returned again; both are refused before the message exists — because
+// ErrInvalidStateTransition is classified as never reaching a counterparty, so a
+// pacs.004 uploaded for one would be answered by nobody and the operator who
+// asked would hear nothing at all. A push clawback the returning bank cannot fund is refused the same way,
 // to the same caller, and is the one refusal in this system a beneficiary bank
 // makes about its own customer. Everything the settlement agent can answer, it
 // answers: a message carrying more than one return, a count that disagrees with

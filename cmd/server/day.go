@@ -362,39 +362,40 @@ func (d *Deployment) clear(ctx context.Context) {
 		d.journal.problem(problems...)
 	}
 
-	// 2. The clearing house works through the instructions and returns its
-	// members uploaded: each is recorded, and routed to the agent it names.
-	d.journal.problem(d.csm.work(ctx, ebics.CCT, ebics.CDD, ebics.CRT)...)
+	// 2. The clearing house works through what its members uploaded: each file is
+	// recorded, each transaction validated and taken into the open cycle for its
+	// scheme, each submitting bank answered per transaction — and each receiving
+	// bank's share of the file BUILT AND HELD. Nothing is queued for a receiving
+	// bank here; see phase 5.
+	d.journal.problem(d.csm.work(ctx)...)
 
-	// 3. Each receiving bank collects what was routed to it and answers per
-	// transaction — ACCP or RJCT — in a status report it uploads.
-	for _, b := range d.subscribers() {
-		d.journal.problem(b.collect(ctx, csm, b.csm, ebics.BTD)...)
-	}
-
-	// 4. The clearing house works through those answers, taking each accepted
-	// payment into the open cycle for its scheme.
-	d.journal.problem(d.csm.work(ctx, ebics.CST)...)
-
-	// 5. The clearing house's own cut-off: every open cycle is netted and its
+	// 3. The clearing house's own cut-off: every open cycle is netted and its
 	// positions uploaded to the settlement agent. Two different cut-offs share
-	// the word and they are a phase apart — a bank's turns instructions into a
-	// file, and this one turns a batch of accepted payments into net positions. A
-	// cycle the operator closed by hand is already closed and is settled by this
-	// day's phase 6 rather than by this one.
+	// the word and they are two phases apart — a bank's turns instructions into a
+	// file, and this one turns a batch of validated payments into net positions.
+	// A cycle the operator closed by hand is already closed and is settled by
+	// this day's phase 4 rather than by this one.
 	d.journal.problem(d.csm.closeOpenCycles(ctx)...)
 
-	// 6. The settlement agent works through everything uploaded to it: cut-offs
+	// 4. The settlement agent works through everything uploaded to it: cut-offs
 	// discharged, returns executed, lodgements credited. This is the only phase
 	// in which central-bank reserves move.
 	d.journal.problem(d.cb.work(ctx)...)
 
-	// 7. The clearing house collects the answers and turns each settled CYCLE
-	// into per-payment news, and each settled RETURN into the pacs.004 the other
-	// bank has been waiting for.
+	// 5. The clearing house collects the answers and RELEASES: each settled cycle
+	// becomes the output files its receiving banks have been waiting for and an
+	// ACSC apiece for the banks that submitted, and each settled RETURN becomes
+	// the pacs.004 the other bank has been waiting for.
+	//
+	// THE ORDER OF PHASES 3, 4 AND 5 IS THE DESIGN. The cycle settles before the
+	// output files are released, so a receiving bank is handed its instructions
+	// only once the funds behind them are final and never credits a customer
+	// against money that has not settled. Reverse them and settlement risk is
+	// invented — and a bank that could not apply a payment would be refusing one
+	// nobody had paid for yet, which is a different and much easier system.
 	d.journal.problem(d.csm.collect(ctx)...)
 
-	// 8. Each member collects, THE SETTLEMENT AGENT FIRST. The order is
+	// 6. Each member collects, THE SETTLEMENT AGENT FIRST. The order is
 	// load-bearing and is the only thing that guarantees the mirror leg is
 	// booked before the creditor legs draw on it — see CentralBank.advise, which
 	// argues it where the guarantee used to live.

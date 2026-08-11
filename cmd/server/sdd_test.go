@@ -6,7 +6,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/raphi011/cbs/ebics"
 	"github.com/raphi011/cbs/iso20022"
 	"github.com/raphi011/cbs/payment"
 )
@@ -54,27 +53,76 @@ func TestDirectDebitPostsTheDebtorLegAtTheDebtorsBank(t *testing.T) {
 	}
 
 	h.work(t)
-
 	if got := h.payment(t, p.ID); got.Status != payment.Accepted {
 		t.Fatalf("status = %v, want Accepted", got.Status)
 	}
+	// And STILL no leg, which is the half the release order added. The payer's
+	// bank has not been handed the collection yet, so nothing in this system has
+	// looked at the payer's account: a collection is validated by the clearing
+	// house before it settles and executed by the payer's bank after.
+	if _, err := h.bank(h.debtorBIC).GetPayment(context.Background(), p.ID); err == nil {
+		t.Fatal("the payer's bank holds a copy of a collection that has not settled")
+	}
+
+	h.closeCycle(t)
+	h.work(t)
+
 	// The leg is read off the DEBTOR's bank's own copy, because that is the only
 	// row in the network with a column to hold one. The clearing house's copy has
 	// no leg columns at all — it posts nothing and holds no book of accounts — so
 	// asking it would report a missing leg for a leg that was posted.
 	if got := h.bankPayment(t, h.debtorBIC, p.ID); got.DebtorLegTx == "" {
-		t.Error("no debtor leg after the debtor's bank accepted the collection")
+		t.Error("no debtor leg after the payer's bank was handed the settled collection")
 	}
 }
 
-func TestDirectDebitAgainstAnUnfundedDebtorIsAM04(t *testing.T) {
+// A payer's bank that cannot fund the collection RETURNS it, and this is the
+// pull's half of the same rule AC01 states for a push.
+//
+// It is the clearest case there is for settling before releasing. The payer's
+// bank is net-debited at the cut-off whatever its customer's balance turns out
+// to be, so by the time it looks at the account the money has left its reserve —
+// and AM04 is a shortfall no other institution in the system can see. Refusing
+// would be refusing a payment nobody had paid for yet; what it does instead is
+// stand in for the payer out of its own pocket and ask for the money back.
+func TestDirectDebitAgainstAnUnfundedDebtorComesBackAsAnAM04Return(t *testing.T) {
 	h := newHarnessWithAnUnfundedDebtor(t)
 	p := h.submitDirectDebit(t)
+
+	h.work(t)
+	h.closeCycle(t)
 	h.work(t)
 
-	got := h.payment(t, p.ID)
-	if got.RejectCode != iso20022.StatusReasonInsufficientFunds {
-		t.Errorf("reject code = %q, want AM04", got.RejectCode)
+	if got := h.payment(t, p.ID); got.Status != payment.Settled {
+		t.Fatalf("status = %v after the cut-off, want Settled — a collection the payer cannot fund still settles", got.Status)
+	}
+	returns := h.filesOfTypeTo(t, h.cfg.ClearingHouseBIC, "pacs.004.001.09")
+	if len(returns) != 1 {
+		t.Fatalf("the payer's bank uploaded %d returns, want 1", len(returns))
+	}
+	rsn := returns[0].Document.(*iso20022.Pacs004).PmtRtr.TxInf[0].RtrRsnInf
+	if rsn == nil || rsn.Rsn.Cd == nil || *rsn.Rsn.Cd != iso20022.ReturnReasonInsufficientFunds {
+		t.Fatalf("the return carries %v, want AM04", rsn)
+	}
+	// The payer was never debited, which is the whole point of the refusal: the
+	// bank that could not collect carried the money itself.
+	if bal := h.balance(t, h.debtorPID, h.debtorAcct.ID); bal != 0 {
+		t.Errorf("the payer's balance = %d, want 0 — the collection was forced through", bal)
+	}
+
+	h.work(t)
+	if got := h.payment(t, p.ID); got.Status != payment.Returned {
+		t.Fatalf("status = %v after the return, want Returned", got.Status)
+	}
+	// And the biller gave it back: it was credited at settlement, like every
+	// other payee in this network, and the return clawed it back out again.
+	if bal := h.balance(t, h.creditorPID, h.creditorAcct.ID); bal != 0 {
+		t.Errorf("the biller's balance = %d, want 0 — the return did not claw the money back", bal)
+	}
+	for _, pid := range []payment.ParticipantID{h.debtorPID, h.creditorPID} {
+		if bal := h.suspense(t, pid); bal != 0 {
+			t.Errorf("%s's clearing suspense = %d after the return, want 0", pid, bal)
+		}
 	}
 }
 
@@ -92,25 +140,31 @@ func TestARevokedMandateIsRefusedSynchronously(t *testing.T) {
 	}
 }
 
-// The chain is four messages, and it is the one place in this package that
-// answers "which bank submits a direct debit" without prose.
+// The chain is eight files, and it is the one place in this package that answers
+// "which bank submits a direct debit" without prose.
 //
-// Read the first hop against TestTheCreditTransferChainIsFourMessages and the
-// whole difference between a push and a pull is there: the payee's bank starts
-// the conversation, the payer's bank answers it. Everything after that is the
-// same clearing house doing the same job.
-func TestTheDirectDebitChainIsFourMessages(t *testing.T) {
+// Read the first hop against TestTheCreditTransferChainIsEightFiles and the whole
+// difference between a push and a pull is there: the payee's bank starts the
+// conversation, the payer's bank is handed the collection to execute. Everything
+// after that is the same clearing house doing the same job — and, as on a push,
+// the instruction reaches the bank that acts on it only after the cycle has
+// settled.
+func TestTheDirectDebitChainIsEightFiles(t *testing.T) {
 	h := newHarness(t)
 	h.submitDirectDebit(t)
-	h.work(t)
+	h.day(t)
 
 	want := []struct {
 		from, to iso20022.BIC
 		msgDef   string
 	}{
 		{h.creditorBIC, h.cfg.ClearingHouseBIC, "pacs.003.001.08"},
+		{h.cfg.ClearingHouseBIC, h.cfg.CentralBankBIC, "pacs.009.001.08"},
+		{h.cfg.CentralBankBIC, h.cfg.ClearingHouseBIC, "pacs.002.001.10"},
+		{h.cfg.CentralBankBIC, h.debtorBIC, "camt.053.001.08"},
 		{h.cfg.ClearingHouseBIC, h.debtorBIC, "pacs.003.001.08"},
-		{h.debtorBIC, h.cfg.ClearingHouseBIC, "pacs.002.001.10"},
+		{h.cfg.CentralBankBIC, h.creditorBIC, "camt.053.001.08"},
+		{h.cfg.ClearingHouseBIC, h.creditorBIC, "pacs.002.001.10"},
 		{h.cfg.ClearingHouseBIC, h.creditorBIC, "pacs.002.001.10"},
 	}
 	h.mu.Lock()
@@ -136,34 +190,35 @@ func TestTheDirectDebitChainIsFourMessages(t *testing.T) {
 // is the payee's — not the payer's, as it is for a push.
 //
 // It is the same rule stated twice over, once per direction: a pacs.002 is the
-// answer to an instruction, and it goes back to whoever gave it. The debtor's
-// bank is the one that DECIDED here, and it is the last party that needs telling.
+// answer to an instruction, and it goes back to whoever gave it. TM01 is the
+// refusal available, because after task 8 the clearing house is the only
+// institution that rejects anything and a scheme with no open cut-off window is
+// the cheapest of its refusals to build.
 func TestARejectedCollectionIsAnsweredToThePayeesBank(t *testing.T) {
-	h := newHarnessWithAnUnfundedDebtor(t)
+	h := newHarnessWithNoOpenCycle(t)
 	h.submitDirectDebit(t)
 	h.work(t)
 
-	h.assertLastStatusTo(t, h.creditorBIC, iso20022.StatusReasonInsufficientFunds)
-	// And ONE answer, not two. The clearing house tells the payer's bank as well
-	// only when that bank is holding money against the rejected payment, and this
-	// collection was refused before any was taken — the funds check is what
-	// refused it, and it runs before the leg is posted. A second pacs.002 here
-	// would be the clearing house instructing a bank to give back what it never
-	// took. See csm.tell.
-	if got := h.messagesSeen(); got != 4 {
-		t.Errorf("a refused collection carried %d messages, want 4", got)
+	h.assertLastStatusTo(t, h.creditorBIC, iso20022.StatusReasonInvalidCutOffTime)
+	// ONE answer, and the payer's bank is told nothing at all. It has never heard
+	// of this collection: nothing is released before a cycle settles, and this one
+	// never reached a cycle. Two files crossed — the collection up and the refusal
+	// back — and that is the whole of a rejected pull.
+	if got := h.messagesSeen(); got != 2 {
+		t.Errorf("a refused collection carried %d messages, want 2", got)
 	}
 }
 
-// A collection the clearing house cannot clear is TM01, and the payer's money
-// comes back — from the bank that took it, which is not the bank that submitted.
+// A collection the clearing house cannot clear is TM01, and NOBODY is holding
+// any money when it says so.
 //
-// This is the pull flow's one genuinely new seam, and it does not exist in a
-// push. By the time the clearing house refuses, the DEBTOR's bank has already
-// posted the debtor leg: that is what accepting a collection means. So the
-// rejection has two recipients and two reasons — the payee's bank, because it
-// asked, and the payer's bank, because it is holding money against a payment
-// this network has just rejected. See csm.receiveStatus.
+// That is the seam settling before releasing closed. The payer's bank used to
+// have posted the debtor leg by this point — accepting a collection is what
+// posting it means — so a rejection had to reach two banks and one of them had a
+// customer to refund. Now the payer's bank is handed the collection only after
+// finality, so a refusal before finality finds nothing to give back: the payer's
+// money never left, and the only bank that ever heard of the payment is the one
+// that asked.
 func TestDirectDebitWithNoOpenCycleIsTM01(t *testing.T) {
 	h := newHarnessWithNoOpenCycle(t)
 	p := h.submitDirectDebit(t)
@@ -173,14 +228,14 @@ func TestDirectDebitWithNoOpenCycleIsTM01(t *testing.T) {
 	if got.RejectCode != iso20022.StatusReasonInvalidCutOffTime {
 		t.Errorf("reject code = %q, want TM01 — no cycle open IS an invalid cut-off time", got.RejectCode)
 	}
-	// The debtor's bank really did take the money before the clearing house
-	// refused — otherwise there would be nothing for the reversal to prove. Its
-	// own copy is where the leg is; see harness.bankPayment.
-	if h.bankPayment(t, h.debtorBIC, p.ID).DebtorLegTx == "" {
-		t.Fatal("no debtor leg, so this test cannot show the reversal it exists for")
+	if _, err := h.bank(h.debtorBIC).GetPayment(context.Background(), p.ID); err == nil {
+		t.Error("the payer's bank holds a copy of a collection that was refused before it settled")
+	}
+	if bal := h.balance(t, h.debtorPID, h.debtorAcct.ID); bal != harnessFunding {
+		t.Errorf("the payer's balance = %d, want %d — money moved for a collection nobody cleared", bal, harnessFunding)
 	}
 	if bal := h.suspense(t, h.debtorPID); bal != 0 {
-		t.Errorf("payer's clearing suspense = %d after a TM01, want 0 — the collection was never reversed", bal)
+		t.Errorf("payer's clearing suspense = %d after a TM01, want 0", bal)
 	}
 	// And the bank that asked was told, with the clearing house's own reason.
 	h.assertLastStatusTo(t, h.creditorBIC, iso20022.StatusReasonInvalidCutOffTime)
@@ -212,90 +267,21 @@ func TestDirectDebitWithNoOpenCycleIsTM01(t *testing.T) {
 // now equally unreachable on this path, and Reset's ForgetBanks/JoinRoster window
 // — which is exactly what removing the actor reproduces.
 //
-// The clearing house cannot fail to KNOW where a bank is, only fail to REACH it.
-func TestTheRefundIsAttemptedEvenWhenTheSubmitterCannotBeAddressed(t *testing.T) {
-	h := newHarness(t)
-	p := h.submitDirectDebit(t)
-	h.work(t)
-
-	got := h.payment(t, p.ID)
-	if h.bankPayment(t, h.debtorBIC, p.ID).DebtorLegTx == "" {
-		t.Fatal("no debtor leg, so there is no refund for this test to be about")
-	}
-	if h.suspense(t, h.debtorPID) != harnessAmount {
-		t.Fatalf("the payer's bank is not holding the money, so this test asserts nothing")
-	}
-
-	// The clearing house's own half of a rejection, run directly: the payment
-	// leaves its cycle and becomes Rejected, and NOBODY is told. That is what
-	// csm.reject does before it calls tell, and doing it here is what leaves
-	// tell as the only thing under test.
-	rejected, err := h.net.RejectAtCSM(context.Background(), got.ID,
-		iso20022.StatusReasonNotSpecifiedAgentGenerated, "operator")
-	if err != nil {
-		t.Fatalf("RejectAtCSM: %v", err)
-	}
-
-	// The submitter is made unreachable by moving it to an address no subscriber
-	// is enrolled under, so the clearing house has no download queue to put its
-	// message in and the enqueue is refused.
-	//
-	// On the local COPY of the payment, which is all tell is given and all it
-	// reads. Nothing is written, so the payer's bank is still the real one and
-	// still the bank the refund has to reach — which is the ordering under test.
-	rejected.CreditorDetails.Agent = "NOSUCHBKXXX"
-	relay := h.dep.ClearingHouse()
-	before := h.statusesSentTo(h.debtorBIC)
-	// payerAccepted is true: this collection was answered ACCP by the payer's
-	// bank, which is what posted the debtor leg asserted above. It is an argument
-	// now rather than a read of p.DebtorLegTx, because that column is the bank's
-	// and is not in the clearing house's schema — see csm.tell.
-	err = relay.tell(context.Background(), rejected,
-		payment.OriginalMessage{MsgID: notProvided, MsgDefIdr: notProvided},
-		payment.TransactionStatusReport{
-			EndToEndID: endToEndOf(rejected),
-			TxID:       string(rejected.ID),
-			Status:     iso20022.TransactionStatusRejected,
-			Code:       iso20022.StatusReasonNotSpecifiedAgentGenerated,
-			Text:       "operator",
-		}, true)
-
-	// The failure is reported — it is not swallowed to make the refund look
-	// clean.
-	if err == nil || ebics.CodeOf(err) != ebics.InvalidUserOrUserState {
-		t.Fatalf("tell = %v, want the submitter's queueing reported", err)
-	}
-
-	// And the refund went out anyway. Counted after the day is carried, because
-	// the tap records a file when it crosses rather than when it is queued.
-	h.work(t)
-	if after := h.statusesSentTo(h.debtorBIC); after != before+1 {
-		t.Fatalf("the payer's bank was sent %d statuses, want 1 — the refund was skipped because the other message failed",
-			after-before)
-	}
-	// The money is what says it worked. A status the payer's bank read as an
-	// acceptance would leave the suspense exactly where it is.
-	if bal := h.suspense(t, h.debtorPID); bal != 0 {
-		t.Fatalf("payer's clearing suspense = %d after the refund message, want 0", bal)
-	}
-}
-
 // There is no stub for a roster entry that cannot be read: csmOps has no
 // GetRosterEntry, because a status is addressed from the payment's own agent
 // BICs. The failure this test is about is the SEND. See
 // TestTheRefundIsAttemptedEvenWhenTheSubmitterCannotBeAddressed.
 
-// A second copy of a collection the debtor's bank has already answered is
-// dead-lettered, not answered again — and above all not answered TWICE with two
-// different answers.
+// A second copy of a released collection is REPORTED at the debtor's bank, not
+// executed again — and above all not collected from the payer twice.
 //
-// This is the transport end of the guard payment.AcceptInboundTx documents. Through a
-// completed chain the redelivery meets the STATUS guard first: the clearing
-// house has taken the payment into a cycle, so it is no longer Initiated and
+// This is the transport end of the guard payment.AcceptInboundTx documents.
+// Through a completed chain the redelivery meets the STATUS guard first: this
+// bank's own copy is Settled, so it is no longer Initiated and
 // ErrInvalidStateTransition comes back. That sentinel carries the empty code in
-// payment's reasonTable precisely so that it never reaches a counterparty —
-// ReasonFor would turn it into MS03 and reject, on the wire, a collection this
-// bank in fact accepted.
+// payment's reasonTable precisely so that it never reaches a counterparty, and
+// payment.Answerable is what keeps it out of a pacs.004 — a bank that RETURNED a
+// redelivery would send back a collection it had in fact executed.
 //
 // The narrower witness inside that half — DebtorLegTx, which catches a
 // redelivery arriving while the payment is still Initiated — is covered on both
@@ -305,10 +291,9 @@ func TestTheRefundIsAttemptedEvenWhenTheSubmitterCannotBeAddressed(t *testing.T)
 // to decide who won.
 func TestARedeliveredCollectionIsReportedAtTheDebtorsBank(t *testing.T) {
 	h := newHarness(t)
-	p := h.submitDirectDebit(t)
-	h.work(t)
+	p := h.settledCollection(t)
 
-	// The pacs.003 the clearing house relayed, sent a second time.
+	// The pacs.003 the clearing house released, sent a second time.
 	var relayed []byte
 	h.mu.Lock()
 	for _, m := range h.seen {
@@ -328,16 +313,17 @@ func TestARedeliveredCollectionIsReportedAtTheDebtorsBank(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), payment.ErrInvalidStateTransition.Error()) {
 		t.Fatalf("the day reported %v, want the illegal transition as a problem", err)
 	}
-	if got := h.payment(t, p.ID); got.Status != payment.Accepted {
-		t.Errorf("the redelivery moved the payment to %v; it was already Accepted", got.Status)
+	if got := h.bankPayment(t, h.debtorBIC, p.ID); got.Status != payment.Settled {
+		t.Errorf("the redelivery moved the payer's bank's copy to %v; it was already Settled", got.Status)
 	}
 	// And the payer was debited once. This is the last of three guards and not
 	// the first, which is worth stating rather than implying: it fires only after
 	// the status guard, AcceptInboundTx's DebtorLegTx witness and the ledger's
 	// idempotency key on the leg have all gone. It was checked that it fires at
-	// all — with those three removed the suspense doubles and this is the line
-	// that says so, in the terms that matter to a payer.
-	if bal := h.suspense(t, h.debtorPID); bal != harnessAmount {
-		t.Errorf("payer's clearing suspense = %d, want %d — the redelivery collected again", bal, harnessAmount)
+	// all — with those three removed the payer is collected from twice and this
+	// is the line that says so, in the terms that matter to a payer.
+	if bal := h.balance(t, h.debtorPID, h.debtorAcct.ID); bal != harnessFunding-harnessAmount {
+		t.Errorf("the payer's balance = %d, want %d — the redelivery collected again",
+			bal, harnessFunding-harnessAmount)
 	}
 }

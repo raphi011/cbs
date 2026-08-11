@@ -70,8 +70,9 @@ type BankAccounts struct {
 	Suspense ledger.AccountID
 	Reserve  ledger.AccountID
 
-	// Unclaimed is where a credit goes when the payee's account will not take
-	// it — closed, and therefore terminal.
+	// Unclaimed is where a credit goes when the payee's account will not take it
+	// — closed, and therefore terminal — or when this bank cannot find the payee
+	// at all behind the address a settled instruction quoted.
 	//
 	// A real bank has one. Money that arrives for an account that cannot receive
 	// it does not vanish and does not sit in the payee's closed account: it is
@@ -79,30 +80,36 @@ type BankAccounts struct {
 	// process for finding them. This system had nowhere for it to go, which is
 	// why the gap at the return and at the cut-off was a ruling rather than a
 	// line of code. Both are closed now: SettleAtBankTx diverts a credit the
-	// payee cannot take, and PostReturnLegTx diverts a refund the payer cannot
-	// take.
+	// payee cannot take, ReceiveUnappliedTx parks one whose address resolves to
+	// nobody here, and PostReturnLegTx diverts a refund the payer cannot take.
 	//
 	// It is a CONTROL account, and the only one among this bank's own. Each leg
-	// names the deposit account the money was meant for, which is known at every
-	// site that posts here — the account is closed, not absent. So the balance
-	// answers "what does the bank owe THIS holder" and not only "what is
-	// unclaimed", which is the question a release has to answer before it pays
-	// anybody.
+	// names the holder the money was meant for — the deposit account where there
+	// is one, and the address the message quoted where the account could not be
+	// resolved at all (unclaimedSubsidiary). So the balance answers "what does
+	// the bank owe THIS holder" and not only "what is unclaimed", which is the
+	// question a release has to answer before it pays anybody.
 	Unclaimed ledger.AccountID
 
-	// ReturnsReceivable is a claim on a biller: money the bank paid out to
-	// honour a refund (a SEPA direct debit's unconditional eight-week right,
-	// today) when the biller's account could not fund it. An Asset — the bank
-	// is owed this, by someone it has identified perfectly well — and the
-	// mirror image of Unclaimed, which is owed BY the bank.
+	// ReturnsReceivable is money the bank has paid out on a scheme obligation it
+	// could not fund from the customer it belongs to. An Asset — the bank is owed
+	// this — and the mirror image of Unclaimed, which is owed BY the bank.
 	//
-	// PostReturnLegTx is what posts to it, and only on a pull, and only when the
-	// biller's account is CLOSED. A biller who has spent the money but still has
-	// an account is simply overdrawn by it — the ledger does not refuse a
-	// Liability going negative, and an overdrawn biller is a debt the bank
-	// collects from a customer it still has. A closed account is the case with
-	// nowhere on the account to put the debit, and it is the only one this
-	// account is reached for.
+	// Two obligations reach it, and both are unconditional:
+	//
+	//   - A REFUND (a SEPA direct debit's eight-week right) whose biller's
+	//     account is CLOSED. A biller who has spent the money but still has an
+	//     account is simply overdrawn by it — the ledger does not refuse a
+	//     Liability going negative, and an overdrawn biller is a debt the bank
+	//     collects from a customer it still has. A closed account is the case
+	//     with nowhere on the account to put the debit.
+	//   - A COLLECTION that settled and that this bank could not take from its
+	//     payer at all (ReceiveUnappliedTx). The reserves left on the cut-off
+	//     whatever the payer's balance was, so the bank stands in for them until
+	//     the return brings the money back.
+	//
+	// PostReturnLegTx posts both, and both are on a pull: it is the direction in
+	// which this bank is asked for money rather than handed it.
 	ReturnsReceivable ledger.AccountID
 
 	// VaultCash is the cash this bank is holding: notes in a drawer, and the

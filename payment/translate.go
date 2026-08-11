@@ -77,11 +77,11 @@ var reasonTable = []reasonMapping{
 	// is true of a bank that does not exist and equally true of one this scheme
 	// has not admitted. It is classified in this block rather than below because
 	// it does reach a counterparty — when the PAYEE's bank is the non-member,
-	// csm.clear turns AcceptAtCSMTx's refusal into the RJCT its submitter
-	// reverses on. In the other direction the answer dead-letters, because the
-	// bank to be told is the non-member itself; that direction is refused at
-	// Mesh.Submit's door instead, before any message exists. See
-	// ErrBankNotAdmitted, which sets out both.
+	// the clearing house turns AcceptAtCSMTx's refusal into the RJCT its
+	// submitter reverses on. In the other direction the answer dead-letters,
+	// because the bank to be told is the non-member itself; that direction is
+	// refused at the submitting bank's own door instead, before any message
+	// exists. See ErrBankNotAdmitted, which sets out both.
 	{ErrBankNotAdmitted, "ErrBankNotAdmitted", iso20022.StatusReasonBankIdentifierIncorrect},
 	{ErrUnaddressableAccount, "ErrUnaddressableAccount", iso20022.StatusReasonMissingDebtorAccountOrIdentification},
 	{ErrIdentifierMismatch, "ErrIdentifierMismatch", iso20022.StatusReasonMissingDebtorAccountOrIdentification},
@@ -169,10 +169,9 @@ var reasonTable = []reasonMapping{
 	// discriminated that way are the ones reached on paths nothing is wrong
 	// with:
 	//
-	//   - ErrInvalidStateTransition, an ordinary redelivery, in four places:
-	//     bank.accept (which is where bank.receiveCreditTransfer and
-	//     receiveDirectDebit both end up), csm.receiveStatus, csm.clear and
-	//     centralBank.receiveReturn.
+	//   - ErrInvalidStateTransition, an ordinary redelivery, in three places:
+	//     a bank applying a released file, the clearing house taking one in, and
+	//     the settlement agent executing a return.
 	//   - ErrNotThisBanksPayment, the ordinary happy path of EVERY push
 	//     settlement. csm.tellSettled fans the ACSC to both banks; the payer's
 	//     bank has no creditor leg, and PostCreditorLeg tells it so. Discarded
@@ -337,7 +336,7 @@ var reasonTable = []reasonMapping{
 // two guards are about payment/errors.go — every sentinel declared there must
 // appear, and nothing else may.
 //
-// Both members are AM04, from two different layers, and they are two entries
+// Two of the three are AM04, from two different layers, and they are two entries
 // rather than one because they are two distinct error values that no unwrapping
 // relates: neither wraps the other.
 //
@@ -359,13 +358,20 @@ var reasonTable = []reasonMapping{
 // settlement agent answers, and it is what the receiving system reads to decide
 // whether to re-present or unwind.
 //
+// The third is deposit.ErrAccountClosed, and it is AC04, which the external set
+// has a member for and which is one of the commonest return reasons in SEPA. It
+// is the payee's own bank's refusal of a settled credit — the account exists and
+// will not take one — and it reaches a counterparty because a receiving bank
+// after finality answers with a pacs.004 rather than with silence.
+//
 // A new member belongs here only if the error reaches ReasonFor at all, which
-// means a half that some mesh handler calls really returns it. A push RETURN is
-// the first place in a push flow where deposit's funds sentinel is produced,
-// because it checks whether the payee's account can fund a WITHDRAWAL.
+// means a half that some institution's handler calls really returns it. A push
+// RETURN is the first place in a push flow where deposit's funds sentinel is
+// produced, because it checks whether the payee's account can fund a WITHDRAWAL.
 var borrowedReasons = []reasonMapping{
 	{deposit.ErrInsufficientAvailable, "deposit.ErrInsufficientAvailable", iso20022.StatusReasonInsufficientFunds},
 	{ledger.ErrInsufficientBalance, "ledger.ErrInsufficientBalance", iso20022.StatusReasonInsufficientFunds},
+	{deposit.ErrAccountClosed, "deposit.ErrAccountClosed", iso20022.StatusReasonClosedAccountNumber},
 }
 
 // ReasonFor maps an error to the code a pacs.002 should carry.
@@ -408,6 +414,71 @@ func ReasonFor(err error) iso20022.StatusReason {
 		}
 	}
 	return iso20022.StatusReasonNotSpecifiedAgentGenerated
+}
+
+// Answerable reports whether an error is a judgement about the INSTRUCTION —
+// something a counterparty can be told and can act on — as against a failure of
+// this system's own bookkeeping, which nobody outside it could do anything with.
+//
+// It is the question ReasonFor cannot answer. ReasonFor always produces a code,
+// because a caller that has already decided to answer needs one; MS03 is its
+// floor. So a dropped connection and a payee's closed account come back as codes
+// that look alike, and the caller has to have made the decision first.
+//
+// The tables are what make it: an error classified in either of them was
+// classified BY SOMEBODY, with a comment saying why, and an error in neither has
+// simply never been thought about as something to put on a wire. The empty-code
+// entries are excluded for the same reason ReasonFor excludes them — an empty
+// code IS the decision that this one never reaches a counterparty.
+//
+// What it is for is the receiving bank's half after finality, where the two
+// outcomes are no longer both messages: a judgement becomes a pacs.004 that
+// sends a settled payment back, and a bookkeeping failure becomes a line in the
+// day's report. Returning money on a dropped connection is the mistake this
+// exists to prevent.
+func Answerable(err error) bool {
+	for _, table := range [][]reasonMapping{reasonTable, borrowedReasons} {
+		for _, m := range table {
+			if m.Code != "" && errors.Is(err, m.Err) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// ReturnReasonFor maps an error to the code a pacs.004 should carry.
+//
+// It is ReasonFor's counterpart for the OTHER external set, and it goes through
+// ReasonFor rather than holding a second table: the two sets share their
+// spellings wherever both name the same fact, and a second table would be a
+// second place for one classification to live and drift from.
+//
+// It is not a cast, and the switch is what stops it being one. A status reason
+// with no member of its own in the return set — TM01, FF01, AM05's siblings —
+// becomes MS03, because a pacs.004 may only carry a member of the return set and
+// putting a rejection code in one would be putting a value on the wire that set
+// does not define. iso20022.ReturnReason exists as a distinct type for exactly
+// this reason.
+func ReturnReasonFor(err error) iso20022.ReturnReason {
+	switch ReasonFor(err) {
+	case iso20022.StatusReasonIncorrectAccountNumber:
+		return iso20022.ReturnReasonIncorrectAccountNumber
+	case iso20022.StatusReasonClosedAccountNumber:
+		return iso20022.ReturnReasonClosedAccountNumber
+	case iso20022.StatusReasonInsufficientFunds:
+		return iso20022.ReturnReasonInsufficientFunds
+	case iso20022.StatusReasonDuplication:
+		return iso20022.ReturnReasonDuplication
+	case iso20022.StatusReasonNoMandate:
+		return iso20022.ReturnReasonNoMandate
+	case iso20022.StatusReasonBankIdentifierIncorrect:
+		return iso20022.ReturnReasonBankIdentifierIncorrect
+	case iso20022.StatusReasonMissingDebtorAccountOrIdentification:
+		return iso20022.ReturnReasonMissingDebtorAccountOrIdentification
+	default:
+		return iso20022.ReturnReasonNotSpecifiedAgentGenerated
+	}
 }
 
 // ---------------------------------------------------------------------------

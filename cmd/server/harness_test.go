@@ -161,6 +161,11 @@ type harness struct {
 
 	mu   sync.Mutex
 	seen []tappedMessage
+
+	// lodgeSeq numbers the fixture's lodgements, because LodgeReservesTx keys its
+	// posting on the message id and a bank may be funded more than once. See
+	// newHarnessWithASecondDepositor.
+	lodgeSeq int
 }
 
 // harnessOptions is what the named constructors below vary, and nothing else
@@ -186,6 +191,12 @@ type harnessOptions struct {
 	// without reserves while the payer can still pay; see
 	// newHarnessWithAnUnfundedReserve.
 	lendToTheDebtor bool
+	// fundTheDebtorsBank gives the payer's bank reserves without giving the
+	// payer a balance, by depositing and lodging a SECOND customer's money. It
+	// is the state fundTheDebtor deliberately will not produce, and it is what a
+	// collection the payer cannot fund needs: the cut-off has to settle before
+	// the payer's bank ever sees the account. See newHarnessWithAnUnfundedDebtor.
+	fundTheDebtorsBank bool
 	// twoAssets gives both banks and both customers a dollar side beside the
 	// euro one, and registers a dollar push scheme with a cut-off window of its
 	// own. See newHarnessWithTwoAssets.
@@ -211,17 +222,42 @@ func newHarnessWithNoOpenCycle(t *testing.T) *harness {
 	return build(t, harnessOptions{fundTheDebtor: true})
 }
 
-// newHarnessWithAnUnfundedDebtor is the same network with the opening
-// deposit never paid in.
+// newHarnessWithAnUnfundedDebtor is the same network with the payer's own
+// account left empty and the payer's BANK able to settle anyway.
 //
 // It is the pull flow's counterpart to the unknown IBAN: the condition only the
 // DEBTOR's bank can see, and therefore the one that proves which bank answered.
 // A creditor's bank cannot know what is in the account it is collecting from —
 // that is the whole asymmetry a direct debit is built on — so an empty account
 // is a refusal that can only have come from the far side of the network.
+//
+// # The bank is funded and the customer is not, and prising them apart is the
+// fixture
+//
+// The collection has to SETTLE before the payer's bank is handed it, so a
+// fixture that left the bank without reserves would be refused by the settlement
+// agent and never reach the customer's balance at all — which is a different
+// condition, and newHarnessWithAnUnfundedReserve's. A deposit moves both at once
+// (see fundTheDebtor), so the reserves come from a SECOND customer at the same
+// bank: somebody else's money, lodged, which is what a bank's reserve is.
 func newHarnessWithAnUnfundedDebtor(t *testing.T) *harness {
 	t.Helper()
-	return build(t, harnessOptions{openCycles: true})
+	return build(t, harnessOptions{openCycles: true, fundTheDebtorsBank: true})
+}
+
+// newHarnessWithASecondDepositor is the same network with another customer's
+// money on the payer's bank's reserve beside its payer's.
+//
+// It is the fixture for a BATCH one of whose transactions the payer cannot fund.
+// A bank whose reserve is exactly its payer's balance cannot settle such a batch
+// at all — the cut-off nets more than the whole account holds — so the
+// interesting outcome, one collection applied and one sent back, is unreachable
+// behind a settlement refusal that is about the bank rather than the customer.
+// A second depositor is how a real bank's reserve stops being one customer's
+// balance.
+func newHarnessWithASecondDepositor(t *testing.T) *harness {
+	t.Helper()
+	return build(t, harnessOptions{openCycles: true, fundTheDebtor: true, fundTheDebtorsBank: true})
 }
 
 // newHarnessWithARevokedMandate is the same network with the debtor's
@@ -430,6 +466,13 @@ func build(t *testing.T, opts harnessOptions) *harness {
 	// TestABankCannotSettleOutOfVaultCash, which is the one that does.
 	if opts.fundTheDebtor {
 		if err := h.bank(h.debtor.BIC).Deposit(ctx, h.debtor.ID, h.debtorAcct.ID, harnessFunding, "Opening deposit"); err != nil {
+			t.Fatalf("Deposit: %v", err)
+		}
+		h.lodge(t, h.debtor.BIC, "EUR", harnessFunding)
+	}
+	if opts.fundTheDebtorsBank {
+		other := h.openCustomer(t, h.debtor, "Dario", "EUR", 0)
+		if err := h.bank(h.debtor.BIC).Deposit(ctx, h.debtor.ID, other.ID, harnessFunding, "Opening deposit"); err != nil {
 			t.Fatalf("Deposit: %v", err)
 		}
 		h.lodge(t, h.debtor.BIC, "EUR", harnessFunding)
@@ -875,6 +918,31 @@ func (h *harness) submitCreditTransferInUSD(t *testing.T) payment.Payment {
 	return p
 }
 
+// dollarsTo is a dollar credit transfer to a payee at any bank, addressed by the
+// account the register holds.
+//
+// The payee's account is a EURO one and that is the point rather than an
+// oversight: the assets a member clears in are the roster's fact and no
+// submitting bank can check them, so this is what a file addressed to a member
+// outside its own scheme looks like on the wire. Only the payer's own leg is
+// held to the scheme's asset, and it is a dollar account. See
+// TestAMixedFileIsAnsweredPART.
+func (h *harness) dollarsTo(t *testing.T, acct deposit.Account) payment.InitiatePaymentRequest {
+	t.Helper()
+	return payment.InitiatePaymentRequest{
+		Scheme: schemeUSDCT,
+		Debtor: payment.PartyRef{
+			Account:    h.debtorUSDAcct.ID,
+			Identifier: deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: h.debtorUSDIBAN},
+		},
+		Creditor:        payment.PartyRef{Account: acct.ID, Identifier: acct.Identifiers[0]},
+		DebtorDetails:   payment.PartyDetails{Agent: h.debtorBIC, Name: h.debtorUSDAcct.Name},
+		CreditorDetails: payment.PartyDetails{Name: acct.Name},
+		Amount:          harnessAmount,
+		Description:     "invoice 45",
+	}
+}
+
 // aThirdBank admits one more member with a euro customer, and has every member
 // pull the directory again so the new bank can be addressed.
 //
@@ -998,6 +1066,12 @@ func (h *harness) filesOfTypeTo(t *testing.T, to iso20022.BIC, msgDef string) []
 // cut-off, and the two moments are a day apart in a deployment where one cycle
 // closes per day.
 //
+// Leaving the cycle cut-off out is therefore what stops anything being RELEASED:
+// the clearing house holds each receiving bank's share of a file until the cycle
+// carrying it has settled, so a test that calls this once and asserts is looking
+// at a network in which the payees\' banks have not been told anything yet, on
+// purpose.
+//
 // The BANKS' cut-off is in, because it is where a file comes from: a hub that
 // was never emptied uploads nothing and every flow test would measure a network
 // carrying no payments. The two cut-offs share a word and are different acts —
@@ -1018,11 +1092,7 @@ func workThrough(d *Deployment) []Problem {
 		_, problems := b.cutoff(ctx)
 		ps = append(ps, problems...)
 	}
-	ps = append(ps, d.csm.work(ctx, ebics.CCT, ebics.CDD, ebics.CRT)...)
-	for _, b := range d.subscribers() {
-		ps = append(ps, b.collect(ctx, d.cfg.ClearingHouseBIC, b.csm, ebics.BTD)...)
-	}
-	ps = append(ps, d.csm.work(ctx, ebics.CST)...)
+	ps = append(ps, d.csm.work(ctx)...)
 	ps = append(ps, d.cb.work(ctx)...)
 	ps = append(ps, d.csm.collect(ctx)...)
 	for _, b := range d.subscribers() {
@@ -1418,10 +1488,11 @@ func (h *harness) suspense(t *testing.T, id payment.ParticipantID) ledger.Amount
 func (h *harness) lodge(t *testing.T, id iso20022.BIC, asset ledger.AssetCode, amount ledger.Amount) {
 	t.Helper()
 	ctx := context.Background()
+	h.lodgeSeq++
 	in, _, err := h.bank(id).LodgeReserves(ctx, asset, amount, payment.MessageContext{
 		From:  id,
 		To:    h.cfg.CentralBankBIC,
-		MsgID: fmt.Sprintf("fixture-lodge-%s-%s", id, asset),
+		MsgID: fmt.Sprintf("fixture-lodge-%s-%s-%d", id, asset, h.lodgeSeq),
 		Now:   h.clock.Now(),
 	})
 	if err != nil {

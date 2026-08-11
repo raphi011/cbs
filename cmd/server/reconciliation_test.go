@@ -163,7 +163,6 @@ func TestAClearingSuspenseIsAgedWithNoDeadlineOnIt(t *testing.T) {
 	h := newServer(t, nil)
 	a, b, _ := threeBanks(t, h)
 	doJSON(t, csmSurface(h), "POST", "/cycles", `{"scheme":"sepa.ct"}`, http.StatusCreated)
-	lodge(t, h, a.pid, "EUR", 100000)
 	sct(t, h, a, b, "in-flight")
 
 	var rep api.AgeingReportDTO

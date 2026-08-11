@@ -32,27 +32,41 @@ func TestCreditTransferReachesAcceptedThroughTheCSM(t *testing.T) {
 	}
 }
 
-// The chain is four messages, and naming them is the point of the package: the
-// payer's bank tells the clearing house, the clearing house tells the payee's
-// bank, the payee's bank answers, and the clearing house answers the payer's
-// bank. Nothing here is a function call across a boundary.
+// The chain is eight files over one business day, and naming them in order is
+// the point of the package. Nothing here is a function call across a boundary.
+//
+// The order is the whole of what task 8 is about. Read the middle four: the
+// clearing house instructs settlement, the settlement agent discharges it and
+// advises both members — and only THEN does the payee's bank receive the
+// instruction it is to act on. The money is final before the instruction to
+// apply it exists at the bank that will apply it, which is what makes a receiving
+// bank unable to credit a customer against a cut-off that might still fail.
 //
 // It is asserted as a count and a route rather than as an exact byte sequence,
 // because the identifiers each hop assigns are the sender's own and pinning them
 // would be pinning the id scheme, not the flow.
-func TestTheCreditTransferChainIsFourMessages(t *testing.T) {
+//
+// Two pacs.002 reach the payer's bank and they say different things: the first
+// is the clearing house taking the payment into a cycle, the second is that
+// cycle settling. Both are collected in the same download, which is what a
+// deployment running one cut-off a day looks like from the bank's end.
+func TestTheCreditTransferChainIsEightFiles(t *testing.T) {
 	h := newHarness(t)
 	h.submitCreditTransfer(t)
-	h.work(t)
+	h.day(t)
 
 	want := []struct {
 		from, to iso20022.BIC
 		msgDef   string
 	}{
 		{h.debtorBIC, h.cfg.ClearingHouseBIC, "pacs.008.001.08"},
-		{h.cfg.ClearingHouseBIC, h.creditorBIC, "pacs.008.001.08"},
-		{h.creditorBIC, h.cfg.ClearingHouseBIC, "pacs.002.001.10"},
+		{h.cfg.ClearingHouseBIC, h.cfg.CentralBankBIC, "pacs.009.001.08"},
+		{h.cfg.CentralBankBIC, h.cfg.ClearingHouseBIC, "pacs.002.001.10"},
+		{h.cfg.CentralBankBIC, h.debtorBIC, "camt.053.001.08"},
 		{h.cfg.ClearingHouseBIC, h.debtorBIC, "pacs.002.001.10"},
+		{h.cfg.ClearingHouseBIC, h.debtorBIC, "pacs.002.001.10"},
+		{h.cfg.CentralBankBIC, h.creditorBIC, "camt.053.001.08"},
+		{h.cfg.ClearingHouseBIC, h.creditorBIC, "pacs.008.001.08"},
 	}
 	h.mu.Lock()
 	seen := append([]tappedMessage(nil), h.seen...)
@@ -73,34 +87,117 @@ func TestTheCreditTransferChainIsFourMessages(t *testing.T) {
 	}
 }
 
-func TestCreditTransferToAnUnknownAccountComesBackAsAC01(t *testing.T) {
+// The payee's bank is handed nothing at all until the cycle carrying the payment
+// has settled, and this is the assertion that says so on its own.
+//
+// It is the negative half of the chain above and worth its own test, because the
+// chain measures an ORDER and this measures an ABSENCE: run every phase that
+// carries a file, stop short of the cut-off, and the bank that is to be paid has
+// still never heard of the payment.
+func TestNothingReachesThePayeesBankBeforeTheCycleSettles(t *testing.T) {
 	h := newHarness(t)
-	p := h.submitCreditTransferTo(t, unknownIBANAt(h.creditor))
+	p := h.submitCreditTransfer(t)
 	h.work(t)
 
-	got := h.payment(t, p.ID)
-	if got.Status != payment.Rejected {
-		t.Fatalf("status = %v, want Rejected", got.Status)
+	if files := h.filesOfTypeTo(t, h.creditorBIC, "pacs.008.001.08"); len(files) != 0 {
+		t.Fatalf("the payee's bank was handed %d instruction files before settlement, want 0", len(files))
 	}
-	if got.RejectCode != iso20022.StatusReasonIncorrectAccountNumber {
-		t.Errorf("reject code = %q, want AC01", got.RejectCode)
+	if _, err := h.bank(h.creditorBIC).GetPayment(context.Background(), p.ID); err == nil {
+		t.Error("the payee's bank holds a copy of a payment that has not settled")
 	}
-	// And the money came back. A rejection that left the payer short would be
-	// worse than no rejection at all.
-	if bal := h.suspense(t, h.debtorPID); bal != 0 {
-		t.Errorf("clearing suspense = %d after a rejection, want 0", bal)
+	// And the payer's bank HAS been told, which is what says the file was taken
+	// in rather than lost: the clearing house validated it and put it in a cycle.
+	if got := h.bankPayment(t, h.debtorBIC, p.ID); got.Status != payment.Accepted {
+		t.Errorf("the payer's bank records %v before the cut-off, want Accepted", got.Status)
+	}
+}
+
+// A payee's bank that cannot find the payee RETURNS the payment, and this is
+// the single largest consequence of settling before releasing.
+//
+// The same instruction was a REJECT while the clearing house relayed before the
+// cut-off: the payee's bank looked at it first, said AC01, and no money had
+// moved. Now it is handed the file only after finality, so the money is already
+// in its clearing suspense and the only honest answer is a pacs.004 that sends
+// it back. That is what a real SEPA bank does, and it is why AC01 is a member of
+// the return code set as well as of the rejection one.
+//
+// Three days' worth of phases, because a return is a conversation: the first
+// carries and settles the payment, the second is where the payee's bank finds
+// out and asks for it back, and the third is where the settlement agent reverses
+// the reserves and the payer's bank pays its customer.
+func TestCreditTransferToAnUnknownAccountComesBackAsAnAC01Return(t *testing.T) {
+	h := newHarness(t)
+	p := h.submitCreditTransferTo(t, unknownIBANAt(h.creditor))
+
+	h.work(t)
+	h.closeCycle(t)
+	// The cut-off releases the file, and the payee's bank asks for the payment
+	// back in the same phase it discovers it cannot apply it.
+	h.work(t)
+	if got := h.payment(t, p.ID); got.Status != payment.Settled {
+		t.Fatalf("status = %v after the cut-off, want Settled — a payment the payee's bank cannot apply still settles", got.Status)
+	}
+	if got := h.bankPayment(t, h.creditorBIC, p.ID); got.Status != payment.Settled {
+		t.Fatalf("the payee's bank records %v; it holds money it cannot pay out", got.Status)
+	}
+	returns := h.filesOfTypeTo(t, h.cfg.ClearingHouseBIC, "pacs.004.001.09")
+	if len(returns) != 1 {
+		t.Fatalf("the payee's bank uploaded %d returns, want 1", len(returns))
+	}
+
+	// The return's own trip: up to the settlement agent, back down to both banks.
+	h.work(t)
+	if got := h.payment(t, p.ID); got.Status != payment.Returned {
+		t.Fatalf("status = %v after the return, want Returned", got.Status)
+	}
+
+	// The payer has their money back and neither bank is holding any of it.
+	if bal := h.balance(t, h.debtorPID, h.debtorAcct.ID); bal != harnessFunding {
+		t.Errorf("the payer's balance = %d, want %d — the return did not reach them", bal, harnessFunding)
+	}
+	for _, pid := range []payment.ParticipantID{h.debtorPID, h.creditorPID} {
+		if bal := h.suspense(t, pid); bal != 0 {
+			t.Errorf("%s's clearing suspense = %d after the return, want 0", pid, bal)
+		}
+	}
+}
+
+// The return carries AC01 and it reaches the payer's bank as a MESSAGE, which is
+// what makes the refund happen. A reason invented at the far end would be a
+// second rendering of one intent; both banks read this one off the same bytes.
+func TestTheReturnOfAnUnpayableTransferCarriesAC01(t *testing.T) {
+	h := newHarness(t)
+	h.submitCreditTransferTo(t, unknownIBANAt(h.creditor))
+	h.work(t)
+	h.closeCycle(t)
+	h.work(t)
+
+	returns := h.filesOfTypeTo(t, h.cfg.ClearingHouseBIC, "pacs.004.001.09")
+	if len(returns) != 1 {
+		t.Fatalf("the payee's bank uploaded %d returns, want 1", len(returns))
+	}
+	rsn := returns[0].Document.(*iso20022.Pacs004).PmtRtr.TxInf[0].RtrRsnInf
+	if rsn == nil || rsn.Rsn.Cd == nil || *rsn.Rsn.Cd != iso20022.ReturnReasonIncorrectAccountNumber {
+		t.Fatalf("the return carries %v, want AC01", rsn)
 	}
 }
 
 // The rejection reaches the payer's bank as a message, not as a return value.
 // It is the pacs.002 that makes the money come back, so the payer's bank has to
 // receive one carrying the code.
+//
+// The refusal under test is the CLEARING HOUSE's, because after task 8 that is
+// the only institution that rejects anything: a bank's own refusal comes too
+// late to be one and is a return instead. TM01 is the cheapest of them to build
+// — a scheme with no cut-off window open — and what it measures is the message,
+// not the code.
 func TestARejectedCreditTransferIsAnsweredToThePayersBank(t *testing.T) {
-	h := newHarness(t)
-	h.submitCreditTransferTo(t, unknownIBANAt(h.creditor))
+	h := newHarnessWithNoOpenCycle(t)
+	h.submitCreditTransfer(t)
 	h.work(t)
 
-	h.assertLastStatusTo(t, h.debtorBIC, iso20022.StatusReasonIncorrectAccountNumber)
+	h.assertLastStatusTo(t, h.debtorBIC, iso20022.StatusReasonInvalidCutOffTime)
 }
 
 func TestCreditTransferWithNoOpenCycleIsTM01(t *testing.T) {
@@ -202,8 +299,8 @@ func TestAFileAnInstitutionHasNoHandlerForIsReported(t *testing.T) {
 // a bank reverses only what this network's record calls rejected — cannot be
 // what refuses it. See TestABankRefusesToReverseAPaymentThatIsNotRejected.
 func TestABankRefusesAStatusAboutAnotherBanksPayment(t *testing.T) {
-	h := newHarness(t)
-	p := h.submitCreditTransferTo(t, unknownIBANAt(h.creditor))
+	h := newHarnessWithNoOpenCycle(t)
+	p := h.submitCreditTransfer(t)
 	h.work(t)
 	if got := h.payment(t, p.ID); got.Status != payment.Rejected {
 		t.Fatalf("the fixture payment is %v, want Rejected", got.Status)
@@ -271,8 +368,8 @@ func TestABankRefusesAStatusAboutAnotherBanksPayment(t *testing.T) {
 // closed network — and with reconciliation against the cycle reports afterwards.
 // What this system CAN do it does one hop earlier, at the institution that would
 // have to be lying: the clearing house never sends an RJCT about a payment it has
-// not rejected. See csm.relayRecorded, which rejects its own copy in the same
-// breath as the RC01 it answers with.
+// not rejected. See ClearingHouse.refuse, which rejects its own copy in the same
+// breath as the code it answers with.
 func TestABankRefusesToReverseAPaymentThatIsNotRejected(t *testing.T) {
 	h := newHarness(t)
 	p := h.settledPayment(t)
@@ -310,38 +407,33 @@ func TestABankRefusesToReverseAPaymentThatIsNotRejected(t *testing.T) {
 		h.booksTouchedBy(h.debtorBIC), nil)
 }
 
-// A second copy of a status the clearing house has already acted on is dead-
-// lettered, not answered.
+// A member bank's pacs.002 is REPORTED at the clearing house and acted on by
+// nothing, and what it costs is money nobody can move.
 //
-// This is reachable: a queue redelivers, and by the time the duplicate arrives
-// the payment is Accepted, so AcceptAtCSMTx answers ErrInvalidStateTransition.
-// That sentinel is classified in payment's reasonTable with the EMPTY code
-// precisely because it must never reach a counterparty — it says this system
-// tried an illegal transition, which is a defect here and not a judgement about
-// anyone's instruction. Handing it to ReasonFor would turn it into MS03 and
-// reject, on the wire, a payment that was in fact accepted.
-func TestARedeliveredAcceptanceIsReportedAndNotRejected(t *testing.T) {
+// It is the only status a member uploads now: a receiving bank makes no
+// judgement about an instruction, because the instruction reaches it after the
+// cycle carrying it is final. So the one thing left for it to say is that a file
+// would not parse — and by then the payments inside that file have settled, the
+// money is in that bank's clearing suspense, and it can neither apply them nor
+// name them to return them.
+//
+// There is nothing for the clearing house to do about it, which is exactly why
+// it is a line in the day's report: the failure is real, it is unrecoverable
+// from inside the flow, and payment/recon is what makes the stranded suspense
+// visible afterwards.
+func TestAFileAPayeesBankCannotReadIsReportedAtTheClearingHouse(t *testing.T) {
 	h := newHarness(t)
-	p := h.submitCreditTransfer(t)
+	h.injectRaw(t, h.cfg.ClearingHouseBIC, h.creditorBIC, []byte("<Envelope><nonsense/>"))
+	// The bank answers FF01 up its own connection, which is the whole of what it
+	// can do; the clearing house works through it on the next pass.
 	h.work(t)
 
-	env, err := payment.StatusMessage(
-		payment.OriginalMessage{MsgID: "orig-1", MsgDefIdr: "pacs.008.001.08"},
-		[]payment.TransactionStatusReport{{TxID: string(p.ID), Status: iso20022.TransactionStatusAccepted}},
-		payment.MessageContext{From: h.creditorBIC, To: h.cfg.ClearingHouseBIC, MsgID: "sts-dup", Now: testTime})
-	if err != nil {
-		t.Fatalf("StatusMessage: %v", err)
+	err := h.workErr(t)
+	if err == nil || !strings.Contains(err.Error(), "FF01") {
+		t.Fatalf("the day reported %v, want the payee's bank's FF01 recorded as a problem", err)
 	}
-	h.upload(t, h.creditorBIC, h.cfg.ClearingHouseBIC, env)
-
-	err = h.workErr(t)
-	// Matched on the TEXT and not with errors.Is: a day's report is prose an
-	// operator reads, and Problem.Detail does not wrap the sentinel.
-	if err == nil || !strings.Contains(err.Error(), payment.ErrInvalidStateTransition.Error()) {
-		t.Fatalf("the day reported %v, want the illegal transition as a problem", err)
-	}
-	if got := h.payment(t, p.ID); got.Status != payment.Accepted {
-		t.Errorf("the duplicate moved the payment to %v; it was already Accepted", got.Status)
+	if !strings.Contains(err.Error(), string(h.creditorBIC)) {
+		t.Errorf("the report %q does not name the bank that could not read the file", err)
 	}
 }
 
@@ -357,7 +449,7 @@ func TestARedeliveredAcceptanceIsReportedAndNotRejected(t *testing.T) {
 // no state its own copy could be in would let it tell that message from a
 // rejection this network really made (payment.RejectAtBankTx). The replay is
 // refused as a DUPLICATE before anything goes on the wire — see
-// csm.relayRecorded — so keeping the original id would measure that refusal
+// the clearing house's own record — so keeping the original id would measure that refusal
 // instead of the routing table.
 //
 // So the transaction id is doctored too, and the file is then what a forged
@@ -410,21 +502,21 @@ func TestACreditTransferForABankTheClearingHouseCannotRouteToIsRC01(t *testing.T
 	}
 }
 
-// A second copy of a credit transfer the payee's bank has already answered is
-// dead-lettered, not answered again.
+// A second copy of a released output file is REPORTED at the payee's bank, not
+// acted on again.
 //
-// Same sentinel and same reasoning as the clearing house's duplicate, one hop
-// earlier: by the time the redelivery arrives the payment is no longer
-// Initiated, AcceptInboundTx refuses it with ErrInvalidStateTransition, and
-// turning that into a pacs.002 would reject on the wire a payment this bank
-// accepted. What the bank must not do is answer twice with two different
-// answers.
+// The redelivery arrives after the payment has settled and been applied, so
+// AcceptInboundTx refuses it with ErrInvalidStateTransition — a sentinel
+// payment's reasonTable classifies with the EMPTY code precisely because it
+// describes a defect in this system rather than a judgement about the sender's
+// instruction. payment.Answerable is what keeps it out of a pacs.004: a bank
+// that RETURNED a redelivery would send back, across the network, a payment it
+// had in fact applied.
 func TestARedeliveredCreditTransferIsReportedAtThePayeesBank(t *testing.T) {
 	h := newHarness(t)
-	p := h.submitCreditTransfer(t)
-	h.work(t)
+	p := h.settledPayment(t)
 
-	// The pacs.008 the clearing house relayed, sent a second time.
+	// The pacs.008 the clearing house released, sent a second time.
 	var relayed []byte
 	h.mu.Lock()
 	for _, m := range h.seen {
@@ -444,8 +536,13 @@ func TestARedeliveredCreditTransferIsReportedAtThePayeesBank(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), payment.ErrInvalidStateTransition.Error()) {
 		t.Fatalf("the day reported %v, want the illegal transition as a problem", err)
 	}
-	if got := h.payment(t, p.ID); got.Status != payment.Accepted {
-		t.Errorf("the redelivery moved the payment to %v; it was already Accepted", got.Status)
+	if got := h.bankPayment(t, h.creditorBIC, p.ID); got.Status != payment.Settled {
+		t.Errorf("the redelivery moved the payee's bank's copy to %v; it was already Settled", got.Status)
+	}
+	// And the payee was paid once. A redelivery answered rather than reported
+	// would have credited them twice or sent the money back.
+	if bal := h.balance(t, h.creditorPID, h.creditorAcct.ID); bal != harnessAmount {
+		t.Errorf("the payee's balance = %d, want %d", bal, harnessAmount)
 	}
 }
 

@@ -2858,7 +2858,7 @@ func (s *Network) SettleAtBankTx(ctx context.Context, tx Tx, id PaymentID) (Paym
 			// because a connection dropped would be wrong.
 			return Payment{}, err
 		}
-		target = accts.Unclaimed.For(string(p.Creditor.Account))
+		target = accts.Unclaimed.For(unclaimedSubsidiary(p))
 		description = "Unclaimed: " + p.Description
 	}
 
@@ -3353,7 +3353,22 @@ func (s *Network) AcceptInboundTx(ctx context.Context, tx Tx, id PaymentID, req 
 		// unlike SubmitPaymentTx, this half must not use them to overwrite
 		// CreditorDetails. See the note above on which side of this row is whose
 		// fact.
-		if _, _, err := s.creditorSideTx(ctx, tx, scheme, &p, sc); err != nil {
+		//
+		// A payee whose account is CLOSED is not a refusal on this side, and it is
+		// the one error from that half this arm swallows. The instruction reaches
+		// a receiving bank only after the cycle carrying it is final, so the money
+		// is here and refusing would strand it; what a bank does with a credit for
+		// an account that cannot take one is HOLD it for the payee, which is
+		// SettleAtBankTx's diversion to unclaimed balances and the whole reason
+		// that account exists. The address is already resolved and written onto p
+		// by the time creditorSideTx makes the check, so nothing this arm needs is
+		// lost with the error.
+		//
+		// It stays a refusal at the SUBMITTING bank, which is creditorSideTx's
+		// other caller: a collection into a closed account is one that bank can
+		// still decline, before anything has moved.
+		if _, _, err := s.creditorSideTx(ctx, tx, scheme, &p, sc); err != nil &&
+			!errors.Is(err, deposit.ErrAccountClosed) {
 			return err
 		}
 	} else {
@@ -3370,6 +3385,152 @@ func (s *Network) AcceptInboundTx(ctx context.Context, tx Tx, id PaymentID, req 
 		return err
 	}
 	return s.appendAuditTx(ctx, tx, ledger.EventPaymentInitiated, string(p.ID), p)
+}
+
+// ReceiveUnapplied is ReceiveUnappliedTx in its own unit of work, which is what
+// a bank working through a released output file needs: one transaction fails on
+// its own, and the rest of the file is unaffected.
+func (s *Network) ReceiveUnapplied(ctx context.Context, id PaymentID, req InitiatePaymentRequest) (Payment, error) {
+	var out Payment
+	err := s.store.Update(ctx, func(ctx context.Context, tx Tx) error {
+		var err error
+		out, err = s.ReceiveUnappliedTx(ctx, tx, id, req)
+		return err
+	})
+	return out, err
+}
+
+// ReceiveUnappliedTx is the receiving bank writing down a payment that has
+// ALREADY SETTLED and that it cannot give to the customer the message names.
+//
+// It is the half AcceptInboundTx runs when the answer is yes. There is no
+// answer of no left to give: the instruction reached this bank only because the
+// cycle carrying it was final, so the reserves have moved and the money is here.
+// What is left is where the bank PUTS it until it can send it back, and a
+// pacs.004 is how it does that (see cmd/server's Bank.receive).
+//
+// # The money is parked, and which account it lands in is the direction
+//
+// The two destinations are the mirror image of each other and they already
+// exist, because a bank that cannot pass money on is the case both were opened
+// for:
+//
+//   - On a PUSH the money arrived. It goes to UNCLAIMED BALANCES, the bank's
+//     liability to whoever is behind the line it could not resolve, exactly as a
+//     credit for a closed account does (SettleAtBankTx). The clearing suspense
+//     returns to zero, which is what says the cut-off is fully applied.
+//   - On a PULL the money left. This bank was net-debited for a collection it
+//     could not fund from the payer, so it funded it itself: RETURNS
+//     RECEIVABLE, the bank's claim, discharged when the return brings the
+//     reserves back (refundTx).
+//
+// # What is deliberately NOT written
+//
+// DebtorLegTx stays empty on the pull, and that is the record rather than an
+// omission: the field says the PAYER WAS DEBITED, and the payer was not. It is
+// what refundTx reads to know that the return has nothing to pay back to them.
+// CreditorLegTx is written on the push, because the creditor leg did post — into
+// a position standing for the payee rather than the payee's own, which is
+// CreditorLegAccount's whole job and is how the clawback finds the money again.
+//
+// # A redelivery is answered with the row
+//
+// The row is the witness, for AcceptInboundTx's reason and with one difference:
+// there is no state left for a second delivery to be too late for, so it comes
+// back as the payment rather than as ErrInvalidStateTransition. A file released
+// twice would otherwise park the money twice.
+func (s *Network) ReceiveUnappliedTx(ctx context.Context, tx Tx, id PaymentID, req InitiatePaymentRequest) (Payment, error) {
+	if _, err := s.self(); err != nil {
+		return Payment{}, err
+	}
+	scheme, ok := s.scheme(req.Scheme)
+	if !ok {
+		return Payment{}, ErrSchemeNotFound
+	}
+	if err := validateInstruction(id, req); err != nil {
+		return Payment{}, err
+	}
+	switch existing, err := tx.GetPayment(ctx, id); {
+	case err == nil:
+		return existing, nil
+	case !errors.Is(err, ErrPaymentNotFound):
+		return Payment{}, err
+	}
+	bank, err := s.selfBankTx(ctx, tx)
+	if err != nil {
+		return Payment{}, err
+	}
+	accts, err := bank.AccountsFor(scheme.Asset())
+	if err != nil {
+		return Payment{}, err
+	}
+
+	p := newPayment(id, req, scheme, s.now())
+	if err := s.appendAuditTx(ctx, tx, ledger.EventPaymentInitiated, string(p.ID), p); err != nil {
+		return Payment{}, err
+	}
+
+	park := ledger.PostTransactionRequest{
+		Description: "Unapplied: " + p.Description,
+		ValueDate:   p.ValueDate,
+		Metadata:    paymentMetadata(&p),
+	}
+	if scheme.Direction() == Push {
+		held := accts.Unclaimed.For(unclaimedSubsidiary(p))
+		// The same key SettleAtBankTx's credit carries, because this IS that leg:
+		// one payment credits one destination in this bank's book once, and which
+		// destination it was does not make it a different posting.
+		park.IdempotencyKey = string(p.ID) + ":credit"
+		park.Entries = []ledger.Entry{
+			{AccountID: accts.Suspense, Amount: p.Amount, Direction: ledger.Debit},
+			{AccountID: held.Account, Subsidiary: held.Subsidiary, Amount: p.Amount, Direction: ledger.Credit},
+		}
+	} else {
+		park.IdempotencyKey = string(p.ID) + ":uncollected"
+		park.Entries = []ledger.Entry{
+			{AccountID: accts.ReturnsReceivable, Amount: p.Amount, Direction: ledger.Debit},
+			{AccountID: accts.Suspense, Amount: p.Amount, Direction: ledger.Credit},
+		}
+	}
+	posted, err := bank.Ledger.PostTransactionTx(ctx, tx, park)
+	if err != nil {
+		return Payment{}, err
+	}
+	if scheme.Direction() == Push {
+		p.CreditorLegTx = posted.ID
+		p.CreditorLegAccount = accts.Unclaimed
+	}
+
+	if err := s.transition(&p, Settled); err != nil {
+		return Payment{}, err
+	}
+	if err := tx.PutPayment(ctx, p); err != nil {
+		return Payment{}, err
+	}
+	if err := s.appendAuditTx(ctx, tx, ledger.EventPaymentSettled, string(p.ID), p); err != nil {
+		return Payment{}, err
+	}
+	return p, nil
+}
+
+// unclaimedSubsidiary is the holder an unclaimed credit is booked under: the
+// payee's own account where this bank resolved one, and the ADDRESS the message
+// quoted where it could not.
+//
+// One claim under two spellings — what does this bank owe whoever is behind this
+// line — and the fallback is what makes the pool answerable for a credit that
+// resolved to nothing at all. Under an empty subsidiary every such credit would
+// pool into one nameless position and a release could not tell two of them
+// apart.
+//
+// SettleAtBankTx and ReceiveUnappliedTx write it and clawbackTx re-derives it,
+// so it is read from here by all three: a payment whose clawback looked in a
+// different position from the one its credit landed in would debit a stranger.
+func unclaimedSubsidiary(p Payment) string {
+	if p.Creditor.Account != "" {
+		return string(p.Creditor.Account)
+	}
+	return p.Creditor.Identifier.Value
 }
 
 // RecordRelayedCreditTransfer is the clearing house writing its own copy of a
@@ -3636,11 +3797,12 @@ func (s *Network) AcceptAtCSMTx(ctx context.Context, tx Tx, id PaymentID) (Payme
 // only here is it one. Every other error is passed through as it arrived: a
 // dropped connection is not a statement about the instruction.
 //
-// A payment refused here has already had its debtor leg posted, and getting the
-// customer's money back is csm.clear's job rather than this one's: it rejects
-// the payment and the pacs.002 makes the payer's bank reverse. That works in one
-// of the two directions and not the other, which is what Mesh.Submit's door
-// guard is for. ErrBankNotAdmitted sets both out.
+// A payment refused here may already have had its debtor leg posted — on a push
+// it has, at submission — and getting the customer's money back is not this
+// half's job: the clearing house rejects the payment and the pacs.002 makes the
+// submitting bank reverse. That works in one of the two directions and not the
+// other, which is what the submitting bank's own door guard is for.
+// ErrBankNotAdmitted sets both out.
 func (s *Network) bothBanksAreMembersTx(ctx context.Context, tx Tx, p Payment) error {
 	scheme, ok := s.Scheme(p.Scheme)
 	if !ok {
@@ -4488,9 +4650,10 @@ func (s *Network) clawbackTx(ctx context.Context, tx Tx, creditor *Bank, accts B
 	// reach a control account. It is the payee either way — their own money on
 	// one, the bank's unclaimed pool held for them on the other — and it is
 	// re-derived from the payment rather than stored beside CreditorLegAccount,
-	// which SettleAtBankTx wrote from this same field. Returns Receivable is the
-	// arm that names nobody: what it records is the bank's own claim.
-	position := from.For(string(p.Creditor.Account))
+	// through the same helper the credit was booked under (unclaimedSubsidiary).
+	// Returns Receivable is the arm that names nobody: what it records is the
+	// bank's own claim.
+	position := from.For(unclaimedSubsidiary(p))
 	if from == accts.ReturnsReceivable {
 		position = from.Total()
 	}
@@ -4522,6 +4685,28 @@ func (s *Network) refundTx(ctx context.Context, tx Tx, debtor *Bank, accts BankA
 	// account rather than the creditor's: this is the payer's own bank, holding
 	// either the payer's money or a refund their closed account would not take.
 	to := accts.Unclaimed.For(string(p.Debtor.Account))
+
+	// Unless the payer was never debited, which is a collection this bank
+	// SETTLED and could not fund from its customer: it stood in for them
+	// (ReceiveUnappliedTx) and what the return discharges is its own claim, not a
+	// refund it owes anybody. Paying the payer here would hand them money they
+	// never lost.
+	//
+	// The field is the whole test and it is exact: the payer's bank posts the
+	// debtor leg at submission on a push and on receipt on a pull, so an empty
+	// one at this bank names the one arrangement that skipped it.
+	if p.DebtorLegTx == "" {
+		return debtor.Ledger.PostTransactionTx(ctx, tx, ledger.PostTransactionRequest{
+			IdempotencyKey: returnLegKey(p.ID, "return-refund", replacing),
+			Description:    "Returns receivable: " + description,
+			Metadata:       paymentMetadata(&p),
+			Entries: []ledger.Entry{
+				{AccountID: accts.Suspense, Amount: p.Amount, Direction: ledger.Debit},
+				{AccountID: accts.ReturnsReceivable, Amount: p.Amount, Direction: ledger.Credit},
+			},
+		})
+	}
+
 	err := debtor.Deposit.CheckCreditTx(ctx, tx, p.Debtor.Account)
 	switch {
 	case err == nil:

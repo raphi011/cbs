@@ -105,6 +105,10 @@ func TestABankAdmittedAfterTheLastRefreshCannotBePaidUntilTheNextOne(t *testing.
 	if got := h.payment(t, p.ID); got.Status != payment.Accepted {
 		t.Fatalf("the payment after the refresh is %v, want Accepted", got.Status)
 	}
+	// Through the cut-off, because the joining bank is handed the instruction
+	// only once the cycle carrying it is final.
+	h.closeCycle(t)
+	h.work(t)
 	// And it went where the address said, derived rather than typed.
 	if got := h.payment(t, p.ID).CreditorDetails.Agent; got != joiner.BIC {
 		t.Errorf("the derived creditor agent is %q, want the joining bank's %q", got, joiner.BIC)

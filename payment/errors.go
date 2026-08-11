@@ -117,13 +117,13 @@ var (
 	//
 	// # It is answered on the wire, and only in one direction
 	//
-	// Reaching the clearing house's refusal at all means the payment is in the
-	// mesh, and csm.clear turns a refusal to clear into the RJCT the submitting
-	// bank is sent. That answer arrives when it is the PAYEE's bank that is not
+	// Reaching the clearing house's refusal at all means the payment is in a file
+	// that institution has taken in, and it turns a refusal to clear into the
+	// RJCT the submitting bank is sent. That answer arrives when it is the PAYEE's bank that is not
 	// admitted, and its submitter reverses the debtor leg and refunds its
 	// customer. It does not arrive when the submitter is itself the non-member:
-	// csm.tell addresses the submitter through the roster too, so the pacs.002
-	// dead-letters with "cannot address the bank that submitted". Measured, with
+	// the clearing house addresses the submitter through the roster too, so the
+	// pacs.002 dead-letters with "cannot address the bank that submitted". Measured, with
 	// the door guard removed. That asymmetry is precisely why the door guard is
 	// the one that carries the paying direction.
 	//

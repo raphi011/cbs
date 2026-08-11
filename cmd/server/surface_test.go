@@ -465,6 +465,9 @@ func TestABankSeesOnlyItsOwnPayments(t *testing.T) {
 
 	mine := sct(t, h, a, b, "own-leg")
 	theirs := sct(t, h, b, c, "not-mine")
+	// Through the cut-off, because a receiving bank holds no copy of a payment
+	// until the cycle carrying it has settled and the file is released.
+	settle(t, h)
 
 	// Aurora is the debtor on one and a party to no other.
 	var list []api.PaymentDTO
@@ -519,8 +522,11 @@ func threeBanks(t *testing.T, h *server) (a, b, c seededBank) {
 			http.StatusCreated)["id"].(string)
 		// Read back rather than chosen: the bank minted it.
 		iban := ibanFor(t, h, pid, did)
-		doJSON(t, bankSurface(h, pid), "POST", "/deposits",
-			`{"account":"`+did+`","amount":500000,"description":"opening"}`, http.StatusOK)
+		// Funded AND lodged, because a cut-off settles across reserves: a bank
+		// holding its customers' money as vault cash is a bank that cannot pay
+		// anybody, and every fixture here that carries a payment to finality needs
+		// one that can.
+		fundAndLodge(t, h, pid, did, 500000)
 		return seededBank{pid: pid, account: did, iban: iban, bic: bic, accountName: accountName}
 	}
 	return mk("Bank A", "BNKADEFFXXX"),

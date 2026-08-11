@@ -672,262 +672,172 @@ func (b *Bank) answerUnreadable(ctx context.Context, host iso20022.BIC, cause er
 	return err
 }
 
-// receiveCreditTransfer is the PAYEE's bank answering a credit transfer.
+// receiveCreditTransfer is the PAYEE's bank applying a credit transfer that has
+// ALREADY SETTLED.
 //
-// Two questions, asked in this order, and the order is what decides the code the
-// sender gets back.
+// # There is nothing left to say no to
+//
+// The instruction reaches this bank only once the cycle carrying it is final, so
+// the reserves have moved and the money is in this bank's clearing suspense
+// before it has looked at a single line. That is the whole point of settling
+// before release: a receiving bank never credits a customer against money that
+// has not settled. What it costs is the answer it used to be able to give — a
+// pacs.002 saying no — and what replaces it is a pacs.004 saying "here it is
+// back", which is what a real SEPA bank sends and why AC01 and AC04 are return
+// reasons as well as rejection ones.
+//
+// # Two questions, and the order still decides the code
 //
 // First: can this file be resolved to instructions at all? That is
-// CreditTransferRequest, which resolves the CREDITOR of every transaction in the
-// file — this bank's own customer, the only party a pacs.008 routed here by
-// CdtrAgt gives this bank any standing to look up — BY ADDRESS, IN THIS BANK'S
-// OWN REGISTER. It is the question a real receiving bank asks first, because
-// until it is answered the bank does not know the file is even for one of its
-// customers. It does not resolve the DEBTOR — see payment.CreditTransferRequest
-// and localPartyIn — so an unaddressable or unknown debtor IBAN, which names a
-// customer at the SENDING bank and nothing this bank could ever confirm, is not
-// refused here.
+// CreditTransferRequest, which resolves the CREDITOR of every transaction — this
+// bank's own customer, the only party a pacs.008 routed here by CdtrAgt gives
+// this bank any standing to look up — BY ADDRESS, IN THIS BANK'S OWN REGISTER.
+// It does not resolve the DEBTOR, who is a customer at the sending bank and
+// nothing this bank could ever confirm.
 //
-// # Own register, and what it catches
+// The register searched is this bank's own, so AC01 fires whenever THIS bank
+// does not hold the creditor's IBAN — which is what a MISDIRECTED file reaches,
+// the counterparty's BIC having been asserted by the payer rather than derived.
 //
-// The register searched is the one belonging to this bank's own
-// payment.Network, so AC01 fires whenever THIS bank does not hold the creditor's
-// IBAN.
+// Second: does this bank's own half check out? That is AcceptInbound followed by
+// SettleAtBank: the payee's account exists, is in the scheme's asset, is
+// addressable, can take a credit — and then the money leaves the clearing
+// suspense for it.
 //
-// That matters on the WRONGLY routed file rather than on the happy path. The
-// counterparty's BIC is asserted by the payer rather than derived
-// (payment.SubmitPaymentTx says why it has to be), so this is what a misdirected
-// credit transfer reaches — and it holds no such address, so it answers AC01.
-//
-// Second: does this bank's own half check out? That is AcceptInbound: the
-// payee's account exists, is in the scheme's asset, is addressable, and can take
-// a credit.
+// A FILE that cannot be read at all is a problem in the day's report and nothing
+// else. There is nobody to answer: the payments in it have settled, and a bank
+// that cannot read the file cannot name the transactions to return either.
 func (b *Bank) receiveCreditTransfer(ctx context.Context, from iso20022.BIC, hdr iso20022.AppHdr, doc *iso20022.Pacs008) error {
-	body := doc.FIToFICstmrCdtTrf
-	orig := payment.OriginalMessage{
-		MsgID:     body.GrpHdr.MsgId,
-		MsgDefIdr: hdr.MsgDefIdr,
-		CreDtTm:   body.GrpHdr.CreDtTm.Time,
-	}
 	txs, err := b.ops.CreditTransferRequest(ctx, doc)
 	if err != nil {
-		return b.answer(ctx, from, orig, refused(refsIn(body.CdtTrfTxInf, func(tx iso20022.CreditTransferTransaction) iso20022.PaymentIdentification {
-			return tx.PmtId
-		}), err))
+		return fmt.Errorf("server: %s cannot read the settled file %s handed it: %w", b.bic, from, err)
 	}
-	// One decision per transaction, in the file's own order, so the reference each
-	// is answered under is the transaction's own rather than the file's.
-	reports := make([]payment.TransactionStatusReport, 0, len(txs))
-	var errs []error
-	for i, in := range txs {
-		ref := body.CdtTrfTxInf[i].PmtId
-		// An address this bank could not resolve is this transaction's own
-		// refusal and no other's; see payment.InboundTransaction.
-		if in.Refusal != nil {
-			reports = append(reports, decision(ref, in.Refusal))
-			continue
-		}
-		r, err := b.accept(ctx, ref, in.Request)
-		if err != nil {
-			errs = append(errs, err)
-			continue
-		}
-		reports = append(reports, r)
-	}
-	return errors.Join(b.answer(ctx, from, orig, reports), errors.Join(errs...))
+	return b.applyAll(ctx, txs)
 }
 
-// receiveDirectDebit is the PAYER's bank answering a collection, and it is the
-// mirror of receiveCreditTransfer in every way except the one that matters.
+// receiveDirectDebit is the PAYER's bank applying a collection that has already
+// settled, and it is the mirror of receiveCreditTransfer in every way except the
+// one that matters.
 //
-// The two questions are the same two, in the same order. First, can this file be
-// resolved to instructions at all — DirectDebitRequest, which resolves the
-// DEBTOR of every collection in the file — this bank's own customer, the party a
-// pacs.003 routed here by DbtrAgt gives this bank standing over — BY ADDRESS, in
-// this bank's own register. The CREDITOR is the sending bank's customer and is
-// not resolved. Second, does this bank's own half check out — AcceptInbound.
+// The two questions are the same two. First, DirectDebitRequest resolves the
+// DEBTOR of every collection — this bank's own customer, the party a pacs.003
+// routed here by DbtrAgt gives this bank standing over — by address, in this
+// bank's own register. Second, AcceptInbound.
 //
-// What differs is what the second question DOES. On a push it is a check and
-// nothing more; here it is the posting. The payer's money leaves their account
-// for this bank's clearing suspense at the moment this handler says yes, because
-// this is the first moment any institution in the system has been able to look
-// at that account at all. So a refusal here is a refusal that no other party
-// could have made: AM04 is the payer's balance, and the bank that submitted this
-// collection has no way of knowing it.
+// What differs is what the second question DOES. On a push it releases money
+// this bank was handed; here it TAKES money, out of the payer's account and into
+// the clearing suspense the settlement already emptied. So this bank has paid
+// before it has collected, and AM04 — the payer's balance, which no other
+// institution in the system can see — is discovered with the money already gone.
+// That is exactly why an unfunded direct debit is a return in SEPA and never a
+// reject, and it is the clearest case there is for settling before releasing:
+// reverse the two and this bank would be refusing a collection whose reserves
+// had not moved, which is a different and much easier system.
 //
-// That is also why own-register resolution matters more on this side than on the
-// push: a collection addressed to the wrong bank must not resolve the payer and
-// post the debit in the PAYER'S BANK'S BOOK. The bank that was wrongly named
-// holds no such address and answers AC01 before anything posts.
+// Own-register resolution matters more on this side than on the push for the
+// same reason: a collection addressed to the wrong bank must not resolve the
+// payer and post the debit in the PAYER'S BANK'S BOOK.
 func (b *Bank) receiveDirectDebit(ctx context.Context, from iso20022.BIC, hdr iso20022.AppHdr, doc *iso20022.Pacs003) error {
-	body := doc.FIToFICstmrDrctDbt
-	orig := payment.OriginalMessage{
-		MsgID:     body.GrpHdr.MsgId,
-		MsgDefIdr: hdr.MsgDefIdr,
-		CreDtTm:   body.GrpHdr.CreDtTm.Time,
-	}
 	txs, err := b.ops.DirectDebitRequest(ctx, doc)
 	if err != nil {
-		return b.answer(ctx, from, orig, refused(refsIn(body.DrctDbtTxInf, func(tx iso20022.DirectDebitTransactionInformation) iso20022.PaymentIdentification {
-			return tx.PmtId
-		}), err))
+		return fmt.Errorf("server: %s cannot read the settled file %s handed it: %w", b.bic, from, err)
 	}
-	// Per transaction, for receiveCreditTransfer's reason.
-	reports := make([]payment.TransactionStatusReport, 0, len(txs))
+	return b.applyAll(ctx, txs)
+}
+
+// applyAll runs this bank's own half over every transaction in a released file,
+// one at a time.
+//
+// One at a time is the point rather than a convenience: a single payee's closed
+// account must not fail a whole batch, so each transaction succeeds, is returned,
+// or is reported on its own, and the file's other customers are paid either way.
+func (b *Bank) applyAll(ctx context.Context, txs []payment.InboundTransaction) error {
 	var errs []error
-	for i, in := range txs {
-		ref := body.DrctDbtTxInf[i].PmtId
-		// An address this bank could not resolve is this transaction's own
-		// refusal and no other's; see payment.InboundTransaction.
-		if in.Refusal != nil {
-			reports = append(reports, decision(ref, in.Refusal))
-			continue
-		}
-		r, err := b.accept(ctx, ref, in.Request)
-		if err != nil {
+	for _, in := range txs {
+		if err := b.apply(ctx, in); err != nil {
 			errs = append(errs, err)
-			continue
 		}
-		reports = append(reports, r)
 	}
-	return errors.Join(b.answer(ctx, from, orig, reports), errors.Join(errs...))
+	return errors.Join(errs...)
 }
 
-// accept runs the receiving bank's own half for ONE transaction and says what
-// this bank decided about it. It is the second of the two questions both receive
-// handlers ask, and it is shared because the direction changes what the half
-// DOES and not what this bank does about it.
+// apply is this bank's own half for ONE settled transaction: write the row, move
+// the money, and send the payment back if it cannot.
 //
-// One transaction at a time, because the answer is about a transaction: a file
-// where the second collection overdraws its payer and the first does not has two
-// different outcomes to report, and there is no single answer to a file. What
-// there IS one of is the pacs.002 carrying them — see answer.
+// # Three outcomes, and only one of them is a failure
 //
-// The REQUEST goes through it: this bank has no row for the payment, so what the
-// resolution produced IS the payment, written here under the id the message
-// carries in PmtId/TxId. See payment.AcceptInboundTx.
+// APPLIED: the row is written and the leg is posted. On a push the payee is
+// credited out of the clearing suspense; on a pull the payer is debited into it.
 //
-// The id and the request come off the same message and are passed separately,
-// which is worth one line: a request describes an instruction and carries no id,
-// because the act that MINTS one is the submitting bank's and there is exactly
-// one of those in the system (payment.SubmitPaymentTx).
+// RETURNED: this bank has a judgement to make about the instruction and the
+// judgement is no. The money is parked — payment.ReceiveUnappliedTx says where
+// and why — and a pacs.004 goes back up the connection the file came down.
 //
-// # The one outcome that is not a report
+// REPORTED: this bank's own bookkeeping failed, which is not a judgement about
+// anything and is nobody's to be told. payment.Answerable is the discrimination,
+// and it is load-bearing: a dropped connection turned into a return would send a
+// customer's money back across the network because a database was busy.
 //
-// An error comes back instead, and the transaction drops out of the file's
-// answer. See below for why that particular refusal must not go on the wire; the
-// rest of the file is still answered, because a redelivered transaction is no
-// reason for the other payers in the batch to hear nothing.
-func (b *Bank) accept(ctx context.Context, ref iso20022.PaymentIdentification,
-	req payment.InitiatePaymentRequest) (payment.TransactionStatusReport, error) {
-
-	err := b.ops.AcceptInbound(ctx, payment.PaymentID(ref.TxId), req)
-	// Already answered. A file can be collected twice only if it was queued
-	// twice, and the second time the payment is no longer Initiated, which is
-	// what this sentinel says. It must NOT become a rejection: payment's
-	// reasonTable classifies it with the empty code precisely because it
-	// describes a defect in this system rather than a judgement about the
-	// sender's instruction, and ReasonFor would turn it into MS03 and reject,
-	// on the wire, a payment this bank in fact accepted. The day's report is
-	// the right channel: nobody to answer, and visible to an operator.
-	//
-	// A redelivery that arrives while the payment is STILL Initiated does not
-	// reach here at all: AcceptInboundTx's pull arm returns nil on a payment
-	// that already has a debtor leg, so the collection is answered a second
-	// time with the same yes rather than with the ledger's idempotency
-	// refusal — which has no entry in reasonTable and would come back MS03.
-	if errors.Is(err, payment.ErrInvalidStateTransition) {
-		return payment.TransactionStatusReport{},
-			fmt.Errorf("server: %s was sent %s again and it is no longer Initiated: %w", b.bic, ref.TxId, err)
+// # A file delivered twice
+//
+// AcceptInbound answers a redelivery by doing nothing when the row is still
+// Initiated, and refuses one that arrived after the payment moved on. Neither is
+// a judgement about the sender's instruction — payment's reasonTable classifies
+// ErrInvalidStateTransition with the empty code for exactly that reason — so it
+// is reported rather than returned. Returning it would send back, on the wire, a
+// payment this bank had in fact applied.
+func (b *Bank) apply(ctx context.Context, in payment.InboundTransaction) error {
+	// An address this bank could not resolve is this transaction's own refusal
+	// and no other's; see payment.InboundTransaction.
+	if in.Refusal != nil {
+		return b.sendBack(ctx, in, in.Refusal)
 	}
-	return decision(ref, err), nil
+	if err := b.ops.AcceptInbound(ctx, in.ID, in.Request); err != nil {
+		if !payment.Answerable(err) {
+			return fmt.Errorf("server: %s cannot take on %s: %w", b.bic, in.ID, err)
+		}
+		return b.sendBack(ctx, in, err)
+	}
+	if _, err := b.ops.SettleAtBank(ctx, in.ID); err != nil {
+		return fmt.Errorf("server: %s took on %s and could not apply it: %w", b.bic, in.ID, err)
+	}
+	return nil
 }
 
-// decision is one transaction's outcome as a status report: accepted if cause is
-// nil, rejected with the code cause maps to if not.
-func decision(ref iso20022.PaymentIdentification, cause error) payment.TransactionStatusReport {
-	r := payment.TransactionStatusReport{
-		EndToEndID: ref.EndToEndId,
-		TxID:       ref.TxId,
-		Status:     iso20022.TransactionStatusAccepted,
-	}
-	if cause != nil {
-		r.Status = iso20022.TransactionStatusRejected
-		r.Code = payment.ReasonFor(cause)
-		r.Text = cause.Error()
-	}
-	return r
-}
-
-// refused is every transaction in a file rejected for one reason: what a bank
-// answers when the FILE, rather than any payment in it, is what it could not
-// deal with.
+// sendBack records a settled payment this bank cannot apply and returns it.
 //
-// Per transaction and not once for the file, because a pacs.002's group status
-// is DERIVED from the transactions inside it (payment's groupStatusOf) and a
-// sender matches an answer to an instruction by the transaction reference. A
-// single report naming no transaction says only that something went wrong with
-// something.
-func refused(refs []iso20022.PaymentIdentification, cause error) []payment.TransactionStatusReport {
-	out := make([]payment.TransactionStatusReport, 0, len(refs))
-	for _, ref := range refs {
-		out = append(out, decision(ref, cause))
-	}
-	return out
-}
-
-// refsIn is a file's transaction references, in the file's own order.
-func refsIn[T any](txs []T, of func(T) iso20022.PaymentIdentification) []iso20022.PaymentIdentification {
-	out := make([]iso20022.PaymentIdentification, 0, len(txs))
-	for _, tx := range txs {
-		out = append(out, of(tx))
-	}
-	return out
-}
-
-// answer uploads ONE pacs.002 to the clearing house carrying this bank's
-// decision about every transaction in the file it collected.
+// The row comes first and it is not bookkeeping for its own sake: a return is an
+// edge from Settled, so there has to BE a copy of this payment at this bank
+// before there is anything to return — and the money has to be somewhere this
+// bank can name, or its clearing suspense stands short with nothing explaining
+// it. payment.ReceiveUnappliedTx does both in one unit of work.
 //
-// One file in, one status file out, which is the shape a receiving bank actually
-// has: it is handed a batch and it reports on a batch. That is also what makes
-// GrpSts: PART reachable — payment's groupStatusOf says PART when a file's
-// transactions did not all go the same way, and until a file could carry more
-// than one there was nothing for it to describe.
+// The reason travels as a RETURN code and not as the rejection code the same
+// refusal would have carried an hour earlier. They are different external sets
+// and a pacs.004 may only carry a member of its own; see payment.ReturnReasonFor.
 //
-// To the CLEARING HOUSE and not to the banks that submitted, because those are
-// several different parties and this bank was never given any of their addresses
-// to answer at. Under this transport it could not reach them if it had: a member
-// bank dials the clearing house and the settlement agent and nobody else.
-//
-// An EMPTY set of reports uploads nothing. A pacs.002 with no transaction is not
-// a message this codec will build, and there is nothing to say: every
-// transaction in the file was one this bank had already answered.
-func (b *Bank) answer(ctx context.Context, to iso20022.BIC, orig payment.OriginalMessage,
-	reports []payment.TransactionStatusReport) error {
-
-	if len(reports) == 0 {
-		return nil
+// returnPayment is the ordinary first hop of any return, unchanged: this bank's
+// own leg posts before the file is uploaded, which is what makes a refusal bind.
+// Here the leg is the one ReceiveUnappliedTx left it — the unclaimed pool on a
+// push, its own claim on a pull — so there is nothing for it to refuse, which is
+// right: a bank cannot decline to hand back money it never paid out.
+func (b *Bank) sendBack(ctx context.Context, in payment.InboundTransaction, cause error) error {
+	if _, err := b.ops.ReceiveUnapplied(ctx, in.ID, in.Request); err != nil {
+		return fmt.Errorf("server: %s cannot apply %s and cannot record holding it: %w",
+			b.bic, in.ID, errors.Join(cause, err))
 	}
-	for _, r := range reports {
-		b.d.journal.outcome(TransactionOutcome{
-			DecidedBy: b.bic,
-			Payment:   payment.PaymentID(r.TxID),
-			Status:    r.Status,
-			Code:      r.Code,
-			Text:      r.Text,
-		})
+	b.d.journal.outcome(TransactionOutcome{
+		DecidedBy: b.bic,
+		Payment:   in.ID,
+		Status:    iso20022.TransactionStatusSettlementCompleted,
+		Code:      payment.ReasonFor(cause),
+		Text:      cause.Error(),
+	})
+	if err := b.returnPayment(ctx, in.ID, payment.ReturnReasonFor(cause), cause.Error()); err != nil {
+		return fmt.Errorf("server: %s cannot apply %s and cannot send it back: %w",
+			b.bic, in.ID, errors.Join(cause, err))
 	}
-	env, err := payment.StatusMessage(orig, reports, b.d.messageContext(b.bic, to))
-	if err != nil {
-		return fmt.Errorf("server: %s could not build its pacs.002 for %s: %w", b.bic, to, err)
-	}
-	// A rejection is NOT also returned as an error once it has been answered. A
-	// refusal that reached the counterparty is completed work, not a failure: the
-	// sender knows, the code says why, and the flow carries on. Returning it as
-	// well would make every AC01 a problem in the day's report — which is the
-	// channel for what nobody could be told.
-	_, err = b.upload(ctx, to, b.csm, env)
-	return err
+	return nil
 }
 
 // receiveStatus is a bank learning what became of a payment it is party to.

@@ -99,9 +99,16 @@ type bankOps interface {
 	// Both read a FILE and answer with one transaction per instruction in it,
 	// each carrying the id the submitting bank minted. A file this bank cannot
 	// read is refused entire — see payment.creditTransferIn.
+	//
+	// ReceiveUnapplied is the same half's other outcome, and it exists because
+	// the file arrives after finality: a transaction this bank will not take is
+	// not refused, it is HELD and sent back. It writes the row a return needs an
+	// edge from and parks the money the settlement already moved. See
+	// payment.ReceiveUnappliedTx and Bank.sendBack.
 	CreditTransferRequest(ctx context.Context, doc *iso20022.Pacs008) ([]payment.InboundTransaction, error)
 	DirectDebitRequest(ctx context.Context, doc *iso20022.Pacs003) ([]payment.InboundTransaction, error)
 	AcceptInbound(ctx context.Context, id payment.PaymentID, req payment.InitiatePaymentRequest) error
+	ReceiveUnapplied(ctx context.Context, id payment.PaymentID, req payment.InitiatePaymentRequest) (payment.Payment, error)
 
 	// ResolveIdentifier is the on-us check, and it is the one method here that is
 	// called from a door rather than from a handler: an instruction naming a payee

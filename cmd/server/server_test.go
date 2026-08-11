@@ -183,6 +183,31 @@ func carry(t *testing.T, s *server) {
 	}
 }
 
+// settle reaches the clearing house's cut-off on every open cycle and carries
+// what it produces, which is what a fixture needs when it wants the RECEIVING
+// side of a payment to exist at all.
+//
+// carry alone stops short of finality on purpose — the output files are held
+// until the cycle settles — so a test asserting on the payee's bank's copy has
+// to come this far. See Deployment.clear.
+func settle(t *testing.T, s *server) {
+	t.Helper()
+	var cycles []api.ClearingCycleDTO
+	getJSON(t, csmSurface(s), "/cycles", &cycles)
+	var closed int
+	for _, c := range cycles {
+		if c.Status != payment.CycleOpen.String() {
+			continue
+		}
+		assertStatus(t, csmSurface(s), "POST", "/cycles/"+c.ID+"/close", "", http.StatusOK)
+		closed++
+	}
+	if closed == 0 {
+		t.Fatalf("no cycle was open to cut off; the fixture has nothing to settle (cycles: %+v)", cycles)
+	}
+	carry(t, s)
+}
+
 // provisionMember writes one bank's three rows, gives it its place in this
 // deployment, and has every member pull the routing directory. It returns the
 // bank's participant id, which is what the routes below are keyed by.

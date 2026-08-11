@@ -148,6 +148,11 @@ func TestTheClearingHouseSortsAFileByCreditorAgent(t *testing.T) {
 	if files := h.filesOfTypeTo(t, h.cfg.ClearingHouseBIC, pacs008); len(files) != 1 {
 		t.Fatalf("the payer's bank uploaded %d files, want 1 carrying both payees", len(files))
 	}
+	// Through the cut-off, because a share reaches nobody until the cycle
+	// carrying it has settled. The SORT happens when the file is taken in; the
+	// RELEASE happens after finality, and this test is about the sort.
+	h.work(t)
+	h.closeCycle(t)
 	h.work(t)
 
 	for _, want := range []struct {
@@ -185,24 +190,40 @@ func TestTheClearingHouseSortsAFileByCreditorAgent(t *testing.T) {
 
 // A file whose transactions did not all go the same way comes back PART.
 //
-// payment's groupStatusOf has always computed it and has never been able to see
-// a mixed file, because until a file could carry more than one transaction there
-// was nothing for a group status to summarise. This is the test that gives it
-// one: two credit transfers to the same bank, one payee it holds and one it does
-// not.
+// payment's groupStatusOf has always computed it and needs a mixed file to
+// describe. The institution that builds one is the CLEARING HOUSE: it is the
+// only one left that judges an instruction before it settles, so it is the only
+// one whose answer can carry two different verdicts about one upload. A
+// receiving bank's objection now arrives after finality and travels as a
+// pacs.004, which has no group status at all.
+//
+// # The mixed file, and why it takes three banks and two assets to build one
+//
+// A payer cannot address a payment to a bank the scheme does not reach: its own
+// bank routes from its copy of the roster and refuses an unknown allocation at
+// the door (payment.ErrBankCodeUnknown). So the refusal has to be about
+// something the ROSTER holds and the DIRECTORY does not, and there is exactly
+// one such fact — which ASSETS a member clears in.
+//
+// Banco Tercero is admitted for euro. It is in everybody's directory, so a
+// dollar payment addressed to its customer is composed, uploaded and carried as
+// far as the clearing house, which holds the roster and is the first institution
+// in the chain able to say that this member does not clear dollars. RC01 — "the
+// BIC does not identify a reachable participant" — is the code, and it is exact.
 func TestAMixedFileIsAnsweredPART(t *testing.T) {
-	h := newHarness(t)
+	h := newHarnessWithTwoAssets(t)
+	_, carla := h.aThirdBank(t)
 
-	good := h.submit(t, h.creditTransferToAccount(t, h.creditorAcct, "payable"))
-	bad := h.submit(t, h.creditTransferRequestTo(t, unknownIBANAt(h.creditor)))
+	good := h.submitCreditTransferInUSD(t)
+	bad := h.submit(t, h.dollarsTo(t, carla))
 	h.cutOff(t, h.debtorBIC)
 	h.work(t)
 
-	// ONE answer, carrying both decisions. A receiving bank is handed a batch and
-	// reports on a batch.
-	answers := h.filesOfTypeTo(t, h.cfg.ClearingHouseBIC, "pacs.002.001.10")
+	// ONE answer, carrying both decisions. The clearing house is handed a batch
+	// and reports on a batch.
+	answers := h.filesOfTypeTo(t, h.debtorBIC, "pacs.002.001.10")
 	if len(answers) != 1 {
-		t.Fatalf("the payee's bank answered with %d status files, want 1", len(answers))
+		t.Fatalf("the clearing house answered with %d status files, want 1", len(answers))
 	}
 	report := answers[0].Document.(*iso20022.Pacs002).FIToFIPmtStsRpt
 	if got := report.OrgnlGrpInfAndSts.GrpSts; got != iso20022.GroupStatusPartiallyAccepted {
@@ -220,8 +241,8 @@ func TestAMixedFileIsAnsweredPART(t *testing.T) {
 	if got := byID[string(good.ID)].Status; got != iso20022.TransactionStatusAccepted {
 		t.Errorf("the payable transaction was answered %v, want ACCP", got)
 	}
-	if got := byID[string(bad.ID)].Code; got != iso20022.StatusReasonIncorrectAccountNumber {
-		t.Errorf("the unknown payee was answered %q, want AC01", got)
+	if got := byID[string(bad.ID)].Code; got != iso20022.StatusReasonBankIdentifierIncorrect {
+		t.Errorf("the payee at a euro-only member was answered %q, want RC01", got)
 	}
 
 	// And each payment ended where its own answer sent it, which is what a
@@ -231,31 +252,36 @@ func TestAMixedFileIsAnsweredPART(t *testing.T) {
 		t.Errorf("the payable transfer is %v, want Accepted", got.Status)
 	}
 	if got := h.payment(t, bad.ID); got.Status != payment.Rejected {
-		t.Errorf("the unpayable transfer is %v, want Rejected", got.Status)
+		t.Errorf("the unclearable transfer is %v, want Rejected", got.Status)
 	}
 	// The rejected payer got their money back and the accepted one did not: one
 	// amount is still in the clearing suspense, waiting for the cut-off.
-	if bal := h.suspense(t, h.debtorPID); bal != harnessAmount {
-		t.Errorf("the payer's clearing suspense = %d, want %d — one of the two was reversed", bal, harnessAmount)
+	if bal := h.balance(t, h.debtorPID, h.debtorUSDAcct.ID); bal != harnessFunding-harnessAmount {
+		t.Errorf("the payer's dollar balance = %d, want %d — one of the two was reversed",
+			bal, harnessFunding-harnessAmount)
 	}
 }
 
-// A bulk collection is the pull's half of the same rule, and it is a separate
-// test because the direction changes which bank posts.
+// A bulk collection settles whole and is RETURNED per transaction, which is the
+// pull's half of what a batch answer means after task 8.
 //
 // Two collections in one file, one payable and one not, and the refusal is the
 // PAYER's bank's own: it is the only institution that can see the account being
-// collected from. So a mixed pacs.003 proves something a mixed pacs.008 cannot —
-// that the bank answering per transaction is also POSTING per transaction.
-func TestABulkCollectionIsAnsweredPerTransaction(t *testing.T) {
-	h := newHarness(t)
+// collected from, and it sees it only once both collections have settled. So a
+// mixed pacs.003 proves something no rejection could — that a file settles as a
+// unit and comes apart into per-transaction outcomes at the bank that executes
+// it, one applied and one sent back.
+func TestABulkCollectionIsReturnedPerTransaction(t *testing.T) {
+	h := newHarnessWithASecondDepositor(t)
 
 	payable := h.submitDirectDebit(t)
 	// A second collection for more than the payer has left. The first takes
 	// harnessAmount out of an account holding harnessFunding, so a collection for
-	// the whole of the funding overdraws it once the first has posted.
+	// what remains plus a little overdraws it once the first has posted — while
+	// staying inside what the payer's BANK can settle, which is the other
+	// customer's money as well. See newHarnessWithASecondDepositor.
 	over := h.directDebitRequest(t)
-	over.Amount = harnessFunding
+	over.Amount = harnessFunding - harnessAmount + 1
 	over.Description = "subscription 8"
 	unpayable := h.submit(t, over)
 
@@ -265,21 +291,41 @@ func TestABulkCollectionIsAnsweredPerTransaction(t *testing.T) {
 		t.Fatalf("two collections became %d files, want 1", len(files))
 	}
 	h.work(t)
+	h.closeCycle(t)
+	h.work(t)
 
-	if got := h.payment(t, payable.ID); got.Status != payment.Accepted {
-		t.Errorf("the payable collection is %v, want Accepted", got.Status)
+	// BOTH settled. A cut-off nets a batch and discharges it whole; the payer's
+	// balance is not a question anybody asked at that point.
+	for _, id := range []payment.PaymentID{payable.ID, unpayable.ID} {
+		if got := h.payment(t, id); got.Status != payment.Settled {
+			t.Fatalf("%s is %v after the cut-off, want Settled", id, got.Status)
+		}
 	}
-	got := h.payment(t, unpayable.ID)
-	if got.Status != payment.Rejected {
-		t.Fatalf("the collection that overdraws its payer is %v, want Rejected", got.Status)
+	// And exactly one came back.
+	returns := h.filesOfTypeTo(t, h.cfg.ClearingHouseBIC, "pacs.004.001.09")
+	if len(returns) != 1 {
+		t.Fatalf("the payer's bank uploaded %d returns, want 1 — the file's other collection was payable", len(returns))
 	}
-	if got.RejectCode != iso20022.StatusReasonInsufficientFunds {
-		t.Errorf("reject code = %q, want AM04 — the payer's own bank is the only one that can say it", got.RejectCode)
+	body := returns[0].Document.(*iso20022.Pacs004).PmtRtr
+	if len(body.TxInf) != 1 || body.TxInf[0].OrgnlTxId != string(unpayable.ID) {
+		t.Fatalf("the return names %v, want just %s", body.TxInf, unpayable.ID)
 	}
-	// The payer was debited once and only once. A file answered as a whole would
+	if rsn := body.TxInf[0].RtrRsnInf; rsn == nil || rsn.Rsn.Cd == nil ||
+		*rsn.Rsn.Cd != iso20022.ReturnReasonInsufficientFunds {
+		t.Errorf("return reason = %v, want AM04 — the payer's own bank is the only one that can say it", rsn)
+	}
+	// The payer was debited once and only once. A file applied as a whole would
 	// have posted both legs or neither.
 	if bal := h.balance(t, h.debtorPID, h.debtorAcct.ID); bal != harnessFunding-harnessAmount {
 		t.Errorf("the payer's balance = %d, want %d", bal, harnessFunding-harnessAmount)
+	}
+
+	h.work(t)
+	if got := h.payment(t, unpayable.ID); got.Status != payment.Returned {
+		t.Errorf("the unpayable collection is %v, want Returned", got.Status)
+	}
+	if got := h.payment(t, payable.ID); got.Status != payment.Settled {
+		t.Errorf("the payable collection is %v after its neighbour was returned, want Settled", got.Status)
 	}
 }
 

@@ -52,6 +52,79 @@ func TestANetPayerWhoCannotCoverIsRejectedOnTheInstruction(t *testing.T) {
 	h.assertLastStatusTo(t, h.cfg.ClearingHouseBIC, iso20022.StatusReasonInsufficientFunds)
 }
 
+// A cut-off the settlement agent refuses releases NOTHING, and that is what
+// settling before releasing is FOR.
+//
+// The whole of the risk it removes is here. The payments in this cycle are
+// Cleared and no reserves have moved, and the bank that would be paid has never
+// heard of them — so there is no customer credited against money that is not
+// there, and nothing to unwind when the operator funds the short member and
+// instructs settlement again. Under the other order the payee's bank would be
+// holding an instruction it had already acted on for a cut-off that failed.
+func TestARefusedCutOffReleasesNothing(t *testing.T) {
+	h := newHarnessWithAnUnfundedReserve(t)
+	p := h.submitCreditTransfer(t)
+	h.work(t)
+	h.closeCycle(t)
+	h.work(t)
+
+	if got := h.payment(t, p.ID); got.Status != payment.Cleared {
+		t.Fatalf("payment status = %v, want Cleared — the cut-off has to have failed for this test to say anything", got.Status)
+	}
+	if files := h.filesOfTypeTo(t, h.creditorBIC, "pacs.008.001.08"); len(files) != 0 {
+		t.Errorf("the payee's bank was handed %d instruction files for a cut-off that did not settle, want 0", len(files))
+	}
+	if _, err := h.bank(h.creditorBIC).GetPayment(context.Background(), p.ID); err == nil {
+		t.Error("the payee's bank holds a copy of a payment nobody has settled")
+	}
+	if bal := h.balance(t, h.creditorPID, h.creditorAcct.ID); bal != 0 {
+		t.Errorf("the payee holds %d against a refused cut-off, want 0", bal)
+	}
+}
+
+// A payment the operator rejects out of an open cycle is CUT OUT of the share
+// its neighbours travel in.
+//
+// The share is built when the file is taken in and released when the cycle
+// settles, and an operator can reject in between — which is the one window in
+// which a held file can go out of date. So the release filters against what
+// actually settled: a bank handed a rejected transaction would credit a payee
+// out of a suspense the reserves for it never reached, and the submitting bank
+// has already been told RJCT and reversed its customer's debit.
+func TestARejectedPaymentIsCutOutOfTheShareItsNeighboursTravelIn(t *testing.T) {
+	h := newHarness(t)
+	kept := h.submit(t, h.smallTransfer(t, "invoice 1"))
+	pulled := h.submit(t, h.smallTransfer(t, "invoice 2"))
+	h.cutOff(t, h.debtorBIC)
+	h.work(t)
+
+	if _, err := h.dep.ClearingHouse().Reject(context.Background(), pulled.ID,
+		iso20022.StatusReasonDuplication, "cancelled by the payer"); err != nil {
+		t.Fatalf("Reject: %v", err)
+	}
+	h.closeCycle(t)
+	h.work(t)
+
+	files := h.filesOfTypeTo(t, h.creditorBIC, "pacs.008.001.08")
+	if len(files) != 1 {
+		t.Fatalf("the payee's bank was handed %d files, want 1", len(files))
+	}
+	body := files[0].Document.(*iso20022.Pacs008).FIToFICstmrCdtTrf
+	if len(body.CdtTrfTxInf) != 1 || body.CdtTrfTxInf[0].PmtId.TxId != string(kept.ID) {
+		t.Fatalf("the released share carries %d transactions, want only %s", len(body.CdtTrfTxInf), kept.ID)
+	}
+	if body.GrpHdr.NbOfTxs != "1" {
+		t.Errorf("the share of one asserts NbOfTxs=%q", body.GrpHdr.NbOfTxs)
+	}
+	// And the payee was paid once, for the transaction that survived.
+	if bal := h.balance(t, h.creditorPID, h.creditorAcct.ID); bal != harnessAmount/2 {
+		t.Errorf("the payee holds %d, want %d", bal, harnessAmount/2)
+	}
+	if got := h.payment(t, pulled.ID); got.Status != payment.Rejected {
+		t.Errorf("the rejected payment is %v", got.Status)
+	}
+}
+
 // TestARefusedSettlementCanBeInstructedAgain walks the whole way out of the one
 // state this system had no exit from.
 //
@@ -358,36 +431,30 @@ func TestOneSettlementInstructionPerAsset(t *testing.T) {
 	}
 }
 
-// TestASettledCollectionIsAnnouncedToThePayeesBank is the fan-out's other
+// TestASettledCollectionIsAnnouncedToThePayeesBank is the release's other
 // direction, and it is the one that says who is actually waiting.
 //
 // On a push the bank that submitted and the bank that is owed an answer are the
-// payer's, and they are the same bank, so a fan-out that simply addressed the
+// payer's, and they are the same bank, so an advice that simply addressed the
 // payer would look right. On a PULL they are opposite: the payee's bank sent the
-// collection and has been waiting since, and the payer's bank answered it long
-// ago and has nothing outstanding. Settlement is the moment the payee's bank is
-// actually paid, and this message is what tells it to pay its own customer, so
-// it closes the thing it started and starts the last posting the payment needs.
+// collection and has been waiting since, and the payer's bank has never heard of
+// it. Settlement is the moment the payee's bank is actually paid, and this
+// message is what tells it to pay its own customer.
 //
-// # ONE message to the payee's bank and one to the payer's
+// # ONE message to the payee's bank, and an INSTRUCTION to the payer's
 //
-// Addressing two ROLES — the bank that submitted, and the CREDITOR's bank, which
-// has the leg to post — would send a single message on a pull, where those are
-// one institution, and tell the payer's bank nothing at all. It holds its own
-// copy of the payment and cannot read anybody's, so it has a row to close.
+// Both banks hear from the clearing house at the cut-off and they hear different
+// things, which is what settling before releasing made of the old fan-out. The
+// submitter gets a pacs.002 saying ACSC — the answer to the question it asked.
+// The payer's bank gets the pacs.003 itself, for the first time, because until
+// the cycle settled there was nothing safe to hand it: that file is both its
+// instruction and its news, and it writes its own copy and executes it in one
+// go.
 //
-// The argument was about WAITING and the message is not only for waiting. Each
-// institution holds its own copy of this payment now and nobody can write
-// another's, so a payer's bank that is never told keeps a row saying Initiated
-// for ever about a payment whose reserves have moved — and then refuses to
-// return it, because a return is an edge from Settled. Three return tests were
-// exactly that. So the third reason to be told is a ROW TO CLOSE, and it belongs
-// to whichever bank has neither of the first two.
-//
-// The counts are still what catch a fan-out that sent the same advice twice —
-// SettleAtBankTx's Settled guard makes a second one a no-op, so the money would
-// be right and only the conversation wrong — and they are ONE EACH rather than
-// one and none. See csm.tellSettled.
+// The counts are what catch a release that sent the same thing twice —
+// SettleAtBankTx's Settled guard and AcceptInboundTx's row witness both make a
+// second one a no-op, so the money would be right and only the conversation
+// wrong.
 func TestASettledCollectionIsAnnouncedToThePayeesBank(t *testing.T) {
 	h := newHarness(t)
 	p := h.submitDirectDebit(t)
@@ -396,7 +463,6 @@ func TestASettledCollectionIsAnnouncedToThePayeesBank(t *testing.T) {
 	// Counted from here, so the ACCP this bank was already sent when it
 	// submitted is not in the total.
 	before := h.statusesSentTo(h.creditorBIC)
-	debtorBefore := h.statusesSentTo(h.debtorBIC)
 	h.closeCycle(t)
 	h.work(t)
 
@@ -407,11 +473,17 @@ func TestASettledCollectionIsAnnouncedToThePayeesBank(t *testing.T) {
 	if got := h.statusesSentTo(h.creditorBIC) - before; got != 1 {
 		t.Errorf("the payee's bank was sent %d statuses over the cut-off; it is the submitter AND the creditor's bank, which is one message", got)
 	}
-	if got := h.statusesSentTo(h.debtorBIC) - debtorBefore; got != 1 {
-		t.Errorf("the payer's bank was sent %d statuses over the cut-off; it holds a copy of this payment and has one row to close, which is one message", got)
+	// The payer's bank was sent the collection and no status at all. It asked
+	// nothing, so there is nothing to answer it with; what it needs is the
+	// instruction, and one is what it got.
+	if got := h.messagesSentTo(h.debtorBIC, "pacs.003.001.08"); got != 1 {
+		t.Errorf("the payer's bank was handed %d collections over the cut-off, want 1", got)
 	}
-	// And it really did close it, which is what the message is for on this side:
-	// no leg to post, and a copy that can now be returned from.
+	if got := h.statusesSentTo(h.debtorBIC); got != 0 {
+		t.Errorf("the payer's bank was sent %d statuses; it never asked this network anything", got)
+	}
+	// And it executed what it was handed, which is the last posting the payment
+	// needs and the only one that touches the payer's account.
 	if got := h.bankPayment(t, h.debtorBIC, p.ID); got.Status != payment.Settled {
 		t.Errorf("the payer's own copy is %v after the cut-off, want Settled", got.Status)
 	}
@@ -646,19 +718,19 @@ func TestTheMessagesACutOffPutsOnTheWire(t *testing.T) {
 	instruction := hop{h.cfg.ClearingHouseBIC, h.cfg.CentralBankBIC, "pacs.009.001.08"}
 	answer := hop{h.cfg.CentralBankBIC, h.cfg.ClearingHouseBIC, "pacs.002.001.10"}
 	fanOut := hop{h.cfg.ClearingHouseBIC, h.debtorBIC, "pacs.002.001.10"}
-	// The two the payee's bank receives, and the pair whose order is forced.
-	// The creditor's bank's copy of the advice is the second message a push
-	// produces for one payment, and it is the one that causes a POSTING; the
-	// statement is what credits the suspense that posting draws on. See
-	// bank.receiveStatus and centralBank.advise.
+	// The two the payee's bank receives, and the pair whose order is forced. The
+	// INSTRUCTION is what that bank is handed at the cut-off — released only now,
+	// because until the cycle settled there was nothing safe to give it — and it
+	// is what causes the POSTING; the statement is what credits the suspense that
+	// posting draws on. See bank.apply and centralBank.advise.
 	payeeStatement := hop{h.cfg.CentralBankBIC, h.creditorBIC, "camt.053.001.08"}
-	payeeAdvice := hop{h.cfg.ClearingHouseBIC, h.creditorBIC, "pacs.002.001.10"}
+	payeeFile := hop{h.cfg.ClearingHouseBIC, h.creditorBIC, "pacs.008.001.08"}
 	want := map[hop]int{
 		instruction:    1,
 		answer:         1,
 		fanOut:         1,
 		payeeStatement: 1,
-		payeeAdvice:    1,
+		payeeFile:      1,
 		{h.cfg.CentralBankBIC, h.debtorBIC, "camt.053.001.08"}: 1,
 	}
 	h.mu.Lock()
@@ -691,16 +763,16 @@ func TestTheMessagesACutOffPutsOnTheWire(t *testing.T) {
 			h.debtorBIC, order[fanOut], order[answer])
 	}
 	// The load-bearing pair, and not a chain argument: both of these are handled
-	// by the PAYEE'S BANK, one goroutine popping one FIFO queue, so their order
-	// here is that bank's handling order. The statement credits the clearing
-	// suspense; the advice is what makes the creditor leg draw on it. The other
-	// way round and that bank pays its customer out of a suspense the cut-off
-	// has not credited yet. centralBank.advise sends before it answers for
-	// exactly this reason.
-	if order[payeeStatement] > order[payeeAdvice] {
-		t.Errorf("the payee's bank handled the ACSC at %d and its own camt.053 at %d; "+
+	// by the PAYEE'S BANK, which collects from the settlement agent before it
+	// collects from the clearing house, so their order here is that bank's own
+	// collection order. The statement credits the clearing suspense; the released
+	// instruction is what makes the creditor leg draw on it. The other way round
+	// and that bank pays its customer out of a suspense the cut-off has not
+	// credited yet. Deployment.clear's last phase is where that order is decided.
+	if order[payeeStatement] > order[payeeFile] {
+		t.Errorf("the payee's bank handled its released instruction at %d and its own camt.053 at %d; "+
 			"the statement credits the suspense the creditor leg draws on and must come first",
-			order[payeeAdvice], order[payeeStatement])
+			order[payeeFile], order[payeeStatement])
 	}
 }
 

@@ -498,8 +498,14 @@ func TestPayingAfterAResetGoesThroughTheReseededBanks(t *testing.T) {
 // work, before anything is sent, so it comes back as a status code in the
 // response to the request that caused it. A payment the FAR SIDE refuses cannot:
 // by the time the payee's bank has looked at the address, this handler has
-// answered 202 and the connection is gone. The refusal lands on the payment's
+// answered 202 and the connection is gone. The outcome lands on the payment's
 // own row instead, and the caller finds it by asking again.
+//
+// What the far side's refusal IS has moved. It is handed the instruction only
+// after the cycle carrying it is final, so it cannot reject: the payment settles,
+// the payee's bank sends it back, and the row the caller reads ends up Returned.
+// The caller's experience is the same shape either way — ask again — which is the
+// half this test is about.
 //
 // Both halves are asserted here because the split is what ruling 4 of this task
 // is about, and either half alone would be satisfied by a system that had got the
@@ -529,13 +535,19 @@ func TestWhichRefusalsReachTheCallerAndWhichDoNot(t *testing.T) {
 	id := decodePaymentID(t, rec)
 
 	carry(t, srv)
+	if got := getPayment(t, srv, id); got.Status != "Accepted" {
+		t.Fatalf("status before the cut-off = %q, want Accepted — nothing the far side says can reach it yet", got.Status)
+	}
+
+	// Through the cut-off and the return it provokes. The payee's bank is handed
+	// the instruction, cannot resolve the address, and sends the money back; the
+	// second pass is the return's own trip through the settlement agent.
+	settle(t, srv)
+	carry(t, srv)
 
 	got := getPayment(t, srv, id)
-	if got.Status != "Rejected" {
-		t.Errorf("status after draining = %q, want Rejected — the payee's bank cannot resolve that address", got.Status)
-	}
-	if got.RejectCode != "AC01" {
-		t.Errorf("reject code = %q, want AC01 — the refusal reached the payment even though it could not reach the caller", got.RejectCode)
+	if got.Status != "Returned" {
+		t.Errorf("status after the cut-off = %q, want Returned — the payee's bank cannot resolve that address", got.Status)
 	}
 }
 

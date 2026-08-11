@@ -835,8 +835,7 @@ func TestWhichBooksEachBankActuallyReaches(t *testing.T) {
 	h := newHarness(t) // builds a seeded network over a recordingStore
 
 	h.rec.reset()
-	h.submitCreditTransfer(t)
-	h.work(t)
+	h.settle(t, h.submitCreditTransfer(t))
 
 	assertBooksTouched(t, "the payer's bank", h.booksTouchedBy(h.debtorBIC),
 		[]ledger.BookID{h.debtorBook})
@@ -886,10 +885,13 @@ func TestWhichBooksEachBankActuallyReaches(t *testing.T) {
 // shows the two arriving in the same place, and they arrive there because the
 // same institution owns both.
 //
-// # ONE measurement, after the drain, and it distinguishes both wrong flows
+// # ONE measurement, over a whole business day, and it distinguishes both wrong
+// flows
 //
-// A single set per actor over the whole chain, taken after Drain, which is the
-// only barrier this package has and a real one.
+// A single set per actor over the whole chain, taken once the payment is final.
+// It has to run that far: the payer's bank is handed the collection only after
+// the cycle settles, so a measurement stopping at the cut-off would find that
+// bank untouched and prove nothing about which institution executed it.
 //
 // The obvious worry is that a single set is a UNION over both roles, so a bank
 // that played both might produce a union colliding with a legitimate one.
@@ -926,8 +928,7 @@ func TestWhichBooksEachBankReachesInAPull(t *testing.T) {
 	h := newHarness(t)
 
 	h.rec.reset()
-	h.submitDirectDebit(t)
-	h.work(t)
+	h.settle(t, h.submitDirectDebit(t))
 
 	assertBooksTouched(t, "the payee's bank, submitting a collection", h.booksTouchedBy(h.creditorBIC),
 		[]ledger.BookID{h.creditorBook})

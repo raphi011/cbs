@@ -155,9 +155,12 @@ func TestTheDayReportNamesWhatMovedAndWhoDecidedWhat(t *testing.T) {
 			t.Errorf("a file in the report is %+v; every one names both ends, a type and an order id", f)
 		}
 	}
-	// The payment's own life, in the order three institutions decided it: the
-	// payee's bank accepts the instruction, the clearing house clears it, and the
-	// clearing house reports it settled once the reserves have moved.
+	// The payment's own life, in the order it was decided — and both decisions
+	// are the CLEARING HOUSE's, which is what settling before releasing did to
+	// the report. It validates the instruction and takes it into a cycle, and it
+	// reports the payment settled once the reserves have moved. The payee's bank
+	// decides nothing: it is handed an instruction that is already final, and its
+	// only remaining answer is a return.
 	var decided []iso20022.BIC
 	for _, o := range report.Outcomes {
 		if o.Payment != p.ID {
@@ -165,9 +168,9 @@ func TestTheDayReportNamesWhatMovedAndWhoDecidedWhat(t *testing.T) {
 		}
 		decided = append(decided, o.DecidedBy)
 	}
-	want := []iso20022.BIC{h.creditorBIC, h.cfg.ClearingHouseBIC, h.cfg.ClearingHouseBIC}
+	want := []iso20022.BIC{h.cfg.ClearingHouseBIC, h.cfg.ClearingHouseBIC}
 	if len(decided) != len(want) {
-		t.Fatalf("the report carries %v for this payment, want one decision each from %v", decided, want)
+		t.Fatalf("the report carries %v for this payment, want %v", decided, want)
 	}
 	for i := range want {
 		if decided[i] != want[i] {
