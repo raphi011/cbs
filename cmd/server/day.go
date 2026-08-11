@@ -81,14 +81,13 @@ type TransactionOutcome struct {
 	Text      string
 }
 
-// Problem is a file an institution could not process, and it is what replaces
-// the dead letter.
+// Problem is a file an institution could not process.
 //
-// Under a transport that pushed, a handler with no caller had nowhere to put a
-// failure and the bus accounted for it. Under pull, the institution that cannot
-// process a file is running its own business day and this is where it puts it:
-// against the order id the file arrived under, at the institution that could
-// not get through it.
+// An institution that cannot process a file it downloaded has nobody to return
+// the error to — the uploader was told EBICS_OK and went away. What it has
+// instead is its own business day, which is running, and this is where the
+// failure goes: against the order id the file arrived under, at the institution
+// that could not get through it.
 //
 // OrderID is empty where the failure was not about one file — a download that
 // could not be made at all, say — because there is no order to name.
@@ -167,9 +166,9 @@ func (j *journal) take() ([]FileMoved, []TransactionOutcome, []Problem) {
 // A DayReport is what a business day did: the day it ran on, the day it left
 // the clock on, and everything that moved in between.
 //
-// It is strictly more than the transport it replaces could say. A drain hands
-// back dead letters joined into a string; this is a value the operator console
-// renders, the suite asserts against and the seed checks — and it is what makes
+// It is a VALUE rather than an error string, which is what lets the operator
+// console render it, the suite assert against it and the seed check it — and it
+// is what makes
 // the day legible, because a learner can watch a payment move through the
 // phases instead of observing that it has arrived.
 type DayReport struct {

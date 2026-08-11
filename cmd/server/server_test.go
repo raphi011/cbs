@@ -3397,7 +3397,7 @@ func mistype(address string) string {
 // built its pacs.008 in a second, and an unaddressable payee fails the second —
 // so a request the API reported as refused moved 1000 out of Alice's account,
 // into a clearing suspense, against a payment nobody would ever answer. No
-// message had been sent, so there was not even a dead letter; a client that
+// file had been uploaded, so there was nothing in any day's report; a client that
 // retried the refusal drained the account. payment.TakeInstruction is the fix,
 // and these assertions are what would have seen it: the status codes alone were
 // all green throughout.

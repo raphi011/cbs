@@ -1650,7 +1650,7 @@ func (h *harness) urlOf(bic iso20022.BIC) string {
 // It is how a test asserts on ONE conversation in a fixture that has already
 // carried others: a return starts from a settled payment, so by the time it
 // begins the wire is six messages deep and none of them is what the test is
-// about. Copied under the lock, because actor goroutines are still appending.
+// about. Copied under the lock, because listener goroutines are still appending.
 func (h *harness) messagesFrom(mark int) []tappedMessage {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -1661,7 +1661,7 @@ func (h *harness) messagesFrom(mark int) []tappedMessage {
 // definition handed to one actor.
 //
 // Raw, and not parsed: what it is for is REDELIVERY — putting the very bytes an
-// actor already handled back into its inbox, which is the only way to provoke
+// institution already handled back into its download queue, which is the only way to provoke
 // what a queue does on its own in a real network. lastStatusTo parses because
 // its callers are reading an answer; this one's caller is replaying a message.
 func (h *harness) lastMessageOfTypeTo(t *testing.T, to iso20022.BIC, msgDef string) []byte {

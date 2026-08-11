@@ -131,7 +131,7 @@ type BankAccounts struct {
 	// Cash paid in debits this and credits the customer, in this book and nowhere
 	// else. Nothing about it involves the central bank, because nothing about a
 	// customer handing over notes does: the bank holds that money as cash until it
-	// chooses to do something else with it. mesh's
+	// chooses to do something else with it.
 	// TestTakingCashInReachesNoOtherInstitution is what measures the absence.
 	//
 	// # What moves it onward is a conversation
@@ -201,7 +201,7 @@ type Bank struct {
 	Name string
 
 	// BIC is this bank's ISO 9362 business identifier code: what a
-	// counterparty addresses it by, and what the mesh routes on.
+	// counterparty addresses it by, and what names its download queue.
 	//
 	// It is here rather than derived from ID or Name because a BIC is issued
 	// by SWIFT, not chosen: "AURODEFFXXX" and "Aurora Bank" have no

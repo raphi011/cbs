@@ -187,7 +187,7 @@ func (s *recordingStores) noterFor(ctx context.Context, unit map[ledger.BookID]b
 }
 
 // note records one book access, against the whole store and against the actor
-// that made it. It is called from actor goroutines, so it takes the lock — the
+// that made it. It is called from listener goroutines, so it takes the lock — the
 // harness serves both hosts on HTTP listeners, whose goroutines touch the same store
 // concurrently.
 //

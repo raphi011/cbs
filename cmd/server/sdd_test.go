@@ -255,7 +255,7 @@ func TestDirectDebitWithNoOpenCycleIsTM01(t *testing.T) {
 //
 // The submitter is made unaddressable rather than the payer's bank, because
 // that is the direction the ordering has to survive. Both are attempted and both
-// errors come back joined, so the dead letter still names what went wrong.
+// errors come back joined, so the report still names what went wrong.
 //
 // # How the submitter is made unaddressable, and what stopped working
 //

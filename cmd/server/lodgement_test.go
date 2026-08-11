@@ -94,11 +94,11 @@ func TestAStoreFailureAtTheAgentIsNotARefusal(t *testing.T) {
 	mark := h.messagesSeen()
 	err := cb.receiveLodgement(context.Background(), h.debtorBIC, hdr, doc)
 	if err == nil {
-		t.Fatal("a store failure at the settlement agent was ANSWERED rather than dead-lettered; " +
+		t.Fatal("a store failure at the settlement agent was ANSWERED rather than reported; " +
 			"the member has posted its leg and is now being told the lodgement did not happen")
 	}
 	if !errors.Is(err, broken) {
-		t.Errorf("the dead letter does not carry the cause: %v", err)
+		t.Errorf("the reported problem does not carry the cause: %v", err)
 	}
 	// The tap records a file when it CROSSES, so a receipt sitting in a queue is
 	// not on it until somebody collects. The camt.050 was never uploaded — this
@@ -122,7 +122,7 @@ func TestAStoreFailureAtTheAgentIsNotARefusal(t *testing.T) {
 //
 // It also pins the LIST against payment.ReceiveLodgementTx's "What it refuses"
 // section. The two are a pair maintained by hand, and a sentinel added there and
-// not here would silently become a dead letter.
+// not here would silently become a line in the day's report.
 //
 // Each is wrapped before it is returned, because that is how the domain returns
 // them — with the BIC and the account the refusal is about, which is the prose the
@@ -144,7 +144,7 @@ func TestALodgementRefusalIsAJudgement(t *testing.T) {
 			}
 
 			if err := cb.receiveLodgement(context.Background(), h.debtorBIC, hdr, doc); err != nil {
-				t.Fatalf("a judgement about the request became a dead letter: %v", err)
+				t.Fatalf("a judgement about the request became a reported problem: %v", err)
 			}
 			h.work(t)
 

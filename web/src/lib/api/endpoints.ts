@@ -635,8 +635,9 @@ export function getPayment(payid: string): Promise<Payment> {
 
 // The operator's console initiating on a bank's behalf. Like the retail route
 // above, the answer is 202 — the payment it hands back is Initiated, in no cycle
-// and unseen by the payee's bank, because the mesh carries it the rest of the way
-// afterwards. Read it again to learn what became of it.
+// and unseen by the payee's bank, because it is waiting in that bank's hub for
+// the next cut-off. Advancing the day is what carries it; read it again
+// afterwards to learn what became of it.
 export function initiatePayment(
   body: InitiatePaymentRequest,
 ): Promise<Payment> {

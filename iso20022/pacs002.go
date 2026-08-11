@@ -16,8 +16,9 @@ func init() {
 //
 // This is the message that makes clearing ASYNCHRONOUS. A bank sends an
 // instruction and does not learn its fate from the sending; it learns it later,
-// from a separate document that refers back by identifier. The 202 Accepted, the
-// status query and the mesh all follow from this message existing.
+// by COLLECTING a separate document that refers back by identifier. The 202
+// Accepted, the status query and the download queue all follow from this message
+// existing.
 type Pacs002 struct {
 	XMLName         xml.Name                  `xml:"urn:iso:std:iso:20022:tech:xsd:pacs.002.001.10 Document"`
 	FIToFIPmtStsRpt FIToFIPaymentStatusReport `xml:"FIToFIPmtStsRpt"`

@@ -329,7 +329,7 @@ func TestAReturnedCollectionIsSentByThePayersBank(t *testing.T) {
 // asking twice. payment.PostReturnLegTx refuses it too, with
 // ErrInvalidStateTransition, and that sentinel is the one payment's reasonTable
 // gives the empty code: an institution that received such a return could only
-// dead-letter it, so the operator who asked would hear nothing. Refused at the
+// report it, so the operator who asked would hear nothing. Refused at the
 // door, it is the caller's answer and it names the status.
 //
 // And nothing goes on the wire either way, which is the second half of the
@@ -414,7 +414,7 @@ func TestARedeliveredReturnIsReportedAndNotAnswered(t *testing.T) {
 	answered := h.statusesSentTo(h.creditorBIC)
 	h.injectRaw(t, h.cfg.ClearingHouseBIC, h.cfg.CentralBankBIC, relayed)
 
-	// Errorf and not Fatalf: "dead-lettered" and "not answered" are two claims,
+	// Errorf and not Fatalf: "reported" and "not answered" are two claims,
 	// and a settlement agent that answered this instead would break both at
 	// once. Stopping at the first would leave the second unobserved in exactly
 	// the case it exists for.
@@ -492,7 +492,7 @@ func TestAReturnTheSettlementAgentCannotActOnWholeIsRefused(t *testing.T) {
 			h.upload(t, h.creditorBIC, h.cfg.ClearingHouseBIC, env)
 			h.work(t)
 
-			// Answered, not dead-lettered: this is a judgement about the
+			// Answered, not reported: this is a judgement about the
 			// message, and the bank that sent it can act on the answer.
 			h.assertLastTxStatusTo(t, h.creditorBIC, iso20022.TransactionStatusRejected)
 			// The exact refusal, not merely a refusal: the two checks refuse
@@ -659,7 +659,7 @@ func TestAProprietaryReturnReasonReachesTheLedgersToo(t *testing.T) {
 // the schema and iso20022's ReturnTransaction.validate accepts either. This
 // system identifies payments by OrgnlTxId, so such a message names no payment
 // this network holds. The sender is told nothing and the payment is untouched;
-// what is dead-lettered is the answer.
+// what is reported is the answer.
 //
 // # WHERE it dies has moved, and half the limit is closed
 //
@@ -701,10 +701,10 @@ func TestAReturnThatNamesNoPaymentCannotBeAnswered(t *testing.T) {
 	answered := h.statusesSentTo(h.creditorBIC)
 	err = h.workErr(t)
 	if err == nil {
-		t.Fatal("Drain was clean; a return the settlement agent could neither execute nor answer went unreported")
+		t.Fatal("the day was clean; a return the settlement agent could neither execute nor answer went unreported")
 	}
 	if !strings.Contains(err.Error(), "naming no payment") || !strings.Contains(err.Error(), string(h.cfg.ClearingHouseBIC)) {
-		t.Errorf("the dead letter %q is not the clearing house unable to say which payment the answer is about", err)
+		t.Errorf("the reported problem %q is not the clearing house unable to say which payment the answer is about", err)
 	}
 	if got := h.statusesSentTo(h.creditorBIC); got != answered {
 		t.Errorf("the bank was sent %d statuses about a return that names no payment; the answer cannot be built", got-answered)
@@ -1169,7 +1169,7 @@ func TestTheClearingHousesOtherCallersLeaveTheHeldReturnsAlone(t *testing.T) {
 	h.dep.csm.held["pay_sentinel"] = held
 
 	// A cut-off, a re-instruction, and an operator's rejection: the three
-	// entry points that do not arrive in an inbox.
+	// entry points that do not arrive in a download queue.
 	if _, err := h.net.OpenCycle(context.Background(), payment.SchemeSEPACT); err != nil {
 		t.Fatalf("OpenCycle: %v", err)
 	}

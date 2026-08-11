@@ -52,9 +52,9 @@ import (
 // Two asks for one bank must answer with stores that see the same rows. On a
 // file that is merely wasteful to get wrong; on an ephemeral database it is
 // fatal, because a second Open would mint a second random name and the bank
-// would forget everything it had written. So the map is the point of this type
-// and the mutex is what makes it safe for the mesh, which opens banks from
-// whichever goroutine admits them.
+// would forget everything it had written. So the map is the point of this type,
+// and the mutex is what makes it safe for the listeners, which serve requests on
+// whichever goroutine net/http hands them and open banks on demand.
 type Set struct {
 	// dir is where the databases live, or "" for an ephemeral set.
 	dir   string
@@ -198,8 +198,8 @@ func (s *Set) Bank(ctx context.Context, bic iso20022.BIC) (payment.Store, error)
 // each listed bank's own row and got ErrParticipantNotFound; cmd/server's plan
 // would bind a listener per phantom, and fail startup naming a bank nobody has
 // heard of. Both are the same wrong claim — that a file is a bank — and
-// TestResetRebuildsTheMeshSoAReadmittedBankCanPay asserts the right one: a reset
-// with no reseed leaves no members.
+// TestResetRebuildsTheDeploymentSoAReadmittedBankCanPay asserts the right one: a
+// reset with no reseed leaves no members.
 //
 // The alternative was for Reset to CLOSE and delete what it empties, and it was
 // rejected because a running process cannot survive it. cmd/server binds each
@@ -311,9 +311,9 @@ func (s *Set) CentralBankStore() *Store   { return s.cb }
 // It empties them one at a time and in no particular order, and there is nothing
 // to be gained by doing better: these are separate databases, so there is no
 // transaction that could span them and no ordering in which a half-reset system
-// is consistent. That is the same fact the mesh models everywhere else — an
-// interval between two institutions' units of work — and api.Server.Reset holds
-// its own lock over the whole thing.
+// is consistent. That is the same fact the business day models everywhere else —
+// an interval between two institutions' units of work — and the reset route
+// holds its own lock over the whole thing.
 //
 // The first failure stops it and is returned. A partially emptied system is not
 // a state anything recovers from, and pressing on would only make it larger.

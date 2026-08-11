@@ -42,10 +42,10 @@ func init() {
 // That single absence decides the shape of the whole conversation, so it is
 // recorded here rather than only where it bites. A bank cannot post its own leg
 // of a lodgement FROM this message, because the message does not say how much;
-// so the bank posts before it sends, exactly as a submitting bank does
-// (Mesh.Submit), and the alternative — remembering the outstanding request in the
-// actor — is the shape csm.held already has and already pays for. See
-// payment.LodgeReservesTx.
+// so the bank posts before it uploads, exactly as a submitting bank does, and
+// the alternative — remembering the outstanding request in memory at the
+// requester — is the shape a clearing house's held returns already have and
+// already pay for. See payment.LodgeReservesTx.
 //
 // # What the schema said, checked rather than recalled
 //

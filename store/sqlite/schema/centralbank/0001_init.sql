@@ -73,7 +73,7 @@ CREATE TABLE books (
     -- There is one thing to add that is only true here. A process in which every
     -- payment.Network holds a ledger.Book over payment.CentralBankBook makes this
     -- book reachable from all of them, and the only thing then keeping a member
-    -- bank's handler out is that the mesh's bankOps names no method reaching it.
+    -- bank's handler out is that bankOps in cmd/server names no method reaching it.
     -- Only this institution's network holds the book, and only this institution's
     -- DATABASE holds the rows — which is what makes the refusal a fact rather
     -- than a field being nil.

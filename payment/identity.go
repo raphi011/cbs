@@ -34,9 +34,9 @@ type Identity struct {
 	pid  ParticipantID
 }
 
-// role is the kind of institution, and there are exactly three because the mesh
-// has exactly three actors and cmd/server/ops.go is their enumeration: bankOps,
-// csmOps, settlementOps.
+// role is the kind of institution, and there are exactly three because a
+// deployment holds exactly three kinds and cmd/server/ops.go is their
+// enumeration: bankOps, csmOps, settlementOps.
 //
 // It is unexported, and the three constructors below are the only way to name
 // one, so a caller cannot build an identity this package has no acts for.
@@ -64,8 +64,8 @@ const (
 func AsBank(pid ParticipantID) Identity { return Identity{role: roleBank, pid: pid} }
 
 // AsClearingHouse is the CSM's identity: it clears, it nets, it routes, and it
-// holds no book of accounts at all. See csmOps in the mesh, which is the list of
-// what it may reach, and TestTheCSMTouchesOnlyItsOwnBook, which is the
+// holds no book of accounts at all. See csmOps in cmd/server, which is the list
+// of what it may reach, and TestTheCSMTouchesOnlyItsOwnBook, which is the
 // measurement that it reaches nothing else.
 func AsClearingHouse() Identity { return Identity{role: roleClearingHouse} }
 
@@ -76,8 +76,8 @@ func AsCentralBank() Identity { return Identity{role: roleCentralBank} }
 // Participant is the bank this identity is, and ok is false for the other two.
 //
 // It exists for the layers above that already carry the same id for their own
-// reasons — api's bound listener, the mesh's index of actors — so that they can
-// check the two agree rather than keep two answers to one question.
+// reasons — api's bound listener, a deployment's banks by address — so that they
+// can check the two agree rather than keep two answers to one question.
 func (i Identity) Participant() (ParticipantID, bool) {
 	return i.pid, i.role == roleBank
 }
@@ -101,9 +101,9 @@ func (i Identity) String() string {
 // store.
 //
 // It is the composition root's handle and the ONLY thing that holds more than
-// one institution's view: cmd/server builds one, api takes one and binds each
-// listener to the single Network its surface belongs to, and the mesh takes one
-// and gives each actor its own. Nothing downstream of those two holds a second.
+// one institution's view: cmd/server builds one, gives each of its institutions
+// the single Network that institution IS, and api binds each listener to the
+// same one. Nothing downstream holds a second.
 //
 // The store is a property of the entity being asked for, which costs one thing:
 // Bank takes a context and returns an error, because opening a database can

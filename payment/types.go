@@ -332,8 +332,8 @@ type Payment struct {
 	// Both, not either, for a rejection: the code is what makes it
 	// machine-actionable — it is the entire point of ISO 20022's external
 	// code sets — and the text is what says the part no code can. A rejection
-	// produced inside this system without a code would be one the mesh could
-	// not put in a pacs.002.
+	// produced inside this system without a code would be one no institution
+	// could put in a pacs.002.
 	//
 	// A RETURN (Status == Returned, set by PostReturnLegTx when the SECOND of
 	// the two banks posts its leg) is not a rejection and does not set

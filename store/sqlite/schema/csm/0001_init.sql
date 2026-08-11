@@ -85,7 +85,7 @@ CREATE TABLE roster_entries (
     -- What writes this row identifies the account owner by BIC and delivers no
     -- legal name, so a name here could only be the clearing house remembering
     -- something nobody told it — and nothing would read it: every reader of this
-    -- row in mesh takes the BIC and touches nothing else, and the operator
+    -- row takes the BIC and touches nothing else, and the operator
     -- console lists banks from their own rows. A member's legal name lives where
     -- it was actually given: on the bank's row, and on settlement_members, which
     -- is told it by the application and names the reserve account after it.
@@ -246,14 +246,13 @@ CREATE TABLE payments (
     --     it would leave empty; they name a ledger this database does not have.
     --   * return_clawback_tx and return_refund_tx, for the same reason.
     --
-    -- ONE READER HAD TO CHANGE FOR THAT TO BE TRUE, and it is worth naming
-    -- rather than leaving to be discovered. mesh's csm.tell decided whether to
-    -- send the payer's bank a refund instruction by reading debtor_leg_tx off
-    -- this row — "has the payer's bank debited?" answered out of another
-    -- institution's column. It cannot be, and it did not need to be: the
-    -- clearing house knows the scheme's direction and knows what status it
-    -- carried this payment to, which is the same question asked of facts it
-    -- owns.
+    -- THE READER A CLEARING HOUSE IS TEMPTED INTO is worth naming rather than
+    -- leaving to be discovered: whether to tell the payer's bank to refund could
+    -- be decided by reading debtor_leg_tx off this row — "has the payer's bank
+    -- debited?" answered out of another institution's column. It cannot be, and
+    -- it does not need to be: the clearing house knows the scheme's direction and
+    -- knows what status it carried this payment to, which is the same question
+    -- asked of facts it owns.
     --
     -- The two agent columns mean something different here than at a bank as
     -- well. This institution derives neither: both arrive on the message it is

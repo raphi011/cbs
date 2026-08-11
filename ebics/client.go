@@ -105,9 +105,10 @@ func (c *Client) OrderStatus(ctx context.Context, id OrderID) (Acknowledgement, 
 // do sends one envelope and reads the answer, turning a return code that is not
 // OK into a *Refusal.
 //
-// The two failures it keeps apart are the ones the mesh could not express: an
-// error with no return code is a host that was not reached — connection refused,
-// a timeout, a 500 — and a *Refusal is a host that answered and said no.
+// The two failures it keeps apart call for opposite things. An error with no
+// return code is a host that was not reached — connection refused, a timeout, a
+// 500 — and retrying is right; a *Refusal is a host that answered and said no,
+// and retrying is pointless.
 func (c *Client) do(ctx context.Context, req Request) (*Response, error) {
 	body, err := json.Marshal(req)
 	if err != nil {

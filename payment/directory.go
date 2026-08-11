@@ -39,9 +39,9 @@ func (s *Network) RefreshDirectory(ctx context.Context, published []RosterEntry)
 // # It is handed the roster rather than reading one
 //
 // A member cannot open the clearing house's database, so the rows arrive from
-// outside the domain — cmd/server's Mesh.RefreshDirectory is what carries them, standing
-// in for the file a subscriber downloads. What this act decides is not where
-// they came from but WHAT SURVIVES the copy, and that is a domain ruling:
+// outside the domain — cmd/server's Deployment.RefreshDirectory is what carries
+// them, standing in for the file a subscriber downloads. What this act decides is
+// not where they came from but WHAT SURVIVES the copy, and that is a domain ruling:
 //
 //   - the allocation and the BIC, because that pairing is the question a payer's
 //     bank has to answer and cannot compute;

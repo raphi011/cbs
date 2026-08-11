@@ -261,7 +261,7 @@ func TestReSettlingASettledCycleIsRefused(t *testing.T) {
 // pacs.009, and this is what happens to the second — the same thing that happens
 // to a redelivered one, since a queue can hand the same instruction over twice
 // and neither case is distinguishable at the receiver. SettleCycleTx refuses it
-// with ErrCycleNotClosed and receiveSettlement dead-letters it rather than
+// with ErrCycleNotClosed and receiveSettlement reports it rather than
 // answering RJCT, because telling the clearing house a cycle was rejected when
 // it in fact settled would be a lie.
 //
@@ -280,14 +280,14 @@ func TestASecondSettlementInstructionPostsNothing(t *testing.T) {
 	payeeBefore := h.balance(t, h.creditorPID, h.creditorAcct.ID)
 
 	// The instruction the cut-off sent, replayed verbatim into the settlement
-	// agent's inbox. Re-sent by the clearing house, because that is who the
+	// agent's download queue. Re-sent by the clearing house, because that is who the
 	// central bank accepts one from.
 	raw := h.lastMessageOfTypeTo(t, h.cfg.CentralBankBIC, "pacs.009.001.08")
 	h.injectRaw(t, h.cfg.ClearingHouseBIC, h.cfg.CentralBankBIC, raw)
 
 	err := h.workErr(t)
 	if err == nil || !strings.Contains(err.Error(), "was told to settle") {
-		t.Fatalf("draining after a replayed instruction = %v, want a dead letter naming the repeat", err)
+		t.Fatalf("the day after a replayed instruction = %v, want a reported problem naming the repeat", err)
 	}
 
 	if got := h.balance(t, h.creditorPID, h.creditorAcct.ID); got != payeeBefore {
@@ -613,10 +613,10 @@ func TestAnEmptyCycleInstructsNothing(t *testing.T) {
 // is why the console can name the reason without one being stored: the net
 // position and the reserve are both right there.
 //
-// It also pins the thing csm.receiveSettlementStatus decided NOT to do. No bank
-// is told, and the drain would say so if one were: bank.receiveStatus refuses a
+// It also pins the thing receiveSettlementStatus does NOT do. No bank is told,
+// and the day's report would say so if one were: Bank.receiveStatus refuses a
 // rejection of a payment this network records as Cleared, so a fan-out here
-// would come back as a dead letter at both banks rather than as a quiet mistake.
+// would come back as a problem at both banks rather than as a quiet mistake.
 func TestARefusedSettlementLeavesTheCycleClosedAndThePaymentsCleared(t *testing.T) {
 	h := newHarnessWithAnUnfundedReserve(t)
 	p := h.submitCreditTransfer(t)

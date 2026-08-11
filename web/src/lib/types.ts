@@ -342,9 +342,9 @@ export interface ParticipantAccounts {
   // that cash, because only the central bank can credit an account in the
   // central bank's book — POST /lodgements is the 422. Nothing it takes part in
   // can settle either, a settlement instruction naming its members through a
-  // routing directory this bank is not in. What still ROUTES to it is the mesh's
-  // actor table, so a payment addressed to one clears like any other and the
-  // cut-off carrying it is what fails.
+  // routing directory this bank is not in. It is still ENROLLED, so files
+  // addressed to it reach its download queue, a payment addressed to one clears
+  // like any other, and the cut-off carrying it is what fails.
   settlement: string;
 }
 
@@ -352,10 +352,8 @@ export interface Participant {
   id: string;
   name: string;
   // The bank's ISO 9362 address: what a counterparty addresses it by and what
-  // the mesh routes on. participantDTO has carried it all along; this interface
-  // did not, because nothing in the UI needed it until the routing directory
-  // became a screen — the roster is keyed by BIC and carries no name, so joining
-  // the two is the only way to show a member's name beside its address.
+  // names its download queue. The roster is keyed by BIC and carries no name, so
+  // joining the two is the only way to show a member's name beside its address.
   bic: string;
   // The bank's default deposit product, created with its chart of accounts at
   // onboarding. It is what the open-account form offers.

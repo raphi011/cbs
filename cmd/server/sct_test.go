@@ -247,7 +247,7 @@ func TestARolledBackSubmitSendsNothing(t *testing.T) {
 	}
 }
 
-// A message type an actor has no handler for is a dead letter and not a shrug.
+// A message type an institution has no handler for is REPORTED and not shrugged off.
 //
 // A pacs.004 is not usable as the example: it travels to a bank after finality
 // and that bank posts its own leg from it, so it is a message every bank in this
@@ -279,10 +279,10 @@ func TestAFileAnInstitutionHasNoHandlerForIsReported(t *testing.T) {
 
 	err = h.workErr(t)
 	if err == nil {
-		t.Fatal("Drain was clean; the bank swallowed a message it has no handler for")
+		t.Fatal("the day was clean; the bank swallowed a message it has no handler for")
 	}
 	if !strings.Contains(err.Error(), "pacs.009") {
-		t.Errorf("dead letter %q does not name the message the bank could not handle", err)
+		t.Errorf("the reported problem %q does not name the message the bank could not handle", err)
 	}
 }
 
@@ -325,14 +325,14 @@ func TestABankRefusesAStatusAboutAnotherBanksPayment(t *testing.T) {
 
 	err = h.workErr(t)
 	if err == nil {
-		t.Fatal("Drain was clean; the payee's bank acted on a rejection of somebody else's customer's debit")
+		t.Fatal("the day was clean; the payee's bank acted on a rejection of somebody else's customer's debit")
 	}
 	// Named, and not merely non-nil. Without the guard the reversal is attempted
 	// and fails on the ledger's own refusal to reverse a transaction twice, so a
-	// test that asked only whether the drain was dirty would pass on a handler
+	// test that asked only whether the day reported anything would pass on a handler
 	// that had already reached into the payer's book to find out.
 	if !strings.Contains(err.Error(), string(h.creditorBIC)) || !strings.Contains(err.Error(), string(h.debtorBIC)) {
-		t.Errorf("dead letter %q does not say which bank refused it, and whose payment it was about", err)
+		t.Errorf("the reported problem %q does not say which bank refused it, and whose payment it was about", err)
 	}
 	// And it reached nobody's ledger while refusing.
 	assertBooksTouched(t, "the payee's bank, refusing a misrouted rejection",
@@ -391,13 +391,13 @@ func TestABankRefusesToReverseAPaymentThatIsNotRejected(t *testing.T) {
 
 	err = h.workErr(t)
 	if err == nil {
-		t.Fatal("Drain was clean; the payer's bank reversed the debit of a payment that has settled")
+		t.Fatal("the day was clean; the payer's bank reversed the debit of a payment that has settled")
 	}
 	// Named, and not merely non-nil. The refusal has to be the STATE one and not
 	// the ledger's own refusal to reverse a transaction twice, which would mean
 	// the bank had already reached its customer's account to find out.
 	if !strings.Contains(err.Error(), "records as Settled") || !strings.Contains(err.Error(), string(h.debtorBIC)) {
-		t.Errorf("dead letter %q is not the payer's bank refusing to reverse a settled payment", err)
+		t.Errorf("the reported problem %q is not the payer's bank refusing to reverse a settled payment", err)
 	}
 	if bal := h.balance(t, h.debtorPID, h.debtorAcct.ID); bal != harnessFunding-harnessAmount {
 		t.Errorf("payer's balance = %d, want %d — the settled debit was reversed anyway",
@@ -459,7 +459,7 @@ func TestAFileAPayeesBankCannotReadIsReportedAtTheClearingHouse(t *testing.T) {
 // house whose row said Initiated while its message said RJCT is the same
 // inconsistency one layer up.
 //
-// The payer's bank then dead-letters the answer, and that is correct rather than
+// The payer's bank then REPORTS the answer, and that is correct rather than
 // incidental: it is being told about a payment it never submitted and holds no
 // row for. It is asserted rather than discarded so that a failure anywhere else
 // in the chain cannot hide underneath the assertions below.
@@ -482,10 +482,10 @@ func TestACreditTransferForABankTheClearingHouseCannotRouteToIsRC01(t *testing.T
 	h.upload(t, h.debtorBIC, h.cfg.ClearingHouseBIC, env)
 	err = h.workErr(t)
 	if err == nil {
-		t.Fatal("Drain was clean; the payer's bank acted on a rejection of a payment it never sent")
+		t.Fatal("the day was clean; the payer's bank acted on a rejection of a payment it never sent")
 	}
 	if !strings.Contains(err.Error(), string(forged)) || !strings.Contains(err.Error(), string(h.debtorBIC)) {
-		t.Errorf("dead letter %q is not the payer's bank refusing a rejection of a payment it holds no row for", err)
+		t.Errorf("the reported problem %q is not the payer's bank refusing a rejection of a payment it holds no row for", err)
 	}
 
 	h.assertLastStatusTo(t, h.debtorBIC, iso20022.StatusReasonBankIdentifierIncorrect)

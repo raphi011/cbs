@@ -197,9 +197,15 @@ func (s *Network) ReconcileTx(ctx context.Context, tx Tx, asset ledger.AssetCode
 // statement the bank holds, and both absences — told and could not book, never
 // told at all — leave the newest statement it holds agreeing with its own
 // reserve. Nothing inside this bank distinguishes them and nothing here pretends
-// to. It is unreachable in this transport, which delivers exactly once and in
-// order, and it becomes reachable AND INVISIBLE the day the mesh gains a lossy
-// one. What would close it is a periodic statement, and there is none.
+// to.
+//
+// It is REACHABLE and it is INVISIBLE, and that combination is the point. A
+// statement is not pushed at a member; it waits in the member's download queue
+// until the member collects, so a bank that stops collecting stops being told
+// and this walk goes on agreeing with itself. What closes it is not a check at
+// this bank at all — it is the settlement agent's own liability to the member,
+// which recon compares across the two databases, or a periodic statement. There
+// is no periodic statement.
 func (s *Network) reserveHoldsTogether(ctx context.Context, tx Tx, bank *Bank, accts BankAccounts,
 	byMirror map[ledger.TransactionID]SettlementAdvice, rec *Reconciliation,
 ) error {

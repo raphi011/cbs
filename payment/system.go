@@ -82,7 +82,7 @@ type Network struct {
 //
 // It catches an act of the settlement agent's reached through any other
 // institution's handle — which, since these methods are exported, is every
-// caller outside the mesh. Inside the mesh the compiler already catches it,
+// caller outside cmd/server. Inside cmd/server the compiler already catches it,
 // because settlementOps carries the five and bankOps and csmOps carry none.
 //
 // It does NOT catch the central bank posting in the wrong PLACE within its own
@@ -210,7 +210,7 @@ func cbAssetsAccountName(asset ledger.AssetCode) string {
 //
 // id says WHICH institution this is, and every act below reads it rather than
 // taking a participant argument. Most callers do not name one here: Networks is
-// the factory, and it is what api, the mesh and cmd/server hold.
+// the factory, and it is what api and cmd/server hold.
 //
 // # The zero Identity panics
 //
@@ -259,9 +259,9 @@ func (s *Network) Identity() Identity { return s.id }
 //
 // It is exported because a layer built OVER a network has to timestamp too, and
 // a second clock beside this one would be a second answer to the same question:
-// a mesh with its own clock could emit a pacs.008 dated after the payment it
-// carries. There is one clock in this system, and this is how anything above
-// the payment layer reads it.
+// an institution with its own clock could emit a pacs.008 dated after the
+// payment it carries. There is one clock in this system — the deployment's — and
+// this is how anything above the payment layer reads it.
 func (s *Network) Now() time.Time { return s.clock() }
 
 // now is Now, for this package's own use.
@@ -725,8 +725,8 @@ func joiningAssets(assets []ledger.AssetCode) []ledger.AssetCode {
 // euro-only admission draws the bank's own id, one per act that decides from a
 // read, and one per audit event, of which an admission appends four. The gaps
 // between consecutive banks are therefore wide and widen whenever an act is
-// added, which is why api's mesh tests resolve ids from the seed's IBANs instead
-// of naming them.
+// added, which is why the suites that drive a seeded deployment resolve ids from
+// the seed's IBANs instead of naming them.
 func (s *Network) admissionSequenceTx(ctx context.Context, tx Tx) error {
 	_, err := tx.NextID(ctx, s.book(), "adm")
 	return err
@@ -831,7 +831,7 @@ func (s *Network) FoundBankTx(ctx context.Context, tx Tx, name string, bic iso20
 		return nil, err
 	}
 	// Validated at founding rather than at first use. A bank with a malformed
-	// BIC is one the mesh cannot route to and one the other two institutions
+	// BIC is one no file can be addressed to and one the other two institutions
 	// cannot key their rows by — the BIC is the only identifier that crosses
 	// between them — and the moment to refuse it is when the bank is built, not
 	// when the first payment addressed to it fails somewhere else entirely.
@@ -2110,7 +2110,7 @@ func (s *Network) OpenCycleTx(ctx context.Context, tx Tx, scheme SchemeID) (Clea
 // The settlement agent settles a batch and answers about the batch — one pacs.002
 // naming the cycle. Turning that into per-payment news is this institution's job
 // and nobody else's, because nothing on settlementOps can enumerate a cycle's
-// payments (see mesh's tellSettled, which is the caller). So the fan-out and the
+// payments (see ClearingHouse.tellSettled, which is the caller). So the fan-out and the
 // status are one unit of work: a cycle whose copies could not all be marked is
 // not a cycle any bank should be told about.
 //
@@ -2267,7 +2267,8 @@ func (s *Network) CloseCycleTx(ctx context.Context, tx Tx, id CycleID) (Clearing
 // "<cycle>:settle", so even a caller that reached it would move nothing twice.
 //
 // A cycle not closed YET is the clearing house's refusal, since it owns the
-// cut-off and will not build an instruction for an open one (mesh/csm.settle).
+// cut-off and will not build an instruction for an open one
+// (ClearingHouse.CloseCycle).
 // What reaches here from an open cycle is an instruction with no legs, and that
 // is ErrInvalidSettlement. See ErrCycleNotClosed.
 //
@@ -2341,7 +2342,7 @@ func (s *Network) SettleCycleTx(ctx context.Context, tx Tx, id CycleID, instruct
 	// settlement account in this book is a LIABILITY — the central bank owes the
 	// member its reserve — and Book.checkSufficientBalance only guards Asset and
 	// Expense accounts. Without it a cycle whose net payer was short would settle,
-	// leaving the shortfall to surface at the bank as a dead letter.
+	// leaving the shortfall to surface at the bank as a file it cannot book.
 	//
 	// Refusing to take a member's reserve below zero is the central bank
 	// declining to extend uncollateralised intraday credit, which is the decision
@@ -3294,7 +3295,7 @@ func (s *Network) AcceptInbound(ctx context.Context, id PaymentID, req InitiateP
 // A row that is here and is NOT Initiated is a redelivery that arrived after the
 // payment moved on: the clearing house has taken it into a cycle, or it was
 // rejected and must not be revived by an answer in flight when it died. That is
-// ErrInvalidStateTransition, which mesh's accept turns into a dead letter
+// ErrInvalidStateTransition, which the receiving bank puts in the day's report
 // because there is nobody to answer.
 //
 // It appends payment.initiated, because this is the moment the payment comes
@@ -3324,8 +3325,8 @@ func (s *Network) AcceptInboundTx(ctx context.Context, tx Tx, id PaymentID, req 
 	// never runs. On a pull that silently skips the debtor leg and the collection
 	// then settles, pays the payee and can be returned, out of money nobody took.
 	//
-	// Mesh.Submit refuses an on-us payment, so nothing in the running system
-	// reaches this; the domain has to be right all the same.
+	// A submitting bank's door refuses an on-us payment, so nothing in the
+	// running system reaches this; the domain has to be right all the same.
 	//
 	// What answers it is the debtor leg, which only this half posts. On a push the
 	// receiving half posts nothing at all, so a second delivery to the submitting
@@ -3622,7 +3623,7 @@ func (s *Network) RecordRelayed(ctx context.Context, txs []InboundTransaction) (
 // instruction finds its own copy and returns it unchanged. A copy that is no
 // longer Initiated is a redelivery that arrived after the clearing house had
 // already decided, and it comes back ErrInvalidStateTransition — the same
-// sentinel, for the same reason, and the mesh turns it into a dead letter
+// sentinel, for the same reason, and the clearing house reports it in the day
 // because there is nobody left to answer.
 //
 // It appends payment.initiated to this institution's own log. See
@@ -3742,7 +3743,7 @@ func (s *Network) AcceptAtCSM(ctx context.Context, id PaymentID) (Payment, error
 // TM01 rather than an error returned to a customer.
 //
 // It writes network rows (the payment, the cycle) and appends the acceptance
-// event, which is what makes the act visible to the mesh's book recorder at
+// event, which is what makes the act visible to the book recorder at
 // all: network-scoped writes reach it only through the id allocation and the
 // audit event. See the note in cmd/server/books_test.go.
 //
@@ -3996,14 +3997,14 @@ func (s *Network) RejectAtCSM(ctx context.Context, id PaymentID, code iso20022.S
 // # This half can happen without the other
 //
 // Between the two halves the payment is Rejected and the customer's money is
-// still in suspense. The mesh does not hide it: a pacs.002 whose reversal fails
-// at the debtor's bank has nobody to answer, so it becomes a dead letter and
-// mesh.Drain returns it —
-// TestARejectionWhoseRefundFailsStandsAndIsDeadLettered forces exactly that.
+// still in suspense. Nothing hides it: a pacs.002 whose reversal fails at the
+// debtor's bank has nobody to answer, so it becomes a problem in the day's
+// report — TestARejectionWhoseRefundFailsStandsAndIsReported forces exactly
+// that.
 //
 // One caller still composes both halves in ONE transaction, so the gap is not
-// open there: the seed, which builds a fixed scenario before any actor is
-// running and has no mesh to send anything through.
+// open there: the seed, which builds a fixed scenario and uploads no files at
+// all.
 //
 // The reason text is validated HERE and not in the other half because this is
 // the half that stores it: RejectReason is persisted on the payment and copied
@@ -4078,13 +4079,13 @@ func (s *Network) RejectAtBank(ctx context.Context, id PaymentID, code iso20022.
 //
 // What it can NOT check is whether the clearing house really made the decision
 // the message reports: the status it reads is its own copy's. See
-// Network.transition, and mesh's csm.relayed for the clearing house's half — it
+// Network.transition, and RejectAtCSMTx for the clearing house's half — it
 // must not send an RJCT about a payment it has not rejected.
 //
 // The refusal names the status rather than returning the bare sentinel, because
-// a dead letter that says which state refused the reversal is the difference
-// between a redelivery and a message that arrived after finality. It wraps
-// ErrInvalidStateTransition, which the mesh dead-letters.
+// a report that says which state refused the reversal is the difference
+// between a redelivery and a file that arrived after finality. It wraps
+// ErrInvalidStateTransition, which reaches the day's report rather than the wire.
 //
 // The code and the free text are the CLEARING HOUSE's, quoted off the pacs.002
 // and stored unchanged. This bank did not decide and does not paraphrase.
@@ -4150,9 +4151,9 @@ func (s *Network) ReverseDebtorLeg(ctx context.Context, p Payment, reason string
 // the payment and does not look at its status, so nothing here would stop it
 // reversing the live debit of a payment that is on its way to settlement. The
 // caller establishes that the payment is rejected: the seed's reject by running
-// the CSM's half first in the same unit of work, and in the mesh the debtor
-// bank's handler, which runs this on a pacs.002 and only for an RJCT — which is
-// the path api takes now.
+// the CSM's half first in the same unit of work, and in a running deployment the
+// debtor bank's handler, which runs this on a collected pacs.002 and only for an
+// RJCT.
 //
 // Running it twice is refused rather than absorbed: the ledger flips the
 // original to Reversed under a conditional store write, so a second reversal of
@@ -4231,13 +4232,13 @@ func (s *Network) SettleReturn(ctx context.Context, in ReturnInstruction) ([]Set
 //
 // # Which is why the payment id is required, and required HERE
 //
-// The key is the only record this actor keeps of anything, so an instruction
-// with no payment id would move reserves between two real banks under
+// The key is the only record this institution keeps of anything, so an
+// instruction with no payment id would move reserves between two real banks under
 // ":return-settle", and every later nameless return would come back
 // ErrReturnAlreadySettled having settled nothing.
 //
 // ReadReturn refuses such a message before an instruction exists, and that is
-// the guard mesh hits. This is not a second copy of it: a ReturnInstruction
+// the guard a collected file hits first. This is not a second copy of it: a ReturnInstruction
 // built any other way would reopen the hole. A guard on the money belongs next
 // to the money.
 func (s *Network) SettleReturnTx(ctx context.Context, tx Tx, in ReturnInstruction) ([]SettlementStatement, error) {
@@ -4276,7 +4277,7 @@ func (s *Network) SettleReturnTx(ctx context.Context, tx Tx, in ReturnInstructio
 	// is very often short by exactly this amount — and answering AM04 would
 	// tell the returning bank its counterparty could not fund a return that in
 	// fact completed. Asked in this order, "you have already sent me this" is
-	// what comes back, which is the answer to dead-letter.
+	// what comes back, which is the answer to report rather than to send.
 	key := string(in.PaymentID) + ":return-settle"
 	switch _, err := tx.GetTransactionByIdempotencyKey(ctx, CentralBankBook, key); {
 	case err == nil:
@@ -4424,7 +4425,7 @@ func (s *Network) PostReturnLeg(ctx context.Context, id PaymentID, reason string
 // own — see the note at the transition below. A bank that is BOTH sides holds
 // both legs and posts them one call at a time, clawback first, because the guard
 // is written as "my leg, not standing" rather than as a choice between two
-// parties. Mesh.Submit refuses such a payment at the door; the domain handles it
+// parties. A submitting bank's door refuses such a payment; the domain handles it
 // anyway, because a rule that holds only because no caller builds the
 // counter-example is a rule nobody is keeping.
 //
@@ -4867,9 +4868,9 @@ func (s *Network) ReverseReturnLeg(ctx context.Context, id PaymentID, reason str
 // individually balanced.
 //
 // So it refuses anything that is not still Settled. The caller this guard exists
-// for is mesh's bank.receiveReturnStatus, which acts on a MESSAGE: a status
+// for is Bank.receiveReturnStatus, which acts on a MESSAGE: a status
 // arriving late, or twice, is the shape that would otherwise unwind half of a
-// return that finished. There it surfaces as a dead letter.
+// return that finished. There it surfaces in the day's report.
 // ErrInvalidStateTransition rather than a new sentinel — reasonTable already
 // classifies it as a defect here rather than a judgement to answer a
 // counterparty with.
@@ -5181,8 +5182,9 @@ func (s *Network) ResolveIdentifierTx(ctx context.Context, tx Tx, ident deposit.
 // # Only a NOT-FOUND becomes a domain error
 //
 // This is on the MONEY path — reached from AcceptInboundTx through
-// creditorSideTx/debtorSideTx, so a receiving bank runs it on every message it
-// answers and mesh turns whatever comes back into a pacs.002 through ReasonFor.
+// creditorSideTx/debtorSideTx, so a receiving bank runs it on every transaction
+// in a file it answers and turns whatever comes back into that transaction's
+// line of the pacs.002, through ReasonFor.
 // Collapsing every error into ErrAccountNotInParticipant would make AC01
 // "incorrect account number" the answer to a dropped database connection, so a
 // transient fault at the RECEIVING bank would tell the SENDING bank its

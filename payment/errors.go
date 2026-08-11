@@ -80,19 +80,19 @@ var (
 	//
 	// # What it stops, measured on both directions
 	//
-	// A bank that is founded and not yet admitted can still have a mesh actor —
-	// giving one is a separate act from any of the four, and nothing orders the
-	// two — so without this sentinel it is addressable in both directions and
-	// neither direction is refused:
+	// A bank that is founded and not yet admitted can still be an EBICS
+	// subscriber — enrolling one is a separate act from any of the four, and
+	// nothing orders the two — so without this sentinel it is addressable in both
+	// directions and neither direction is refused:
 	//
-	//   - PAYING. Mesh.Submit accepted the submission, SubmitPaymentTx posted the
-	//     debtor leg, the payee's bank accepted, and AcceptAtCSMTx took the
-	//     payment into the cycle. The customer's account went to -250,000 against
-	//     an arranged overdraft and the clearing suspense to +250,000.
+	//   - PAYING. The submission was accepted, SubmitPaymentTx posted the
+	//     debtor leg, the file reached the clearing house, and AcceptAtCSMTx took
+	//     the payment into the cycle. The customer's account went to -250,000
+	//     against an arranged overdraft and the clearing suspense to +250,000.
 	//   - BEING PAID. POST /payments to a founded bank answered 202 and the
 	//     payment reached Cleared.
 	//
-	// Both ended at the same place: csm.settlementLegs turns a net position into
+	// Both ended at the same place: the clearing house turns a net position into
 	// a BIC through the roster, cannot name a non-member, and the whole pacs.009
 	// fails — so the cycle stays Closed with EVERY OTHER MEMBER's payments in it,
 	// their payees unpaid and their payers' money in suspense. POST
@@ -102,11 +102,11 @@ var (
 	//
 	// # Why it is refused twice and what each refusal is for
 	//
-	// Mesh.Submit refuses it at the door, where ErrOnUsPayment is refused
-	// and for that refusal's stated reason: Submit is synchronous, so a guard
-	// placed any later has a committed debtor leg to unwind rather than an
-	// instruction to decline. api answers 422 and the payer is told before any
-	// money has moved.
+	// The submitting bank's door refuses it, where ErrOnUsPayment is refused
+	// and for that refusal's stated reason: a submission is handled
+	// synchronously, so a guard placed any later has a committed debtor leg to
+	// unwind rather than an instruction to decline. api answers 422 and the payer
+	// is told before any money has moved.
 	//
 	// AcceptAtCSMTx refuses it again, and that one is not belt and braces. It is
 	// the CLEARING HOUSE making the judgement from its own row, and it is what
@@ -123,9 +123,9 @@ var (
 	// admitted, and its submitter reverses the debtor leg and refunds its
 	// customer. It does not arrive when the submitter is itself the non-member:
 	// the clearing house addresses the submitter through the roster too, so the
-	// pacs.002 dead-letters with "cannot address the bank that submitted". Measured, with
-	// the door guard removed. That asymmetry is precisely why the door guard is
-	// the one that carries the paying direction.
+	// pacs.002 has no queue to be put in and becomes a problem in the day's
+	// report instead. Measured, with the door guard removed. That asymmetry is
+	// precisely why the door guard is the one that carries the paying direction.
 	//
 	// # Nothing can reach it today, and it stays
 	//
@@ -231,8 +231,8 @@ var (
 	//
 	// Like ErrCycleNotClosed it is classified with the EMPTY code in reasonTable:
 	// it describes this system's own state rather than a judgement about the
-	// sender's message, so the mesh dead-letters it instead of answering a
-	// clearing house that its settled cycle was rejected.
+	// sender's message, so the settlement agent reports it in the day's report
+	// instead of telling a clearing house that its settled cycle was rejected.
 	ErrCycleAlreadySettled = errors.New("clearing cycle has already settled")
 
 	// ErrInvalidSettlement is a settlement instruction this agent cannot read as
@@ -330,10 +330,11 @@ var (
 	// reference it separates them: same reference, extend the entry; different
 	// reference, refuse.
 	//
-	// It is the clearing house's answer and not the mesh's. The mesh's actor map
-	// refuses a taken address too, and that one is a statement about
-	// connectivity; this is the statement about membership, made by the
-	// institution that owns routing.
+	// It is the clearing house's answer and not the transport's. Enrolling a
+	// subscriber twice at an EBICS host is a no-op, because a second queue for
+	// one party would be a place files went to die; this is the statement about
+	// MEMBERSHIP, made by the institution that owns routing, and the two are
+	// asked of different things.
 	ErrBICAlreadyAdmitted = errors.New("payment: this BIC is already admitted under another admission")
 
 	// ErrBankCodeTaken is a bank code already allocated to a DIFFERENT
@@ -667,8 +668,8 @@ var (
 	//
 	// What this refusal does NOT claim is that a supplied BIC is right. Nothing
 	// here can check one: this bank cannot read the counterparty's register, so a
-	// wrong-but-well-formed BIC is delivered to the bank it names and refused
-	// THERE, with AC01, by a bank that does not hold the address. See
-	// mesh's TestAWrongCounterpartyAgentIsRefusedByTheBankItNames.
+	// wrong-but-well-formed BIC puts the transaction in that bank's share of the
+	// file and is refused THERE, with AC01, by a bank that does not hold the
+	// address.
 	ErrCounterpartyAgentNotNamed = errors.New("payment: the instruction does not name a usable BIC for the counterparty's bank")
 )

@@ -9,7 +9,7 @@
 // back is an import cycle. translate_test.go's reason-table tests need reasonTable, which
 // is unexported and is meant to stay that way — the table is this package's own
 // classification, not something a caller chooses between. ReasonFor beside it is
-// now exported, because mesh's handlers ask for a code, but that changes nothing
+// now exported, because cmd/server's handlers ask for a code, but that changes nothing
 // here: reasonTable alone keeps the two halves apart. Neither half can move to
 // the other's package, and a test-only export to bridge them would be API
 // surface outliving the reason for it. Go allows both packages in one directory;

@@ -15,7 +15,7 @@ import (
 //
 // They exist because nothing else in this package injected one. Every other
 // settlement test drives a cut-off and reads the state it leaves, which walks the
-// statement path but never puts a statement into a bank's inbox on its own terms
+// statement path but never puts a statement into a bank's download queue on its own terms
 // — so none of receiveStatement's own guards had a witness, and neither did the
 // two no-ops the domain makes for a message it has already acted on. All four
 // were verified by breaking them and watching exactly these tests fail; the
@@ -81,7 +81,7 @@ func statementTo(t *testing.T, h *harness, to iso20022.BIC) (iso20022.Envelope, 
 	return env, doc
 }
 
-// injectStatement marshals an edited statement back into a bank's inbox, as the
+// injectStatement marshals an edited statement back into a bank's download queue, as the
 // settlement agent.
 func injectStatement(t *testing.T, h *harness, to iso20022.BIC, env iso20022.Envelope) {
 	t.Helper()
@@ -98,7 +98,7 @@ func injectStatement(t *testing.T, h *harness, to iso20022.BIC, env iso20022.Env
 //
 // A queue can hand the same message over twice and the receiver cannot tell a
 // duplicate from a retry, so a redelivered camt.053 is an ORDINARY event and not
-// an error — which is why this drains clean rather than dead-lettering, and why
+// an error — which is why the day reports nothing, and why
 // the guard returns the existing row instead of refusing.
 //
 // The money assertion is the substance: the mirror leg moved the reserve once.
@@ -121,7 +121,7 @@ func TestARedeliveredStatementBooksTheMirrorLegOnce(t *testing.T) {
 	reserveBefore := h.reserveOf(t, h.creditorPID)
 	suspenseBefore := h.suspense(t, h.creditorPID)
 
-	// The statement that bank already booked, replayed verbatim into its inbox.
+	// The statement that bank already booked, replayed verbatim into its queue.
 	raw := h.lastMessageOfTypeTo(t, h.creditorBIC, "camt.053.001.08")
 	h.injectRaw(t, h.cfg.CentralBankBIC, h.creditorBIC, raw)
 	h.work(t)
@@ -203,7 +203,7 @@ func TestARedeliveredSettlementStatusPaysThePayeeOnce(t *testing.T) {
 // injected — the payer's bank's own statement, delivered to the payee's bank.
 //
 // Both layers, because they refuse for different reasons. The domain refuses
-// because the account named is not this participant's; the handler dead-letters
+// because the account named is not this participant's; the handler REPORTS
 // because a message it cannot act on has no answer to send — a statement is not
 // an instruction, so there is nothing to reject back to the sender.
 func TestAStatementAboutAnotherBanksAccountIsRefused(t *testing.T) {
@@ -236,7 +236,7 @@ func TestAStatementAboutAnotherBanksAccountIsRefused(t *testing.T) {
 		h.lastMessageOfTypeTo(t, h.debtorBIC, "camt.053.001.08"))
 	drained := h.workErr(t)
 	if drained == nil || !strings.Contains(drained.Error(), "could not book the settlement") {
-		t.Fatalf("draining after a misrouted statement = %v, want a dead letter", drained)
+		t.Fatalf("the day after a misrouted statement = %v, want a reported problem", drained)
 	}
 	// Matched on the TEXT and not with errors.Is, for the reason
 	// TestARedeliveredReturnIsReportedAndNotAnswered gives: a day's report is
@@ -278,7 +278,7 @@ func TestAStatementCarryingTwoAccountsIsRefused(t *testing.T) {
 
 	drained := h.workErr(t)
 	if drained == nil || !strings.Contains(drained.Error(), "carrying 2 accounts") {
-		t.Fatalf("draining after a two-account statement = %v, want a dead letter naming the count", drained)
+		t.Fatalf("the day after a two-account statement = %v, want a reported problem naming the count", drained)
 	}
 }
 
@@ -292,7 +292,7 @@ func TestAStatementCarryingTwoAccountsIsRefused(t *testing.T) {
 // second would move the bank's reserve mirror by the WRONG AMOUNT with nothing
 // anywhere recording that it had.
 //
-// A statement is answered by nothing, so the only trace is a dead letter. That
+// A statement is answered by nothing, so the only trace is the day's report. That
 // is not a gap: the central bank has already settled and is final, and there is
 // no decision left for this bank to accept or refuse.
 func TestAnUnreadableStatementIsNotBooked(t *testing.T) {
@@ -312,7 +312,7 @@ func TestAnUnreadableStatementIsNotBooked(t *testing.T) {
 
 	drained := h.workErr(t)
 	if drained == nil || !strings.Contains(drained.Error(), "could not read the statement") {
-		t.Fatalf("draining after an unreadable statement = %v, want a dead letter", drained)
+		t.Fatalf("the day after an unreadable statement = %v, want a reported problem", drained)
 	}
 	if after := h.advice(t, h.creditorPID, string(cyc.ID)); after != before {
 		t.Errorf("the advice row is %+v after an unreadable statement, want the unchanged %+v", after, before)

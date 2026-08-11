@@ -78,8 +78,9 @@ var reasonTable = []reasonMapping{
 	// has not admitted. It is classified in this block rather than below because
 	// it does reach a counterparty — when the PAYEE's bank is the non-member,
 	// the clearing house turns AcceptAtCSMTx's refusal into the RJCT its
-	// submitter reverses on. In the other direction the answer dead-letters,
-	// because the bank to be told is the non-member itself; that direction is
+	// submitter reverses on. In the other direction there is nowhere to put the
+	// answer, because the bank to be told is the non-member itself and a
+	// non-member has no download queue; that direction is
 	// refused at the submitting bank's own door instead, before any message
 	// exists. See ErrBankNotAdmitted, which sets out both.
 	{ErrBankNotAdmitted, "ErrBankNotAdmitted", iso20022.StatusReasonBankIdentifierIncorrect},
@@ -159,8 +160,9 @@ var reasonTable = []reasonMapping{
 	// Each is a failure of THIS system's own bookkeeping rather than a
 	// judgement about the instruction, so there is nothing truthful to tell
 	// the sender. They are classified here as never reaching a counterparty,
-	// and the mesh is where that classification is acted on: an actor that
-	// gets one dead-letters it rather than putting it on the wire.
+	// and the institutions in cmd/server are where that classification is acted
+	// on: one that gets a file back with such an error records it against the
+	// order id in the day's report rather than uploading an answer.
 	//
 	// ReasonFor itself still cannot tell one of these apart from an error the
 	// table has never heard of at all — both come back MS03 through the same
@@ -232,8 +234,8 @@ var reasonTable = []reasonMapping{
 
 	// A mandate recorded at a bank that is not its creditor's. It reaches no
 	// message at all: creating one is an operator's request on a bank's own
-	// console, answered with a status code, and nothing in the mesh calls
-	// CreateMandateTx. The empty code is therefore not a judgement about what to
+	// console, answered with a status code, and no file any institution
+	// exchanges carries CreateMandateTx. The empty code is therefore not a judgement about what to
 	// tell a counterparty — there is no conversation this can occur in.
 	{ErrNotThisBanksMandate, "ErrNotThisBanksMandate", ""},
 
@@ -245,8 +247,7 @@ var reasonTable = []reasonMapping{
 	// caller and the callee are the same process, and what went wrong is that
 	// something held a handle belonging to one institution and asked it to
 	// perform another's act. It is a WIRING mistake — the same class as
-	// api.NewServer's missing mesh and NewNetwork's zero Identity, both of which
-	// panic — and it is a returned error here only because the entity a Network
+	// NewNetwork's zero Identity, which panics — and it is a returned error here only because the entity a Network
 	// belongs to is decided far from where an act is called.
 	//
 	// So the empty code, for a sharper version of the reason the three above
@@ -265,8 +266,8 @@ var reasonTable = []reasonMapping{
 	// did — so it takes ErrCycleNotClosed's empty code and ErrCycleNotClosed's
 	// argument: it describes THIS system's state and not a judgement about the
 	// instruction, and MS03 would tell a clearing house that a cycle which in
-	// fact settled was refused. mesh's centralBank.receiveSettlement
-	// discriminates it by name and dead-letters it.
+	// fact settled was refused. The settlement agent's handler discriminates it
+	// by name and reports it instead of answering.
 	//
 	// A separate sentinel because the agent does not read the cycle to find out:
 	// it holds no cycles table, so "have I settled this" is answered out of its own
@@ -378,10 +379,8 @@ var borrowedReasons = []reasonMapping{
 //
 // It is exported because the party that decides an error is worth telling a
 // counterparty about is not this package: it is whoever holds the connection.
-// In this repository that is mesh, whose bank and clearing-house handlers turn
-// a refused half into a rejection on the wire, and which is therefore the first
-// caller this function has ever had. It stayed unexported for as long as it had
-// none.
+// In this repository that is cmd/server, whose bank and clearing-house handlers
+// turn a refused half into a rejection in a file they upload.
 //
 // It unwraps, because the payment layer wraps freely and a table keyed on
 // identity alone would degrade to MS03 for most real failures — silently,
@@ -403,7 +402,7 @@ var borrowedReasons = []reasonMapping{
 // borrowed code rather than falling to MS03. Nothing produces such an error
 // today and TestReasonForEmptyCodeEntriesFallToMS03 pins the direct case; the
 // protection an empty code gives is the CALLER's, made by name before it asks
-// for a code at all, which is what mesh's handlers do with
+// for a code at all, which is what cmd/server's handlers do with
 // ErrInvalidStateTransition. See the note on the empty-code block above.
 func ReasonFor(err error) iso20022.StatusReason {
 	for _, table := range [][]reasonMapping{reasonTable, borrowedReasons} {
@@ -1467,8 +1466,7 @@ func (s *Network) ReturnMessage(p Payment, reason iso20022.ReturnReason, text st
 // payer who names the wrong bank has the message delivered to that bank, and
 // this function is what refuses it. Own-register resolution is the guard: a
 // sweep would have found the payee at the RIGHT bank and gone on to act on
-// somebody else's customer. See mesh's
-// TestAWrongCounterpartyAgentIsRefusedByTheBankItNames.
+// somebody else's customer.
 //
 // The bank reading the message is this network's own identity, which is what
 // makes "its own register" a property of the handle rather than of what the
@@ -1641,9 +1639,7 @@ func (s *Network) creditTransferIn(doc *iso20022.Pacs008) ([]InboundTransaction,
 // A collection addressed to the wrong bank is refused here, and on a pull that
 // matters more than on a push: the receiving bank is the one that POSTS, so
 // under the sweep a collector who named itself as the payer's bank resolved the
-// payer at the payer's real bank and posted the debit in that bank's book. See
-// mesh's TestAWrongCounterpartyAgentIsRefusedByTheBankItNames, whose pull arm is
-// that exact instruction.
+// payer at the payer's real bank and posted the debit in that bank's book.
 //
 // And it carries a mandate. An empty MndtId is refused here rather than left for
 // SDD.Validate, which would refuse it too: this is another bank's claim on this
@@ -1727,8 +1723,8 @@ func (s *Network) directDebitIn(doc *iso20022.Pacs003) ([]InboundTransaction, er
 // this network's outbound side has always rendered a payment in whatever asset
 // its scheme settles in (amountOf takes the scale from the asset), so a system
 // that could SEND a dollar credit transfer and not RECEIVE one was
-// asymmetrical in a way nothing but a second scheme could reveal. The mesh's
-// two-asset settlement fixture is what revealed it.
+// asymmetrical in a way nothing but a second scheme could reveal. The
+// two-asset settlement fixture in cmd/server is what reveals it.
 //
 // What has NOT changed is that the message does not get to choose. A currency no
 // scheme in this direction settles in is refused rather than reinterpreted,
@@ -1950,7 +1946,8 @@ func remittanceIn(r *iso20022.RemittanceInformation) string {
 // ReadStatus reads a received pacs.002 as what it says about the original
 // message and what it says about each transaction in it.
 //
-// Two return values because they are two different facts, and the mesh acts on
+// Two return values because they are two different facts, and the bank that
+// collected the file acts on
 // them at different granularities: the OriginalMessage is how a status is
 // matched back to something this system sent — there is no other link, which is
 // what makes clearing asynchronous rather than merely delayed — and each report
@@ -2060,12 +2057,12 @@ type ReturnInstruction struct {
 // rejection or a return machine-actionable in a statement or an exception
 // queue, and the text is the part no code can say. The word for "neither was
 // given" is the caller's, because CodeAndText serves two callers answering
-// different questions: mesh.rejectionText, over iso20022.StatusReason, and
-// ReturnReason below, over iso20022.ReturnReason — the sibling external code
+// different questions: cmd/server's rejectionText, over iso20022.StatusReason,
+// and ReturnReason below, over iso20022.ReturnReason — the sibling external code
 // set pacs004.go keeps as a separate type precisely so that a rejection
 // reason cannot be used as a return reason with nothing to notice. It lives
-// here rather than in mesh because ReturnReason does, and mesh already
-// imports payment; mesh.rejectionText calls through to this rather than
+// here rather than beside its caller because ReturnReason does, and cmd/server
+// already imports payment; rejectionText calls through to this rather than
 // keeping its own copy of the same four lines.
 func CodeAndText(code, text, none string) string {
 	switch {
@@ -2083,9 +2080,9 @@ func CodeAndText(code, text, none string) string {
 // ReturnReason is what a return is described as where a CUSTOMER's money
 // moves: the reason the returning bank gave, code and text.
 //
-// It lives here rather than in mesh because ReadReturn needs this exact reading
-// for ReturnInstruction.Reason, and mesh cannot be imported from this package.
-// mesh.receiveReturn calls straight through to it.
+// It lives here rather than beside its caller because ReadReturn needs this
+// exact reading for ReturnInstruction.Reason, and cmd/server cannot be imported
+// from this package. Bank.receiveReturn calls straight through to it.
 //
 // The two CUSTOMER legs, and not the reserve reversal between the two banks.
 // PostReturnLegTx writes this into the payer's refund and into the payee's
@@ -2247,12 +2244,11 @@ type SettlementLeg struct {
 //
 // # It lives here because two callers have to agree
 //
-// It was mesh's csm.settlementLegs and had one. The settlement agent works from
-// the LEGS now rather than from the cycle — it holds no cycles table, and
-// SettleCycleTx was reading one out of the clearing house's database — so the
-// seed, which plays every institution and sends no messages, has to produce
-// exactly what the pacs.009 would have carried. Two renderings of one intent are
-// two things that can drift, and this is the one that decides what settles.
+// The settlement agent works from the LEGS rather than from the cycle, because
+// it holds no cycles table. So two callers have to produce the same legs: the
+// clearing house, which renders them into a pacs.009, and the seed, which plays
+// every institution and uploads no files at all. Two renderings of one intent
+// are two things that can drift, and this is the one that decides what settles.
 func SettlementLegsOf(c ClearingCycle, asset ledger.AssetCode, centralBank iso20022.BIC) []SettlementLeg {
 	legs := make([]SettlementLeg, 0, len(c.NetPositions))
 	// A cycle's positions are keyed by BIC and a leg is addressed by BIC, so there
@@ -2760,7 +2756,8 @@ func ReadLodgement(hdr iso20022.AppHdr, doc *iso20022.Camt050) (LodgementInstruc
 // by ReceiveLodgementTx and settlementAccountTx — which quote a BIC, an asset and
 // two account ids, and can exceed 140 characters between them. A document that
 // would not marshal is worse than a shortened reason: the member would be told
-// nothing at all, and the servicer's handler would dead-letter its own answer.
+// nothing at all, and the servicer's handler would report its own answer as a
+// file it could not build.
 //
 // So this truncates, and it truncates VISIBLY, with an ellipsis, so that a reader
 // of a shortened reason can tell it was shortened. The limit is called out on

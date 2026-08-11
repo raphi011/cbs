@@ -584,9 +584,9 @@ func (b *Bank) lodge(ctx context.Context, asset ledger.AssetCode, amount ledger.
 // # A file that cannot be dealt with is RECORDED rather than lost
 //
 // The uploader was told EBICS_OK and went away, so there is nobody to return an
-// error to. What replaces the dead letter is the day's report: the failure is
-// noted against the institution that could not process it, with the order id it
-// arrived under. That is strictly more than the transport it replaces could say,
+// error to. The failure goes in the day's report instead: noted against the
+// institution that could not process it, with the order id it arrived under. A
+// report is a value rather than a string,
 // because a report is a value an operator reads and a joined error string is
 // not.
 //

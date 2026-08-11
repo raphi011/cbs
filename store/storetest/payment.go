@@ -89,7 +89,7 @@ func RunPayment(t *testing.T, newStore func(*testing.T, ledger.BookID) payment.S
 		// several layers away from the store that lost it.
 		assertEqual(t, "product id", string(got.ProductID), "prd_basic")
 		assertEqual(t, "product id in listings", string(listed[0].ProductID), "prd_basic")
-		// The BIC is what the mesh routes on, and it is DERIVED from the id rather
+		// The BIC is what a file is addressed by, and it is DERIVED from the id rather
 		// than stored beside it: a bank's id IS its address, so there is no bic
 		// column and nothing for a store to drop. What is asserted is that the
 		// derivation happens on both read paths — a store that filled it in GetBank
@@ -754,7 +754,7 @@ func RunPayment(t *testing.T, newStore func(*testing.T, ledger.BookID) payment.S
 		// settlement it also wrote are in two other databases, and the honest
 		// statement about those is the opposite one: they cannot roll back with
 		// these, because no transaction spans two databases. That is what the
-		// mesh models everywhere else.
+		// business day models everywhere else.
 		updatePayment(t, s, func(ctx context.Context, tx payment.Tx) error {
 			return tx.PutBank(ctx, bankRow(auroraBIC, "Aurora Bank", early))
 		})

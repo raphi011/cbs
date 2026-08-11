@@ -217,8 +217,8 @@ var ErrNotInThisShape = errors.New("sqlite: this store's schema holds no such ta
 // a bank's network reaching into the central bank's book gets a silent not-found
 // — an empty listing, a zero balance, a "ledger not found" three layers away —
 // and the only instrument that could see it is the book recorder in
-// cmd/server/books_test.go, which watches mesh actors and is therefore blind to
-// anything that never becomes a message.
+// cmd/server/books_test.go, which watches an institution's units of work and is
+// therefore blind to anything that never becomes one.
 //
 // It does not replace the recorder and the recorder gets STRONGER beside it. The
 // two answer different questions: this one says a store was asked about a book

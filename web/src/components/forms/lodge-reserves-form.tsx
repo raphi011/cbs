@@ -45,11 +45,11 @@ import type { Asset } from "@/lib/types";
 //
 // # The reserve is not up when this resolves
 //
-// The route answers 202: the credit is the central bank's to make, on a message
-// still in flight. The toast says "asked" rather than "done" for that reason, and
-// the hook invalidates anyway so the figure refreshes when the answer lands. In
-// this system the mesh delivers synchronously inside one process, so the refetch
-// will see it — but that is the transport's doing and not this form's promise.
+// The route answers 202: the credit is the central bank's to make, and it makes
+// it when the business day next runs. The file is uploaded now and sits in the
+// central bank's inbox until then, so the refetch this triggers reads the OLD
+// figure and is right to. The toast says "asked" rather than "done" for that
+// reason. Advancing the day is what completes it.
 export function LodgeReservesForm({
   pid,
   asset,

@@ -19,8 +19,8 @@ import (
 // than hidden because of what it produces: a scheme where everybody pulled a
 // moment ago, which is not a state the system maintains for anybody. A suite
 // that wants to MEASURE staleness therefore cannot use this helper, and none
-// does — the case lives in mesh, where a bank is provisioned and the others are
-// left holding the copies they had.
+// does — the case lives in cmd/server, where a bank is provisioned and the
+// others are left holding the copies they had.
 //
 // # Why the fixture fixes the country
 //

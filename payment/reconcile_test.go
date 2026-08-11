@@ -300,10 +300,11 @@ func TestAMissedStatementIsCaughtByTheNextOne(t *testing.T) {
 // and the money is visibly still in suspense, which is a position and not a
 // defect.
 //
-// It is unreachable in this transport, which delivers exactly once and in order.
-// It becomes reachable AND INVISIBLE the day the mesh gains a lossy one, and
-// what would close it is a periodic statement, which this system does not have.
-// payment/recon catches it today because it can read the agent's register; this
+// It is REACHABLE, because nothing is pushed at a member: a statement waits in
+// the bank's download queue until the bank collects, and a bank that stops
+// collecting stops being told while this run goes on agreeing with itself. What
+// would close it from inside is a periodic statement, which this system does not
+// have. payment/recon catches it because it can read the agent's register; this
 // cannot, and does not pretend to.
 func TestTheLastStatementNeverArrivingIsUndetectableFromInside(t *testing.T) {
 	ctx := context.Background()

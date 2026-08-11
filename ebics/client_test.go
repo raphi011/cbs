@@ -107,9 +107,8 @@ func TestOrderStatusSeparatesTheThreeAnswers(t *testing.T) {
 	}
 }
 
-// TestAHostThatCannotBeReachedIsNotARefusal is the distinction the mesh could
-// not draw, and the two call for opposite things: retry the first, do not retry
-// the second.
+// TestAHostThatCannotBeReachedIsNotARefusal: the two call for opposite things —
+// retry the first, do not retry the second.
 func TestAHostThatCannotBeReachedIsNotARefusal(t *testing.T) {
 	srv := httptest.NewServer(ebics.NewServer())
 	url := srv.URL
