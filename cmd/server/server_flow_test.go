@@ -16,6 +16,7 @@ import (
 	"github.com/raphi011/cbs/calendar"
 
 	"github.com/raphi011/cbs/deposit"
+	"github.com/raphi011/cbs/ebics"
 	"github.com/raphi011/cbs/iban"
 	"github.com/raphi011/cbs/iso20022"
 	"github.com/raphi011/cbs/payment"
@@ -313,7 +314,7 @@ func TestPendingAndCutoffOnABanksOwnPort(t *testing.T) {
 // a file survives a reset is if the reset left the queue standing — and a file
 // about a payment no institution now holds a row for would be worked through on
 // the first day after it, against tables the reset has emptied. Both hosts are
-// therefore rebuilt, which is what this measures.
+// therefore emptied, which is what this measures.
 //
 // The cut-off is what puts a file there at all. A submission on its own leaves
 // the instruction in the payer's bank's hub and nothing on any connection, so a
@@ -403,18 +404,19 @@ func TestAReseededNetworkCanStillBePaidThrough(t *testing.T) {
 	}
 }
 
-// A reset replaces the network, so it has to replace the deployment's picture of it.
+// A reset empties the network, so it has to empty the deployment's picture of it.
 //
 // The sequence that fails without it: provision a bank, reset, provision the same
 // BIC again. If the deployment keeps the first bank's queues, a file addressed
 // to that BIC lands in a queue about a payment no institution holds a row for,
-// on a system whose roster is empty.
+// on a system whose roster is empty. What is KEPT is the bank itself, because a
+// listener holds it — see TestAResetKeepsEveryBindingAListenerMadeAtStartup.
 //
 // Every assertion below is one of the three things that go wrong: the address is
 // free again, the bank that comes back can actually be paid through — a row with
 // no actor answers every read and carries no payment — and the refusal that IS
 // still reachable says something true.
-func TestResetRebuildsTheDeploymentSoAReadmittedBankCanPay(t *testing.T) {
+func TestAReadmittedBankCanBePaidThroughAfterAReset(t *testing.T) {
 	h := newServer(t, nil)
 
 	provisionMember(t, h, "BNKADEFFXXX", "Bank A")
@@ -754,4 +756,126 @@ func aliceBalance(t *testing.T, s *server) int64 {
 	bal := doJSON(t, bankSurface(s, string(aliceBIC)), "GET",
 		"/deposit-accounts/"+string(alice.Account)+"/balance", "", http.StatusOK)
 	return int64(bal["book"].(float64))
+}
+
+// A reset leaves every binding a listener made at startup pointing at the
+// institution that is still running.
+//
+// serve binds each surface and each EBICS host ONCE, before the first request:
+// there is no lookup per request anywhere in this process, and there cannot be,
+// because http.Server takes a handler. So a reset that REPLACED an institution
+// would leave a deployment nobody could reach — banks uploading into a host
+// nothing reads, an operator's cut-off emptying a hub nothing fills — and every
+// test in this package would pass, because the fixtures ask the deployment for
+// its institutions again after the reset and a real listener never does.
+//
+// The mounted host below is therefore the point of the test: it is captured
+// exactly as serve captures it, and the reseeded bank has to be enrolled at the
+// one it is serving.
+func TestAResetKeepsEveryBindingAListenerMadeAtStartup(t *testing.T) {
+	srv := newAPIHarness(t)
+	ctx := context.Background()
+
+	csm := srv.dep.ClearingHouse()
+	csmHost, cbHost := csm.EBICS(), srv.dep.CentralBank().EBICS()
+	mounted := httptest.NewServer(csmHost)
+	t.Cleanup(mounted.Close)
+	bic, _ := seededParty(t, srv, aliceIBAN)
+	before, err := srv.dep.Bank(ctx, payment.ParticipantID(bic))
+	if err != nil {
+		t.Fatalf("binding %s before the reset: %v", bic, err)
+	}
+
+	rec := post(t, srv.CentralBankRoutes(), "/admin/reset")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("reset = %d (body: %s)", rec.Code, rec.Body)
+	}
+
+	if got := srv.dep.ClearingHouse().EBICS(); got != csmHost {
+		t.Error("the reset replaced the clearing house's EBICS side; the listener serving it is still on the old one")
+	}
+	if got := srv.dep.CentralBank().EBICS(); got != cbHost {
+		t.Error("the reset replaced the settlement agent's EBICS side; the listener serving it is still on the old one")
+	}
+	after, err := srv.dep.Bank(ctx, payment.ParticipantID(bic))
+	if err != nil {
+		t.Fatalf("binding %s after the reset: %v", bic, err)
+	}
+	if after != before {
+		t.Errorf("the reset replaced %s; that bank's own listener is still serving the old one", bic)
+	}
+
+	// And a file uploaded to the host the listener is serving is one the clearing
+	// house can see. A stale host answers EBICS_OK out of a queue this
+	// institution never reads, which is the worse half of the same defect: the
+	// bank is told its file arrived and no cut-off ever contains it.
+	client := ebics.NewClient(ebics.SubscriberID(bic), mounted.URL)
+	if _, err := client.Upload(ctx, ebics.CCT, []byte("<a file this test never asks anybody to read/>")); err != nil {
+		t.Fatalf("%s uploading to the host its listener mounts: %v", bic, err)
+	}
+	if got := len(csm.host.Pending()); got != 1 {
+		t.Errorf("the clearing house has %d files to work through, and one was just uploaded to the host its listener mounts", got)
+	}
+}
+
+// A reset empties what the clearing house is holding between files.
+//
+// Two maps outlive a unit of work there: the returns waiting for finality, and
+// the receiving banks' shares of every file taken in. Both are keyed by ids the
+// store mints, and a reset restarts those sequences — so a share that survived
+// one would be released into a bank's queue by the next cycle to be given the
+// same id, carrying transactions about payments no institution holds a row for.
+//
+// The cut-off and the carry are what put a share there at all. A submission on
+// its own leaves the instruction in the payer's bank's hub, so a version of this
+// test without them would measure a reset over an empty map.
+func TestAResetThrowsAwayTheSharesTheClearingHouseHolds(t *testing.T) {
+	srv := newAPIHarness(t)
+
+	postJSON(t, payerRoutes(t, srv), "/payments", validSubmission(t, srv))
+	doJSON(t, payerRoutes(t, srv), "POST", "/payments/cutoff", "", http.StatusAccepted)
+	carry(t, srv)
+	if got := len(srv.dep.ClearingHouse().output); got == 0 {
+		t.Fatal("the clearing house holds no output file, so this test would pass on nothing")
+	}
+
+	rec := post(t, srv.CentralBankRoutes(), "/admin/reset")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("reset = %d (body: %s)", rec.Code, rec.Body)
+	}
+
+	if got := len(srv.dep.ClearingHouse().output); got != 0 {
+		t.Errorf("%d output files survived the reset; each is addressed against a cycle id the store will mint again", got)
+	}
+	if got := len(srv.dep.ClearingHouse().held); got != 0 {
+		t.Errorf("%d returns survived the reset; each names a payment no institution now holds", got)
+	}
+}
+
+// A bank's console, bound before a reset, still reads and empties that bank's
+// own hub afterwards.
+//
+// The hub is the one thing a bank holds outside its database, and a submission
+// goes to the bank the DEPLOYMENT routes it to while GET /payments/pending and
+// POST /payments/cutoff answer out of the bank the LISTENER was given. A reset
+// that made those two different banks would leave a console reporting an empty
+// hub for ever and a cut-off route that emptied nothing, with every row in the
+// database looking exactly right.
+func TestABankConsoleBoundBeforeAResetStillHoldsItsOwnHub(t *testing.T) {
+	srv := newAPIHarness(t)
+	payer := payerRoutes(t, srv)
+
+	rec := post(t, srv.CentralBankRoutes(), "/admin/reset")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("reset = %d (body: %s)", rec.Code, rec.Body)
+	}
+
+	postJSON(t, payerRoutes(t, srv), "/payments", validSubmission(t, srv))
+	if got := doJSONArray(t, payer, "GET", "/payments/pending", "", http.StatusOK); len(got) != 1 {
+		t.Fatalf("the console bound before the reset holds %d instructions, want the 1 just submitted", len(got))
+	}
+	out := doJSON(t, payer, "POST", "/payments/cutoff", "", http.StatusAccepted)
+	if orders, _ := out["orderIds"].([]any); len(orders) != 1 {
+		t.Fatalf("its cut-off uploaded %v, want one file", out["orderIds"])
+	}
 }

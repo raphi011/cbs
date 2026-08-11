@@ -376,6 +376,13 @@ func (d *Deployment) clear(ctx context.Context) {
 	// this day's phase 4 rather than by this one.
 	d.journal.problem(d.csm.closeOpenCycles(ctx)...)
 
+	// 3b. And the cut-offs that instructed nothing are discharged where they
+	// stand. A cycle whose members' positions all cancel — or that took nothing
+	// in at all — has no leg to send, so no answer is coming and phase 5 would
+	// never release it. Before phase 4 rather than after, because the settlement
+	// agent has nothing to do with it. See ClearingHouse.settleUninstructed.
+	d.journal.problem(d.csm.settleUninstructed(ctx)...)
+
 	// 4. The settlement agent works through everything uploaded to it: cut-offs
 	// discharged, returns executed, lodgements credited. This is the only phase
 	// in which central-bank reserves move.

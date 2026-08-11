@@ -1060,6 +1060,10 @@ func (c *ClearingHouse) openCycles(ctx context.Context) []Problem {
 // nothing for a settlement agent to discharge. Every credit-transfer test in
 // this package closes an untouched direct-debit cycle for exactly that reason,
 // so the path is walked constantly rather than reasoned about.
+//
+// Silence is not the END of such a cycle, though, and that is settleUninstructed's
+// job: no answer will ever come back for a file that was never sent, and the
+// payments inside one are owed the same finality as any other batch.
 func (c *ClearingHouse) instructSettlement(ctx context.Context, closed payment.ClearingCycle) error {
 	scheme, ok := c.ops.Scheme(closed.Scheme)
 	if !ok {
@@ -1094,6 +1098,64 @@ func (c *ClearingHouse) instructSettlement(ctx context.Context, closed payment.C
 // one intent are two things that can drift.
 func (c *ClearingHouse) settlementLegs(closed payment.ClearingCycle, asset ledger.AssetCode) []payment.SettlementLeg {
 	return payment.SettlementLegsOf(closed, asset, c.d.cfg.CentralBankBIC)
+}
+
+// settleUninstructed discharges the cut-offs no settlement agent will ever
+// answer for.
+//
+// A closed cycle that nets to nothing was never instructed — there was no leg to
+// send — so nothing will arrive to release it, and everything settle-before-
+// release gates is gated on an answer. Without this the payments in such a cycle
+// stay Cleared for ever: every payer's money sits in its own bank's clearing
+// suspense, and every receiving bank's share of the file waits in c.output for a
+// pacs.002 that no institution owes anyone.
+//
+// # It is the clearing house settling, and that is not a crossing
+//
+// No reserve moves and none needs to: every member's position is zero, so the
+// suspense each of them filled at submission is emptied by the payments it
+// receives in the same batch. What this institution writes is its OWN copies and
+// nothing else — SettleAtCSM touches no book at all — and the settlement agent
+// is not silent about this cut-off so much as never asked about it. There is no
+// settlement row anywhere, which is what payment.NetsToNothing tells the
+// reconciliation harness.
+//
+// # It sweeps rather than following the close
+//
+// Every closed cycle, not the ones this day's cut-off closed, because an
+// operator can close one out of turn through the API and the same cycle would
+// then wait for an answer that is not coming. A cycle with a position to
+// discharge is left alone here whatever became of its instruction: one the agent
+// refused is the operator's to re-instruct — see Settle — and one this sweep
+// settled instead would release its files against reserves nobody moved.
+//
+// The sweep terminates because SettleAtCSM marks the cycle Settled, so it is
+// each such cut-off's last day of being looked at.
+func (c *ClearingHouse) settleUninstructed(ctx context.Context) []Problem {
+	ctx = withActor(ctx, c.bic)
+
+	cycles, err := c.ops.ListCycles(ctx)
+	if err != nil {
+		return []Problem{{Institution: c.bic, Detail: fmt.Sprintf("reading the cycles nothing was instructed for: %v", err)}}
+	}
+	var problems []Problem
+	for _, cycle := range cycles {
+		if cycle.Status != payment.CycleClosed || !payment.NetsToNothing(cycle) {
+			continue
+		}
+		// The original message is named as unavailable, by Reject's convention and
+		// for its reason: there is no settlement instruction to refer back to, and
+		// inventing a message id no institution sent would be worse than saying so.
+		if err := c.tellSettled(ctx, cycle.ID,
+			payment.OriginalMessage{MsgID: notProvided, MsgDefIdr: notProvided},
+			payment.TransactionStatusReport{
+				TxID:   string(cycle.ID),
+				Status: iso20022.TransactionStatusSettlementCompleted,
+			}); err != nil {
+			problems = append(problems, Problem{Institution: c.bic, Detail: err.Error()})
+		}
+	}
+	return problems
 }
 
 // receiveSettlementStatus is the clearing house acting on what the CENTRAL BANK

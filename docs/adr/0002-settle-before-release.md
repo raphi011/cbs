@@ -76,6 +76,20 @@ a payment an operator rejects out of an open cycle is filtered out when the rest
 of its cycle settles. Holding a rendered file would release a transaction the
 network had already told a bank it would not carry.
 
+**A cut-off with nothing to settle is discharged by the clearing house itself.**
+Release is gated on the settlement agent's answer, and there are cut-offs it is
+never asked about: a cycle whose members' positions all cancel, and one that took
+nothing in, have no leg to send, and a settlement instruction with no transaction
+is not a message. Nothing would ever release them, so the institution that netted
+the batch settles it where it stands — phase 3b, before the settlement agent is
+worked at all. No reserve moves and none needs to: every position is zero, so
+each bank's clearing suspense is emptied by the payments it receives in the same
+batch. **No settlement is recorded anywhere against such a cycle**, which the
+reconciliation harness has to know before it reads a settled cycle with no
+settlement against it as a break (`payment.NetsToNothing`). A cycle with a
+position to discharge is never settled this way, whatever became of its
+instruction: one the agent refused is the operator's to re-instruct.
+
 **A settled direct debit is where the argument is clearest.** The payer's bank
 was net-debited at the cut-off whatever its customer's balance turns out to be,
 so `AM04` — a shortfall no other institution can see — is discovered with the

@@ -631,6 +631,7 @@ Running one carries every payment through every phase, in a fixed order, for eve
 2  csm     validate, accept into the open cycle, answer per transaction,
            and BUILD each receiving bank's share -- releasing nothing
 3  csm     its own cut-off: net every open cycle, instruct settlement
+3b csm     discharge the cut-offs that instructed nobody
 4  cb      settle whole-or-nothing, statement per member, answer the csm
 5  csm     collect the answer -> RELEASE the output files
 6  banks   collect -- THE SETTLEMENT AGENT FIRST, then the clearing house
@@ -645,6 +646,8 @@ Three of those orderings are load-bearing:
 - **The directory refresh is first**, so a bank admitted since the last day can be paid by its neighbours today rather than whenever somebody remembers to pull. See [[routing-directory]].
 - **Phases 3, 4 and 5 are settle, then release.** The cycle settles before any output file leaves the clearing house, so a receiving bank is handed its instructions only once the funds behind them are final. Reverse them and a bank could credit a customer against a batch that still fails. What the order costs is the receiving bank's ability to reject — its objections become [[allows-return|returns]] instead.
 - **Banks collect from the settlement agent first.** The reserve mirror has to be booked before the [[creditor-leg|creditor legs]] draw on it, and the two files sit in **different queues at different institutions**. Two connections share no ordering, so nothing about the order they were written in survives; what guarantees it is the bank's own collection order, which is a decision each bank makes about its own operations.
+
+**A cut-off can net to nothing, and one that does is discharged by the clearing house itself.** If every member's position cancels — or the scheme saw no traffic at all — there is nothing to instruct, because a settlement instruction with no transaction is not a message. Nobody is asked, so no answer comes back and phase 5 would wait for ever; the institution that netted the batch settles it where it stands. No reserves move and none need to: each bank's [[clearing-suspense|clearing suspense]] is emptied by the payments it receives in the same batch, and **no settlement is recorded anywhere** for such a cut-off.
 
 A **failure never stops the day.** A file one bank cannot read must not stop another bank being paid, so every phase records what went wrong and carries on. What a day hands back is a report: the files that moved, what was decided about each transaction, and every file some institution could not get through.
 

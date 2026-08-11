@@ -141,6 +141,9 @@ type Deployment struct {
 	// banks is every member bank this process holds a database for, by ADDRESS.
 	// A bank's ParticipantID is its BIC (payment.AsBank), so this is keyed by the
 	// one identity a bank has.
+	//
+	// An entry is written once and never replaced, for the reason the hosts are
+	// not: a listener holds the Bank it was given at startup. See mintBank.
 	banks map[iso20022.BIC]*Bank
 
 	// resetMu serializes Reset AND AdvanceDay. They are the two acts over the
@@ -253,8 +256,23 @@ func (d *Deployment) enrol(bic iso20022.BIC) {
 	d.cb.host.Enrol(ebics.SubscriberID(bic))
 }
 
-// mintBank opens one bank's database and gives it its two connections.
+// mintBank opens one bank's database and gives it its two connections — or hands
+// back the Bank this deployment already holds for that address.
+//
+// One Bank per address for the life of the process, and that is an invariant
+// rather than a saving. A listener binds the surface it serves at startup, so a
+// second Bank for an address that already has one would be a bank whose console
+// answered out of a hub nothing cuts off and whose cut-off route emptied a hub
+// nothing fills. Reset empties what a Bank holds and keeps the Bank; see
+// Bank.clearHub.
 func (d *Deployment) mintBank(ctx context.Context, bic iso20022.BIC) (*Bank, error) {
+	d.mu.Lock()
+	held, ok := d.banks[bic]
+	d.mu.Unlock()
+	if ok {
+		return held, nil
+	}
+
 	net, err := d.nets.Bank(ctx, payment.ParticipantID(bic))
 	if err != nil {
 		return nil, fmt.Errorf("server: opening %s's store: %w", bic, err)
@@ -264,9 +282,15 @@ func (d *Deployment) mintBank(ctx context.Context, bic iso20022.BIC) (*Bank, err
 		csm: ebics.NewClient(ebics.SubscriberID(bic), d.cfg.ClearingHouseURL),
 		cb:  ebics.NewClient(ebics.SubscriberID(bic), d.cfg.CentralBankURL),
 	}
+	// Under the lock a second time, because opening the database above is I/O and
+	// two requests for a bank neither of them found may have run it at once. The
+	// loser's Bank is discarded, so the invariant above holds however they raced.
 	d.mu.Lock()
+	defer d.mu.Unlock()
+	if held, ok := d.banks[bic]; ok {
+		return held, nil
+	}
 	d.banks[bic] = b
-	d.mu.Unlock()
 	return b, nil
 }
 
@@ -698,18 +722,28 @@ func (d *Deployment) member(bic iso20022.BIC) (*Bank, error) {
 // idempotent. It makes resets exclusive within ONE process; two servers sharing
 // a database could still race, which is a property of a teaching tool.
 //
-// # The queues go with the rows, and so do the hubs
+// # Everything an institution holds between files goes with the rows
 //
 // A download queue holds bytes addressed to a subscriber, and the payments those
-// bytes describe are about to be deleted. Both hosts are therefore rebuilt
-// empty, and every reseeded bank is enrolled again as the seed admits it. A
-// queue that survived would deliver a file about a payment no institution holds
-// a row for, on the first day after the reset.
+// bytes describe are about to be deleted. Both hosts are therefore emptied, and
+// every reseeded bank is enrolled again as the seed admits it. A queue that
+// survived would deliver a file about a payment no institution holds a row for,
+// on the first day after the reset.
 //
-// A bank's payment hub goes the same way and needs no line of its own: the hub
-// is state on the Bank, and every Bank is discarded above. An instruction taken
-// and not yet cut off would otherwise be uploaded, after the reset, about a
-// payment nobody holds.
+// The same goes for the three other things kept outside the store: each bank's
+// payment hub, the clearing house's held returns and its output files. An
+// instruction taken and not yet cut off would otherwise be uploaded after the
+// reset about a payment nobody holds, and a share held against a cycle id would
+// be released into a bank's queue by the next cycle to mint that id — the
+// sequences restart with the rows.
+//
+// # Every institution is EMPTIED and none is replaced
+//
+// A listener binds the surface it serves once, at startup, so an institution
+// this reset swapped for a new one would leave a process serving the old: banks
+// uploading into a host nothing reads, an operator's cut-off emptying a hub
+// nothing fills. That is why the three institutions and the banks are cleared in
+// place rather than rebuilt, and why ebics.Server.Reset exists.
 //
 // The seed's own timeline is replayed from BaseDate, which is seed.Populate's
 // act rather than this one's: a reset restores the dataset, and a dataset dated
@@ -719,14 +753,14 @@ func (d *Deployment) Reset(ctx context.Context) error {
 	d.resetMu.Lock()
 	defer d.resetMu.Unlock()
 
-	d.mu.Lock()
-	d.banks = map[iso20022.BIC]*Bank{}
-	d.mu.Unlock()
-
-	d.csm.host = ebics.NewServer()
-	d.cb.host = ebics.NewServer()
+	for _, b := range d.banksInOrder() {
+		b.clearHub()
+	}
+	d.csm.host.Reset()
+	d.cb.host.Reset()
 	d.cb.host.Enrol(ebics.SubscriberID(d.cfg.ClearingHouseBIC))
 	d.csm.held = map[payment.PaymentID]heldReturn{}
+	d.csm.output = map[payment.CycleID][]pendingFile{}
 	d.journal.take()
 
 	if err := d.nets.Stores().Reset(ctx); err != nil {

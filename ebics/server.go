@@ -74,6 +74,25 @@ func (s *Server) Enrol(sub SubscriberID) {
 	}
 }
 
+// Reset empties this host: every enrolment, every queue, and every order it has
+// recorded. The host itself survives, which is the point of it being a method
+// rather than a new Server — a listener mounted this one at startup and would go
+// on serving the discarded one.
+//
+// It is an operator's act and not the protocol's: nothing a subscriber can send
+// reaches it. What it stands in for is a gateway rebuilt from nothing, which is
+// why the enrolments go too — provisioning is what creates a queue, so a reseed
+// makes them again.
+func (s *Server) Reset() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.seq = 0
+	s.subs = map[SubscriberID]*subscriber{}
+	s.orders = map[OrderID]*record{}
+	s.arrivals = nil
+}
+
 // Enrolled reports whether sub can reach this host at all.
 func (s *Server) Enrolled(sub SubscriberID) bool {
 	s.mu.Lock()

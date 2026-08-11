@@ -111,9 +111,9 @@ func newServer(t *testing.T, populate func(context.Context, *payment.Networks, s
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 
 	s := &server{nets: nets, clock: clock}
-	// The two hosts, on real listeners, with the handler looked up per REQUEST:
-	// Reset replaces both, so a captured one would serve a deployment's dead
-	// queues after a reseed.
+	// The two hosts, on real listeners. The handler is looked up per REQUEST
+	// because the deployment does not exist yet: its config names these two URLs,
+	// so the listeners have to be standing before it is built.
 	csmHost := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		s.dep.ClearingHouse().EBICS().ServeHTTP(w, r)
 	}))
@@ -147,8 +147,8 @@ func newServer(t *testing.T, populate func(context.Context, *payment.Networks, s
 // admitForPopulate is what a reseed here uses to make a bank: its three rows,
 // then its place in the network.
 //
-// The second half is what a reseed cannot leave out. Deployment.Reset rebuilds
-// both hosts empty before it truncates and enrols nobody afterwards, so a
+// The second half is what a reseed cannot leave out. Deployment.Reset empties
+// both hosts before it truncates and enrols nobody afterwards, so a
 // baseline that wrote its rows and stopped would rebuild a network whose banks
 // answer every read and can be sent nothing.
 func admitForPopulate(ctx context.Context, nets *payment.Networks, dep seed.Deployment,

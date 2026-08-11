@@ -10,6 +10,7 @@ import (
 	"github.com/raphi011/cbs/iso20022"
 	"github.com/raphi011/cbs/ledger"
 	"github.com/raphi011/cbs/payment"
+	"github.com/raphi011/cbs/payment/recon"
 )
 
 // The settlement flow end to end: a cut-off, an instruction, a discharge, and
@@ -892,4 +893,82 @@ func statusText(doc *iso20022.Pacs002) string {
 		}
 	}
 	return strings.Join(out, "; ")
+}
+
+// A cut-off in which every position cancels settles, and its files are released.
+//
+// Two banks pay each other the same amount inside one cycle, so the netting
+// leaves both of them owing nothing. There is no leg to send and therefore no
+// pacs.009, and until the clearing house discharged such a cut-off itself the
+// batch had nowhere to go: no settlement agent would ever answer for a file
+// nobody uploaded, so both payments stayed Cleared for ever, both payers' money
+// stayed in their own bank's clearing suspense, and neither payee's bank was
+// handed the instructions it was waiting for.
+//
+// The measure is therefore what a payee can spend, not what a status column
+// says: each customer ends the day with what they started with, which is only
+// true if both instructions were released AND applied. recon.Check is the other
+// half — it holds all N+2 books against each other, and a settlement recorded
+// where none belongs is a break it names.
+func TestACutOffThatNetsToNothingSettlesAndReleasesItsFiles(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+
+	// The payee's own opening balance. This fixture funds one side, and a cycle
+	// that nets to nothing needs both banks to be paying.
+	if err := h.bank(h.creditorBIC).Deposit(ctx, h.creditorPID, h.creditorAcct.ID, harnessFunding, "Opening deposit"); err != nil {
+		t.Fatalf("funding the payee: %v", err)
+	}
+
+	there := h.submitCreditTransfer(t)
+	back := h.submit(t, h.reverseCreditTransfer(t))
+
+	h.day(t)
+
+	for _, p := range []payment.Payment{there, back} {
+		if got := h.payment(t, p.ID); got.Status != payment.Settled {
+			t.Errorf("%s is %v after the day that netted its cycle to nothing, want Settled", p.ID, got.Status)
+		}
+	}
+	// Each customer is back where they started, which is what makes this a cycle
+	// that netted to nothing rather than two payments that went nowhere.
+	if got := h.balance(t, h.debtorPID, h.debtorAcct.ID); got != harnessFunding {
+		t.Errorf("the first payer holds %d, want %d", got, harnessFunding)
+	}
+	if got := h.balance(t, h.creditorPID, h.creditorAcct.ID); got != harnessFunding {
+		t.Errorf("the second payer holds %d, want %d", got, harnessFunding)
+	}
+	recon.Check(t, h.nets)
+}
+
+// And the settlement agent is never asked about it, which is the half the
+// balances above cannot say.
+//
+// A cut-off with nothing to discharge is settled by the institution that netted
+// it: no instruction is uploaded, no reserve moves, and no settlement row exists
+// anywhere. A clearing house that instead sent a pacs.009 of zero-amount legs
+// would move no money either, and this is what tells the two apart.
+func TestACutOffThatNetsToNothingInstructsNobody(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+
+	if err := h.bank(h.creditorBIC).Deposit(ctx, h.creditorPID, h.creditorAcct.ID, harnessFunding, "Opening deposit"); err != nil {
+		t.Fatalf("funding the payee: %v", err)
+	}
+	h.submitCreditTransfer(t)
+	h.submit(t, h.reverseCreditTransfer(t))
+
+	before := h.centralBankTransactionCount(t)
+	h.day(t)
+
+	if got := h.centralBankTransactionCount(t); got != before {
+		t.Errorf("the settlement agent posted %d transactions for a cut-off that netted to nothing, want none", got-before)
+	}
+	settlements, err := h.cb().ListSettlements(ctx)
+	if err != nil {
+		t.Fatalf("ListSettlements: %v", err)
+	}
+	if len(settlements) != 0 {
+		t.Errorf("the settlement agent holds %d settlements, and nobody instructed one", len(settlements))
+	}
 }

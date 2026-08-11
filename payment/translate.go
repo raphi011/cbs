@@ -2267,6 +2267,27 @@ func SettlementLegsOf(c ClearingCycle, asset ledger.AssetCode, centralBank iso20
 	return legs
 }
 
+// NetsToNothing reports whether a cycle leaves nobody with anything to
+// discharge: every member's position is zero, or it took nothing in at all.
+//
+// It is the whole-cycle form of the rule SettlementLegsOf applies per position,
+// and it is a state with two quite different causes — a scheme that saw no
+// traffic today, and a batch in which every bank's payments and receipts
+// cancelled exactly. Neither yields an instruction, because a pacs.009 with no
+// transaction is not a message, so such a cut-off is discharged by the clearing
+// house itself and NO settlement is recorded against it anywhere. Two callers
+// need that rule: the institution that would otherwise wait for an answer that
+// never comes, and the reconciliation harness, which would otherwise read a
+// settled cycle with no settlement row as a break.
+func NetsToNothing(c ClearingCycle) bool {
+	for _, net := range c.NetPositions {
+		if net != 0 {
+			return false
+		}
+	}
+	return true
+}
+
 // SettlementMessage renders a closed cycle's net positions as the pacs.009 that
 // instructs the central bank to settle them.
 //

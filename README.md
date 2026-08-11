@@ -1266,6 +1266,7 @@ The schedule, on a day the scheme settles:
 2  csm     validate, record, take into the open cycle, answer per transaction,
            and BUILD each receiving bank's share -- releasing nothing
 3  csm     its own cut-off: net every open cycle -> upload CSI
+3b csm     discharge the cut-offs that instructed nothing
 4  cb      settle whole-or-nothing -> camt.053 per member -> answer the csm
 5  csm     collect the answer -> RELEASE the output files, and the ACSC per payment
 6  banks   collect -- THE SETTLEMENT AGENT FIRST, then the clearing house
@@ -1280,6 +1281,8 @@ Three orderings in that list are load-bearing rather than presentational:
 - **The directory refresh is phase 0**, so a bank admitted since the last advance can be paid by its neighbours *today* rather than after somebody remembers to call the route. The refresh is a phase of the day rather than a background poller, and it visits **every** bank rather than every subscriber, because a bank waiting on admission is exactly the bank that needs the directory it is about to appear in.
 - **Phases 3, 4, 5 are settle-then-release.** The cycle settles before the output files leave the clearing house, so a receiving bank is handed its instructions only once the funds behind them are final. Reverse them and settlement risk is invented. What the order costs is the receiving bank's ability to say *no*, which is why [its objections are returns](#the-payment-lifecycle) rather than rejections.
 - **Phase 6 collects from the settlement agent first.** The mirror leg has to be booked before the creditor legs draw on it, and the two files that carry them sit in **different queues at different institutions** — the `camt.053` at the settlement agent, the released `pacs.008` at the clearing house. Two connections share no ordering, so nothing about the order they were written in survives. What guarantees it is the **bank's own collection order**, and that is more honest than a guarantee from the network: the ordering was never a property of the transport; it was a property of there being one queue.
+
+**Phase 3b is the one phase that asks nobody anything.** A cut-off whose members' positions all cancel — or that took nothing in at all — has no leg to send, because a settlement instruction with no transaction is not a message. So no answer is coming and phase 5 would never release it: the clearing house discharges it where it stands. No reserve moves and none needs to — every member's position is zero, so the suspense each of them filled at submission is emptied by the payments it receives in the same batch. **There is no settlement recorded anywhere for such a cut-off**, which is what the reconciliation harness has to know before it reads a settled cycle with no settlement against it as a break.
 
 **A phase never stops the day.** Every one of them collects its failures and carries on, because a file one bank cannot read must not stop another bank being paid — and an institution that abandoned the day halfway would leave the clock where it was with half the queues drained.
 

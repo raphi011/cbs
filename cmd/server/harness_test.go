@@ -372,9 +372,9 @@ func (h *harness) cbBook(t *testing.T) *ledger.Book {
 // server in memory — would make "the counterparty is unreachable" inexpressible
 // again, which is exactly what this transport exists to make reachable.
 //
-// The handler is looked up per REQUEST rather than captured, because Reset
-// replaces both hosts: a captured handler would serve a deployment's dead queues
-// after a reseed.
+// The handler is looked up per REQUEST rather than captured because the
+// deployment does not exist yet: its config names these two URLs, so both
+// listeners have to be standing before it is built.
 //
 // # The fixture never advances a day
 //
@@ -803,6 +803,33 @@ func (h *harness) creditTransferRequestTo(t *testing.T, iban string) payment.Ini
 		// from the port's bound identity and the seed names it outright; this is a
 		// caller that names its own side, which every fixture here is.
 		DebtorDetails: payment.PartyDetails{Agent: h.debtorBIC, Name: h.debtorAcct.Name},
+	}
+}
+
+// reverseCreditTransfer is the same push the other way: the payee's customer
+// paying the payer's, out of the payee's own bank.
+//
+// It is what a cut-off that nets to nothing needs — two banks paying each other
+// the same amount inside one cycle — and it is the only instruction in this
+// fixture that the CREDITOR's bank submits under a push scheme. The amount is
+// the harness's one, because a position cancels exactly or it does not cancel at
+// all.
+func (h *harness) reverseCreditTransfer(t *testing.T) payment.InitiatePaymentRequest {
+	t.Helper()
+	return payment.InitiatePaymentRequest{
+		Scheme: payment.SchemeSEPACT,
+		Debtor: payment.PartyRef{
+			Account:    h.creditorAcct.ID,
+			Identifier: h.creditorAcct.Identifiers[0],
+		},
+		Creditor: payment.PartyRef{
+			Account:    h.debtorAcct.ID,
+			Identifier: deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: h.debtorIBAN},
+		},
+		Amount:          harnessAmount,
+		Description:     "invoice 43",
+		CreditorDetails: payment.PartyDetails{Name: h.debtorAcct.Name},
+		DebtorDetails:   payment.PartyDetails{Agent: h.creditorBIC, Name: h.creditorAcct.Name},
 	}
 }
 

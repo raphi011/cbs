@@ -293,10 +293,30 @@ func (b *Bank) queued() []payment.PaymentID {
 // not be uploaded is retried at the next cut-off ahead of whatever arrived while
 // it was being tried. A hub is a queue, and a retry does not go to the back of
 // one.
+//
+// It is called ONCE per cut-off, with every instruction that cut-off could not
+// send, in the order it took them. Called per failed file it would put the
+// second file's instructions ahead of the first's, and the hub's order is what
+// batched promises to build the next files out of.
 func (b *Bank) requeue(ids []payment.PaymentID) {
+	if len(ids) == 0 {
+		return
+	}
 	b.hubMu.Lock()
 	defer b.hubMu.Unlock()
 	b.hub = append(ids, b.hub...)
+}
+
+// clearHub throws away everything this bank has taken and not yet cut off.
+//
+// Reset's, and only Reset's: the instructions name payments whose rows are being
+// deleted, and a hub that survived one would upload a file about a payment no
+// institution holds. Nothing in the domain discards a hub — an instruction a
+// bank has accepted is owed an outcome.
+func (b *Bank) clearHub() {
+	b.hubMu.Lock()
+	defer b.hubMu.Unlock()
+	b.hub = nil
 }
 
 // pending reads the rows behind a list of queued ids, in the order they were
@@ -359,10 +379,14 @@ func (b *Bank) cutoff(ctx context.Context) ([]ebics.OrderID, []Problem) {
 	to := b.d.cfg.ClearingHouseBIC
 	var orders []ebics.OrderID
 	var problems []Problem
+	// kept accumulates across the files rather than going back one at a time, so
+	// two files that both failed return to the hub in the order this bank took
+	// their instructions. See requeue.
+	var kept []payment.PaymentID
 	for _, batch := range batched(ps) {
 		env, err := b.ops.InstructionMessage(ctx, batch, b.d.messageContext(b.bic, to))
 		if err != nil {
-			b.requeue(idsOf(batch))
+			kept = append(kept, idsOf(batch)...)
 			problems = append(problems, Problem{
 				Institution: b.bic,
 				Detail:      fmt.Sprintf("building the cut-off file for %s: %v", batch[0].Scheme, err),
@@ -371,12 +395,13 @@ func (b *Bank) cutoff(ctx context.Context) ([]ebics.OrderID, []Problem) {
 		}
 		id, err := b.upload(ctx, to, b.csm, env)
 		if err != nil {
-			b.requeue(idsOf(batch))
+			kept = append(kept, idsOf(batch)...)
 			problems = append(problems, Problem{Institution: b.bic, Detail: err.Error()})
 			continue
 		}
 		orders = append(orders, id)
 	}
+	b.requeue(kept)
 	return orders, problems
 }
 

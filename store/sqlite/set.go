@@ -198,7 +198,7 @@ func (s *Set) Bank(ctx context.Context, bic iso20022.BIC) (payment.Store, error)
 // each listed bank's own row and got ErrParticipantNotFound; cmd/server's plan
 // would bind a listener per phantom, and fail startup naming a bank nobody has
 // heard of. Both are the same wrong claim — that a file is a bank — and
-// TestResetRebuildsTheDeploymentSoAReadmittedBankCanPay asserts the right one: a
+// TestAReadmittedBankCanBePaidThroughAfterAReset asserts the right one: a
 // reset with no reseed leaves no members.
 //
 // The alternative was for Reset to CLOSE and delete what it empties, and it was

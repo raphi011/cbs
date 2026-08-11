@@ -742,6 +742,15 @@ func (s *snapshot) cyclesAndSettlementsAgree(rep *Report) {
 		}
 		switch len(found) {
 		case 0:
+			// Unless there was nothing to discharge. A cut-off whose positions all
+			// cancel is settled by the clearing house itself and instructs nobody,
+			// so the ABSENCE of a settlement row is what agreement looks like here
+			// — see payment.NetsToNothing. A settlement that DID exist against one
+			// is not waved through: it has rows to compare, so it takes the arms
+			// below and is held against the cycle's zeros like any other.
+			if payment.NetsToNothing(c) {
+				continue
+			}
 			rep.breakf(betweenCHAndAgent,
 				"cycle %s is Settled at the clearing house and the settlement agent holds no settlement against it",
 				c.ID)

@@ -1,8 +1,11 @@
 package main
 
 import (
+	"context"
+	"slices"
 	"testing"
 
+	"github.com/raphi011/cbs/ebics"
 	"github.com/raphi011/cbs/iso20022"
 	"github.com/raphi011/cbs/payment"
 )
@@ -355,5 +358,51 @@ func TestAFileOfManyReachesFinality(t *testing.T) {
 		if bal := h.suspense(t, pid); bal != 0 {
 			t.Errorf("%s's clearing suspense = %d after settlement, want 0", pid, bal)
 		}
+	}
+}
+
+// Two files that could not go out come back in the order the hub took them.
+//
+// A cut-off builds one file per scheme and settlement date, and a file that will
+// not go out is KEPT — the instructions return to the FRONT of the hub, ahead of
+// whatever arrived while the upload was being tried. With more than one file
+// failing, "the front" has an order of its own, and it is the order the
+// instructions were taken in: the next cut-off builds its files out of the hub
+// as it stands, so a hub that came back reversed sends the second morning's
+// batch first.
+//
+// The connection is what fails here, and it is the one failure this transport
+// made expressible: the payer's bank holds a file it cannot deliver, with
+// nothing posted to unwind. Two SCHEMES rather than two days, because a scheme
+// is what makes two files out of one hub in a single cut-off.
+func TestTwoFilesThatCouldNotGoOutComeBackInTheOrderTheyWereTaken(t *testing.T) {
+	h := newHarnessWithTwoAssets(t)
+
+	euro := h.submitCreditTransfer(t)
+	dollar := h.submitCreditTransferInUSD(t)
+
+	// The payer's bank loses its connection to the clearing house, and nothing
+	// else about the deployment changes.
+	payer, err := h.dep.member(h.debtorBIC)
+	if err != nil {
+		t.Fatalf("member %s: %v", h.debtorBIC, err)
+	}
+	payer.csm = ebics.NewClient(ebics.SubscriberID(h.debtorBIC), "http://127.0.0.1:1/ebics")
+
+	orders, problems := payer.cutoff(context.Background())
+	if len(orders) != 0 {
+		t.Fatalf("%d files went out over a connection nothing is listening on", len(orders))
+	}
+	if len(problems) != 2 {
+		t.Fatalf("a cut-off of two files that could not be uploaded reported %d problems, want 2", len(problems))
+	}
+
+	want := []payment.PaymentID{euro.ID, dollar.ID}
+	var got []payment.PaymentID
+	for _, p := range h.pending(t, h.debtorBIC) {
+		got = append(got, p.ID)
+	}
+	if !slices.Equal(got, want) {
+		t.Errorf("the hub holds %v after both files were kept, want %v — the order it took them in", got, want)
 	}
 }
