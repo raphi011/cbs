@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/raphi011/cbs/calendar"
 	"github.com/raphi011/cbs/deposit"
 	"github.com/raphi011/cbs/iso20022"
 	"github.com/raphi011/cbs/ledger"
@@ -147,15 +148,16 @@ func testNetwork(t *testing.T) testNets {
 
 // testNetworkAndClock is testNetwork for the tests that also need to ask what
 // day it is, which after the catalogue is any test resolving a price.
-func testNetworkAndClock(t *testing.T) (testNets, *Dataset) {
+func testNetworkAndClock(t *testing.T) (testNets, *calendar.Clock) {
 	t.Helper()
-	d := New()
-	stores := testenv.NewSet(t, d.Now)
-	nets := payment.NewNetworks(stores, d.Now)
-	if err := d.Populate(context.Background(), nets, newTestDeployment(nets, d.Now)); err != nil {
+	clock := calendar.NewClock(BaseDate)
+	d := New(clock)
+	stores := testenv.NewSet(t, clock.Now)
+	nets := payment.NewNetworks(stores, clock.Now)
+	if err := d.Populate(context.Background(), nets, newTestDeployment(nets, clock.Now)); err != nil {
 		t.Fatalf("populate: %v", err)
 	}
-	return testNets{Network: nets.ClearingHouse(), nets: nets, stores: stores}, d
+	return testNets{Network: nets.ClearingHouse(), nets: nets, stores: stores}, clock
 }
 
 func TestNetworkShape(t *testing.T) {
@@ -611,7 +613,7 @@ func TestBrunoOverdraftRepricing(t *testing.T) {
 // something.
 func TestSeededCatalogueShowsAllThreePricingCases(t *testing.T) {
 	ctx := context.Background()
-	net, data := testNetworkAndClock(t)
+	net, clock := testNetworkAndClock(t)
 
 	var verde *payment.Bank
 	for _, p := range listParticipants(t, ctx, net) {
@@ -647,7 +649,7 @@ func TestSeededCatalogueShowsAllThreePricingCases(t *testing.T) {
 	if got := int64(repriced.Overdraft.Rate); got != 149_000 {
 		t.Errorf("the reprice = %d, want 149000 (14.9%%)", got)
 	}
-	inForce, err := verde.Catalogue.VersionInForce(ctx, verde.ProductID, ledger.DayStart(data.Now()))
+	inForce, err := verde.Catalogue.VersionInForce(ctx, verde.ProductID, ledger.DayStart(clock.Now()))
 	if err != nil {
 		t.Fatalf("version in force: %v", err)
 	}
@@ -737,9 +739,16 @@ func TestDeterministicIDs(t *testing.T) {
 	}
 }
 
-func TestClockWentLive(t *testing.T) {
+// A mutation made after the scenario is built is dated on the DEPLOYMENT's
+// timeline, where the scenario left it, and not on the wall clock.
+//
+// That is what makes one screen readable. The sample dataset is dated months
+// before today, so a row stamped with real time beside it would put two
+// timelines a year apart on one page — and a reader would have no way to tell a
+// stale seed date from the day the deployment is actually on.
+func TestAMutationAfterTheBuildIsDatedOnTheDeploymentsTimeline(t *testing.T) {
 	ctx := context.Background()
-	net := testNetwork(t)
+	net, clock := testNetworkAndClock(t)
 	first := listParticipants(t, ctx, net)[0]
 	accts, err := first.Deposit.ListAccounts(ctx)
 	if err != nil {
@@ -750,13 +759,15 @@ func TestClockWentLive(t *testing.T) {
 	}
 	ref := payment.PartyRef{Account: accts[0].ID}
 
-	// A mutation after build must be timestamped in real time, not at baseDate.
 	m, err := net.bank(first.ID).CreateMandate(ctx, first.BIC, ref, ref, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if time.Since(m.CreatedAt) > time.Minute {
-		t.Fatalf("mandate CreatedAt = %v, expected ~now (clock did not go live)", m.CreatedAt)
+	if !m.CreatedAt.Equal(clock.Now()) {
+		t.Fatalf("mandate CreatedAt = %v, want the business date %v", m.CreatedAt, clock.Now())
+	}
+	if !m.CreatedAt.After(BaseDate) {
+		t.Fatalf("mandate CreatedAt = %v, want a day the scenario advanced to past the anchor %v", m.CreatedAt, BaseDate)
 	}
 }
 
@@ -800,16 +811,18 @@ func listPayments(t *testing.T, ctx context.Context, net testNets) []payment.Pay
 // second copy of the scenario on top of the first.
 func TestPopulateIsIdempotent(t *testing.T) {
 	ctx := context.Background()
-	d := New()
-	stores := testenv.NewSet(t, d.Now)
-	nets := payment.NewNetworks(stores, d.Now)
+	clock := calendar.NewClock(BaseDate)
+	d := New(clock)
+	stores := testenv.NewSet(t, clock.Now)
+	nets := payment.NewNetworks(stores, clock.Now)
 	net := testNets{Network: nets.ClearingHouse(), nets: nets, stores: stores}
-	dep := newTestDeployment(nets, d.Now)
+	dep := newTestDeployment(nets, clock.Now)
 
 	if err := d.Populate(ctx, nets, dep); err != nil {
 		t.Fatalf("first Populate: %v", err)
 	}
 	participants, payments := listParticipants(t, ctx, net), listPayments(t, ctx, net)
+	built := clock.Now()
 
 	if err := d.Populate(ctx, nets, dep); err != nil {
 		t.Fatalf("second Populate: %v", err)
@@ -820,41 +833,40 @@ func TestPopulateIsIdempotent(t *testing.T) {
 	if got := len(listPayments(t, ctx, net)); got != len(payments) {
 		t.Fatalf("payments after reseeding = %d, want %d", got, len(payments))
 	}
-	assertClockIsLive(t, d, "after a second Populate on the same Dataset")
+	if got := clock.Now(); !got.Equal(built) {
+		t.Fatalf("the business date after a second Populate = %v, want %v — the skip moved the clock", got, built)
+	}
 
 	// The case the idempotent skip exists for: a second process opening a store
-	// that outlived the first. Its Dataset is brand new, so its clock starts
-	// frozen at baseDate and Populate builds nothing — and if the skip returned
-	// without releasing the clock, everything this process went on to write
-	// would be timestamped 2025-09-15.
-	second := New()
-	secondNets := payment.NewNetworks(stores, second.Now)
+	// that outlived the first. Its clock is the one calendar.OpenClock read back
+	// from beside the databases — a day well past the anchor and past where this
+	// scenario's own timeline ended — and the skip must leave it exactly there. A
+	// rewind here would put the business date behind books already holding
+	// entries dated later, and every accrual and ageing report after it would be
+	// computed against a day that has been lived through.
+	resumed := BaseDate.AddDate(0, 0, 400)
+	secondClock := calendar.NewClock(resumed)
+	second := New(secondClock)
+	secondNets := payment.NewNetworks(stores, secondClock.Now)
 	secondNet := testNets{Network: secondNets.ClearingHouse(), nets: secondNets, stores: stores}
-	if err := second.Populate(ctx, secondNets, newTestDeployment(secondNets, second.Now)); err != nil {
+	if err := second.Populate(ctx, secondNets, newTestDeployment(secondNets, secondClock.Now)); err != nil {
 		t.Fatalf("Populate from a second process: %v", err)
 	}
 	if got := len(listParticipants(t, ctx, secondNet)); got != len(participants) {
 		t.Fatalf("participants seen by the second process = %d, want %d", got, len(participants))
 	}
-	assertClockIsLive(t, second, "after an idempotent skip in a second process")
+	if got := secondClock.Now(); !got.Equal(resumed) {
+		t.Fatalf("the business date after an idempotent skip = %v, want %v — the skip rewound the clock", got, resumed)
+	}
 
 	// And the observable consequence, not just the clock reading: a row written
-	// after the skip must carry a live timestamp.
+	// after the skip carries the day that process resumed on.
 	acct, err := listParticipants(t, ctx, secondNet)[0].OpenCustomerAccount(ctx, "Opened after the skip", "EUR")
 	if err != nil {
 		t.Fatalf("open account after the skip: %v", err)
 	}
-	if age := time.Since(acct.CreatedAt); age > time.Minute {
-		t.Fatalf("account opened after the skip is dated %v (%v ago), expected ~now", acct.CreatedAt, age)
-	}
-}
-
-// assertClockIsLive checks that a Dataset's clock has been released to real
-// time rather than left frozen at baseDate.
-func assertClockIsLive(t *testing.T, d *Dataset, when string) {
-	t.Helper()
-	if age := time.Since(d.Now()); age > time.Minute {
-		t.Fatalf("clock %s reads %v (%v ago), expected ~now — the seed clock never went live", when, d.Now(), age)
+	if !acct.CreatedAt.Equal(resumed) {
+		t.Fatalf("account opened after the skip is dated %v, want %v", acct.CreatedAt, resumed)
 	}
 }
 
@@ -927,11 +939,12 @@ func TestMustAndCheckPanicWithSeedErr(t *testing.T) {
 // exactly — IDs, statuses, amounts and booking dates.
 func TestPopulateAfterResetRebuildsTheSameDataset(t *testing.T) {
 	ctx := context.Background()
-	d := New()
-	stores := testenv.NewSet(t, d.Now)
-	nets := payment.NewNetworks(stores, d.Now)
+	clock := calendar.NewClock(BaseDate)
+	d := New(clock)
+	stores := testenv.NewSet(t, clock.Now)
+	nets := payment.NewNetworks(stores, clock.Now)
 	net := testNets{Network: nets.ClearingHouse(), nets: nets, stores: stores}
-	dep := newTestDeployment(nets, d.Now)
+	dep := newTestDeployment(nets, clock.Now)
 
 	if err := d.Populate(ctx, nets, dep); err != nil {
 		t.Fatalf("Populate: %v", err)

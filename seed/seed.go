@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/raphi011/cbs/calendar"
 	"github.com/raphi011/cbs/deposit"
 	"github.com/raphi011/cbs/iban"
 	"github.com/raphi011/cbs/interest"
@@ -17,28 +18,31 @@ import (
 	"github.com/raphi011/cbs/provision"
 )
 
-// baseDate anchors the deterministic seed timeline. Everything built before the
-// clock goes live is dated relative to this instant.
-var baseDate = time.Date(2025, 9, 15, 9, 0, 0, 0, time.UTC)
-
-// Dataset is the sample scenario together with the deterministic clock it is
-// built on.
+// BaseDate anchors the deterministic seed timeline, and is therefore where a
+// deployment holding no business date of its own begins: everything this
+// scenario builds is dated relative to it, and the days an operator advances
+// afterwards run on from where it left off.
 //
-// The clock has to be owned here rather than passed in, because seeding
-// controls it: it is frozen at baseDate and advanced step by step while the
-// scenario is built, then switched to real time so that anything done
-// afterwards — through the API, say — is timestamped live. Rebuilding after a
-// store reset rewinds it, so a reset restores the dataset rather than a version
-// of it shifted forward in time.
-type Dataset struct{ clock *clock }
+// It is a Monday, which is what makes the first advance a settlement day rather
+// than a weekend.
+var BaseDate = time.Date(2025, 9, 15, 9, 0, 0, 0, time.UTC)
 
-// New returns a Dataset with its clock frozen at baseDate.
-func New() *Dataset { return &Dataset{clock: newClock(baseDate)} }
+// Dataset is the sample scenario together with the deployment clock it is built
+// on.
+//
+// The clock is the DEPLOYMENT's and is passed in. Seeding drives it — rewound to
+// BaseDate and advanced a day at a time while the scenario is built — and then
+// leaves it wherever the timeline ended, which is where the deployment goes on
+// from. Nothing switches it to wall time: a business date is advanced by an
+// operator, and a dataset dated a year before the wall clock beside rows dated
+// today is two timelines on one screen.
+//
+// Rebuilding after a store reset rewinds it, so a reset restores the dataset
+// rather than a version of it shifted forward in time.
+type Dataset struct{ clock *calendar.Clock }
 
-// Now is the time source every layer built over the dataset's store must read.
-// Hand it to the store and to payment.NewNetwork so that booking dates, value
-// dates and audit timestamps all come from the same clock.
-func (d *Dataset) Now() time.Time { return d.clock.now() }
+// New returns a Dataset built on clock.
+func New(clock *calendar.Clock) *Dataset { return &Dataset{clock: clock} }
 
 // Populate builds the full sample scenario (see the package doc) into the
 // network's store, provisioning its banks and giving each one its place in the
@@ -83,13 +87,13 @@ func (d *Dataset) Now() time.Time { return d.clock.now() }
 // api.Server.handleReset). What remains is a process killed mid-seed, which
 // leaves a partial dataset this probe will skip; the answer to that is to reset.
 //
-// The clock goes live on every path out of Populate, including the one that
-// built nothing. That is not a detail: the second process to open a store that
-// outlives the first has a Dataset whose clock is still frozen at baseDate, and
-// if the skip returned without releasing it, every payment, account, hold,
-// snapshot and audit event that process went on to write would be timestamped
-// 2025-09-15. Freezing the clock is a property of building the scenario, not of
-// the Dataset.
+// The clock is REWOUND only on the path that builds, which is what makes the
+// skip above safe against a store that outlives the process. A second process
+// opening one finds the banks already there, builds nothing, and leaves the
+// business date exactly where it opened it — which is the date the last process
+// left, read back from beside the databases (calendar.OpenClock). Rewinding
+// unconditionally would put a running deployment back at BaseDate on every boot,
+// behind books that already hold entries dated months later.
 //
 // The scenario is hardcoded, so a failure while building it is a programming
 // bug rather than a runtime condition, and the builder says so by panicking.
@@ -98,11 +102,6 @@ func (d *Dataset) Now() time.Time { return d.clock.now() }
 // report and a request to answer. Any other panic is re-raised with its stack
 // intact; see recoverBuild.
 func (d *Dataset) Populate(ctx context.Context, nets *payment.Networks, dep Deployment) (err error) {
-	// Registered first, so it runs last: whether the scenario was built now,
-	// was already there, or failed halfway, the clock is released before
-	// Populate returns.
-	defer d.clock.goLive()
-
 	if dep == nil {
 		return errors.New("seed: no deployment, so no bank in this scenario could be admitted to the scheme")
 	}
@@ -130,7 +129,9 @@ func (d *Dataset) Populate(ctx context.Context, nets *payment.Networks, dep Depl
 		}
 	}()
 
-	d.clock.rewind(baseDate)
+	if err := d.clock.Rewind(BaseDate); err != nil {
+		return err
+	}
 	b := &builder{
 		ctx: ctx, nets: nets, dep: dep, clock: d.clock,
 		cats: map[payment.ParticipantID]catalogue{},
@@ -192,7 +193,7 @@ type builder struct {
 	// dep is the running system: the five acts the builder cannot perform for
 	// itself, because each needs more than one institution. See Deployment.
 	dep   Deployment
-	clock *clock
+	clock *calendar.Clock
 	// cats holds each bank's product IDs, keyed by participant: the
 	// catalogue is book-scoped, so every bank has its own Basic and Premium and
 	// the same name at two banks is two products.
@@ -308,7 +309,7 @@ const seedAsset ledger.AssetCode = "EUR"
 //
 // Both are forward-dated, which is the only direction PublishVersion allows.
 func (b *builder) products(p *payment.Bank) {
-	from := ledger.DayStart(b.clock.now())
+	from := ledger.DayStart(b.clock.Now())
 
 	b.publish(p, p.ProductID, from.AddDate(0, 0, 1), product.OverdraftPricing{
 		Rate: 120_000, UnarrangedRate: 350_000, DayCount: interest.ACT365,
@@ -377,13 +378,23 @@ func (b *builder) openLine(p *payment.Bank, borrower deposit.Account, name strin
 	return must(p.Lending.GetFacility(b.ctx, line.ID))
 }
 
+// day moves the business date on by one, and it is the only step this builder
+// takes.
+//
+// A deployment's clock keeps the time of day (calendar.Clock.Advance), so
+// everything the scenario writes on one date carries the SAME instant and its
+// order is the order it was written in. That is the running system's own
+// property, and a fixture that stepped an hour between two holds would be
+// building a timeline no operator can produce.
+func (b *builder) day() { must(b.clock.Advance()) }
+
 // runDays advances the clock a day at a time, driving RunEndOfDay through each
 // one — the same entry point payment.Bank exposes to the API — so the
 // seed's accrual and arrears move exactly as a running day would produce them.
 func (b *builder) runDays(p *payment.Bank, days int) {
 	for i := 0; i < days; i++ {
-		b.clock.advance(24 * time.Hour)
-		check(p.RunEndOfDay(b.ctx, b.clock.now()))
+		b.day()
+		check(p.RunEndOfDay(b.ctx, b.clock.Now()))
 	}
 }
 
@@ -846,7 +857,6 @@ func (b *builder) build() {
 	b.lodge(nord, 360_000)
 	b.lodge(soleil, 210_000)
 
-	b.clock.advance(2 * time.Hour)
 
 	// --- Holds on Alice: active / released / captured ----------------------
 	ctx := b.ctx
@@ -864,9 +874,9 @@ func (b *builder) build() {
 	must(aurora.Deposit.CaptureHold(ctx, captured.ID, merchantPos, 0, "Captured: card payment"))
 
 	// --- End-of-day snapshots for Alice across two business days -----------
-	must(aurora.Deposit.TakeEndOfDaySnapshot(ctx, alice.ID, b.clock.now()))
-	b.clock.advance(24 * time.Hour)
-	must(aurora.Deposit.TakeEndOfDaySnapshot(ctx, alice.ID, b.clock.now()))
+	must(aurora.Deposit.TakeEndOfDaySnapshot(ctx, alice.ID, b.clock.Now()))
+	b.day()
+	must(aurora.Deposit.TakeEndOfDaySnapshot(ctx, alice.ID, b.clock.Now()))
 
 	// --- Account status lifecycle ------------------------------------------
 	check(aurora.Deposit.MarkDormant(ctx, annie.ID)) // Active -> Dormant
@@ -884,7 +894,6 @@ func (b *builder) build() {
 	m3 := must(b.bank(soleil.BIC).CreateMandate(b.ctx, nord.BIC, b.ref(niklas), b.ref(claude), 25_000))
 	check(b.bank(soleil.BIC).RevokeMandate(b.ctx, m3.ID)) // revoked, for display
 
-	b.clock.advance(1 * time.Hour)
 
 	// --- Phase A: a fully settled SEPA Credit Transfer cycle ---------------
 	sct1 := must(b.csm().OpenCycle(b.ctx, payment.SchemeSEPACT))
@@ -894,7 +903,7 @@ func (b *builder) build() {
 	must(b.csm().CloseCycle(b.ctx, sct1.ID))
 	b.settle(sct1.ID)
 
-	b.clock.advance(24 * time.Hour)
+	b.day()
 
 	// --- Phase B: a settled SEPA Direct Debit cycle (one will be returned) --
 	sdd1 := must(b.csm().OpenCycle(b.ctx, payment.SchemeSEPADD))
@@ -906,7 +915,7 @@ func (b *builder) build() {
 	// --- Phase C: return the settled direct debit (an R-transaction) --------
 	b.returnPayment(returned.ID, "Debtor dispute — unauthorised collection")
 
-	b.clock.advance(24 * time.Hour)
+	b.day()
 
 	// --- Phase D: a closed-but-not-settled SCT cycle (payments stay Cleared) -
 	sct2 := must(b.csm().OpenCycle(b.ctx, payment.SchemeSEPACT))
@@ -947,7 +956,6 @@ func (b *builder) build() {
 // deposit page read.
 func (b *builder) lendingShowcase(aurora, verde, nord *payment.Bank, alice, bruno, bella, niklas deposit.Account) {
 	ctx := b.ctx
-	b.clock.advance(1 * time.Hour)
 
 	// --- Bruno's overdraft, priced ------------------------------------------
 	// He already has a 500.00 limit (openOverdraft, above); this is what makes
@@ -960,8 +968,8 @@ func (b *builder) lendingShowcase(aurora, verde, nord *payment.Bank, alice, brun
 	// is the whole point of the distinction and is visible on his account page.
 	must(verde.Deposit.SetOverdraftPricingOverlay(ctx, bruno.ID,
 		&product.OverdraftPricing{Rate: 150_000, UnarrangedRate: 350_000, DayCount: interest.ACT365},
-		b.clock.now()))
-	must(verde.Deposit.SetOverdraftLimit(ctx, bruno.ID, 50_000, b.clock.now()))
+		b.clock.Now()))
+	must(verde.Deposit.SetOverdraftLimit(ctx, bruno.ID, 50_000, b.clock.Now()))
 
 	// --- Bella, migrated onto Premium ---------------------------------------
 	// Effective a fortnight in. Her earlier days keep pricing at Basic's rate —
@@ -972,26 +980,26 @@ func (b *builder) lendingShowcase(aurora, verde, nord *payment.Bank, alice, brun
 	// the day-30 reprice (everyone else), negotiated and therefore unmoved by
 	// it (Bruno), and migrated (Bella).
 	must(verde.Deposit.ChangeProduct(ctx, bella.ID, b.cats[verde.ID].premium,
-		b.clock.now().AddDate(0, 0, 14)))
+		b.clock.Now().AddDate(0, 0, 14)))
 
 	// --- A term loan part-way through its schedule (Alice, Aurora) ----------
 	// EUR 10,000, five years, 6%, annuity. Disbursed, then run day by day
 	// through two monthly instalments paid on time, then a little further so a
 	// fresh accrual is visible without reaching the third instalment. The
 	// result: accrued interest, a partly-paid schedule, Current arrears.
-	t1 := b.clock.now()
+	t1 := b.clock.Now()
 	firstDue := t1.AddDate(0, 1, 0)
 	loan := b.openLoan(aurora, alice, "Alice Home Loan", 1_000_000, 60_000, 60, firstDue, "Home loan payout")
 	alicePos := must(aurora.Deposit.Position(ctx, alice.ID))
 
 	b.runDays(aurora, int(firstDue.Sub(t1)/(24*time.Hour)))
 	sched := must(aurora.Lending.Schedule(ctx, loan.ID))
-	must(aurora.Lending.Repay(ctx, loan.ID, alicePos, sched[0].Total(), b.clock.now(), "Instalment 1"))
+	must(aurora.Lending.Repay(ctx, loan.ID, alicePos, sched[0].Total(), b.clock.Now(), "Instalment 1"))
 
 	secondDue := t1.AddDate(0, 2, 0)
 	b.runDays(aurora, int(secondDue.Sub(firstDue)/(24*time.Hour)))
 	sched = must(aurora.Lending.Schedule(ctx, loan.ID))
-	must(aurora.Lending.Repay(ctx, loan.ID, alicePos, sched[1].Total(), b.clock.now(), "Instalment 2"))
+	must(aurora.Lending.Repay(ctx, loan.ID, alicePos, sched[1].Total(), b.clock.Now(), "Instalment 2"))
 
 	b.runDays(aurora, 10) // a fresh accrual builds up; the third instalment is not yet due
 
@@ -999,8 +1007,7 @@ func (b *builder) lendingShowcase(aurora, verde, nord *payment.Bank, alice, brun
 	// A smaller loan than Alice's, disbursed and then left unpaid past two due
 	// dates: one month plus twenty days past the first instalment, comfortably
 	// inside the 30-59 bucket however the calendar months involved fall.
-	b.clock.advance(1 * time.Hour)
-	t3 := b.clock.now()
+	t3 := b.clock.Now()
 	niklasFirstDue := t3.AddDate(0, 1, 0)
 	b.openLoan(nord, niklas, "Niklas Car Loan", 300_000, 90_000, 24, niklasFirstDue, "Car loan payout")
 	target := t3.AddDate(0, 2, 20)
@@ -1045,15 +1052,14 @@ func (b *builder) lendingShowcase(aurora, verde, nord *payment.Bank, alice, brun
 	// It joins the SCT cycle Phase F left open (only one may be open per
 	// scheme at a time) rather than opening a second one, which is also why it
 	// stays Accepted like SCT-020 rather than Settled.
-	b.clock.advance(1 * time.Hour)
-	check(verde.RunEndOfDay(ctx, b.clock.now()))
+	check(verde.RunEndOfDay(ctx, b.clock.Now()))
 
 	brunoBalance := must(verde.Deposit.GetBalance(ctx, bruno.ID))
 	overdrawBy := ledger.Amount(20_000) // EUR 200 into the EUR 500 arranged limit
 	b.initSCT(verde, bruno, aurora, alice, brunoBalance.Book+overdrawBy, "SCT-030", "Card settlement")
 
 	b.runDays(verde, 45)
-	must(verde.Deposit.ChargeOverdraftInterest(ctx, bruno.ID, b.clock.now()))
+	must(verde.Deposit.ChargeOverdraftInterest(ctx, bruno.ID, b.clock.Now()))
 
 	// --- Bruno, repriced mid-life -------------------------------------------
 	// The arranged rate moves from 15% to 18%, effective TWENTY DAYS AGO — a
@@ -1073,7 +1079,7 @@ func (b *builder) lendingShowcase(aurora, verde, nord *payment.Bank, alice, brun
 	// would have kept the old rate forever.
 	must(verde.Deposit.SetOverdraftPricingOverlay(ctx, bruno.ID,
 		&product.OverdraftPricing{Rate: 180_000, UnarrangedRate: 350_000, DayCount: interest.ACT365},
-		b.clock.now().AddDate(0, 0, -20)))
+		b.clock.Now().AddDate(0, 0, -20)))
 
 	b.runDays(verde, 15)
 
@@ -1090,10 +1096,9 @@ func (b *builder) lendingShowcase(aurora, verde, nord *payment.Bank, alice, brun
 	// carries Bruno's overdraft forward another 30 days — which is where the
 	// 45 days behind his final figure above come from, not the 15 his own
 	// phase runs.
-	b.clock.advance(1 * time.Hour)
 	line := b.openLine(verde, bella, "Bella Card Line", 250_000, 180_000, 20_000, 100_000, "Card line draw")
 	b.runDays(verde, 30)
-	must(verde.Lending.ChargeInterest(ctx, line.ID, b.clock.now()))
+	must(verde.Lending.ChargeInterest(ctx, line.ID, b.clock.Now()))
 }
 
 // glShowcase exercises the raw general-ledger primitives on one bank so that all

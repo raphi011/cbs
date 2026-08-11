@@ -10,6 +10,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/raphi011/cbs/calendar"
 	"github.com/raphi011/cbs/payment"
 	"github.com/raphi011/cbs/seed"
 	"github.com/raphi011/cbs/store/sqlite"
@@ -43,8 +44,22 @@ func main() {
 
 	log := slog.New(slog.NewTextHandler(os.Stdout, nil))
 
-	data := seed.New()
-	stores, err := openStores(context.Background(), *database, data.Now, log)
+	// The clock comes FIRST, because everything below is dated from it: the
+	// stores, the networks and the sample dataset all read this one function, and
+	// time.Now appears nowhere under any of them.
+	//
+	// It is read out of the database directory, so a deployment restarted
+	// mid-timeline resumes on the day it left rather than rewinding to the
+	// anchor. With no directory there is nowhere to keep it and it starts at the
+	// anchor every time, which is the same bargain the ephemeral store makes.
+	clock, err := calendar.OpenClock(*database, seed.BaseDate)
+	if err != nil {
+		log.Error("opening the business date", "error", err)
+		os.Exit(1)
+	}
+
+	data := seed.New(clock)
+	stores, err := openStores(context.Background(), *database, clock.Now, log)
 	if err != nil {
 		log.Error("opening the stores", "error", err)
 		os.Exit(1)
@@ -55,7 +70,7 @@ func main() {
 		}
 	}()
 
-	nets := payment.NewNetworks(stores, data.Now)
+	nets := payment.NewNetworks(stores, clock.Now)
 
 	// The mesh starts BEFORE the seed, and the order is load-bearing. The seed
 	// gives each bank it provisions an actor and pulls each one's routing

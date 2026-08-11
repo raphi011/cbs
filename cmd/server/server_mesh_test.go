@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/raphi011/cbs/api"
+	"github.com/raphi011/cbs/calendar"
 
 	"github.com/raphi011/cbs/deposit"
 	"github.com/raphi011/cbs/iban"
@@ -57,8 +58,9 @@ func newAPIHarness(t *testing.T) (*server, *Mesh) {
 	t.Helper()
 	ctx := context.Background()
 
-	data := seed.New()
-	nets := payment.NewNetworks(testenv.NewSet(t, data.Now), data.Now)
+	clock := calendar.NewClock(seed.BaseDate)
+	data := seed.New(clock)
+	nets := payment.NewNetworks(testenv.NewSet(t, clock.Now), clock.Now)
 
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	cfg := testMeshConfig

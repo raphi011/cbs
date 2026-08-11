@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"testing"
 
+	"github.com/raphi011/cbs/calendar"
 	"github.com/raphi011/cbs/ledger"
 	"github.com/raphi011/cbs/payment"
 	"github.com/raphi011/cbs/seed"
@@ -44,9 +45,10 @@ func TestTheSeedLeavesNoPaymentHalfProcessed(t *testing.T) {
 	ctx := context.Background()
 
 	// The store, the network and the seed, exactly as main builds them.
-	data := seed.New()
-	stores := testenv.NewSet(t, data.Now)
-	nets := payment.NewNetworks(stores, data.Now)
+	clock := calendar.NewClock(seed.BaseDate)
+	data := seed.New(clock)
+	stores := testenv.NewSet(t, clock.Now)
+	nets := payment.NewNetworks(stores, clock.Now)
 	// The clearing house's view, for the network-scoped reads this test makes.
 	net := nets.ClearingHouse()
 	msh, err := NewMesh(nets, meshConfig, slog.New(slog.DiscardHandler))
