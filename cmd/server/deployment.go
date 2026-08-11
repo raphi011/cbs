@@ -87,10 +87,10 @@ func (c Config) validate() error {
 //
 // # There are no goroutines
 //
-// Not one. HTTP requests queue work — a customer's instruction becomes a file
-// uploaded to the clearing house, an operator's cut-off becomes a settlement
-// instruction uploaded to the settlement agent — and AdvanceDay drains all of it
-// synchronously, on the caller's goroutine, in the order a business day runs in.
+// Not one. HTTP requests queue work — a customer's instruction joins their
+// bank's hub, an operator's cut-off becomes a settlement instruction uploaded to
+// the settlement agent — and AdvanceDay drains all of it synchronously, on the
+// caller's goroutine, in the order a business day runs in.
 // Bulk clearing is store-and-forward against a cutoff clock, so this is more
 // faithful than a set of actors AND simpler, which is not usually the same
 // direction.
@@ -697,13 +697,18 @@ func (d *Deployment) member(bic iso20022.BIC) (*Bank, error) {
 // idempotent. It makes resets exclusive within ONE process; two servers sharing
 // a database could still race, which is a property of a teaching tool.
 //
-// # The queues go with the rows
+// # The queues go with the rows, and so do the hubs
 //
 // A download queue holds bytes addressed to a subscriber, and the payments those
 // bytes describe are about to be deleted. Both hosts are therefore rebuilt
 // empty, and every reseeded bank is enrolled again as the seed admits it. A
 // queue that survived would deliver a file about a payment no institution holds
 // a row for, on the first day after the reset.
+//
+// A bank's payment hub goes the same way and needs no line of its own: the hub
+// is state on the Bank, and every Bank is discarded above. An instruction taken
+// and not yet cut off would otherwise be uploaded, after the reset, about a
+// payment nobody holds.
 //
 // The seed's own timeline is replayed from BaseDate, which is seed.Populate's
 // act rather than this one's: a reset restores the dataset, and a dataset dated

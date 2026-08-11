@@ -37,9 +37,9 @@ import (
 // # Nothing on it names a bank
 //
 // Not one method takes a participant or a BIC, because the bank acting IS this
-// value. Submit, Lodge and RefreshDirectory are this bank's own acts; Network is
-// this bank's own network, whose identity is constructor state (see
-// payment.Identity). A handler on this surface therefore has no argument it
+// value. Submit, Pending, Cutoff, Lodge and RefreshDirectory are this bank's own
+// acts; Network is this bank's own network, whose identity is constructor state
+// (see payment.Identity). A handler on this surface therefore has no argument it
 // could name somebody else with.
 type Institution interface {
 	// Network is this bank's own view of the domain. Every read on this surface

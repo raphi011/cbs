@@ -79,10 +79,10 @@ type ClearingHouse struct {
 	// held is the returns this institution has uploaded to the settlement agent
 	// and has not yet heard about, keyed by the payment each names.
 	//
-	// It is the only state any institution in this package keeps between files,
-	// and it is deliberate rather than convenient: see relayReturn for why the
-	// message cannot be queued onward before finality, and for what is lost if
-	// this map is.
+	// It is one of the two things an institution in this package keeps between
+	// files — Bank.hub is the other — and it is deliberate rather than
+	// convenient: see relayReturn for why the message cannot be queued onward
+	// before finality, and for what is lost if this map is.
 	//
 	// No lock. Only relayReturn and receiveReturnStatus touch it, and both are
 	// reached only from a business day, which runs on one goroutine under the
