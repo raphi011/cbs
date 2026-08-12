@@ -143,7 +143,8 @@ func (d *testDeployment) Submit(ctx context.Context, req payment.InitiatePayment
 // scheme, and the clearing house works through what it was sent before any bank
 // collects an answer. Two loops is what that looks like with the transport taken
 // out: every file recorded and taken into its cycle, and only then the
-// submitters told. See Deployment.clear's phases 2 and 6, and CarryToClearing.
+// submitters told. See the clearing and collection phases of a business day,
+// and CarryToClearing.
 //
 // The FILE is what is missing and it is the one thing that matters: the real
 // clearing house builds each receiving bank's share of the document it was sent,

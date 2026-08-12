@@ -30,10 +30,15 @@ releases nothing at all. Three phases of the business day, in this order and for
 this reason:
 
 ```
-3  csm  net every open cycle -> upload the settlement instruction
-4  cb   settle whole-or-nothing -> statement per member -> answer the csm
-5  csm  collect the answer -> RELEASE the output files
+clearing-house cut-off  csm  net every open cycle -> upload the settlement instruction
+settlement              cb   settle whole-or-nothing -> statement per member -> answer the csm
+release                 csm  collect the answer -> RELEASE the output files
 ```
+
+Those are three consecutive phases of the day, in that order and for this reason.
+[ADR-0005](0005-a-business-day-is-a-declared-sequence.md) is what makes the order
+a declaration rather than statement order, and `TestTheDayRunsItsPhasesInOrder`
+is where reversing it now fails.
 
 ## Consequences
 
@@ -81,7 +86,8 @@ Release is gated on the settlement agent's answer, and there are cut-offs it is
 never asked about: a cycle whose members' positions all cancel, and one that took
 nothing in, have no leg to send, and a settlement instruction with no transaction
 is not a message. Nothing would ever release them, so the institution that netted
-the batch settles it where it stands — phase 3b, before the settlement agent is
+the batch settles it where it stands — the **discharge** phase, between the
+clearing house's own cut-off and the settlement, before the settlement agent is
 worked at all. No reserve moves and none needs to: every position is zero, so
 each bank's clearing suspense is emptied by the payments it receives in the same
 batch. **No settlement is recorded anywhere against such a cycle**, which the

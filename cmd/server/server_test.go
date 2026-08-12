@@ -190,7 +190,7 @@ func carry(t *testing.T, s *server) {
 //
 // carry alone stops short of finality on purpose — the output files are held
 // until the cycle settles — so a test asserting on the payee's bank's copy has
-// to come this far. See Deployment.clear.
+// to come this far. See beforeClock, which declares the day's order.
 func settle(t *testing.T, s *server) {
 	t.Helper()
 	var cycles []api.ClearingCycleDTO

@@ -274,7 +274,7 @@
 // first, then the clearing house. That is more honest than what it replaces. The
 // ordering was never a property of the network; it was a property of there being
 // one queue. Now it is a decision a bank makes about its own operations, in one
-// place — see CentralBank.advise and Deployment.clear's last phase — and a bank
+// place — see CentralBank.advise and the day's collection phase — and a bank
 // that made
 // the other decision would post creditor legs against a suspense whose mirror
 // leg had not yet moved.

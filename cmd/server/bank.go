@@ -154,8 +154,8 @@ func (b *Bank) Pending(ctx context.Context) ([]payment.Payment, error) {
 // Cutoff is this bank reaching its cut-off: everything waiting becomes one file
 // per scheme, uploaded to the clearing house, and the order ids come back.
 //
-// The day engine reaches the same cut-off on every settlement day (see
-// Deployment.clear); this is the operator asking for one out of turn, which is
+// The day engine reaches the same cut-off on every settlement day (see the bank
+// cut-off phase in beforeClock); this is the operator asking for one out of turn, which is
 // the same relationship POST /cycles/{cid}/close has with the clearing house's.
 func (b *Bank) Cutoff(ctx context.Context) ([]ebics.OrderID, error) {
 	ids, problems := b.cutoff(ctx)

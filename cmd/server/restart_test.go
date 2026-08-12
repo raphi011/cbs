@@ -234,20 +234,22 @@ func TestACutOffSettledAfterARestartStillReachesEveryReceivingBank(t *testing.T)
 // # Why the phases are driven by hand
 //
 // AdvanceDay runs the release and the members' collection in one call, so there
-// is no seam inside it to drop the process at. What is composed below is clear's
-// own list at phases 4 and 5, which leaves the deployment exactly where a
-// process ending between two business days would. See Deployment.clear, and
-// workThrough, which composes the same list for the flow tests.
+// is no seam inside it to drop the process at. What is selected below is the
+// day's own settlement and release, which leaves the deployment exactly where a
+// process ending between two business days would. See beforeClock, and
+// workThrough, which selects from the same list for the flow tests.
+var releaseWithoutCollectionPhases = only(beforeClock, phaseSettlement, phaseRelease)
+
 func TestFilesReleasedBeforeARestartAreStillCollectedAfterIt(t *testing.T) {
 	ctx := context.Background()
 	r := newRestartable(t)
 
 	closed := r.closeEveryCycleWithPaymentsInIt(t)
 
-	// Phase 4: the settlement agent discharges the batch. Phase 5: the clearing
-	// house collects the answer and releases every share into its bank's queue.
-	// Phase 6 — the members collecting — is deliberately not run.
-	problems := append(r.dep.cb.work(ctx), r.dep.csm.collect(ctx)...)
+	// The settlement agent discharges the batch, then the clearing house collects
+	// the answer and releases every share into its bank's queue. The members'
+	// collection is deliberately not selected.
+	problems := runPhases(ctx, r.dep, releaseWithoutCollectionPhases)
 	for _, p := range problems {
 		t.Logf("problem: %s could not process %s: %s", p.Institution, p.OrderID, p.Detail)
 	}

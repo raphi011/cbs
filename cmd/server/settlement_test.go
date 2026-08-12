@@ -771,7 +771,7 @@ func TestTheMessagesACutOffPutsOnTheWire(t *testing.T) {
 	// collection order. The statement credits the clearing suspense; the released
 	// instruction is what makes the creditor leg draw on it. The other way round
 	// and that bank pays its customer out of a suspense the cut-off has not
-	// credited yet. Deployment.clear's last phase is where that order is decided.
+	// credited yet. The day's collection phase is where that order is decided.
 	if order[payeeStatement] > order[payeeFile] {
 		t.Errorf("the payee's bank handled its released instruction at %d and its own camt.053 at %d; "+
 			"the statement credits the suspense the creditor leg draws on and must come first",

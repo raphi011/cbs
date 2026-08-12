@@ -148,6 +148,13 @@ _Avoid_: settlement day, value date
 One run of the day engine: every phase, on one date, settlement day or not.
 _Avoid_: settlement day, clearing day
 
+**Phase**:
+One named step of a business day, in a declared order: refresh, bank cut-off,
+clearing, clearing-house cut-off, discharge, settlement, release, collection, end
+of day, then the date moves and cycles open. All but the last two run only on a
+settlement day.
+_Avoid_: step, stage, phase number
+
 **Closure**:
 Why TARGET is shut on a date — a weekend, or one of the six named holidays.
 _Avoid_: holiday (bare), non-business day
@@ -171,13 +178,13 @@ takes with it.
 _Avoid_: queue, outbox, batch, pending payments
 
 **Cut-off (a bank's)**:
-Turning the hub into one file per scheme and uploading it. Phase 1 of a
-clearing day.
+Turning the hub into one file per scheme and uploading it. The bank cut-off
+phase, and the first thing on a clearing day that carries anything.
 _Avoid_: cut-off (bare) where the other is meant
 
 **Cut-off (the clearing house's)**:
-Closing every open cycle, netting it and instructing settlement. Phase 3, two
-phases later.
+Closing every open cycle, netting it and instructing settlement. The
+clearing-house cut-off phase, two phases later.
 _Avoid_: cut-off (bare) where the other is meant
 
 **Share**:

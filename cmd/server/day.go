@@ -236,30 +236,351 @@ func toDayReportDTO(r DayReport) api.DayReportDTO {
 }
 
 // ---------------------------------------------------------------------------
-// The day itself
+// The phases, and the sequences built from them
 // ---------------------------------------------------------------------------
 
-// AdvanceDay runs one business day and moves the clock to the next.
+// A phaseID names one step of a business day. The constants are the identity a
+// sequence selects by; the ORDER phases run in is the order they are declared
+// in beforeClock and afterClock, never the order of these constants and never
+// their numeric value.
+type phaseID int
+
+const (
+	phaseRefresh phaseID = iota
+	phaseBankCutoff
+	phaseClearing
+	phaseClearingHouseCutoff
+	phaseDischarge
+	phaseSettlement
+	phaseRelease
+	phaseCollection
+	phaseEndOfDay
+	phaseOpenCycles
+
+	// phaseCollectClearingHouse is the collection NARROWED to the one queue that
+	// holds anything before a cycle settles. It is not a phase of a day — a day
+	// runs phaseCollection, which is the whole of it — and it exists because
+	// carrying to clearing needs that part alone. See carryToClearingPhases.
+	phaseCollectClearingHouse
+)
+
+// A phase is one named step of a business day.
 //
-// # The order of the day IS this function
+// It RETURNS what it could not do rather than journalling it. The runner is the
+// only thing that writes a problem to the journal, which is what makes forgetting
+// impossible: a phase has no journal to reach and no way to drop what it hands
+// back. Whether those problems are journalled or returned to a caller is the
+// runner's decision — see AdvanceDay, which journals, and CarryToClearing, which
+// answers its caller.
+type phase struct {
+	id   phaseID
+	name string
+	// settlementOnly marks a phase that runs only on a day the scheme settles
+	// on. It is read by AdvanceDay alone: a derived sequence names the phases it
+	// wants outright, its caller having already decided that it wants them.
+	settlementOnly bool
+	run            func(ctx context.Context, d *Deployment) []Problem
+}
+
+// beforeClock is the business day, in the order it runs, up to the clock move.
 //
-// Four flows are spread across three institutions, and the only place their
-// order was ever legible was a package doc narrating them. Here the schedule is
-// the code, in one list, which is also why moving a phase is a small change
-// rather than a redesign.
+// # This list IS the order of the day
+//
+// Four flows are spread across three institutions, and this is the one place
+// their order is stated. Every other sequence in this package and its tests is
+// DERIVED from this list by naming phases, so a subset cannot hold a phase the
+// day does not have and cannot run two phases in an order the day does not.
 //
 // It does not interleave: each phase completes for every institution before the
 // next begins. Real bulk clearing is exactly this batched, and a system that
 // interleaved would be inventing concurrency it does not have. Nothing here runs
 // on a goroutine of its own, and there is no goroutine anywhere below it.
 //
+// # Which banks each phase visits
+//
+// The phases that touch a QUEUE visit the subscribers — the banks the clearing
+// house's roster names, which are the banks enrolment gave a queue. A bank
+// without one is not a slow bank: nothing can be addressed to it, so every
+// clearing phase would answer it EBICS_INVALID_USER_OR_USER_STATE, which is
+// true, is not news, and would appear in every day's report for the life of the
+// deployment. Its own hub therefore accumulates and is never cut off, which is
+// the honest outcome — a bank the scheme has not admitted has nowhere to upload
+// to.
+//
+// The refresh and the end of day are the exceptions and visit every bank. The
+// refresh touches no queue at all: it is the scheme's vendor delivering a file,
+// and a bank waiting on admission is exactly the bank that needs the routing
+// directory it is about to appear in. The end of day is the bank's own act and
+// not the scheme's: a bank founded and never admitted still accrues interest on
+// its customers' overdrafts.
+//
+// # A phase never stops the day
+//
+// Every phase collects problems and carries on. A file one bank cannot read must
+// not stop another bank being paid, and an institution that abandoned the day
+// halfway would leave the clock where it was with half the queues drained — a
+// state no operator could reason about and no reset short of a rebuild could
+// leave. What a failure costs is a line in the report.
+var beforeClock = []phase{
+	{
+		id: phaseRefresh, name: "refresh", settlementOnly: true,
+		// Every member takes the published roster. It is the FIRST thing, so a
+		// bank admitted since the last advance can be addressed by its
+		// neighbours today rather than after somebody remembers to call the
+		// route.
+		run: func(ctx context.Context, d *Deployment) []Problem {
+			var ps []Problem
+			for _, b := range d.banksInOrder() {
+				if _, err := b.RefreshDirectory(ctx); err != nil {
+					ps = append(ps, Problem{Institution: b.bic, Detail: err.Error()})
+				}
+			}
+			return ps
+		},
+	},
+	{
+		id: phaseBankCutoff, name: "bank cut-off", settlementOnly: true,
+		// Every member reaches its own cut-off: the morning's instructions leave
+		// each bank's hub as one file per scheme, uploaded to the clearing
+		// house. Before the clearing house works, because a file uploaded after
+		// it had worked would wait a whole day for the next one — and this is
+		// where the day's payments come from, so it is the first thing that
+		// carries anything.
+		run: func(ctx context.Context, d *Deployment) []Problem {
+			var ps []Problem
+			for _, b := range d.subscribers() {
+				_, problems := b.cutoff(ctx)
+				ps = append(ps, problems...)
+			}
+			return ps
+		},
+	},
+	{
+		id: phaseClearing, name: "clearing", settlementOnly: true,
+		// The clearing house works through what its members uploaded: each file
+		// is recorded, each transaction validated and taken into the open cycle
+		// for its scheme, each submitting bank answered per transaction — and
+		// each receiving bank's share of the file BUILT AND HELD. Nothing is
+		// queued for a receiving bank here; see the release.
+		run: func(ctx context.Context, d *Deployment) []Problem { return d.csm.work(ctx) },
+	},
+	{
+		id: phaseClearingHouseCutoff, name: "clearing-house cut-off", settlementOnly: true,
+		// The clearing house's own cut-off: every open cycle is netted and its
+		// positions uploaded to the settlement agent. Two different cut-offs
+		// share the word and they are two phases apart — a bank's turns
+		// instructions into a file, and this one turns a batch of validated
+		// payments into net positions. A cycle the operator closed by hand is
+		// already closed and is settled by this day's settlement rather than by
+		// this one.
+		run: func(ctx context.Context, d *Deployment) []Problem { return d.csm.closeOpenCycles(ctx) },
+	},
+	{
+		id: phaseDischarge, name: "discharge", settlementOnly: true,
+		// And the cut-offs that instructed nothing are discharged where they
+		// stand. A cycle whose members' positions all cancel — or that took
+		// nothing in at all — has no leg to send, so no answer is coming and the
+		// release would never release it. Before the settlement rather than
+		// after, because the settlement agent has nothing to do with it. See
+		// ClearingHouse.settleUninstructed.
+		run: func(ctx context.Context, d *Deployment) []Problem { return d.csm.settleUninstructed(ctx) },
+	},
+	{
+		id: phaseSettlement, name: "settlement", settlementOnly: true,
+		// The settlement agent works through everything uploaded to it: cut-offs
+		// discharged, returns executed, lodgements credited. This is the only
+		// phase in which central-bank reserves move.
+		run: func(ctx context.Context, d *Deployment) []Problem { return d.cb.work(ctx) },
+	},
+	{
+		id: phaseRelease, name: "release", settlementOnly: true,
+		// The clearing house collects the answers and RELEASES: each settled
+		// cycle becomes the output files its receiving banks have been waiting
+		// for and an ACSC apiece for the banks that submitted, and each settled
+		// RETURN becomes the pacs.004 the other bank has been waiting for.
+		//
+		// THE ORDER OF THE CLEARING-HOUSE CUT-OFF, THE SETTLEMENT AND THIS IS
+		// THE DESIGN. The cycle settles before the output files are released, so
+		// a receiving bank is handed its instructions only once the funds behind
+		// them are final and never credits a customer against money that has not
+		// settled. Reverse them and settlement risk is invented — and a bank
+		// that could not apply a payment would be refusing one nobody had paid
+		// for yet, which is a different and much easier system.
+		run: func(ctx context.Context, d *Deployment) []Problem { return d.csm.collect(ctx) },
+	},
+	{
+		id: phaseCollection, name: "collection", settlementOnly: true,
+		// Each member collects, THE SETTLEMENT AGENT FIRST. The order is
+		// load-bearing and is the only thing that guarantees the mirror leg is
+		// booked before the creditor legs draw on it — see CentralBank.advise,
+		// which argues it where the guarantee used to live.
+		//
+		// # Why one phase and not three
+		//
+		// A bank takes all three queues before the next bank takes any, and that
+		// nesting is observable: it is the order files move in, and the chain
+		// tests read it. Three phases would collect one queue across every bank
+		// before starting the next, which reverses it. The guarantee above is
+		// satisfied either way — it is about ONE bank's mirror against ONE
+		// bank's creditor legs — so the nesting is not correctness, and changing
+		// it is a domain decision rather than a consequence of naming phases.
+		run: func(ctx context.Context, d *Deployment) []Problem {
+			var ps []Problem
+			for _, b := range d.subscribers() {
+				ps = append(ps, b.collect(ctx, d.cfg.CentralBankBIC, b.cb, ebics.C53)...)
+				ps = append(ps, b.collect(ctx, d.cfg.CentralBankBIC, b.cb, ebics.BTD)...)
+				ps = append(ps, b.collect(ctx, d.cfg.ClearingHouseBIC, b.csm, ebics.BTD)...)
+			}
+			return ps
+		},
+	},
+	{
+		id: phaseEndOfDay, name: "end of day",
+		// Every bank's own end of day, on EVERY date and not only a settlement
+		// day: interest accrues over a weekend, which is the entire reason
+		// day-count conventions exist. It is the one phase before the clock that
+		// a weekend still runs, and the flag is what says so.
+		//
+		// The date is read from the clock rather than passed, and it is the day
+		// being closed: this runs before the pivot, AdvanceDay holds resetMu
+		// across both, and nothing else moves the clock.
+		run: func(ctx context.Context, d *Deployment) []Problem {
+			var ps []Problem
+			for _, b := range d.banksInOrder() {
+				if err := b.runEndOfDay(ctx, d.clock.Now()); err != nil {
+					ps = append(ps, Problem{Institution: b.bic, Detail: err.Error()})
+				}
+			}
+			return ps
+		},
+	},
+}
+
+// afterClock is what runs once the date has moved.
+//
+// A cycle is stamped with the instant it is opened and the day it accepts
+// payments on is the one it should name, so opening one belongs on the far side
+// of the pivot. Being in this list rather than the other IS that argument: there
+// is nowhere else to put it.
+var afterClock = []phase{
+	{
+		id: phaseOpenCycles, name: "open cycles",
+		// On a day that cleared, the cut-off left none open; on a day that did
+		// not, the ones standing are still open and this is a no-op. A clock
+		// that could not be moved leaves them on the day that just ran, which is
+		// still the day they will accumulate on.
+		run: func(ctx context.Context, d *Deployment) []Problem { return d.csm.openCycles(ctx) },
+	},
+}
+
+// collectClearingHouseOnly is the day's collection with the two settlement-agent
+// queues left out, and it is the one place a sequence holds a phase the day does
+// not declare.
+//
+// Nothing has settled when it runs, so those two queues are empty and the third
+// holds the per-transaction answers. Taking the whole collection instead would
+// be correct and would say something false: that a carry reaches the settlement
+// agent at all.
+var collectClearingHouseOnly = phase{
+	id: phaseCollectClearingHouse, name: "collection · clearing house BTD", settlementOnly: true,
+	run: func(ctx context.Context, d *Deployment) []Problem {
+		var ps []Problem
+		for _, b := range d.subscribers() {
+			ps = append(ps, b.collect(ctx, d.cfg.ClearingHouseBIC, b.csm, ebics.BTD)...)
+		}
+		return ps
+	},
+}
+
+// only selects phases by name, in the order the day declares them.
+//
+// It is how every sequence other than a full day is built, and the reason none
+// of them can drift: a caller says WHICH phases it wants and never in what
+// order, so a subset runs them in the day's own relative order or not at all.
+// An id that names no phase in the list is a programming error and panics —
+// every caller is a package-level variable, so it panics at init or never.
+func only(list []phase, ids ...phaseID) []phase {
+	want := make(map[phaseID]bool, len(ids))
+	for _, id := range ids {
+		want[id] = true
+	}
+	out := make([]phase, 0, len(ids))
+	for _, p := range list {
+		if want[p.id] {
+			out = append(out, p)
+			delete(want, p.id)
+		}
+	}
+	if len(want) != 0 {
+		panic(fmt.Sprintf("server: %d phase(s) selected that the day does not declare", len(want)))
+	}
+	return out
+}
+
+// onSettlementDay drops the phases a day nothing settles on does not run.
+//
+// Only a full day asks. A derived sequence names its phases outright, its caller
+// having already decided that it wants them — the seed carries files to clearing
+// on whatever date it is building on.
+func onSettlementDay(list []phase, settles bool) []phase {
+	if settles {
+		return list
+	}
+	out := make([]phase, 0, len(list))
+	for _, p := range list {
+		if !p.settlementOnly {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// runPhases runs a sequence and hands back everything it could not do.
+//
+// It is the only caller of phase.run, and the only place a phase's problems are
+// collected — which is what makes a phase unable to lose them.
+func runPhases(ctx context.Context, d *Deployment, list []phase) []Problem {
+	var ps []Problem
+	for _, p := range list {
+		ps = append(ps, p.run(ctx, d)...)
+	}
+	return ps
+}
+
+// carryToClearingPhases is the file-moving prefix of a day: every member's
+// cut-off, the clearing house's work over what they uploaded, and each member
+// collecting the answers from it.
+//
+// The collection is the day's, taken out of turn and narrowed: nothing has
+// settled, so that queue holds the per-transaction answers and nothing else —
+// and a submitting bank that did not collect them would sit at Initiated where a
+// carried payment reaches Accepted, which is the divergence a sample dataset
+// must not have. It is appended rather than selected because it is the one step
+// here that is not a phase of a day; see collectClearingHouseOnly.
+var carryToClearingPhases = append(
+	only(beforeClock, phaseBankCutoff, phaseClearing),
+	collectClearingHouseOnly,
+)
+
+// ---------------------------------------------------------------------------
+// The day itself
+// ---------------------------------------------------------------------------
+
+// AdvanceDay runs one business day and moves the clock to the next.
+//
+// The order it runs in is beforeClock's, then the clock, then afterClock's. This
+// function chooses nothing about that order; it decides only what a day does
+// with what the phases hand back, which is to journal it.
+//
 // # What runs on a day nothing settles
 //
 // A weekend or a TARGET holiday advances the date and runs each bank's end of
 // day — interest accrues over a weekend, which is the entire reason day-count
 // conventions exist — and nothing else. No cut-off, no clearing, no settlement.
-// The button still advances on such a day: nothing clears, the report says why,
-// and that is the lesson rather than a state to be prevented.
+// Which phases those are is not decided here either: it is settlementOnly on the
+// phase, so the answer is readable off the day's own declaration. The button
+// still advances on such a day: nothing clears, the report says why, and that is
+// the lesson rather than a state to be prevented.
 //
 // # It takes the lock Reset takes
 //
@@ -275,30 +596,17 @@ func toDayReportDTO(r DayReport) api.DayReportDTO {
 // appear to clear the same night and the whole point of a business calendar
 // would be invisible.
 //
-// # A phase never stops the day
-//
-// Every phase collects problems and carries on. A file one bank cannot read
-// must not stop another bank being paid, and an institution that abandoned the
-// day halfway would leave the clock where it was with half the queues drained —
-// a state no operator could reason about and no reset short of a rebuild could
-// leave. What a failure costs is a line in the report.
+// The clock is the PIVOT and not a phase. It hands back the next date, which the
+// report carries, and an error the caller is told about rather than a problem a
+// report lists — a day whose clock did not move is not a day with a bad line in
+// it.
 func (d *Deployment) AdvanceDay(ctx context.Context) (DayReport, error) {
 	d.resetMu.Lock()
 	defer d.resetMu.Unlock()
 
 	ran := d.BusinessDate()
-	if ran.SettlementDay {
-		d.clear(ctx)
-	}
-	// Every bank's own end of day, on every date. It is the bank's act and not
-	// the scheme's, so it is the bank INDEX that is iterated here and not the
-	// subscriber list: a bank founded and never admitted still accrues interest
-	// on its customers' overdrafts.
-	for _, b := range d.banksInOrder() {
-		if err := b.runEndOfDay(ctx, ran.Date); err != nil {
-			d.journal.problem(Problem{Institution: b.bic, Detail: err.Error()})
-		}
-	}
+	d.journal.problem(runPhases(ctx, d, onSettlementDay(beforeClock, ran.SettlementDay))...)
+
 	next, err := d.clock.Advance()
 	if err != nil {
 		err = fmt.Errorf("server: the business day ran on %s and the clock could not be moved past it: %w",
@@ -306,14 +614,7 @@ func (d *Deployment) AdvanceDay(ctx context.Context) (DayReport, error) {
 		next = d.clock.Now()
 	}
 
-	// And the cycles the next clearing day will accumulate into, opened AFTER the
-	// clock has moved: a cycle is stamped with the instant it is opened, and the
-	// day it accepts payments on is the one it should name. On a day that cleared,
-	// the cut-off above left none open; on a day that did not, the ones standing
-	// are still open and this is a no-op. A clock that could not be moved leaves
-	// them on the day that just ran, which is still the day they will accumulate
-	// on.
-	d.journal.problem(d.csm.openCycles(ctx)...)
+	d.journal.problem(runPhases(ctx, d, onSettlementDay(afterClock, ran.SettlementDay))...)
 
 	files, outcomes, problems := d.journal.take()
 	return DayReport{
@@ -323,97 +624,6 @@ func (d *Deployment) AdvanceDay(ctx context.Context) (DayReport, error) {
 		Outcomes: outcomes,
 		Problems: problems,
 	}, err
-}
-
-// clear is the clearing half of a business day: the phases that only run on a
-// day the scheme settles on.
-//
-// # Which banks each phase visits
-//
-// The phases that touch a QUEUE visit the subscribers — the banks the clearing
-// house's roster names, which are the banks enrolment gave a queue. A bank
-// without one is not a slow bank: nothing can be addressed to it, so every
-// clearing phase would answer it EBICS_INVALID_USER_OR_USER_STATE, which is
-// true, is not news, and would appear in every day's report for the life of the
-// deployment. Its own hub therefore accumulates and is never cut off, which is
-// the honest outcome — a bank the scheme has not admitted has nowhere to upload
-// to.
-//
-// The directory refresh is the exception and visits every bank, because it
-// touches no queue at all: it is the scheme's vendor delivering a file, and a
-// bank waiting on admission is exactly the bank that needs the routing
-// directory it is about to appear in.
-func (d *Deployment) clear(ctx context.Context) {
-	csm, cb := d.cfg.ClearingHouseBIC, d.cfg.CentralBankBIC
-
-	// 0. Every member takes the published roster. It is the FIRST thing, so a
-	// bank admitted since the last advance can be addressed by its neighbours
-	// today rather than after somebody remembers to call the route.
-	for _, b := range d.banksInOrder() {
-		if _, err := b.RefreshDirectory(ctx); err != nil {
-			d.journal.problem(Problem{Institution: b.bic, Detail: err.Error()})
-		}
-	}
-
-	// 1. Every member reaches its own cut-off: the morning's instructions leave
-	// each bank's hub as one file per scheme, uploaded to the clearing house.
-	// Before the clearing house works, because a file uploaded after it had
-	// worked would wait a whole day for the next one — and this is where the
-	// day's payments come from, so it is the first thing that carries anything.
-	for _, b := range d.subscribers() {
-		_, problems := b.cutoff(ctx)
-		d.journal.problem(problems...)
-	}
-
-	// 2. The clearing house works through what its members uploaded: each file is
-	// recorded, each transaction validated and taken into the open cycle for its
-	// scheme, each submitting bank answered per transaction — and each receiving
-	// bank's share of the file BUILT AND HELD. Nothing is queued for a receiving
-	// bank here; see phase 5.
-	d.journal.problem(d.csm.work(ctx)...)
-
-	// 3. The clearing house's own cut-off: every open cycle is netted and its
-	// positions uploaded to the settlement agent. Two different cut-offs share
-	// the word and they are two phases apart — a bank's turns instructions into a
-	// file, and this one turns a batch of validated payments into net positions.
-	// A cycle the operator closed by hand is already closed and is settled by
-	// this day's phase 4 rather than by this one.
-	d.journal.problem(d.csm.closeOpenCycles(ctx)...)
-
-	// 3b. And the cut-offs that instructed nothing are discharged where they
-	// stand. A cycle whose members' positions all cancel — or that took nothing
-	// in at all — has no leg to send, so no answer is coming and phase 5 would
-	// never release it. Before phase 4 rather than after, because the settlement
-	// agent has nothing to do with it. See ClearingHouse.settleUninstructed.
-	d.journal.problem(d.csm.settleUninstructed(ctx)...)
-
-	// 4. The settlement agent works through everything uploaded to it: cut-offs
-	// discharged, returns executed, lodgements credited. This is the only phase
-	// in which central-bank reserves move.
-	d.journal.problem(d.cb.work(ctx)...)
-
-	// 5. The clearing house collects the answers and RELEASES: each settled cycle
-	// becomes the output files its receiving banks have been waiting for and an
-	// ACSC apiece for the banks that submitted, and each settled RETURN becomes
-	// the pacs.004 the other bank has been waiting for.
-	//
-	// THE ORDER OF PHASES 3, 4 AND 5 IS THE DESIGN. The cycle settles before the
-	// output files are released, so a receiving bank is handed its instructions
-	// only once the funds behind them are final and never credits a customer
-	// against money that has not settled. Reverse them and settlement risk is
-	// invented — and a bank that could not apply a payment would be refusing one
-	// nobody had paid for yet, which is a different and much easier system.
-	d.journal.problem(d.csm.collect(ctx)...)
-
-	// 6. Each member collects, THE SETTLEMENT AGENT FIRST. The order is
-	// load-bearing and is the only thing that guarantees the mirror leg is
-	// booked before the creditor legs draw on it — see CentralBank.advise, which
-	// argues it where the guarantee used to live.
-	for _, b := range d.subscribers() {
-		d.journal.problem(b.collect(ctx, cb, b.cb, ebics.C53)...)
-		d.journal.problem(b.collect(ctx, cb, b.cb, ebics.BTD)...)
-		d.journal.problem(b.collect(ctx, csm, b.csm, ebics.BTD)...)
-	}
 }
 
 // CarryToClearing moves the morning's files and stops before anything settles:
@@ -431,26 +641,24 @@ func (d *Deployment) clear(ctx context.Context) {
 // ClearingHouse.takeRecorded, and ClearingHouse.unhandable for what a cycle
 // without one costs.
 //
-// # Where it stops, and the one phase it takes out of turn
+// # Where it stops
 //
-// It is a PREFIX of clear's list, ending before phase 3, and the reason is the
-// reason phases 3, 4 and 5 are in that order: settling is what moves reserves,
-// and a fixed dataset must not depend on when somebody advanced a clock. What it
-// leaves behind is the state every bank in a bulk scheme is really in between its
-// own cut-off and the next settlement.
-//
-// The members' collection from the CLEARING HOUSE is phase 6 in a full day and
-// runs here as the third thing. Nothing has settled, so that queue holds the
-// per-transaction answers and nothing else — and a submitting bank that did not
-// collect them would sit at Initiated where a carried payment reaches Accepted,
-// which is the divergence a sample dataset must not have.
+// It stops before the clearing house's own cut-off, and the reason is the reason
+// that cut-off, the settlement and the release are in that order: settling is
+// what moves reserves, and a fixed dataset must not depend on when somebody
+// advanced a clock. What it leaves behind is the state every bank in a bulk
+// scheme is really in between its own cut-off and the next settlement. Which
+// phases those are is carryToClearingPhases, and it is DERIVED from the day
+// rather than written out, so this cannot come to run them in another order.
 //
 // # The journal is emptied rather than kept
 //
-// Every other act the seed performs writes nothing to it: the composites go
-// straight at each institution's own network. A first day's report carrying six
-// uploads and nothing else would therefore describe the build's last minute and
-// none of the rest of it, dated on the day an operator happened to press the
+// The phases hand their problems back rather than journalling them, so what is
+// drained here is the FILES AND OUTCOMES the institutions record from inside
+// those phases. Every other act the seed performs writes nothing to it: the
+// composites go straight at each institution's own network. A first day's report
+// carrying six uploads and nothing else would describe the build's last minute
+// and none of the rest of it, dated on the day an operator happened to press the
 // button. So what happened here is dropped, and what could not happen is
 // returned — the scenario is hardcoded, so a problem in it is a build failure
 // rather than a line in a report.
@@ -458,15 +666,7 @@ func (d *Deployment) clear(ctx context.Context) {
 // It takes no lock. Reset holds resetMu across the rebuild this runs inside, and
 // the only other caller is a boot with nothing serving yet.
 func (d *Deployment) CarryToClearing(ctx context.Context) error {
-	for _, b := range d.subscribers() {
-		_, problems := b.cutoff(ctx)
-		d.journal.problem(problems...)
-	}
-	d.journal.problem(d.csm.work(ctx)...)
-	for _, b := range d.subscribers() {
-		d.journal.problem(b.collect(ctx, d.cfg.ClearingHouseBIC, b.csm, ebics.BTD)...)
-	}
-
-	_, _, problems := d.journal.take()
+	problems := runPhases(ctx, d, carryToClearingPhases)
+	d.journal.take()
 	return joinProblemDetails(problems)
 }

@@ -117,6 +117,26 @@ unique and the collision is a documented sentinel. Either make the ambiguity a
 sentinel too, or pin the current behaviour with a test that builds two payments
 claiming one reference; today nothing does.
 
+### The seed closes a business day the deployment has not reached
+
+`AdvanceDay` runs each bank's end of day for the day it is LEAVING and then moves
+the clock (`beforeClock`'s end-of-day phase, then the pivot). `seed/seed.go:393`
+`runDays` does the opposite: `b.day()` advances first, and `RunEndOfDay` is then
+called with `b.clock.Now()`, the day just arrived at. Over N days the seed closes
+D+1…D+N where a deployment closes D…D+N-1.
+
+It is **not** a correctness defect today — the advancement guards
+(`deposit/register.go:1812`, `lending/accrual.go:143`,
+`DayCount.Days(LastAccrualDate, date) <= 0`) make the re-close a no-op. Two things
+are wrong anyway: `runDays`' own comment claims the seed's accrual moves *"exactly
+as a running day would produce them"*, which this makes false; and the first
+operator advance after a boot re-closes a day the seed already closed, so it
+accrues nothing on any seeded facility.
+
+Fixing it moves interest figures, so it is a domain decision and does not ride
+along inside a refactor — the same reason the value-date item above is filed
+rather than fixed.
+
 ### `respond.go:20` puts a raw `err.Error()` in 500 bodies
 
 Where `recoverPanic` is careful to emit a fixed string. One of the two is wrong
@@ -681,6 +701,27 @@ as `Participant.Repay`, and `payment.Participant` was dissolved into `Bank`,
 A day-granular, UTC-normalised-at-construction type with `Start()`, `NextDay()`,
 `Key()` and value equality. Thread the type, not the instant, and a missing date
 becomes a compile error. Cheaper today than at any later point.
+
+### The business day as a declared sequence — `done`
+
+[ADR-0005](adr/0005-a-business-day-is-a-declared-sequence.md). The order of a day
+was statement order inside `Deployment.clear`, and three other places re-wrote a
+subset of it by hand. It is now two declared lists of named phases with the clock
+move as the pivot, and every subset — including the two in test files — is
+DERIVED by naming phases, so none can hold a phase the day lacks or run two in an
+order the day does not.
+
+Two things it bought that the entry above did not ask for. A phase RETURNS what
+it could not do and only a runner journals, so the silently-droppable `[]Problem`
+at fifteen call sites became unrepresentable. And `settlementOnly` on the phase
+put "what runs on a weekend" in the declaration, where it had been a doc comment.
+
+What it did not buy is de-duplication: the subsets are argued and there are still
+four of them. Splitting the collection into three selectable phases WOULD have
+de-duplicated the last of it, and it inverts an observable nesting — a day visits
+each bank and takes all three of its queues before the next bank takes any — so
+the collection stayed one phase and `collectClearingHouseOnly` is the one step in
+the package that is not a phase of a day.
 
 ### Deepen the transport module — `done`
 

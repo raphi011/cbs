@@ -1103,32 +1103,32 @@ func (h *harness) filesOfTypeTo(t *testing.T, to iso20022.BIC, msgDef string) []
 // The BANKS' cut-off is in, because it is where a file comes from: a hub that
 // was never emptied uploads nothing and every flow test would measure a network
 // carrying no payments. The two cut-offs share a word and are different acts —
-// see Deployment.clear.
+// see beforeClock.
 //
 // Leaving the refresh out is load-bearing rather than tidy: a fixture asserting
 // what a stale routing directory costs needs it not to run. Leaving the cycle
 // cut-off out is what lets a test see a payment sitting in an open cycle at all.
 //
-// Members collect from the SETTLEMENT AGENT first, which is the ordering
-// AdvanceDay's last phase exists for and the only thing that now guarantees a
-// mirror leg is booked before the creditor legs draw on it.
-func workThrough(d *Deployment) []Problem {
-	ctx := context.Background()
+// Members collect from the SETTLEMENT AGENT first, which is the ordering the
+// day's three collection phases exist in and the only thing that now guarantees
+// a mirror leg is booked before the creditor legs draw on it. That order is not
+// restated here: this NAMES phases and the day orders them, so a fixture cannot
+// carry a sequence the deployment would not run.
+var workThroughPhases = only(beforeClock,
+	phaseBankCutoff,
+	phaseClearing,
+	phaseSettlement,
+	phaseRelease,
+	phaseCollection,
+)
 
-	var ps []Problem
-	for _, b := range d.subscribers() {
-		_, problems := b.cutoff(ctx)
-		ps = append(ps, problems...)
-	}
-	ps = append(ps, d.csm.work(ctx)...)
-	ps = append(ps, d.cb.work(ctx)...)
-	ps = append(ps, d.csm.collect(ctx)...)
-	for _, b := range d.subscribers() {
-		ps = append(ps, b.collect(ctx, d.cfg.CentralBankBIC, b.cb, ebics.C53)...)
-		ps = append(ps, b.collect(ctx, d.cfg.CentralBankBIC, b.cb, ebics.BTD)...)
-		ps = append(ps, b.collect(ctx, d.cfg.ClearingHouseBIC, b.csm, ebics.BTD)...)
-	}
-	return ps
+// workThrough returns what could not be done rather than journalling it, which
+// is the one way a test sequence differs from a day. The files and outcomes it
+// moves DO reach the journal — the institutions record those from inside the
+// phases — so a later AdvanceDay reports them and never reports these problems.
+// The asymmetry is deliberate: a test asserts on what it is handed.
+func workThrough(d *Deployment) []Problem {
+	return runPhases(context.Background(), d, workThroughPhases)
 }
 
 // work carries everything waiting and fails the test on anything an institution
