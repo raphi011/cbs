@@ -73,17 +73,18 @@ type Network struct {
 
 // centralBankBook is the settlement agent's book of accounts, or a refusal.
 //
-// The five acts that reach it are the whole of settlementOps plus ReserveBalance,
-// and each is an act only the central bank performs: opening a member's reserve
-// account, crediting one on a lodgement, discharging a cut-off's net positions,
+// The five acts that reach it are all of CentralBankNetwork's own, and each is
+// an act only the central bank performs: opening a member's reserve account,
+// crediting one on a lodgement, discharging a cut-off's net positions,
 // reversing a settled payment's, and reading what a member holds. A network that
 // is not the central bank's has no book to perform them in, so it is refused
 // here rather than in five places.
 //
-// It catches an act of the settlement agent's reached through any other
-// institution's handle — which, since these methods are exported, is every
-// caller outside cmd/server. Inside cmd/server the compiler already catches it,
-// because settlementOps carries the five and bankOps and csmOps carry none.
+// All five being methods on that type is what keeps every other institution's
+// handle from naming one. What is left for this to catch is a
+// CentralBankNetwork assembled over another institution's core — see the note on
+// core in institutions.go, and TestTheCentralBanksBookIsReachableOnlyFromThe-
+// SettlementAgentsNetwork, which drives exactly that.
 //
 // It does NOT catch the central bank posting in the wrong PLACE within its own
 // book, and it never could: a BookID is an ordinary argument and one is as valid
@@ -324,7 +325,7 @@ func (s *Network) scheme(id SchemeID) (Scheme, bool) {
 // It returns an error rather than a nil book on every other institution's
 // network, which is the difference between a refusal and a panic three frames
 // away in ledger. See centralBankBook, which is the same refusal on the acts.
-func (s *Network) CentralBank() (*ledger.Book, error) { return s.centralBankBook() }
+func (s *CentralBankNetwork) CentralBank() (*ledger.Book, error) { return s.centralBankBook() }
 
 // bind attaches the live handles a Bank record needs to be usable: its
 // own book of accounts, the deposit register and the lending portfolio over
@@ -772,7 +773,7 @@ func (s *CentralBankNetwork) OpenSettlementAccount(ctx context.Context, in Admis
 
 // AdmitMember is AdmitMemberTx in its own unit of work: the clearing house's
 // act, on the settlement agent's acknowledgement.
-func (s *Network) AdmitMember(ctx context.Context, in AdmissionAcknowledgement) (RosterEntry, error) {
+func (s *ClearingHouseNetwork) AdmitMember(ctx context.Context, in AdmissionAcknowledgement) (RosterEntry, error) {
 	var out RosterEntry
 	err := s.store.Update(ctx, func(ctx context.Context, tx Tx) error {
 		var err error
@@ -1336,7 +1337,7 @@ func checkAcknowledgement(in AdmissionAcknowledgement) error {
 // It appends member.admitted under the member's BIC, on an EXTENSION as well as
 // on a creation: a second asset admitted is a second scheme this member clears
 // in.
-func (s *Network) AdmitMemberTx(ctx context.Context, tx Tx, in AdmissionAcknowledgement) (RosterEntry, error) {
+func (s *ClearingHouseNetwork) AdmitMemberTx(ctx context.Context, tx Tx, in AdmissionAcknowledgement) (RosterEntry, error) {
 	// The acknowledgement first, because this reads no store and one this act
 	// cannot use should not cost an identity from the network's counter.
 	if err := checkAcknowledgement(in); err != nil {
@@ -1577,7 +1578,7 @@ func (s *BankNetwork) RecordMembershipTx(ctx context.Context, tx Tx, in Admissio
 // reserve is a separate act, a LODGEMENT, which is a camt.050 to the central
 // bank and its camt.025 back. See LodgeReservesTx, and Camt050 on why a
 // lodgement is a conversation and a deposit is not.
-func (s *Network) Deposit(ctx context.Context, participant ParticipantID, account deposit.AccountID, amount ledger.Amount, description string) error {
+func (s *BankNetwork) Deposit(ctx context.Context, participant ParticipantID, account deposit.AccountID, amount ledger.Amount, description string) error {
 	return s.store.Update(ctx, func(ctx context.Context, tx Tx) error {
 		return s.DepositTx(ctx, tx, participant, account, amount, description)
 	})
@@ -1588,7 +1589,7 @@ func (s *Network) Deposit(ctx context.Context, participant ParticipantID, accoun
 // It names no account outside this bank's book and asks the central bank nothing.
 // LodgeReservesTx is the act with a counterparty, and it is what reads this
 // bank's record of its settlement account number.
-func (s *Network) DepositTx(ctx context.Context, tx Tx, participant ParticipantID, account deposit.AccountID, amount ledger.Amount, description string) error {
+func (s *BankNetwork) DepositTx(ctx context.Context, tx Tx, participant ParticipantID, account deposit.AccountID, amount ledger.Amount, description string) error {
 	if amount <= 0 {
 		return ErrInvalidPaymentAmount
 	}
@@ -1790,7 +1791,7 @@ func (s *BankNetwork) LodgeReservesTx(ctx context.Context, tx Tx, asset ledger.A
 //	central bank:  Debit  Settlement Assets (asset)  / Credit Reserve: <member> (asset)
 //
 // It is the central bank posting on a member's instruction, which is why the
-// method is on settlementOps and on no other interface.
+// method is on CentralBankNetwork and on no other type.
 func (s *CentralBankNetwork) ReceiveLodgement(ctx context.Context, in LodgementInstruction) (LodgementReceipt, error) {
 	var out LodgementReceipt
 	err := s.store.Update(ctx, func(ctx context.Context, tx Tx) error {
@@ -2054,7 +2055,7 @@ func (s *BankNetwork) RevokeMandateTx(ctx context.Context, tx Tx, id MandateID) 
 
 // OpenCycle opens a clearing cycle for a scheme. Payments submitted while it
 // is open accumulate in it until CloseCycle computes their net positions.
-func (s *Network) OpenCycle(ctx context.Context, scheme SchemeID) (ClearingCycle, error) {
+func (s *ClearingHouseNetwork) OpenCycle(ctx context.Context, scheme SchemeID) (ClearingCycle, error) {
 	var out ClearingCycle
 	err := s.store.Update(ctx, func(ctx context.Context, tx Tx) error {
 		var err error
@@ -2067,7 +2068,7 @@ func (s *Network) OpenCycle(ctx context.Context, scheme SchemeID) (ClearingCycle
 // OpenCycleTx is OpenCycle within a caller-supplied unit of work. The
 // "already open?" check and the write are one step, so two concurrent callers
 // cannot both open a cycle for the same scheme.
-func (s *Network) OpenCycleTx(ctx context.Context, tx Tx, scheme SchemeID) (ClearingCycle, error) {
+func (s *ClearingHouseNetwork) OpenCycleTx(ctx context.Context, tx Tx, scheme SchemeID) (ClearingCycle, error) {
 	if _, ok := s.scheme(scheme); !ok {
 		return ClearingCycle{}, ErrSchemeNotFound
 	}
@@ -2110,7 +2111,7 @@ func (s *Network) OpenCycleTx(ctx context.Context, tx Tx, scheme SchemeID) (Clea
 //
 // The settlement agent settles a batch and answers about the batch — one pacs.002
 // naming the cycle. Turning that into per-payment news is this institution's job
-// and nobody else's, because nothing on settlementOps can enumerate a cycle's
+// and nobody else's, because nothing on CentralBankNetwork can enumerate a cycle's
 // payments (see ClearingHouse.tellSettled, which is the caller). So the fan-out and the
 // status are one unit of work: a cycle whose copies could not all be marked is
 // not a cycle any bank should be told about.
@@ -2177,7 +2178,7 @@ func (s *ClearingHouseNetwork) SettleAtCSMTx(ctx context.Context, tx Tx, id Cycl
 // CloseCycle reaches the cut-off: it computes each participant's net position
 // across the cycle's payments and marks the payments Cleared. No money moves
 // yet — that happens at SettleCycle.
-func (s *Network) CloseCycle(ctx context.Context, id CycleID) (ClearingCycle, error) {
+func (s *ClearingHouseNetwork) CloseCycle(ctx context.Context, id CycleID) (ClearingCycle, error) {
 	var out ClearingCycle
 	err := s.store.Update(ctx, func(ctx context.Context, tx Tx) error {
 		var err error
@@ -2188,7 +2189,7 @@ func (s *Network) CloseCycle(ctx context.Context, id CycleID) (ClearingCycle, er
 }
 
 // CloseCycleTx is CloseCycle within a caller-supplied unit of work.
-func (s *Network) CloseCycleTx(ctx context.Context, tx Tx, id CycleID) (ClearingCycle, error) {
+func (s *ClearingHouseNetwork) CloseCycleTx(ctx context.Context, tx Tx, id CycleID) (ClearingCycle, error) {
 	c, err := tx.GetCycle(ctx, id)
 	if err != nil {
 		return ClearingCycle{}, err
@@ -3722,7 +3723,7 @@ func (s *BankNetwork) AcceptAtBankTx(ctx context.Context, tx Tx, id PaymentID) (
 }
 
 // AcceptAtCSM is AcceptAtCSMTx in its own unit of work.
-func (s *Network) AcceptAtCSM(ctx context.Context, id PaymentID) (Payment, error) {
+func (s *ClearingHouseNetwork) AcceptAtCSM(ctx context.Context, id PaymentID) (Payment, error) {
 	var out Payment
 	err := s.store.Update(ctx, func(ctx context.Context, tx Tx) error {
 		var err error
@@ -3753,7 +3754,7 @@ func (s *Network) AcceptAtCSM(ctx context.Context, id PaymentID) (Payment, error
 // distinguish an Initiated payment the far side has accepted from one it has not
 // yet seen, and this will take either into a cycle. That invariant lives in the
 // message flow: the CSM calls this from the pacs.002 handler and nowhere else.
-func (s *Network) AcceptAtCSMTx(ctx context.Context, tx Tx, id PaymentID) (Payment, error) {
+func (s *ClearingHouseNetwork) AcceptAtCSMTx(ctx context.Context, tx Tx, id PaymentID) (Payment, error) {
 	p, err := tx.GetPayment(ctx, id)
 	if err != nil {
 		return Payment{}, err
@@ -3976,7 +3977,7 @@ func (s *BankNetwork) postDebtorLegTx(ctx context.Context, tx Tx, scheme Scheme,
 }
 
 // RejectAtCSM is RejectAtCSMTx in its own unit of work.
-func (s *Network) RejectAtCSM(ctx context.Context, id PaymentID, code iso20022.StatusReason, reason string) (Payment, error) {
+func (s *ClearingHouseNetwork) RejectAtCSM(ctx context.Context, id PaymentID, code iso20022.StatusReason, reason string) (Payment, error) {
 	var out Payment
 	err := s.store.Update(ctx, func(ctx context.Context, tx Tx) error {
 		var err error
@@ -4012,7 +4013,7 @@ func (s *Network) RejectAtCSM(ctx context.Context, id PaymentID, code iso20022.S
 // into the audit event's payload, so an unprintable byte in it would be written
 // to the store. The reversal half puts the same text in a ledger description,
 // and ledger.ReverseTransactionTx validates that itself.
-func (s *Network) RejectAtCSMTx(ctx context.Context, tx Tx, id PaymentID, code iso20022.StatusReason, reason string) (Payment, error) {
+func (s *ClearingHouseNetwork) RejectAtCSMTx(ctx context.Context, tx Tx, id PaymentID, code iso20022.StatusReason, reason string) (Payment, error) {
 	if err := ledger.ValidateText("reason", reason); err != nil {
 		return Payment{}, err
 	}
@@ -4940,7 +4941,7 @@ func (s *Network) GetPayment(ctx context.Context, id PaymentID) (Payment, error)
 }
 
 // GetCycle returns a clearing cycle by ID.
-func (s *Network) GetCycle(ctx context.Context, id CycleID) (ClearingCycle, error) {
+func (s *ClearingHouseNetwork) GetCycle(ctx context.Context, id CycleID) (ClearingCycle, error) {
 	var out ClearingCycle
 	err := s.store.View(ctx, func(ctx context.Context, tx Tx) error {
 		var err error

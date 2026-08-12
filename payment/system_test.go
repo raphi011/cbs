@@ -118,23 +118,6 @@ func (s *testSystem) bank(bic iso20022.BIC) *BankNetwork {
 // bank's book of accounts.
 func (s *testSystem) cb() *CentralBankNetwork { return s.nets.CentralBank() }
 
-// The two mis-wired handles: one institution's TYPE over another's identity.
-//
-// An institution's acts are methods on that institution's type, so reaching
-// another's through a handle minted by Networks does not compile and cannot be
-// tested for. What is still reachable is a handle assembled by hand — the core
-// carries the identity, and a composite literal may be given any core at all —
-// and that is the shape the identity guards refuse.
-//
-// These exist so the suites that measure those guards say which crossing they
-// are making, rather than each spelling out a literal whose point is easy to
-// misread as ordinary construction.
-func bankHandleOver(core Network) *BankNetwork { return &BankNetwork{Network: core} }
-
-func centralBankHandleOver(core Network) *CentralBankNetwork {
-	return &CentralBankNetwork{Network: core}
-}
-
 // testCentralBankBIC is the address this fixture's settlement agent is reached
 // at. It has no store row — a settlement agent is not a member of the scheme it
 // settles — so, like a deployment's, it is configured rather than discovered.
@@ -2931,7 +2914,7 @@ func TestAMandateBelongsToItsCreditorsBankAndToNoOther(t *testing.T) {
 	// The clearing house cannot either: it is not a member bank, so this is not
 	// its act at all. Recording one is a method on BankNetwork, so the crossing
 	// left to measure is a bank's handle over the clearing house's core.
-	asCSM := bankHandleOver(sys.ClearingHouseNetwork.Network)
+	asCSM := BankHandleOverClearingHouse(sys.ClearingHouseNetwork)
 	_, err = asCSM.CreateMandate(ctx, a.BIC, debtor, creditor, 0)
 	assertError(t, err, ErrNotThisInstitutionsAct)
 

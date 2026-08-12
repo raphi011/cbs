@@ -374,18 +374,19 @@ func TestALodgementInFlightIsNotABreak(t *testing.T) {
 // answer zero.
 //
 // Reconcile is a method on BankNetwork, so neither institution's own handle can
-// name it. What is measured here is a bank's handle assembled over one of their
-// cores, which is the crossing the identity still guards — see bankHandleOver.
+// name it. What is measured here is a bank's handle over one of their cores,
+// which is the crossing the identity still guards and which only this package
+// can assemble. See export_test.go.
 func TestReconcileIsNotAnActTheOtherTwoInstitutionsCanPerform(t *testing.T) {
 	ctx := context.Background()
 	sys := testNetwork(t)
 	settledPair(t, sys)
 
-	asCSM := bankHandleOver(sys.ClearingHouseNetwork.Network)
+	asCSM := BankHandleOverClearingHouse(sys.ClearingHouseNetwork)
 	if _, err := asCSM.Reconcile(ctx, testAsset); err == nil {
 		t.Fatal("the clearing house reconciled books it does not have")
 	}
-	asCB := bankHandleOver(sys.cb().Network)
+	asCB := BankHandleOverCentralBank(sys.cb())
 	if _, err := asCB.Reconcile(ctx, testAsset); err == nil {
 		t.Fatal("the settlement agent reconciled a reserve it does not hold")
 	}

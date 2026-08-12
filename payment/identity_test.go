@@ -38,8 +38,10 @@ import (
 // handle Networks minted for another institution does not compile and there is
 // nothing here to measure. What these rows drive is a BankNetwork built over
 // another institution's core, which is a wiring mistake rather than a call — and
-// it is the shape the guard exists for now that the type carries the rest. See
-// bankHandleOver.
+// it is the shape the guard exists for now that the type carries the rest.
+//
+// Assembling one takes a test-only export, because the embedded field is
+// unexported and no package outside this one can name it. See export_test.go.
 //
 // # Both wrong identities, because they are wrong in different ways
 //
@@ -117,8 +119,8 @@ func TestAMemberBanksActsAreRefusedOnAnyOtherInstitutionsNetwork(t *testing.T) {
 		who string
 		net *BankNetwork
 	}{
-		{"the clearing house", bankHandleOver(sys.ClearingHouseNetwork.Network)},
-		{"the central bank", bankHandleOver(sys.cb().Network)},
+		{"the clearing house", BankHandleOverClearingHouse(sys.ClearingHouseNetwork)},
+		{"the central bank", BankHandleOverCentralBank(sys.cb())},
 	} {
 		for _, act := range acts {
 			t.Run(act.name+" as "+imposter.who, func(t *testing.T) {
@@ -189,8 +191,8 @@ func TestTheCentralBanksBookIsReachableOnlyFromTheSettlementAgentsNetwork(t *tes
 		who string
 		net *CentralBankNetwork
 	}{
-		{"the clearing house", centralBankHandleOver(sys.ClearingHouseNetwork.Network)},
-		{"a member bank", centralBankHandleOver(sys.bank(a.BIC).Network)},
+		{"the clearing house", CentralBankHandleOverClearingHouse(sys.ClearingHouseNetwork)},
+		{"a member bank", CentralBankHandleOverBank(sys.bank(a.BIC))},
 	} {
 		for _, act := range acts {
 			t.Run(act.name+" as "+imposter.who, func(t *testing.T) {

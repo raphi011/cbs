@@ -9,10 +9,20 @@ import (
 	"github.com/raphi011/cbs/payment"
 )
 
-// The three narrowed views of *payment.Network, one per kind of actor.
+// The three narrowed views, one per kind of actor.
 //
-// Each actor holds one of these rather than the whole *payment.Network, so a
-// bank handler that calls SettleCycleTx does not COMPILE.
+// # What these add that the type does not
+//
+// Which INSTITUTION an act belongs to is answered in payment: SettleCycle is a
+// method on payment.CentralBankNetwork, so a bank handler naming it does not
+// compile here or in api, seed or provision. What is left to narrow is what one
+// institution's own handle reaches but a DAY has no business calling. A member
+// bank reaches 68 acts; the phases below need 19, and the other 49 are its
+// customers' — mandates, deposits, listings, its own reconciliation — which a
+// day's clearing phases have no reason to touch.
+//
+// So these are the acts of an actor in this deployment, not the acts of an
+// institution. Adding a method here is saying the business day performs it.
 //
 // # Two mechanisms, because neither alone is enough
 //
@@ -451,9 +461,12 @@ type settlementOps interface {
 	ReceiveLodgement(ctx context.Context, in payment.LodgementInstruction) (payment.LodgementReceipt, error)
 }
 
-// *payment.Network satisfies all three, and these assertions are what keep that
-// true: a method added to one of the interfaces above that the Network does not
-// have fails the build here rather than at the handler that wanted it.
+// One institution's type satisfies one interface, and these assertions are what
+// keep that true: a method added to an interface above that its institution does
+// not have fails the build here rather than at the handler that wanted it.
+//
+// The pairings are the whole of what these three lines say. A method moved to
+// the wrong institution in payment fails here too, naming both.
 var (
 	_ bankOps       = (*payment.BankNetwork)(nil)
 	_ csmOps        = (*payment.ClearingHouseNetwork)(nil)

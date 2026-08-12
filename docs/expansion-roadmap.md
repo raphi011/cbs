@@ -723,6 +723,53 @@ each bank and takes all three of its queues before the next bank takes any — s
 the collection stayed one phase and `collectClearingHouseOnly` is the one step in
 the package that is not a phase of a day.
 
+### One type per institution — `done`
+
+[ADR-0006](adr/0006-one-type-per-institution.md). `payment.Network` was one type
+carrying all three institutions' 107 acts, and which of them a caller might
+perform was answered twice at runtime — `ErrNotThisInstitutionsAct` and
+`sqlite.ErrNotInThisShape` — and once at compile time, in `cmd/server/ops.go`
+alone, which `Bank.Network()` then bypassed by handing the whole 107 to the HTTP
+surface.
+
+`BankNetwork`, `ClearingHouseNetwork` and `CentralBankNetwork` embed a shared
+core. Reach falls to 68 / 42 / 30, the core holds the 15 acts three institutions
+genuinely share, and `api`, `seed`, `provision` and every test fixture are held
+by the same types `cmd/server` was. A bank surface naming `SettleCycle` no longer
+compiles.
+
+The review that produced this proposed moving `ops.go`'s three interfaces down
+into `payment` instead, on the grounds that four consumers would share them.
+Measured, they do not: `api/bank` shares 3 of its 17 methods with `bankOps` and
+`api/centralbank` shares 0 of its 5 with `settlementOps`. `ops.go` stays, with a
+different subject — which of ONE institution's acts a business day performs.
+
+### Separate the store by institution — `todo`
+
+The defect ADR-0006 removed from `payment.Network`, still in place one layer
+down. `payment.Tx` is one interface over three schemas, so every shape implements
+every method and `ErrNotInThisShape` refuses at runtime what a type could refuse
+at compile time. Candidate 4 of the same review measured its test coverage:
+emptying `inShape` to `return nil` leaves the whole suite green.
+
+It partitions more cleanly than `Network` did. Of 104 guarded methods: 44 are a
+bank's alone, 14 the clearing house's, 12 the settlement agent's, and the three
+overlaps are each one coherent capability — the ledger (22, bank and settlement
+agent), the EBICS queue (8, clearing house and settlement agent), and the payment
+rows (4, bank and clearing house). Nothing spans all three but `audit_events` and
+`id_sequences`, which every schema holds and which are not guarded at all.
+
+So `BankTx = LedgerTx + PaymentRowsTx + 44`, `CsmTx = EbicsTx + PaymentRowsTx +
+14`, `CentralBankTx = LedgerTx + EbicsTx + 12` — 70 / 26 / 42 against 104 today,
+every crossing a build failure, and `ErrNotInThisShape` with nothing left to
+refuse. The pattern is already in the tree: `ledger.Tx`, `deposit.Tx` and
+`lending.Tx` are separate interfaces `payment.Tx` embeds, and this is carrying it
+through to the institution boundary.
+
+The cost is `store/storetest`, which is written against `Store` and `Tx` and run
+by all three shapes; splitting the interface splits what each shape can be held
+to, and that is the part to design before starting.
+
 ### Deepen the transport module — `done`
 
 Done between §21's tasks 4 and 5, against the three surface packages the split

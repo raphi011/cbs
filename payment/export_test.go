@@ -22,3 +22,30 @@ func (s *Network) OpenCycleID(ctx context.Context, scheme SchemeID) (CycleID, er
 	})
 	return out, err
 }
+
+// The four mis-wired handles: one institution's TYPE over another's core.
+//
+// An institution's acts are methods on that institution's type, so reaching
+// another's through a handle Networks minted does not compile and there is
+// nothing to measure. What is still reachable is a handle whose methods and
+// whose identity disagree — and because the embedded field is unexported (see
+// the note on core in institutions.go), only this package can assemble one.
+//
+// They are here rather than beside the types because assembling one is not an
+// act the system has. The suites that measure Network.self and
+// Network.centralBankBook need it and nothing else does.
+func BankHandleOverClearingHouse(c *ClearingHouseNetwork) *BankNetwork {
+	return &BankNetwork{core: c.core}
+}
+
+func BankHandleOverCentralBank(c *CentralBankNetwork) *BankNetwork {
+	return &BankNetwork{core: c.core}
+}
+
+func CentralBankHandleOverClearingHouse(c *ClearingHouseNetwork) *CentralBankNetwork {
+	return &CentralBankNetwork{core: c.core}
+}
+
+func CentralBankHandleOverBank(b *BankNetwork) *CentralBankNetwork {
+	return &CentralBankNetwork{core: b.core}
+}

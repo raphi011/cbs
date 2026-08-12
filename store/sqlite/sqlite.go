@@ -105,11 +105,15 @@ import (
 // the boundary in the DDL is what makes "the clearing house has no ledger" a
 // fact about the database rather than a claim one test asserts.
 //
-// The three values are the three actors in cmd/server/ops.go — bankOps, csmOps,
-// settlementOps — and there is no fourth. In particular there is no shape
-// holding every table: the monolith that one existed as died with this task,
-// and re-adding it would restore the ability to write a statement that spans two
-// institutions, which is the whole of what was removed.
+// The three values are the three institutions — payment.BankNetwork,
+// payment.ClearingHouseNetwork, payment.CentralBankNetwork — and there is no
+// fourth. In particular there is no shape holding every table: one would restore
+// the ability to write a statement that spans two institutions, which is the
+// whole of what a shape removes.
+//
+// What a shape catches that those types do not is the READ an institution can
+// still name: a payment row is every institution's, so GetPayment is on all
+// three, and a shape is what answers when the table behind it is not there.
 type Shape struct {
 	// dir is the directory under schema/ holding this shape's migrations, and
 	// it doubles as the name in a refusal.

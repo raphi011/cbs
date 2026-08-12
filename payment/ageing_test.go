@@ -379,18 +379,18 @@ func TestARefundThePayerCouldNotTakeIsTerminal(t *testing.T) {
 //
 // Both acts are methods on BankNetwork, so neither is reachable through a handle
 // Networks minted for another institution. What is measured here is the one
-// crossing left: a bank's handle assembled over another institution's core. See
-// bankHandleOver.
+// crossing left: a bank's handle over another institution's core, which only
+// this package can assemble. See export_test.go.
 func TestAgeingIsNotAnActTheOtherTwoInstitutionsCanPerform(t *testing.T) {
 	ctx := context.Background()
 	sys := agedNetwork(t)
 	setupTwoBanks(t, sys.testSystem)
 
-	asCSM := bankHandleOver(sys.ClearingHouseNetwork.Network)
+	asCSM := BankHandleOverClearingHouse(sys.ClearingHouseNetwork)
 	if _, err := asCSM.AgeClearingSuspense(ctx, testAsset); err == nil {
 		t.Fatal("the clearing house aged a suspense it does not have")
 	}
-	asCB := bankHandleOver(sys.cb().Network)
+	asCB := BankHandleOverCentralBank(sys.cb())
 	if _, err := asCB.AgeUnclaimedBalances(ctx, testAsset); err == nil {
 		t.Fatal("the settlement agent aged unclaimed balances it does not have")
 	}

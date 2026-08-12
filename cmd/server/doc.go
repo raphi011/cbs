@@ -1,6 +1,6 @@
 // Command server runs the core-banking REST API.
 //
-// It opens a store, builds a payment.Network per institution over it, seeds it
+// It opens a store, builds one payment network per institution over it, seeds it
 // with a comprehensive sample dataset (multiple banks, accounts, payments,
 // clearing cycles and settlements) and serves it over HTTP. It can also be reset
 // to the sample dataset at runtime via POST /admin/reset, and advanced a
@@ -483,17 +483,22 @@
 // are stated in a named time zone and enforced with a tolerance. None of that is
 // modelled here.
 //
-// # N+2 databases, and four mechanisms rather than two
+// # N+2 databases, and five mechanisms rather than two
 //
 // The store is N+2 databases — one per member bank, the clearing house's, the
-// settlement agent's — so much of the boundary is simply GIVEN. What the four
+// settlement agent's — so much of the boundary is simply GIVEN. What the five
 // mechanisms narrow, each differently:
 //
-//   - ops.go narrows by METHOD. A bank handler that calls SettleCycleTx does not
-//     compile, because bankOps does not name it.
-//   - payment.Network's IDENTITY narrows by INSTITUTION. Each institution is
-//     built over the network of the institution it IS, so a bank cannot act as
-//     another bank through a handle it legitimately holds.
+//   - the payment TYPE narrows by INSTITUTION. An act belongs to one of
+//     payment.BankNetwork, payment.ClearingHouseNetwork or
+//     payment.CentralBankNetwork, so a bank handler that calls SettleCycleTx does
+//     not compile — and neither does one in api, seed or provision.
+//   - ops.go narrows FURTHER, by METHOD, within one institution. A bank reaches
+//     68 acts and the day's phases need 19, so bankOps is what says which; an
+//     act it does not name is one no handler here can call.
+//   - payment.Identity narrows by PARTICIPANT. Each institution is built over the
+//     network of the institution it IS, so a bank cannot act as another bank
+//     through a handle it legitimately holds.
 //   - the STORE narrows by DATABASE. A store handed a book it does not answer for
 //     refuses with sqlite.ErrNotThisStoresBook, and a method reaching for a table
 //     its institution's schema does not create is refused with
@@ -504,14 +509,16 @@
 //     actually reached, which is the question none of the other three answers.
 //     "Did this bank's act touch exactly its own book" is still worth asking
 //     inside one institution's own database, and
-//     TestWhichBooksEachBankActuallyReaches is where the answers are.
+//     TestWhichBooksEachBankActuallyReaches is where the answers are. It is the
+//     one that cannot be replaced by a type: every ledger.Tx method takes its
+//     book as an ordinary argument, and one BookID is as valid as another.
 //
 // A download queue is one institution holding bytes addressed to another, and it
 // is not a fifth crossing: the bytes are opaque to the holder, which is why this
 // package's institutions carry bytes rather than structs and why the queues hold
 // no rows at all.
 //
-// A fifth mechanism is not a boundary and belongs beside them anyway. Every one
+// A sixth mechanism is not a boundary and belongs beside them anyway. Every one
 // above is about what an institution may REACH; payment/recon is about whether
 // the institutions that reached nothing of each other's still agree — a bank's
 // reserve against the settlement agent's liability to it, a cycle against the

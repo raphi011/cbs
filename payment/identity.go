@@ -35,8 +35,9 @@ type Identity struct {
 }
 
 // role is the kind of institution, and there are exactly three because a
-// deployment holds exactly three kinds and cmd/server/ops.go is their
-// enumeration: bankOps, csmOps, settlementOps.
+// deployment holds exactly three kinds. BankNetwork, ClearingHouseNetwork and
+// CentralBankNetwork are their enumeration, and a fourth role would be a fourth
+// type with no acts on it.
 //
 // It is unexported, and the three constructors below are the only way to name
 // one, so a caller cannot build an identity this package has no acts for.
@@ -64,7 +65,7 @@ const (
 func AsBank(pid ParticipantID) Identity { return Identity{role: roleBank, pid: pid} }
 
 // AsClearingHouse is the CSM's identity: it clears, it nets, it routes, and it
-// holds no book of accounts at all. See csmOps in cmd/server, which is the list
+// holds no book of accounts at all. See ClearingHouseNetwork, which is the list
 // of what it may reach, and TestTheCSMTouchesOnlyItsOwnBook, which is the
 // measurement that it reaches nothing else.
 func AsClearingHouse() Identity { return Identity{role: roleClearingHouse} }
@@ -176,18 +177,18 @@ func (n *Networks) Bank(ctx context.Context, pid ParticipantID) (*BankNetwork, e
 	if err != nil {
 		return nil, fmt.Errorf("payment: opening member bank %s's store: %w", pid, err)
 	}
-	return &BankNetwork{Network: *newNetwork(store, n.clock, AsBank(pid), n.schemes)}, nil
+	return &BankNetwork{core: *newNetwork(store, n.clock, AsBank(pid), n.schemes)}, nil
 }
 
 // ClearingHouse returns the CSM's view, over the clearing house's database.
 func (n *Networks) ClearingHouse() *ClearingHouseNetwork {
-	return &ClearingHouseNetwork{Network: *newNetwork(n.stores.ClearingHouse(), n.clock, AsClearingHouse(), n.schemes)}
+	return &ClearingHouseNetwork{core: *newNetwork(n.stores.ClearingHouse(), n.clock, AsClearingHouse(), n.schemes)}
 }
 
 // CentralBank returns the settlement agent's view, which is the only one holding
 // the central bank's book, over the central bank's database.
 func (n *Networks) CentralBank() *CentralBankNetwork {
-	return &CentralBankNetwork{Network: *newNetwork(n.stores.CentralBank(), n.clock, AsCentralBank(), n.schemes)}
+	return &CentralBankNetwork{core: *newNetwork(n.stores.CentralBank(), n.clock, AsCentralBank(), n.schemes)}
 }
 
 // Stores is the set of databases these networks are minted over, so a caller

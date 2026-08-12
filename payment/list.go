@@ -45,7 +45,7 @@ import (
 // The returned Banks carry live Ledger and Deposit handles bound to the
 // network's store, so a caller can go straight from a listing to a bank's books.
 // Their data fields are a snapshot; mutating them changes nothing.
-func (s *Network) ListBanks(ctx context.Context) ([]*Bank, error) {
+func (s *BankNetwork) ListBanks(ctx context.Context) ([]*Bank, error) {
 	var out []*Bank
 	err := s.store.View(ctx, func(ctx context.Context, tx Tx) error {
 		records, err := tx.ListBanks(ctx)
@@ -77,7 +77,7 @@ func (s *Network) ListBanks(ctx context.Context) ([]*Bank, error) {
 // GetRosterEntryByBIC below is the answer to the narrower question — "is this
 // address a member, and what does the scheme hold about it" — and it is what a
 // submitting bank's door asks.
-func (s *Network) GetBank(ctx context.Context, id ParticipantID) (*Bank, error) {
+func (s *BankNetwork) GetBank(ctx context.Context, id ParticipantID) (*Bank, error) {
 	var out *Bank
 	err := s.store.View(ctx, func(ctx context.Context, tx Tx) error {
 		var err error
@@ -128,7 +128,7 @@ func (s *Network) GetBank(ctx context.Context, id ParticipantID) (*Bank, error) 
 // splitting founding from joining. It is REACHED in production: provisioning
 // founds a bank and the clearing house writes its entry two commits later, so in
 // between this is what the clearing house's own row says about that address.
-func (s *Network) GetRosterEntryByBIC(ctx context.Context, bic iso20022.BIC) (RosterEntry, error) {
+func (s *ClearingHouseNetwork) GetRosterEntryByBIC(ctx context.Context, bic iso20022.BIC) (RosterEntry, error) {
 	var out RosterEntry
 	err := s.store.View(ctx, func(ctx context.Context, tx Tx) error {
 		var err error
@@ -149,7 +149,7 @@ func (s *Network) GetRosterEntryByBIC(ctx context.Context, bic iso20022.BIC) (Ro
 // The deployment reads it at startup and package provision publishes it, and
 // asking this rather than ListBanks is what stops a founded, unadmitted bank
 // being enrolled as a subscriber.
-func (s *Network) ListRosterEntries(ctx context.Context) ([]RosterEntry, error) {
+func (s *ClearingHouseNetwork) ListRosterEntries(ctx context.Context) ([]RosterEntry, error) {
 	var out []RosterEntry
 	err := s.store.View(ctx, func(ctx context.Context, tx Tx) error {
 		var err error
@@ -172,7 +172,7 @@ func (s *Network) ListRosterEntries(ctx context.Context) ([]RosterEntry, error) 
 // its members by ADDRESS, because that is the only name a settlement agent is
 // ever told (see SettlementMember), and a caller wanting the banks themselves
 // wants a different institution.
-func (s *Network) ListSettlementMembers(ctx context.Context) ([]SettlementMember, error) {
+func (s *CentralBankNetwork) ListSettlementMembers(ctx context.Context) ([]SettlementMember, error) {
 	var out []SettlementMember
 	err := s.store.View(ctx, func(ctx context.Context, tx Tx) error {
 		var err error
@@ -190,7 +190,7 @@ func (s *Network) ListSettlementMembers(ctx context.Context) ([]SettlementMember
 // It is ListSettlementMembers narrowed to one member, and it is what GET
 // /reserves/{bic} reads. The assets it can report are the ones this agent opened
 // accounts in, which is not necessarily what the bank thinks it operates in.
-func (s *Network) GetSettlementMember(ctx context.Context, bic iso20022.BIC) (SettlementMember, error) {
+func (s *CentralBankNetwork) GetSettlementMember(ctx context.Context, bic iso20022.BIC) (SettlementMember, error) {
 	var out SettlementMember
 	err := s.store.View(ctx, func(ctx context.Context, tx Tx) error {
 		var err error
@@ -252,7 +252,7 @@ func (s *BankNetwork) ListMandates(ctx context.Context) ([]Mandate, error) {
 }
 
 // ListCycles returns all clearing cycles, oldest first by the time they opened.
-func (s *Network) ListCycles(ctx context.Context) ([]ClearingCycle, error) {
+func (s *ClearingHouseNetwork) ListCycles(ctx context.Context) ([]ClearingCycle, error) {
 	var out []ClearingCycle
 	err := s.store.View(ctx, func(ctx context.Context, tx Tx) error {
 		var err error
@@ -264,7 +264,7 @@ func (s *Network) ListCycles(ctx context.Context) ([]ClearingCycle, error) {
 
 // ListSettlements returns all settlements, oldest first by the time they
 // settled.
-func (s *Network) ListSettlements(ctx context.Context) ([]Settlement, error) {
+func (s *CentralBankNetwork) ListSettlements(ctx context.Context) ([]Settlement, error) {
 	var out []Settlement
 	err := s.store.View(ctx, func(ctx context.Context, tx Tx) error {
 		var err error
@@ -276,7 +276,7 @@ func (s *Network) ListSettlements(ctx context.Context) ([]Settlement, error) {
 
 // GetSettlement returns the settlement with the given ID, or
 // ErrSettlementNotFound if it does not exist.
-func (s *Network) GetSettlement(ctx context.Context, id SettlementID) (Settlement, error) {
+func (s *CentralBankNetwork) GetSettlement(ctx context.Context, id SettlementID) (Settlement, error) {
 	var out Settlement
 	err := s.store.View(ctx, func(ctx context.Context, tx Tx) error {
 		var err error
@@ -294,7 +294,7 @@ func (s *Network) GetSettlement(ctx context.Context, id SettlementID) (Settlemen
 // of work, and no message carries it back to the clearing house that asked — so
 // the link survives only in the direction the settlement names the cycle, which
 // is answerable at the agent alone. See ClearingCycle.
-func (s *Network) GetSettlementByCycleID(ctx context.Context, id CycleID) (Settlement, error) {
+func (s *CentralBankNetwork) GetSettlementByCycleID(ctx context.Context, id CycleID) (Settlement, error) {
 	var out Settlement
 	err := s.store.View(ctx, func(ctx context.Context, tx Tx) error {
 		var err error

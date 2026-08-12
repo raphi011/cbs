@@ -26,6 +26,20 @@ import "time"
 //
 // Networks is the only thing that mints these, and it mints one per institution
 // over that institution's own database. Nothing downstream holds a second.
+//
+// # Why the embedded field is spelled core
+//
+// An embedded field takes the name of its type, and the identity lives on the
+// core rather than on the three types above it. Spelled Network, a composite
+// literal in any package could give a bank's handle the clearing house's core
+// and get a handle whose methods and whose identity disagree — the one crossing
+// the types would otherwise still permit, and the reason Network.self and
+// Network.centralBankBook still refuse rather than merely fetch.
+//
+// Spelled core, only this package can assemble one. See export_test.go, which
+// hands the four mis-wired pairings to the suites that measure those refusals
+// and to nothing else.
+type core = Network
 
 // BankNetwork is one member bank's handle: the acts whose subject is this bank's
 // own book, its own register, its own customers and its own half of a payment.
@@ -34,7 +48,7 @@ import "time"
 // method here names a participant to act AS. What still decides between two
 // members is the domain refusing a bank that is not the payment's party — see
 // ErrNotThisBanksPayment and ErrNotAPartyToThisReturn.
-type BankNetwork struct{ Network }
+type BankNetwork struct{ core }
 
 // ClearingHouseNetwork is the CSM's handle: it clears, it nets, it routes, and
 // it holds no book of accounts at all.
@@ -44,7 +58,7 @@ type BankNetwork struct{ Network }
 // TestTheCSMTouchesOnlyItsOwnBook, which measures it rather than assuming it.
 // What it does hold is the state that is an OBLIGATION rather than a record: the
 // files and returns it has taken in and not yet handed over.
-type ClearingHouseNetwork struct{ Network }
+type ClearingHouseNetwork struct{ core }
 
 // CentralBankNetwork is the settlement agent's handle, and the only one holding
 // the central bank's book of accounts.
@@ -57,7 +71,7 @@ type ClearingHouseNetwork struct{ Network }
 // here turns a cycle into the payments inside it, which is what "the central
 // bank never sees an individual payment" means at a cut-off; a return names one
 // payment because the returning bank named it in the message.
-type CentralBankNetwork struct{ Network }
+type CentralBankNetwork struct{ core }
 
 // The three constructors, for a caller building ONE institution over a store it
 // already holds. Each takes what that institution's identity carries and no
@@ -69,13 +83,13 @@ type CentralBankNetwork struct{ Network }
 // identity belonging to nobody, and the absence of any I/O.
 
 func NewBankNetwork(store Store, clock func() time.Time, pid ParticipantID) *BankNetwork {
-	return &BankNetwork{Network: *NewNetwork(store, clock, AsBank(pid))}
+	return &BankNetwork{core: *NewNetwork(store, clock, AsBank(pid))}
 }
 
 func NewClearingHouseNetwork(store Store, clock func() time.Time) *ClearingHouseNetwork {
-	return &ClearingHouseNetwork{Network: *NewNetwork(store, clock, AsClearingHouse())}
+	return &ClearingHouseNetwork{core: *NewNetwork(store, clock, AsClearingHouse())}
 }
 
 func NewCentralBankNetwork(store Store, clock func() time.Time) *CentralBankNetwork {
-	return &CentralBankNetwork{Network: *NewNetwork(store, clock, AsCentralBank())}
+	return &CentralBankNetwork{core: *NewNetwork(store, clock, AsCentralBank())}
 }
