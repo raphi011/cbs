@@ -42,7 +42,7 @@ const testAsset AssetCode = "EUR"
 func testBook(t *testing.T) *Book {
 	t.Helper()
 	store := testenv.New(t, testClock)
-	return NewBook(store, "bank", testClock)
+	return NewBook(store.Ledger(), "bank", testClock)
 }
 
 // setupChartOfAccounts creates a standard chart of accounts for testing:
@@ -211,7 +211,7 @@ func TestGetAccount_NotFound(t *testing.T) {
 // itself. Everything but View is the embedded store's own method, promoted
 // unchanged.
 type countingStore struct {
-	testenv.Store
+	Store
 	views atomic.Int64
 }
 
@@ -228,7 +228,7 @@ func (c *countingStore) View(ctx context.Context, fn func(context.Context, Tx) e
 // entry.
 func TestGetAccounts(t *testing.T) {
 	ctx := context.Background()
-	cs := &countingStore{Store: testenv.New(t, testClock)}
+	cs := &countingStore{Store: testenv.New(t, testClock).Ledger()}
 	book := NewBook(cs, "bank", testClock)
 
 	l, err := book.CreateLedger(ctx, "GL")

@@ -30,8 +30,14 @@ import (
 // member bank's own record of a cut-off it was told about — which carries a
 // book_id like a ledger or deposit row, because it belongs to that bank.
 
-// compile-time check that tx satisfies the payment interface too.
-var _ payment.Tx = (*tx)(nil)
+// compile-time checks that tx satisfies all three institutions' interfaces. It
+// is one value and one body of SQL; which of the three a caller may name is
+// decided by the store it was handed. See sqlite.BankStore.
+var (
+	_ payment.BankTx        = (*tx)(nil)
+	_ payment.CsmTx         = (*tx)(nil)
+	_ payment.CentralBankTx = (*tx)(nil)
+)
 
 // ---------------------------------------------------------------------------
 // The three rows admission writes

@@ -110,7 +110,7 @@ func damageAdvice(t *testing.T, sys *testSystem, bank *Bank, reference string, e
 	ctx := context.Background()
 	store, err := sys.stores.Bank(ctx, bank.BIC)
 	assertNoError(t, err)
-	assertNoError(t, store.Update(ctx, func(ctx context.Context, tx Tx) error {
+	assertNoError(t, store.Update(ctx, func(ctx context.Context, tx BankTx) error {
 		advice, err := tx.GetSettlementAdvice(ctx, bank.BookID, reference, testAsset)
 		if err != nil {
 			return err
@@ -382,11 +382,11 @@ func TestReconcileIsNotAnActTheOtherTwoInstitutionsCanPerform(t *testing.T) {
 	sys := testNetwork(t)
 	settledPair(t, sys)
 
-	asCSM := BankHandleOverClearingHouse(sys.ClearingHouseNetwork)
+	asCSM := BankHandleOverClearingHouse(sys.bank(testBIC), sys.ClearingHouseNetwork)
 	if _, err := asCSM.Reconcile(ctx, testAsset); err == nil {
 		t.Fatal("the clearing house reconciled books it does not have")
 	}
-	asCB := BankHandleOverCentralBank(sys.cb())
+	asCB := BankHandleOverCentralBank(sys.bank(testBIC), sys.cb())
 	if _, err := asCB.Reconcile(ctx, testAsset); err == nil {
 		t.Fatal("the settlement agent reconciled a reserve it does not hold")
 	}

@@ -22,24 +22,25 @@ import (
 // EBICS returns this store as an ebics.Store: the transport state of the
 // institution whose database this is.
 //
-// A fifth adapter for the reason the other four exist — Go allows one Update
-// method per type and each Store interface declares a different callback — and
-// the callback is handed the very same *tx, so nothing about the mechanism
-// differs. What differs is that no unit of work ever spans this and the
-// institution's own: a file is put on a connection outside the transaction that
-// decided to send it, so the transport's writes are always their own.
-func (s *Store) EBICS() ebics.Store { return ebicsStore{s} }
-
-type ebicsStore struct{ *Store }
+// One more adapter for the reason the others exist — Go allows one Update method
+// per type and each Store interface declares a different callback — and the
+// callback is handed the very same *tx, so nothing about the mechanism differs.
+// What differs is that no unit of work ever spans this and the institution's
+// own: a file is put on a connection outside the transaction that decided to
+// send it, so the transport's writes are always their own.
+//
+// It is reached through ClearingHouseStore.EBICS and CentralBankStore.EBICS and
+// through nothing else: a member bank hosts no queue.
+type ebicsStore struct{ *store }
 
 var _ ebics.Store = ebicsStore{}
 
 func (e ebicsStore) Update(ctx context.Context, fn func(context.Context, ebics.Tx) error) error {
-	return e.Store.update(ctx, func(ctx context.Context, t *tx) error { return fn(ctx, t) })
+	return e.store.update(ctx, func(ctx context.Context, t *tx) error { return fn(ctx, t) })
 }
 
 func (e ebicsStore) View(ctx context.Context, fn func(context.Context, ebics.Tx) error) error {
-	return e.Store.view(ctx, func(ctx context.Context, t *tx) error { return fn(ctx, t) })
+	return e.store.view(ctx, func(ctx context.Context, t *tx) error { return fn(ctx, t) })
 }
 
 // NextOrderSeq allocates the next order ordinal at this host.

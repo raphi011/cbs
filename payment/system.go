@@ -45,30 +45,18 @@ type Network struct {
 	// "whose book?" below. Networks mints one Network per entity.
 	id Identity
 
-	// store backs every book the network creates and every entity it records.
-	store Store
-
-	// ledgers, deposits and lendings are the same store seen through the
-	// narrower interfaces the Book, Register and Portfolio types are written
-	// against. They are derived from store rather than injected beside it, so
-	// all layers are guaranteed to address the same data.
-	ledgers  ledger.Store
-	deposits deposit.Store
-	lendings lending.Store
-	products product.Store
+	// common is this institution's database at the width EVERY institution has:
+	// the audit trail and the id counters, which are in all three schemas. It is
+	// derived from the institution's own store rather than passed beside it.
+	//
+	// The store an institution ACTS through is on that institution's type, one
+	// per kind, because the acts differ — see BankNetwork, ClearingHouseNetwork
+	// and CentralBankNetwork.
+	common CommonStore
 
 	// schemes is the only thing a Network holds in memory, and it is SHARED by
 	// every network one Networks mints. See schemeRegistry.
 	schemes *schemeRegistry
-
-	// centralBank holds the participants' reserve accounts. It is a handle over
-	// the store, not state: its chart of accounts is resolved from the store on
-	// use (see centralBankChartTx), so it survives a Store.Reset and works
-	// against a database that was populated by an earlier process.
-	//
-	// It is NIL on every network but the settlement agent's; centralBankBook is
-	// what the five acts reaching it go through.
-	centralBank *ledger.Book
 }
 
 // centralBankBook is the settlement agent's book of accounts, or a refusal.
@@ -76,20 +64,19 @@ type Network struct {
 // The five acts that reach it are all of CentralBankNetwork's own, and each is
 // an act only the central bank performs: opening a member's reserve account,
 // crediting one on a lodgement, discharging a cut-off's net positions,
-// reversing a settled payment's, and reading what a member holds. A network that
-// is not the central bank's has no book to perform them in, so it is refused
-// here rather than in five places.
+// reversing a settled payment's, and reading what a member holds. All five being
+// methods on that type is what keeps every other institution's handle from
+// naming one.
 //
-// All five being methods on that type is what keeps every other institution's
-// handle from naming one. What is left for this to catch is a
-// CentralBankNetwork assembled over another institution's core — see the note on
-// core in institutions.go, and TestTheCentralBanksBookIsReachableOnlyFromThe-
-// SettlementAgentsNetwork, which drives exactly that.
+// What is left for this to catch is a CentralBankNetwork assembled over another
+// institution's core — see the note on core in institutions.go, and
+// TestTheCentralBanksBookIsReachableOnlyFromTheSettlementAgentsNetwork, which
+// drives exactly that.
 //
 // It does NOT catch the central bank posting in the wrong PLACE within its own
 // book, and it never could: a BookID is an ordinary argument and one is as valid
 // as another. That is the recorder's job in cmd/server/books_test.go.
-func (s *Network) centralBankBook() (*ledger.Book, error) {
+func (s *CentralBankNetwork) centralBankBook() (*ledger.Book, error) {
 	if s.centralBank == nil {
 		return nil, fmt.Errorf("%w: this is %s, and the central bank's book of accounts is the settlement agent's alone",
 			ErrNotThisInstitutionsAct, s.id)
@@ -202,51 +189,15 @@ func cbAssetsAccountName(asset ledger.AssetCode) string {
 	return cbAssetsName + " (" + string(asset) + ")"
 }
 
-// NewNetwork creates one institution's view of a payment network, with the SEPA
-// Credit Transfer and SEPA Direct Debit schemes registered.
-//
-// Every book the network creates lives in the given store and reads time from
-// the given clock, so that booking dates, value dates and audit timestamps line
-// up across all of them.
-//
-// id says WHICH institution this is, and every act below reads it rather than
-// taking a participant argument. Most callers do not name one here: Networks is
-// the factory, and it is what api and cmd/server hold.
-//
-// # The zero Identity panics
-//
-// A network belonging to nobody is what this parameter exists to remove, so
-// accepting one would leave that shape reachable by omission. It is a wiring
-// mistake no caller can recover from, and every act would fail far from the
-// cause, so it fails here at the line that got it wrong.
-//
-// The constructor performs no I/O: the central bank's chart of accounts is
-// created on first use and looked up thereafter, so calling NewNetwork against
-// a store that already holds a network is safe and idempotent.
-func NewNetwork(store Store, clock func() time.Time, id Identity) *Network {
-	return newNetwork(store, clock, id, newSchemeRegistry())
-}
-
-// newNetwork is NewNetwork with the scheme registry supplied, so that Networks
-// can hand one registry to every institution it mints. See schemeRegistry.
-func newNetwork(store Store, clock func() time.Time, id Identity, schemes *schemeRegistry) *Network {
+// newNetwork is the core every institution's handle embeds, with the scheme
+// registry supplied so that Networks can hand one registry to every institution
+// it mints. See schemeRegistry, and institutions.go for the three assemblers
+// that call this.
+func newNetwork(common CommonStore, clock func() time.Time, id Identity, schemes *schemeRegistry) core {
 	if id.role == roleUnset {
-		panic("payment: NewNetwork needs an identity; a network belonging to no institution has no answer to whose book an act is about")
+		panic("payment: a network needs an identity; a network belonging to no institution has no answer to whose book an act is about")
 	}
-	ledgers := ledgerView{store}
-	s := &Network{
-		clock:    clock,
-		id:       id,
-		store:    store,
-		ledgers:  ledgers,
-		deposits: depositView{store},
-		lendings: lendingView{store},
-		products: productView{store},
-		schemes:  schemes,
-	}
-	if id.role == roleCentralBank {
-		s.centralBank = ledger.NewBook(ledgers, CentralBankBook, clock)
-	}
+	s := core{clock: clock, id: id, common: common, schemes: schemes}
 	s.RegisterScheme(SCT{})
 	s.RegisterScheme(SDD{})
 	return s
@@ -268,10 +219,14 @@ func (s *Network) Now() time.Time { return s.clock() }
 // now is Now, for this package's own use.
 func (s *Network) now() time.Time { return s.Now() }
 
-// Store returns the store every layer of this network shares, so a caller can
-// open its own unit of work — or reset the whole system — against the same
-// data the network reads.
-func (s *Network) Store() Store { return s.store }
+// Store returns the store every layer of this institution shares, so a caller
+// can open its own unit of work against the same data the network reads.
+//
+// One per institution, each returning that institution's own width, because
+// there is no store type all three have in common past the audit trail.
+func (s *BankNetwork) Store() BankStore                   { return s.store }
+func (s *ClearingHouseNetwork) Store() ClearingHouseStore { return s.store }
+func (s *CentralBankNetwork) Store() CentralBankStore     { return s.store }
 
 // RegisterScheme adds (or replaces) a scheme. Adding support for instant or
 // card payments is a matter of registering a type that implements Scheme — the
@@ -334,7 +289,7 @@ func (s *CentralBankNetwork) CentralBank() (*ledger.Book, error) { return s.cent
 // The handles are stateless, so binding is cheap and a bound Bank is
 // safe to hold; the record's data fields are a snapshot, as with every other
 // value the store returns.
-func (s *Network) bind(p Bank) *Bank {
+func (s *BankNetwork) bind(p Bank) *Bank {
 	p.Ledger = ledger.NewBook(s.ledgers, p.BookID, s.clock)
 	p.Deposit = deposit.NewRegister(s.deposits, p.Ledger, p.BookID, s.clock, p.Issuer, p.CustomerSubledger)
 	p.Lending = lending.NewPortfolio(s.lendings, p.Ledger, p.BookID, s.clock, p.CustomerSubledger)
@@ -343,7 +298,7 @@ func (s *Network) bind(p Bank) *Bank {
 }
 
 // bankTx loads a participant and binds its live handles.
-func (s *Network) bankTx(ctx context.Context, tx Tx, id ParticipantID) (*Bank, error) {
+func (s *BankNetwork) bankTx(ctx context.Context, tx BankTx, id ParticipantID) (*Bank, error) {
 	rec, err := tx.GetBank(ctx, id)
 	if err != nil {
 		return nil, err
@@ -357,28 +312,12 @@ func (s *Network) bankTx(ctx context.Context, tx Tx, id ParticipantID) (*Bank, e
 // checking the payer's funds, ResolveIdentifierTx is a bank searching its own
 // addresses, debtorSideTx is a bank resolving its own customer's account. A
 // network that is not a member bank's is a refusal here (see self).
-func (s *BankNetwork) selfBankTx(ctx context.Context, tx Tx) (*Bank, error) {
+func (s *BankNetwork) selfBankTx(ctx context.Context, tx BankTx) (*Bank, error) {
 	self, err := s.self()
 	if err != nil {
 		return nil, err
 	}
 	return s.bankTx(ctx, tx, self)
-}
-
-// bankByBICTx finds the member a BIC addresses and binds its live handles. It is
-// bankTx over the identifier a MESSAGE carries.
-//
-// It is a keyed read: a bank's id IS its BIC (see AsBank), so the address is the
-// primary key and a second bank on one address is not a row the table can hold.
-func (s *Network) bankByBICTx(ctx context.Context, tx Tx, bic iso20022.BIC) (*Bank, error) {
-	rec, err := tx.GetBank(ctx, ParticipantID(bic))
-	if errors.Is(err, ErrParticipantNotFound) {
-		return nil, fmt.Errorf("%w: no member is addressed by %s", ErrParticipantNotFound, bic)
-	}
-	if err != nil {
-		return nil, err
-	}
-	return s.bind(rec), nil
 }
 
 // centralBankChartTx returns the central bank's reserve and capital
@@ -389,7 +328,7 @@ func (s *Network) bankByBICTx(ctx context.Context, tx Tx, bic iso20022.BIC) (*Ba
 // cached ID is wrong in three situations that all occur in this system: after
 // Store.Reset, in a second process opened against the same database, and in a
 // process that constructed the Network before the data existed.
-func (s *CentralBankNetwork) centralBankChartTx(ctx context.Context, tx Tx) (ledger.SubledgerID, ledger.SubledgerID, error) {
+func (s *CentralBankNetwork) centralBankChartTx(ctx context.Context, tx CentralBankTx) (ledger.SubledgerID, ledger.SubledgerID, error) {
 	book, err := s.centralBankBook()
 	if err != nil {
 		return "", "", err
@@ -454,7 +393,7 @@ func (s *CentralBankNetwork) centralBankChartTx(ctx context.Context, tx Tx) (led
 // lookup it makes, so nothing it matches against can be stale. A caller reading
 // a listing made earlier could open a second account for an asset it already
 // has, and OpenSettlementAccountTx is re-entered on a retried admission.
-func (s *CentralBankNetwork) centralBankAssetsAccountTx(ctx context.Context, tx Tx, asset ledger.AssetCode) (ledger.AccountID, error) {
+func (s *CentralBankNetwork) centralBankAssetsAccountTx(ctx context.Context, tx CentralBankTx, asset ledger.AssetCode) (ledger.AccountID, error) {
 	book, err := s.centralBankBook()
 	if err != nil {
 		return "", err
@@ -490,7 +429,7 @@ func (s *CentralBankNetwork) centralBankAssetsAccountTx(ctx context.Context, tx 
 // same sentinel Bank.AccountsFor gives for the same question asked of the bank's
 // own accounts: settling a dollar position through a euro reserve is the error
 // both refusals exist to prevent.
-func (s *Network) settlementAccountTx(ctx context.Context, tx Tx, bic iso20022.BIC, asset ledger.AssetCode) (ledger.AccountID, error) {
+func (s *CentralBankNetwork) settlementAccountTx(ctx context.Context, tx CentralBankTx, bic iso20022.BIC, asset ledger.AssetCode) (ledger.AccountID, error) {
 	member, err := tx.GetSettlementMember(ctx, bic)
 	if err != nil {
 		return "", err
@@ -728,7 +667,7 @@ func joiningAssets(assets []ledger.AssetCode) []ledger.AssetCode {
 // between consecutive banks are therefore wide and widen whenever an act is
 // added, which is why the suites that drive a seeded deployment resolve ids from
 // the seed's IBANs instead of naming them.
-func (s *Network) admissionSequenceTx(ctx context.Context, tx Tx) error {
+func (s *Network) admissionSequenceTx(ctx context.Context, tx ledger.CommonTx) error {
 	_, err := tx.NextID(ctx, s.book(), "adm")
 	return err
 }
@@ -745,7 +684,7 @@ func (s *Network) admissionSequenceTx(ctx context.Context, tx Tx) error {
 // only one of the four its own operator drives directly.
 func (s *BankNetwork) FoundBank(ctx context.Context, name string, bic iso20022.BIC, country iban.Country, assets []ledger.AssetCode) (*Bank, error) {
 	var out *Bank
-	err := s.store.Update(ctx, func(ctx context.Context, tx Tx) error {
+	err := s.store.Update(ctx, func(ctx context.Context, tx BankTx) error {
 		var err error
 		out, err = s.FoundBankTx(ctx, tx, name, bic, country, assets)
 		return err
@@ -763,7 +702,7 @@ func (s *CentralBankNetwork) OpenSettlementAccount(ctx context.Context, in Admis
 		out    SettlementMember
 		issuer iban.Issuer
 	)
-	err := s.store.Update(ctx, func(ctx context.Context, tx Tx) error {
+	err := s.store.Update(ctx, func(ctx context.Context, tx CentralBankTx) error {
 		var err error
 		out, issuer, err = s.OpenSettlementAccountTx(ctx, tx, in)
 		return err
@@ -775,7 +714,7 @@ func (s *CentralBankNetwork) OpenSettlementAccount(ctx context.Context, in Admis
 // act, on the settlement agent's acknowledgement.
 func (s *ClearingHouseNetwork) AdmitMember(ctx context.Context, in AdmissionAcknowledgement) (RosterEntry, error) {
 	var out RosterEntry
-	err := s.store.Update(ctx, func(ctx context.Context, tx Tx) error {
+	err := s.store.Update(ctx, func(ctx context.Context, tx CsmTx) error {
 		var err error
 		out, err = s.AdmitMemberTx(ctx, tx, in)
 		return err
@@ -787,7 +726,7 @@ func (s *ClearingHouseNetwork) AdmitMember(ctx context.Context, in AdmissionAckn
 // second act, on the same acknowledgement the clearing house admitted it from.
 func (s *BankNetwork) RecordMembership(ctx context.Context, in AdmissionAcknowledgement) (*Bank, error) {
 	var out *Bank
-	err := s.store.Update(ctx, func(ctx context.Context, tx Tx) error {
+	err := s.store.Update(ctx, func(ctx context.Context, tx BankTx) error {
 		var err error
 		out, err = s.RecordMembershipTx(ctx, tx, in)
 		return err
@@ -827,7 +766,7 @@ func (s *BankNetwork) RecordMembership(ctx context.Context, in AdmissionAcknowle
 // settlement references on the bank it carries are empty, because at the moment
 // it is written no settlement agent has opened one. The other three acts each
 // append their own.
-func (s *BankNetwork) FoundBankTx(ctx context.Context, tx Tx, name string, bic iso20022.BIC, country iban.Country, assets []ledger.AssetCode) (*Bank, error) {
+func (s *BankNetwork) FoundBankTx(ctx context.Context, tx BankTx, name string, bic iso20022.BIC, country iban.Country, assets []ledger.AssetCode) (*Bank, error) {
 	if err := ledger.ValidateText("name", name); err != nil {
 		return nil, err
 	}
@@ -1065,7 +1004,7 @@ func (s *BankNetwork) FoundBankTx(ctx context.Context, tx Tx, name string, bic i
 // It appends settlement_account.opened under the member's BIC, and only when it
 // opens something: an event on a request for an asset already held would make a
 // re-run indistinguishable in the log from a second account.
-func (s *CentralBankNetwork) OpenSettlementAccountTx(ctx context.Context, tx Tx, in AdmissionRequest) (SettlementMember, iban.Issuer, error) {
+func (s *CentralBankNetwork) OpenSettlementAccountTx(ctx context.Context, tx CentralBankTx, in AdmissionRequest) (SettlementMember, iban.Issuer, error) {
 	// FIRST: this act returns early for an asset the agent already holds an
 	// account in, so a guard further down would be reachable only on the path
 	// that opens something — and a repeated request on a clearing house's network
@@ -1183,7 +1122,7 @@ func (s *CentralBankNetwork) OpenSettlementAccountTx(ctx context.Context, tx Tx,
 // The width is the country's and is refused rather than truncated: a code of the
 // wrong width does not fit the address it would be minted into, and iban.New
 // would refuse it one layer down with no admission left to refuse.
-func (s *Network) allocateBankCodeTx(ctx context.Context, tx Tx, country iban.Country, bic iso20022.BIC) (iban.Issuer, error) {
+func (s *CentralBankNetwork) allocateBankCodeTx(ctx context.Context, tx CentralBankTx, country iban.Country, bic iso20022.BIC) (iban.Issuer, error) {
 	width, err := iban.BankCodeWidth(country)
 	if err != nil {
 		return iban.Issuer{}, fmt.Errorf("payment: %s applied to a register this system does not keep: %w", bic, err)
@@ -1337,7 +1276,7 @@ func checkAcknowledgement(in AdmissionAcknowledgement) error {
 // It appends member.admitted under the member's BIC, on an EXTENSION as well as
 // on a creation: a second asset admitted is a second scheme this member clears
 // in.
-func (s *ClearingHouseNetwork) AdmitMemberTx(ctx context.Context, tx Tx, in AdmissionAcknowledgement) (RosterEntry, error) {
+func (s *ClearingHouseNetwork) AdmitMemberTx(ctx context.Context, tx CsmTx, in AdmissionAcknowledgement) (RosterEntry, error) {
 	// The acknowledgement first, because this reads no store and one this act
 	// cannot use should not cost an identity from the network's counter.
 	if err := checkAcknowledgement(in); err != nil {
@@ -1461,7 +1400,7 @@ func (s *ClearingHouseNetwork) AdmitMemberTx(ctx context.Context, tx Tx, in Admi
 //
 // It appends membership.recorded, under the bank's own id. The settlement
 // account numbers are on that event and on no other.
-func (s *BankNetwork) RecordMembershipTx(ctx context.Context, tx Tx, in AdmissionAcknowledgement) (*Bank, error) {
+func (s *BankNetwork) RecordMembershipTx(ctx context.Context, tx BankTx, in AdmissionAcknowledgement) (*Bank, error) {
 	self, err := s.self()
 	if err != nil {
 		return nil, err
@@ -1579,7 +1518,7 @@ func (s *BankNetwork) RecordMembershipTx(ctx context.Context, tx Tx, in Admissio
 // bank and its camt.025 back. See LodgeReservesTx, and Camt050 on why a
 // lodgement is a conversation and a deposit is not.
 func (s *BankNetwork) Deposit(ctx context.Context, participant ParticipantID, account deposit.AccountID, amount ledger.Amount, description string) error {
-	return s.store.Update(ctx, func(ctx context.Context, tx Tx) error {
+	return s.store.Update(ctx, func(ctx context.Context, tx BankTx) error {
 		return s.DepositTx(ctx, tx, participant, account, amount, description)
 	})
 }
@@ -1589,7 +1528,7 @@ func (s *BankNetwork) Deposit(ctx context.Context, participant ParticipantID, ac
 // It names no account outside this bank's book and asks the central bank nothing.
 // LodgeReservesTx is the act with a counterparty, and it is what reads this
 // bank's record of its settlement account number.
-func (s *BankNetwork) DepositTx(ctx context.Context, tx Tx, participant ParticipantID, account deposit.AccountID, amount ledger.Amount, description string) error {
+func (s *BankNetwork) DepositTx(ctx context.Context, tx BankTx, participant ParticipantID, account deposit.AccountID, amount ledger.Amount, description string) error {
 	if amount <= 0 {
 		return ErrInvalidPaymentAmount
 	}
@@ -1684,7 +1623,7 @@ func (s *BankNetwork) LodgeReserves(ctx context.Context, asset ledger.AssetCode,
 		in  LodgementInstruction
 		env iso20022.Envelope
 	)
-	err := s.store.Update(ctx, func(ctx context.Context, tx Tx) error {
+	err := s.store.Update(ctx, func(ctx context.Context, tx BankTx) error {
 		var err error
 		in, env, err = s.LodgeReservesTx(ctx, tx, asset, amount, mc)
 		return err
@@ -1716,7 +1655,7 @@ func (s *BankNetwork) LodgeReserves(ctx context.Context, asset ledger.AssetCode,
 // ErrInsufficientBalance — which borrowedReasons already maps to AM04, "the
 // account cannot cover this". A guard here would be a second copy of a rule the
 // ledger states better, and it would have to be kept in step with it.
-func (s *BankNetwork) LodgeReservesTx(ctx context.Context, tx Tx, asset ledger.AssetCode,
+func (s *BankNetwork) LodgeReservesTx(ctx context.Context, tx BankTx, asset ledger.AssetCode,
 	amount ledger.Amount, mc MessageContext) (LodgementInstruction, iso20022.Envelope, error) {
 
 	self, err := s.self()
@@ -1794,7 +1733,7 @@ func (s *BankNetwork) LodgeReservesTx(ctx context.Context, tx Tx, asset ledger.A
 // method is on CentralBankNetwork and on no other type.
 func (s *CentralBankNetwork) ReceiveLodgement(ctx context.Context, in LodgementInstruction) (LodgementReceipt, error) {
 	var out LodgementReceipt
-	err := s.store.Update(ctx, func(ctx context.Context, tx Tx) error {
+	err := s.store.Update(ctx, func(ctx context.Context, tx CentralBankTx) error {
 		var err error
 		out, err = s.ReceiveLodgementTx(ctx, tx, in)
 		return err
@@ -1841,7 +1780,7 @@ func (s *CentralBankNetwork) ReceiveLodgement(ctx context.Context, in LodgementI
 // bank. That is ErrReturnAlreadySettled's shape — a redelivered act caught by the
 // key on the posting it would repeat, in the book of the institution that made it
 // — and it is why this act needs no table of its own.
-func (s *CentralBankNetwork) ReceiveLodgementTx(ctx context.Context, tx Tx, in LodgementInstruction) (LodgementReceipt, error) {
+func (s *CentralBankNetwork) ReceiveLodgementTx(ctx context.Context, tx CentralBankTx, in LodgementInstruction) (LodgementReceipt, error) {
 	// First, for OpenSettlementAccountTx's reason.
 	book, err := s.centralBankBook()
 	if err != nil {
@@ -1895,7 +1834,7 @@ func (s *CentralBankNetwork) ReceiveLodgementTx(ctx context.Context, tx Tx, in L
 // funds via direct debit. A MaxAmount of 0 means unlimited.
 func (s *BankNetwork) CreateMandate(ctx context.Context, assertedAgent iso20022.BIC, debtor, creditor PartyRef, maxAmount ledger.Amount) (Mandate, error) {
 	var out Mandate
-	err := s.store.Update(ctx, func(ctx context.Context, tx Tx) error {
+	err := s.store.Update(ctx, func(ctx context.Context, tx BankTx) error {
 		var err error
 		out, err = s.CreateMandateTx(ctx, tx, assertedAgent, debtor, creditor, maxAmount)
 		return err
@@ -1955,7 +1894,7 @@ func (s *BankNetwork) CreateMandate(ctx context.Context, assertedAgent iso20022.
 // debtor was reached once, and the authorisation is not made of it.
 //
 // DebtorAgent is the whole of what this row records about the other side.
-func (s *BankNetwork) CreateMandateTx(ctx context.Context, tx Tx, assertedAgent iso20022.BIC, debtor, creditor PartyRef, maxAmount ledger.Amount) (Mandate, error) {
+func (s *BankNetwork) CreateMandateTx(ctx context.Context, tx BankTx, assertedAgent iso20022.BIC, debtor, creditor PartyRef, maxAmount ledger.Amount) (Mandate, error) {
 	if _, err := s.self(); err != nil {
 		return Mandate{}, fmt.Errorf("%w: %w", ErrNotThisBanksMandate, err)
 	}
@@ -2017,7 +1956,7 @@ func (s *BankNetwork) CreateMandateTx(ctx context.Context, tx Tx, assertedAgent 
 // RevokeMandate marks a mandate as revoked. Future direct debits referencing
 // it will be rejected.
 func (s *BankNetwork) RevokeMandate(ctx context.Context, id MandateID) error {
-	return s.store.Update(ctx, func(ctx context.Context, tx Tx) error {
+	return s.store.Update(ctx, func(ctx context.Context, tx BankTx) error {
 		return s.RevokeMandateTx(ctx, tx, id)
 	})
 }
@@ -2034,7 +1973,7 @@ func (s *BankNetwork) RevokeMandate(ctx context.Context, id MandateID) error {
 // mandate in this database is this bank's. So the comparison is against the
 // institution — the clearing house and the settlement agent are refused, and the
 // `csm` shape holds no mandates table for either of them to have read.
-func (s *BankNetwork) RevokeMandateTx(ctx context.Context, tx Tx, id MandateID) error {
+func (s *BankNetwork) RevokeMandateTx(ctx context.Context, tx BankTx, id MandateID) error {
 	if _, err := s.self(); err != nil {
 		return fmt.Errorf("%w: %w", ErrNotThisBanksMandate, err)
 	}
@@ -2057,7 +1996,7 @@ func (s *BankNetwork) RevokeMandateTx(ctx context.Context, tx Tx, id MandateID) 
 // is open accumulate in it until CloseCycle computes their net positions.
 func (s *ClearingHouseNetwork) OpenCycle(ctx context.Context, scheme SchemeID) (ClearingCycle, error) {
 	var out ClearingCycle
-	err := s.store.Update(ctx, func(ctx context.Context, tx Tx) error {
+	err := s.store.Update(ctx, func(ctx context.Context, tx CsmTx) error {
 		var err error
 		out, err = s.OpenCycleTx(ctx, tx, scheme)
 		return err
@@ -2068,7 +2007,7 @@ func (s *ClearingHouseNetwork) OpenCycle(ctx context.Context, scheme SchemeID) (
 // OpenCycleTx is OpenCycle within a caller-supplied unit of work. The
 // "already open?" check and the write are one step, so two concurrent callers
 // cannot both open a cycle for the same scheme.
-func (s *ClearingHouseNetwork) OpenCycleTx(ctx context.Context, tx Tx, scheme SchemeID) (ClearingCycle, error) {
+func (s *ClearingHouseNetwork) OpenCycleTx(ctx context.Context, tx CsmTx, scheme SchemeID) (ClearingCycle, error) {
 	if _, ok := s.scheme(scheme); !ok {
 		return ClearingCycle{}, ErrSchemeNotFound
 	}
@@ -2122,7 +2061,7 @@ func (s *ClearingHouseNetwork) OpenCycleTx(ctx context.Context, tx Tx, scheme Sc
 // halves is idempotent for the same reason.
 func (s *ClearingHouseNetwork) SettleAtCSM(ctx context.Context, id CycleID) ([]Payment, error) {
 	var out []Payment
-	err := s.store.Update(ctx, func(ctx context.Context, tx Tx) error {
+	err := s.store.Update(ctx, func(ctx context.Context, tx CsmTx) error {
 		var err error
 		out, err = s.SettleAtCSMTx(ctx, tx, id)
 		return err
@@ -2131,7 +2070,7 @@ func (s *ClearingHouseNetwork) SettleAtCSM(ctx context.Context, id CycleID) ([]P
 }
 
 // SettleAtCSMTx is SettleAtCSM within a caller-supplied unit of work.
-func (s *ClearingHouseNetwork) SettleAtCSMTx(ctx context.Context, tx Tx, id CycleID) ([]Payment, error) {
+func (s *ClearingHouseNetwork) SettleAtCSMTx(ctx context.Context, tx CsmTx, id CycleID) ([]Payment, error) {
 	if err := s.clearingHouse(); err != nil {
 		return nil, err
 	}
@@ -2180,7 +2119,7 @@ func (s *ClearingHouseNetwork) SettleAtCSMTx(ctx context.Context, tx Tx, id Cycl
 // yet — that happens at SettleCycle.
 func (s *ClearingHouseNetwork) CloseCycle(ctx context.Context, id CycleID) (ClearingCycle, error) {
 	var out ClearingCycle
-	err := s.store.Update(ctx, func(ctx context.Context, tx Tx) error {
+	err := s.store.Update(ctx, func(ctx context.Context, tx CsmTx) error {
 		var err error
 		out, err = s.CloseCycleTx(ctx, tx, id)
 		return err
@@ -2189,7 +2128,7 @@ func (s *ClearingHouseNetwork) CloseCycle(ctx context.Context, id CycleID) (Clea
 }
 
 // CloseCycleTx is CloseCycle within a caller-supplied unit of work.
-func (s *ClearingHouseNetwork) CloseCycleTx(ctx context.Context, tx Tx, id CycleID) (ClearingCycle, error) {
+func (s *ClearingHouseNetwork) CloseCycleTx(ctx context.Context, tx CsmTx, id CycleID) (ClearingCycle, error) {
 	c, err := tx.GetCycle(ctx, id)
 	if err != nil {
 		return ClearingCycle{}, err
@@ -2284,7 +2223,7 @@ func (s *ClearingHouseNetwork) CloseCycleTx(ctx context.Context, tx Tx, id Cycle
 func (s *CentralBankNetwork) SettleCycle(ctx context.Context, id CycleID, legs []SettlementLeg) (Settlement, []SettlementStatement, error) {
 	var out Settlement
 	var statements []SettlementStatement
-	err := s.store.Update(ctx, func(ctx context.Context, tx Tx) error {
+	err := s.store.Update(ctx, func(ctx context.Context, tx CentralBankTx) error {
 		var err error
 		out, statements, err = s.SettleCycleTx(ctx, tx, id, legs)
 		return err
@@ -2299,7 +2238,7 @@ func (s *CentralBankNetwork) SettleCycle(ctx context.Context, id CycleID, legs [
 // be quoting whatever the accounts stand at then, and a statement asserting the
 // wrong balance is worse than none: the balance is the only thing a member can
 // check its own posting against.
-func (s *CentralBankNetwork) SettleCycleTx(ctx context.Context, tx Tx, id CycleID, instructed []SettlementLeg) (Settlement, []SettlementStatement, error) {
+func (s *CentralBankNetwork) SettleCycleTx(ctx context.Context, tx CentralBankTx, id CycleID, instructed []SettlementLeg) (Settlement, []SettlementStatement, error) {
 	book, err := s.centralBankBook()
 	if err != nil {
 		return Settlement{}, nil, err
@@ -2570,7 +2509,7 @@ type settlementLeg struct {
 // through an account the agent does not hold is what must be refused, and the
 // agent holding one the member has forgotten about is the member's
 // reconciliation rather than a reason to fail a whole cut-off.
-func (s *Network) settlementLegsTx(ctx context.Context, tx Tx, netPositions map[iso20022.BIC]ledger.Amount, asset ledger.AssetCode) ([]settlementLeg, error) {
+func (s *CentralBankNetwork) settlementLegsTx(ctx context.Context, tx CentralBankTx, netPositions map[iso20022.BIC]ledger.Amount, asset ledger.AssetCode) ([]settlementLeg, error) {
 	members, err := tx.ListSettlementMembers(ctx)
 	if err != nil {
 		return nil, err
@@ -2614,7 +2553,7 @@ func (s *Network) settlementLegsTx(ctx context.Context, tx Tx, netPositions map[
 // message is the whole of the input, so there is nothing else to commit with it.
 func (s *BankNetwork) PostSettlementAdvice(ctx context.Context, m AdvisedMovement) (SettlementAdvice, error) {
 	var out SettlementAdvice
-	err := s.store.Update(ctx, func(ctx context.Context, tx Tx) error {
+	err := s.store.Update(ctx, func(ctx context.Context, tx BankTx) error {
 		var err error
 		out, err = s.PostSettlementAdviceTx(ctx, tx, m)
 		return err
@@ -2655,7 +2594,7 @@ func (s *BankNetwork) PostSettlementAdvice(ctx context.Context, m AdvisedMovemen
 // statement's own reference, so a redelivered statement lands on the same key in
 // THIS bank's ledger — and the advice row is checked first, so it does not even
 // try.
-func (s *BankNetwork) PostSettlementAdviceTx(ctx context.Context, tx Tx, m AdvisedMovement) (SettlementAdvice, error) {
+func (s *BankNetwork) PostSettlementAdviceTx(ctx context.Context, tx BankTx, m AdvisedMovement) (SettlementAdvice, error) {
 	self, err := s.self()
 	if err != nil {
 		return SettlementAdvice{}, err
@@ -2752,7 +2691,7 @@ func (s *BankNetwork) PostSettlementAdviceTx(ctx context.Context, tx Tx, m Advis
 // succeeds or fails alone.
 func (s *BankNetwork) SettleAtBank(ctx context.Context, id PaymentID) (Payment, error) {
 	var out Payment
-	err := s.store.Update(ctx, func(ctx context.Context, tx Tx) error {
+	err := s.store.Update(ctx, func(ctx context.Context, tx BankTx) error {
 		var err error
 		out, err = s.SettleAtBankTx(ctx, tx, id)
 		return err
@@ -2788,7 +2727,7 @@ func (s *BankNetwork) SettleAtBank(ctx context.Context, id PaymentID) (Payment, 
 // went to is a fact about a moment that no later reading recovers: without it a
 // return of a diverted payment debits the payee's closed account to minus the
 // amount and leaves the unclaimed liability standing.
-func (s *BankNetwork) SettleAtBankTx(ctx context.Context, tx Tx, id PaymentID) (Payment, error) {
+func (s *BankNetwork) SettleAtBankTx(ctx context.Context, tx BankTx, id PaymentID) (Payment, error) {
 	self, err := s.selfBIC()
 	if err != nil {
 		return Payment{}, err
@@ -2946,7 +2885,7 @@ type InitiatePaymentRequest struct {
 // TakeInstruction is the pair that cannot do that.
 func (s *BankNetwork) SubmitPayment(ctx context.Context, req InitiatePaymentRequest) (Payment, error) {
 	var out Payment
-	err := s.store.Update(ctx, func(ctx context.Context, tx Tx) error {
+	err := s.store.Update(ctx, func(ctx context.Context, tx BankTx) error {
 		var err error
 		out, err = s.SubmitPaymentTx(ctx, tx, req)
 		return err
@@ -2974,7 +2913,7 @@ func (s *BankNetwork) SubmitPayment(ctx context.Context, req InitiatePaymentRequ
 // own; what a submission produces is an instruction waiting for one.
 func (s *BankNetwork) TakeInstruction(ctx context.Context, req InitiatePaymentRequest) (Payment, error) {
 	var p Payment
-	err := s.store.Update(ctx, func(ctx context.Context, tx Tx) error {
+	err := s.store.Update(ctx, func(ctx context.Context, tx BankTx) error {
 		var err error
 		if p, err = s.SubmitPaymentTx(ctx, tx, req); err != nil {
 			return err
@@ -3088,7 +3027,7 @@ func validateInstruction(id PaymentID, req InitiatePaymentRequest) error {
 // stored and used as lookup keys, so they must be safe to write, but whether
 // the account behind them exists is not a question this bank can ask.
 // TestSubmitDoesNotCheckTheCreditorAccount is the pin.
-func (s *BankNetwork) SubmitPaymentTx(ctx context.Context, tx Tx, req InitiatePaymentRequest) (Payment, error) {
+func (s *BankNetwork) SubmitPaymentTx(ctx context.Context, tx BankTx, req InitiatePaymentRequest) (Payment, error) {
 	// Common validation: everything that needs neither book. It runs before the
 	// branch so that a malformed instruction is refused the same way whichever
 	// bank is submitting it. The id is empty because this act is the one that
@@ -3238,7 +3177,7 @@ func (s *BankNetwork) SubmitPaymentTx(ctx context.Context, tx Tx, req InitiatePa
 
 // AcceptInbound is AcceptInboundTx in its own unit of work.
 func (s *BankNetwork) AcceptInbound(ctx context.Context, id PaymentID, req InitiatePaymentRequest) error {
-	return s.store.Update(ctx, func(ctx context.Context, tx Tx) error {
+	return s.store.Update(ctx, func(ctx context.Context, tx BankTx) error {
 		return s.AcceptInboundTx(ctx, tx, id, req)
 	})
 }
@@ -3304,7 +3243,7 @@ func (s *BankNetwork) AcceptInbound(ctx context.Context, id PaymentID, req Initi
 // into existence in THIS institution's log. A bank whose log recorded a debtor
 // leg it posted but never recorded taking the payment on would have a trail that
 // starts in the middle.
-func (s *BankNetwork) AcceptInboundTx(ctx context.Context, tx Tx, id PaymentID, req InitiatePaymentRequest) error {
+func (s *BankNetwork) AcceptInboundTx(ctx context.Context, tx BankTx, id PaymentID, req InitiatePaymentRequest) error {
 	if _, err := s.self(); err != nil {
 		return err
 	}
@@ -3395,7 +3334,7 @@ func (s *BankNetwork) AcceptInboundTx(ctx context.Context, tx Tx, id PaymentID, 
 // its own, and the rest of the file is unaffected.
 func (s *BankNetwork) ReceiveUnapplied(ctx context.Context, id PaymentID, req InitiatePaymentRequest) (Payment, error) {
 	var out Payment
-	err := s.store.Update(ctx, func(ctx context.Context, tx Tx) error {
+	err := s.store.Update(ctx, func(ctx context.Context, tx BankTx) error {
 		var err error
 		out, err = s.ReceiveUnappliedTx(ctx, tx, id, req)
 		return err
@@ -3442,7 +3381,7 @@ func (s *BankNetwork) ReceiveUnapplied(ctx context.Context, id PaymentID, req In
 // there is no state left for a second delivery to be too late for, so it comes
 // back as the payment rather than as ErrInvalidStateTransition. A file released
 // twice would otherwise park the money twice.
-func (s *BankNetwork) ReceiveUnappliedTx(ctx context.Context, tx Tx, id PaymentID, req InitiatePaymentRequest) (Payment, error) {
+func (s *BankNetwork) ReceiveUnappliedTx(ctx context.Context, tx BankTx, id PaymentID, req InitiatePaymentRequest) (Payment, error) {
 	if _, err := s.self(); err != nil {
 		return Payment{}, err
 	}
@@ -3579,7 +3518,7 @@ func (s *ClearingHouseNetwork) RecordRelayedDirectDebit(ctx context.Context, doc
 // same rows, one fewer translation.
 func (s *ClearingHouseNetwork) RecordRelayed(ctx context.Context, txs []InboundTransaction) ([]Payment, error) {
 	out := make([]Payment, 0, len(txs))
-	err := s.store.Update(ctx, func(ctx context.Context, tx Tx) error {
+	err := s.store.Update(ctx, func(ctx context.Context, tx CsmTx) error {
 		out = out[:0]
 		for _, in := range txs {
 			p, err := s.RecordRelayedTx(ctx, tx, in.ID, in.Request)
@@ -3630,7 +3569,7 @@ func (s *ClearingHouseNetwork) RecordRelayed(ctx context.Context, txs []InboundT
 //
 // It appends payment.initiated to this institution's own log. See
 // AcceptInboundTx on why there are three such events and no trail holding two.
-func (s *ClearingHouseNetwork) RecordRelayedTx(ctx context.Context, tx Tx, id PaymentID, req InitiatePaymentRequest) (Payment, error) {
+func (s *ClearingHouseNetwork) RecordRelayedTx(ctx context.Context, tx CsmTx, id PaymentID, req InitiatePaymentRequest) (Payment, error) {
 	if err := s.clearingHouse(); err != nil {
 		return Payment{}, err
 	}
@@ -3667,7 +3606,7 @@ func (s *ClearingHouseNetwork) RecordRelayedTx(ctx context.Context, tx Tx, id Pa
 // payment and there is nothing else to commit with it.
 func (s *BankNetwork) AcceptAtBank(ctx context.Context, id PaymentID) (Payment, error) {
 	var out Payment
-	err := s.store.Update(ctx, func(ctx context.Context, tx Tx) error {
+	err := s.store.Update(ctx, func(ctx context.Context, tx BankTx) error {
 		var err error
 		out, err = s.AcceptAtBankTx(ctx, tx, id)
 		return err
@@ -3697,7 +3636,7 @@ func (s *BankNetwork) AcceptAtBank(ctx context.Context, id PaymentID) (Payment, 
 // copy stays Initiated until settlement, which is why Initiated -> Settled is a
 // legal edge at a bank. Neither bank is wrong about the payment; they were told
 // different things because they asked different things.
-func (s *BankNetwork) AcceptAtBankTx(ctx context.Context, tx Tx, id PaymentID) (Payment, error) {
+func (s *BankNetwork) AcceptAtBankTx(ctx context.Context, tx BankTx, id PaymentID) (Payment, error) {
 	self, err := s.selfBIC()
 	if err != nil {
 		return Payment{}, err
@@ -3725,7 +3664,7 @@ func (s *BankNetwork) AcceptAtBankTx(ctx context.Context, tx Tx, id PaymentID) (
 // AcceptAtCSM is AcceptAtCSMTx in its own unit of work.
 func (s *ClearingHouseNetwork) AcceptAtCSM(ctx context.Context, id PaymentID) (Payment, error) {
 	var out Payment
-	err := s.store.Update(ctx, func(ctx context.Context, tx Tx) error {
+	err := s.store.Update(ctx, func(ctx context.Context, tx CsmTx) error {
 		var err error
 		out, err = s.AcceptAtCSMTx(ctx, tx, id)
 		return err
@@ -3754,7 +3693,7 @@ func (s *ClearingHouseNetwork) AcceptAtCSM(ctx context.Context, id PaymentID) (P
 // distinguish an Initiated payment the far side has accepted from one it has not
 // yet seen, and this will take either into a cycle. That invariant lives in the
 // message flow: the CSM calls this from the pacs.002 handler and nowhere else.
-func (s *ClearingHouseNetwork) AcceptAtCSMTx(ctx context.Context, tx Tx, id PaymentID) (Payment, error) {
+func (s *ClearingHouseNetwork) AcceptAtCSMTx(ctx context.Context, tx CsmTx, id PaymentID) (Payment, error) {
 	p, err := tx.GetPayment(ctx, id)
 	if err != nil {
 		return Payment{}, err
@@ -3806,7 +3745,7 @@ func (s *ClearingHouseNetwork) AcceptAtCSMTx(ctx context.Context, tx Tx, id Paym
 // submitting bank reverse. That works in one of the two directions and not the
 // other, which is what the submitting bank's own door guard is for.
 // ErrBankNotAdmitted sets both out.
-func (s *Network) bothBanksAreMembersTx(ctx context.Context, tx Tx, p Payment) error {
+func (s *ClearingHouseNetwork) bothBanksAreMembersTx(ctx context.Context, tx CsmTx, p Payment) error {
 	scheme, ok := s.Scheme(p.Scheme)
 	if !ok {
 		return fmt.Errorf("%w: %s, so nothing says which asset it clears in", ErrSchemeNotFound, p.Scheme)
@@ -3856,7 +3795,7 @@ func (s *Network) bothBanksAreMembersTx(ctx context.Context, tx Tx, p Payment) e
 // the submitting call may use what it returns to fill DebtorDetails from the
 // register — see the comment at the call site in SubmitPaymentTx for why that
 // must not happen here.
-func (s *BankNetwork) debtorSideTx(ctx context.Context, tx Tx, scheme Scheme, p *Payment, sc SchemeContext) (deposit.Account, *Bank, error) {
+func (s *BankNetwork) debtorSideTx(ctx context.Context, tx BankTx, scheme Scheme, p *Payment, sc SchemeContext) (deposit.Account, *Bank, error) {
 	account, part, err := s.checkPartyTx(ctx, tx, "debtor", p.Debtor)
 	if err != nil {
 		return deposit.Account{}, nil, err
@@ -3898,7 +3837,7 @@ func (s *BankNetwork) debtorSideTx(ctx context.Context, tx Tx, scheme Scheme, p 
 // pull, where the creditor is the SUBMITTING bank) and AcceptInboundTx (a
 // push, where the creditor is the RECEIVING bank), and only the submitting
 // call may use what it returns to fill CreditorDetails from the register.
-func (s *BankNetwork) creditorSideTx(ctx context.Context, tx Tx, scheme Scheme, p *Payment, sc SchemeContext) (deposit.Account, *Bank, error) {
+func (s *BankNetwork) creditorSideTx(ctx context.Context, tx BankTx, scheme Scheme, p *Payment, sc SchemeContext) (deposit.Account, *Bank, error) {
 	account, part, err := s.checkPartyTx(ctx, tx, "creditor", p.Creditor)
 	if err != nil {
 		return deposit.Account{}, nil, err
@@ -3925,7 +3864,7 @@ func (s *BankNetwork) creditorSideTx(ctx context.Context, tx Tx, scheme Scheme, 
 // postDebtorLegTx moves the payer's money out of their account and into their
 // own bank's clearing suspense. Whoever runs it is the debtor's bank: the
 // submitting bank for a push, the receiving bank for a pull.
-func (s *BankNetwork) postDebtorLegTx(ctx context.Context, tx Tx, scheme Scheme, p *Payment) error {
+func (s *BankNetwork) postDebtorLegTx(ctx context.Context, tx BankTx, scheme Scheme, p *Payment) error {
 	// The deposit layer is the authority for the funds/status check (run in
 	// debtorSideTx); the GL posting here names the payer's position in their
 	// bank's customer-deposit control account.
@@ -3979,7 +3918,7 @@ func (s *BankNetwork) postDebtorLegTx(ctx context.Context, tx Tx, scheme Scheme,
 // RejectAtCSM is RejectAtCSMTx in its own unit of work.
 func (s *ClearingHouseNetwork) RejectAtCSM(ctx context.Context, id PaymentID, code iso20022.StatusReason, reason string) (Payment, error) {
 	var out Payment
-	err := s.store.Update(ctx, func(ctx context.Context, tx Tx) error {
+	err := s.store.Update(ctx, func(ctx context.Context, tx CsmTx) error {
 		var err error
 		out, err = s.RejectAtCSMTx(ctx, tx, id, code, reason)
 		return err
@@ -4013,7 +3952,7 @@ func (s *ClearingHouseNetwork) RejectAtCSM(ctx context.Context, id PaymentID, co
 // into the audit event's payload, so an unprintable byte in it would be written
 // to the store. The reversal half puts the same text in a ledger description,
 // and ledger.ReverseTransactionTx validates that itself.
-func (s *ClearingHouseNetwork) RejectAtCSMTx(ctx context.Context, tx Tx, id PaymentID, code iso20022.StatusReason, reason string) (Payment, error) {
+func (s *ClearingHouseNetwork) RejectAtCSMTx(ctx context.Context, tx CsmTx, id PaymentID, code iso20022.StatusReason, reason string) (Payment, error) {
 	if err := ledger.ValidateText("reason", reason); err != nil {
 		return Payment{}, err
 	}
@@ -4046,7 +3985,7 @@ func (s *ClearingHouseNetwork) RejectAtCSMTx(ctx context.Context, tx Tx, id Paym
 // RejectAtBank is RejectAtBankTx in its own unit of work.
 func (s *BankNetwork) RejectAtBank(ctx context.Context, id PaymentID, code iso20022.StatusReason, reason string) (Payment, error) {
 	var out Payment
-	err := s.store.Update(ctx, func(ctx context.Context, tx Tx) error {
+	err := s.store.Update(ctx, func(ctx context.Context, tx BankTx) error {
 		var err error
 		out, err = s.RejectAtBankTx(ctx, tx, id, code, reason)
 		return err
@@ -4091,7 +4030,7 @@ func (s *BankNetwork) RejectAtBank(ctx context.Context, id PaymentID, code iso20
 //
 // The code and the free text are the CLEARING HOUSE's, quoted off the pacs.002
 // and stored unchanged. This bank did not decide and does not paraphrase.
-func (s *BankNetwork) RejectAtBankTx(ctx context.Context, tx Tx, id PaymentID, code iso20022.StatusReason, reason string) (Payment, error) {
+func (s *BankNetwork) RejectAtBankTx(ctx context.Context, tx BankTx, id PaymentID, code iso20022.StatusReason, reason string) (Payment, error) {
 	self, err := s.selfBIC()
 	if err != nil {
 		return Payment{}, err
@@ -4131,7 +4070,7 @@ func (s *BankNetwork) RejectAtBankTx(ctx context.Context, tx Tx, id PaymentID, c
 
 // ReverseDebtorLeg is ReverseDebtorLegTx in its own unit of work.
 func (s *BankNetwork) ReverseDebtorLeg(ctx context.Context, p Payment, reason string) error {
-	return s.store.Update(ctx, func(ctx context.Context, tx Tx) error {
+	return s.store.Update(ctx, func(ctx context.Context, tx BankTx) error {
 		return s.ReverseDebtorLegTx(ctx, tx, p, reason)
 	})
 }
@@ -4161,7 +4100,7 @@ func (s *BankNetwork) ReverseDebtorLeg(ctx context.Context, p Payment, reason st
 // original to Reversed under a conditional store write, so a second reversal of
 // the same leg answers ErrTransactionAlreadyReversed instead of paying the
 // payer twice.
-func (s *BankNetwork) ReverseDebtorLegTx(ctx context.Context, tx Tx, p Payment, reason string) error {
+func (s *BankNetwork) ReverseDebtorLegTx(ctx context.Context, tx BankTx, p Payment, reason string) error {
 	if p.DebtorLegTx == "" {
 		return nil
 	}
@@ -4183,7 +4122,7 @@ func (s *BankNetwork) ReverseDebtorLegTx(ctx context.Context, tx Tx, p Payment, 
 // with it.
 func (s *CentralBankNetwork) SettleReturn(ctx context.Context, in ReturnInstruction) ([]SettlementStatement, error) {
 	var out []SettlementStatement
-	err := s.store.Update(ctx, func(ctx context.Context, tx Tx) error {
+	err := s.store.Update(ctx, func(ctx context.Context, tx CentralBankTx) error {
 		var err error
 		out, err = s.SettleReturnTx(ctx, tx, in)
 		return err
@@ -4243,7 +4182,7 @@ func (s *CentralBankNetwork) SettleReturn(ctx context.Context, in ReturnInstruct
 // the guard a collected file hits first. This is not a second copy of it: a ReturnInstruction
 // built any other way would reopen the hole. A guard on the money belongs next
 // to the money.
-func (s *CentralBankNetwork) SettleReturnTx(ctx context.Context, tx Tx, in ReturnInstruction) ([]SettlementStatement, error) {
+func (s *CentralBankNetwork) SettleReturnTx(ctx context.Context, tx CentralBankTx, in ReturnInstruction) ([]SettlementStatement, error) {
 	// Before anything is read, because this is a check on the KEY the posting
 	// below will carry rather than on any account. See the note above.
 	//
@@ -4364,7 +4303,7 @@ func (s *CentralBankNetwork) SettleReturnTx(ctx context.Context, tx Tx, in Retur
 // nothing else to commit with it.
 func (s *BankNetwork) PostReturnLeg(ctx context.Context, id PaymentID, reason string) (Payment, error) {
 	var out Payment
-	err := s.store.Update(ctx, func(ctx context.Context, tx Tx) error {
+	err := s.store.Update(ctx, func(ctx context.Context, tx BankTx) error {
 		var err error
 		out, err = s.PostReturnLegTx(ctx, tx, id, reason)
 		return err
@@ -4447,7 +4386,7 @@ func (s *BankNetwork) PostReturnLeg(ctx context.Context, id PaymentID, reason st
 // derived from the attempt it replaces (returnLegKey), because the first
 // attempt's key is spent. AM04 is the retriable refusal — a bank short of
 // reserves at one moment is not a payer who has lost their refund right.
-func (s *BankNetwork) PostReturnLegTx(ctx context.Context, tx Tx, id PaymentID, reason string) (Payment, error) {
+func (s *BankNetwork) PostReturnLegTx(ctx context.Context, tx BankTx, id PaymentID, reason string) (Payment, error) {
 	self, err := s.selfBIC()
 	if err != nil {
 		return Payment{}, err
@@ -4610,7 +4549,7 @@ func (s *BankNetwork) PostReturnLegTx(ctx context.Context, tx Tx, id PaymentID, 
 //
 // `replacing` is the id of this bank's own previous attempt at this leg, if it
 // has one and it was unwound. See returnLegKey.
-func (s *Network) clawbackTx(ctx context.Context, tx Tx, creditor *Bank, accts BankAccounts,
+func (s *BankNetwork) clawbackTx(ctx context.Context, tx BankTx, creditor *Bank, accts BankAccounts,
 	p Payment, reason string, mayRefuse bool, replacing ledger.TransactionID,
 ) (ledger.Transaction, error) {
 	// Where the money actually is, READ OFF THE PAYMENT rather than resolved
@@ -4680,7 +4619,7 @@ func (s *Network) clawbackTx(ctx context.Context, tx Tx, creditor *Bank, accts B
 //
 // `replacing` is the id of this bank's own previous attempt at this leg, if it
 // has one and it was unwound. See returnLegKey.
-func (s *Network) refundTx(ctx context.Context, tx Tx, debtor *Bank, accts BankAccounts,
+func (s *BankNetwork) refundTx(ctx context.Context, tx BankTx, debtor *Bank, accts BankAccounts,
 	p Payment, reason string, replacing ledger.TransactionID,
 ) (ledger.Transaction, error) {
 	description := "Return of payment " + string(p.ID) + ": " + reason
@@ -4749,7 +4688,7 @@ func (s *Network) refundTx(ctx context.Context, tx Tx, debtor *Bank, accts BankA
 // would post a leg keyed off an id nobody can resolve. Money is not routed on a
 // read this system cannot make sense of — the same discrimination clawbackTx
 // makes between a closed account and a dropped connection.
-func (s *Network) legStandsTx(ctx context.Context, tx Tx, bank *Bank, leg ledger.TransactionID) (bool, error) {
+func (s *BankNetwork) legStandsTx(ctx context.Context, tx BankTx, bank *Bank, leg ledger.TransactionID) (bool, error) {
 	if leg == "" {
 		return false, nil
 	}
@@ -4784,10 +4723,22 @@ func returnLegKey(id PaymentID, leg string, replacing ledger.TransactionID) stri
 	return key
 }
 
-// CompleteReturn is CompleteReturnTx in its own unit of work.
-func (s *Network) CompleteReturn(ctx context.Context, id PaymentID) (Payment, error) {
+// CompleteReturn is CompleteReturnTx in its own unit of work, on each of the two
+// institutions that keep a copy of the payment. See CompleteReturnTx for which
+// two, and why the third needs nothing.
+func (s *BankNetwork) CompleteReturn(ctx context.Context, id PaymentID) (Payment, error) {
 	var out Payment
-	err := s.store.Update(ctx, func(ctx context.Context, tx Tx) error {
+	err := s.store.Update(ctx, func(ctx context.Context, tx BankTx) error {
+		var err error
+		out, err = s.CompleteReturnTx(ctx, tx, id)
+		return err
+	})
+	return out, err
+}
+
+func (s *ClearingHouseNetwork) CompleteReturn(ctx context.Context, id PaymentID) (Payment, error) {
+	var out Payment
+	err := s.store.Update(ctx, func(ctx context.Context, tx CsmTx) error {
 		var err error
 		out, err = s.CompleteReturnTx(ctx, tx, id)
 		return err
@@ -4810,7 +4761,7 @@ func (s *Network) CompleteReturn(ctx context.Context, id PaymentID) (Payment, er
 // A copy already Returned is left alone, for the reason every other half of this
 // flow absorbs a redelivery: the settlement agent may answer twice and neither
 // recipient may fail because of it.
-func (s *Network) CompleteReturnTx(ctx context.Context, tx Tx, id PaymentID) (Payment, error) {
+func (s *Network) CompleteReturnTx(ctx context.Context, tx partyTx, id PaymentID) (Payment, error) {
 	p, err := tx.GetPayment(ctx, id)
 	if err != nil {
 		return Payment{}, err
@@ -4832,7 +4783,7 @@ func (s *Network) CompleteReturnTx(ctx context.Context, tx Tx, id PaymentID) (Pa
 
 // ReverseReturnLeg is ReverseReturnLegTx in its own unit of work.
 func (s *BankNetwork) ReverseReturnLeg(ctx context.Context, id PaymentID, reason string) error {
-	return s.store.Update(ctx, func(ctx context.Context, tx Tx) error {
+	return s.store.Update(ctx, func(ctx context.Context, tx BankTx) error {
 		return s.ReverseReturnLegTx(ctx, tx, id, reason)
 	})
 }
@@ -4890,7 +4841,7 @@ func (s *BankNetwork) ReverseReturnLeg(ctx context.Context, id PaymentID, reason
 // reads both ids and can read only one book: it relies on a leg being reversible
 // only while the OTHER side is still unposted, which the Settled guard above is
 // what makes true.
-func (s *BankNetwork) ReverseReturnLegTx(ctx context.Context, tx Tx, id PaymentID, reason string) error {
+func (s *BankNetwork) ReverseReturnLegTx(ctx context.Context, tx BankTx, id PaymentID, reason string) error {
 	self, err := s.selfBIC()
 	if err != nil {
 		return err
@@ -4929,10 +4880,22 @@ func (s *BankNetwork) ReverseReturnLegTx(ctx context.Context, tx Tx, id PaymentI
 // Read accessors
 // ---------------------------------------------------------------------------
 
-// GetPayment returns a payment by ID.
-func (s *Network) GetPayment(ctx context.Context, id PaymentID) (Payment, error) {
+// GetPayment returns this institution's own copy of a payment. Like
+// ListPayments it is one method per institution that keeps payment rows, and the
+// settlement agent keeps none.
+func (s *BankNetwork) GetPayment(ctx context.Context, id PaymentID) (Payment, error) {
 	var out Payment
-	err := s.store.View(ctx, func(ctx context.Context, tx Tx) error {
+	err := s.store.View(ctx, func(ctx context.Context, tx BankTx) error {
+		var err error
+		out, err = tx.GetPayment(ctx, id)
+		return err
+	})
+	return out, err
+}
+
+func (s *ClearingHouseNetwork) GetPayment(ctx context.Context, id PaymentID) (Payment, error) {
+	var out Payment
+	err := s.store.View(ctx, func(ctx context.Context, tx CsmTx) error {
 		var err error
 		out, err = tx.GetPayment(ctx, id)
 		return err
@@ -4943,7 +4906,7 @@ func (s *Network) GetPayment(ctx context.Context, id PaymentID) (Payment, error)
 // GetCycle returns a clearing cycle by ID.
 func (s *ClearingHouseNetwork) GetCycle(ctx context.Context, id CycleID) (ClearingCycle, error) {
 	var out ClearingCycle
-	err := s.store.View(ctx, func(ctx context.Context, tx Tx) error {
+	err := s.store.View(ctx, func(ctx context.Context, tx CsmTx) error {
 		var err error
 		out, err = tx.GetCycle(ctx, id)
 		return err
@@ -4962,7 +4925,7 @@ func (s *BankNetwork) GetMandate(ctx context.Context, id MandateID) (Mandate, er
 		return Mandate{}, fmt.Errorf("%w: %w", ErrNotThisBanksMandate, err)
 	}
 	var out Mandate
-	err := s.store.View(ctx, func(ctx context.Context, tx Tx) error {
+	err := s.store.View(ctx, func(ctx context.Context, tx BankTx) error {
 		var err error
 		out, err = tx.GetMandate(ctx, id)
 		return err
@@ -5000,7 +4963,7 @@ func (s *CentralBankNetwork) ReserveBalance(ctx context.Context, bic iso20022.BI
 		return 0, err
 	}
 	var out ledger.Amount
-	err = s.store.View(ctx, func(ctx context.Context, tx Tx) error {
+	err = s.store.View(ctx, func(ctx context.Context, tx CentralBankTx) error {
 		settlement, err := s.settlementAccountTx(ctx, tx, bic, asset)
 		if err != nil {
 			return err
@@ -5125,7 +5088,7 @@ func validateParty(field string, ref PartyRef) error {
 // bank's has no register to search. See Network.self.
 func (s *BankNetwork) ResolveIdentifier(ctx context.Context, ident deposit.Identifier) (PartyRef, error) {
 	var out PartyRef
-	err := s.store.View(ctx, func(ctx context.Context, tx Tx) error {
+	err := s.store.View(ctx, func(ctx context.Context, tx BankTx) error {
 		var err error
 		out, err = s.ResolveIdentifierTx(ctx, tx, ident)
 		return err
@@ -5144,7 +5107,7 @@ func (s *BankNetwork) ResolveIdentifier(ctx context.Context, ident deposit.Ident
 // A collision ACROSS banks is not observable here: two banks issuing one IBAN is
 // a fact neither of them can see, and in life it is the IBAN's issuer registry
 // that stops it happening rather than anybody's directory noticing afterwards.
-func (s *BankNetwork) ResolveIdentifierTx(ctx context.Context, tx Tx, ident deposit.Identifier) (PartyRef, error) {
+func (s *BankNetwork) ResolveIdentifierTx(ctx context.Context, tx BankTx, ident deposit.Identifier) (PartyRef, error) {
 	if err := ident.Validate("identifier"); err != nil {
 		return PartyRef{}, err
 	}
@@ -5196,7 +5159,7 @@ func (s *BankNetwork) ResolveIdentifierTx(ctx context.Context, tx Tx, ident depo
 // sentinel and everything else is returned unchanged, to fall through ReasonFor's
 // default to MS03: this agent could not carry the instruction out.
 // TestAcceptInboundDoesNotBlameTheSenderForAStoreFailure is the pin.
-func (s *BankNetwork) checkPartyTx(ctx context.Context, tx Tx, field string, ref PartyRef) (deposit.Account, *Bank, error) {
+func (s *BankNetwork) checkPartyTx(ctx context.Context, tx BankTx, field string, ref PartyRef) (deposit.Account, *Bank, error) {
 	if err := validateParty(field, ref); err != nil {
 		return deposit.Account{}, nil, err
 	}
@@ -5286,7 +5249,7 @@ func addressFor(scheme Scheme, ref PartyRef, acct deposit.Account) (deposit.Iden
 }
 
 // removeFromCycleTx drops a payment from its (open) clearing cycle.
-func (s *Network) removeFromCycleTx(ctx context.Context, tx Tx, p Payment) error {
+func (s *ClearingHouseNetwork) removeFromCycleTx(ctx context.Context, tx CsmTx, p Payment) error {
 	c, err := tx.GetCycle(ctx, p.CycleID)
 	if errors.Is(err, ErrCycleNotFound) {
 		return nil

@@ -95,8 +95,10 @@ type recordingStores struct {
 }
 
 var (
-	_ payment.Stores = (*recordingStores)(nil)
-	_ payment.Store  = (*recordingStore)(nil)
+	_ payment.Stores             = (*recordingStores)(nil)
+	_ payment.BankStore          = (*recordingBankStore)(nil)
+	_ payment.ClearingHouseStore = (*recordingClearingHouseStore)(nil)
+	_ payment.CentralBankStore   = (*recordingCentralBankStore)(nil)
 )
 
 func newRecordingStores(inner payment.Stores) *recordingStores {
@@ -109,56 +111,110 @@ func newRecordingStores(inner payment.Stores) *recordingStores {
 
 // The three institutions' stores, each wrapped so that whatever it is asked
 // about is noted against this one recorder.
-func (s *recordingStores) Bank(ctx context.Context, bic iso20022.BIC) (payment.Store, error) {
+func (s *recordingStores) Bank(ctx context.Context, bic iso20022.BIC) (payment.BankStore, error) {
 	inner, err := s.inner.Bank(ctx, bic)
 	if err != nil {
 		return nil, err
 	}
-	return &recordingStore{inner: inner, rec: s}, nil
+	return &recordingBankStore{inner: inner, rec: s}, nil
 }
 
 func (s *recordingStores) Banks(ctx context.Context) ([]iso20022.BIC, error) {
 	return s.inner.Banks(ctx)
 }
 
-func (s *recordingStores) ClearingHouse() payment.Store {
-	return &recordingStore{inner: s.inner.ClearingHouse(), rec: s}
+func (s *recordingStores) ClearingHouse() payment.ClearingHouseStore {
+	return &recordingClearingHouseStore{inner: s.inner.ClearingHouse(), rec: s}
 }
 
-func (s *recordingStores) CentralBank() payment.Store {
-	return &recordingStore{inner: s.inner.CentralBank(), rec: s}
+func (s *recordingStores) CentralBank() payment.CentralBankStore {
+	return &recordingCentralBankStore{inner: s.inner.CentralBank(), rec: s}
 }
 
 func (s *recordingStores) Reset(ctx context.Context) error { return s.inner.Reset(ctx) }
 func (s *recordingStores) Close() error                    { return s.inner.Close() }
 
-// recordingStore is one institution's store, seen through the recorder. It holds
-// no state of its own: every note goes to the set above, so an assertion about
-// which books an actor touched is one question over every database.
-type recordingStore struct {
-	inner payment.Store
+// The three recording stores: one institution's database each, seen through the
+// recorder. None holds state of its own — every note goes to the set above, so
+// an assertion about which books an actor touched is one question over every
+// database.
+//
+// Three types rather than one because there are three store interfaces. Each
+// wraps the transaction its own institution's unit of work hands out.
+type recordingBankStore struct {
+	inner payment.BankStore
 	rec   *recordingStores
 }
 
-func (s *recordingStore) Update(ctx context.Context, fn func(context.Context, payment.Tx) error) error {
+func (s *recordingBankStore) Update(ctx context.Context, fn func(context.Context, payment.BankTx) error) error {
+	unit := s.rec.openUnit()
+	return s.inner.Update(ctx, func(ctx context.Context, tx payment.BankTx) error {
+		return fn(ctx, &recordingBankTx{BankTx: tx, rec: s.rec.noterFor(ctx, unit)})
+	})
+}
+
+func (s *recordingBankStore) View(ctx context.Context, fn func(context.Context, payment.BankTx) error) error {
+	return s.inner.View(ctx, func(ctx context.Context, tx payment.BankTx) error {
+		return fn(ctx, &recordingBankTx{BankTx: tx, rec: s.rec.noterFor(ctx, nil)})
+	})
+}
+
+func (s *recordingBankStore) Reset(ctx context.Context) error { return s.inner.Reset(ctx) }
+func (s *recordingBankStore) Close() error                    { return s.inner.Close() }
+
+type recordingClearingHouseStore struct {
+	inner payment.ClearingHouseStore
+	rec   *recordingStores
+}
+
+func (s *recordingClearingHouseStore) Update(ctx context.Context, fn func(context.Context, payment.CsmTx) error) error {
+	unit := s.rec.openUnit()
+	return s.inner.Update(ctx, func(ctx context.Context, tx payment.CsmTx) error {
+		return fn(ctx, &recordingCsmTx{CsmTx: tx, rec: s.rec.noterFor(ctx, unit)})
+	})
+}
+
+func (s *recordingClearingHouseStore) View(ctx context.Context, fn func(context.Context, payment.CsmTx) error) error {
+	return s.inner.View(ctx, func(ctx context.Context, tx payment.CsmTx) error {
+		return fn(ctx, &recordingCsmTx{CsmTx: tx, rec: s.rec.noterFor(ctx, nil)})
+	})
+}
+
+func (s *recordingClearingHouseStore) Reset(ctx context.Context) error { return s.inner.Reset(ctx) }
+func (s *recordingClearingHouseStore) Close() error                    { return s.inner.Close() }
+
+type recordingCentralBankStore struct {
+	inner payment.CentralBankStore
+	rec   *recordingStores
+}
+
+func (s *recordingCentralBankStore) Update(ctx context.Context, fn func(context.Context, payment.CentralBankTx) error) error {
+	unit := s.rec.openUnit()
+	return s.inner.Update(ctx, func(ctx context.Context, tx payment.CentralBankTx) error {
+		return fn(ctx, &recordingCentralBankTx{CentralBankTx: tx, rec: s.rec.noterFor(ctx, unit)})
+	})
+}
+
+func (s *recordingCentralBankStore) View(ctx context.Context, fn func(context.Context, payment.CentralBankTx) error) error {
+	return s.inner.View(ctx, func(ctx context.Context, tx payment.CentralBankTx) error {
+		return fn(ctx, &recordingCentralBankTx{CentralBankTx: tx, rec: s.rec.noterFor(ctx, nil)})
+	})
+}
+
+func (s *recordingCentralBankStore) Reset(ctx context.Context) error { return s.inner.Reset(ctx) }
+func (s *recordingCentralBankStore) Close() error                    { return s.inner.Close() }
+
+// openUnit starts one WRITING unit of work: it counts it and returns the set its
+// books go into. The three Updates above share it, which is what keeps "did one
+// unit of work touch two books" one question over every database.
+func (s *recordingStores) openUnit() map[ledger.BookID]bool {
 	unit := map[ledger.BookID]bool{}
-	s.rec.mu.Lock()
-	s.rec.updates++
-	s.rec.units = append(s.rec.units, unit)
-	s.rec.mu.Unlock()
-	return s.inner.Update(ctx, func(ctx context.Context, tx payment.Tx) error {
-		return fn(ctx, &recordingTx{Tx: tx, rec: s.rec.noterFor(ctx, unit)})
-	})
+	s.mu.Lock()
+	s.updates++
+	s.units = append(s.units, unit)
+	s.mu.Unlock()
+	return unit
 }
-
-func (s *recordingStore) View(ctx context.Context, fn func(context.Context, payment.Tx) error) error {
-	return s.inner.View(ctx, func(ctx context.Context, tx payment.Tx) error {
-		return fn(ctx, &recordingTx{Tx: tx, rec: s.rec.noterFor(ctx, nil)})
-	})
-}
-
-func (s *recordingStore) Reset(ctx context.Context) error { return s.inner.Reset(ctx) }
-func (s *recordingStore) Close() error                    { return s.inner.Close() }
 
 // bookNoter is what one unit of work notes into: the store, plus the identity of
 // the actor that opened it.
@@ -332,12 +388,12 @@ func bookOf(book ledger.BookID) ledger.BookID {
 // TestRecordingTxOverridesEveryBookScopedMethod is what keeps the override set
 // exactly right: one that went missing would be silently replaced by the
 // promoted method, which records nothing.
-type recordingTx struct {
-	payment.Tx
+type recordingBankTx struct {
+	payment.BankTx
 	rec bookNoter
 }
 
-var _ payment.Tx = (*recordingTx)(nil)
+var _ payment.BankTx = (*recordingBankTx)(nil)
 
 // The overrides, grouped by the layer that declares them. Each is the same two
 // statements — note the book, then call through — and
@@ -346,302 +402,297 @@ var _ payment.Tx = (*recordingTx)(nil)
 
 // --- ledger.Tx ---
 
-func (r *recordingTx) NextID(ctx context.Context, book ledger.BookID, prefix string) (string, error) {
+func (r *recordingBankTx) NextID(ctx context.Context, book ledger.BookID, prefix string) (string, error) {
 	r.rec.note(book)
-	return r.Tx.NextID(ctx, book, prefix)
+	return r.BankTx.NextID(ctx, book, prefix)
 }
 
-func (r *recordingTx) NextSubledgerBlock(ctx context.Context, book ledger.BookID) (int, error) {
+func (r *recordingBankTx) NextSubledgerBlock(ctx context.Context, book ledger.BookID) (int, error) {
 	r.rec.note(book)
-	return r.Tx.NextSubledgerBlock(ctx, book)
+	return r.BankTx.NextSubledgerBlock(ctx, book)
 }
 
-func (r *recordingTx) NextAccountSeq(ctx context.Context, book ledger.BookID, typeBlock int, subledger ledger.SubledgerID) (int, error) {
+func (r *recordingBankTx) NextAccountSeq(ctx context.Context, book ledger.BookID, typeBlock int, subledger ledger.SubledgerID) (int, error) {
 	r.rec.note(book)
-	return r.Tx.NextAccountSeq(ctx, book, typeBlock, subledger)
+	return r.BankTx.NextAccountSeq(ctx, book, typeBlock, subledger)
 }
 
-func (r *recordingTx) PutLedger(ctx context.Context, book ledger.BookID, l ledger.Ledger) error {
+func (r *recordingBankTx) PutLedger(ctx context.Context, book ledger.BookID, l ledger.Ledger) error {
 	r.rec.note(book)
-	return r.Tx.PutLedger(ctx, book, l)
+	return r.BankTx.PutLedger(ctx, book, l)
 }
 
-func (r *recordingTx) GetLedger(ctx context.Context, book ledger.BookID, id ledger.LedgerID) (ledger.Ledger, error) {
+func (r *recordingBankTx) GetLedger(ctx context.Context, book ledger.BookID, id ledger.LedgerID) (ledger.Ledger, error) {
 	r.rec.note(book)
-	return r.Tx.GetLedger(ctx, book, id)
+	return r.BankTx.GetLedger(ctx, book, id)
 }
 
-func (r *recordingTx) ListLedgers(ctx context.Context, book ledger.BookID) ([]ledger.Ledger, error) {
+func (r *recordingBankTx) ListLedgers(ctx context.Context, book ledger.BookID) ([]ledger.Ledger, error) {
 	r.rec.note(book)
-	return r.Tx.ListLedgers(ctx, book)
+	return r.BankTx.ListLedgers(ctx, book)
 }
 
-func (r *recordingTx) PutSubledger(ctx context.Context, book ledger.BookID, sl ledger.Subledger) error {
+func (r *recordingBankTx) PutSubledger(ctx context.Context, book ledger.BookID, sl ledger.Subledger) error {
 	r.rec.note(book)
-	return r.Tx.PutSubledger(ctx, book, sl)
+	return r.BankTx.PutSubledger(ctx, book, sl)
 }
 
-func (r *recordingTx) GetSubledger(ctx context.Context, book ledger.BookID, id ledger.SubledgerID) (ledger.Subledger, error) {
+func (r *recordingBankTx) GetSubledger(ctx context.Context, book ledger.BookID, id ledger.SubledgerID) (ledger.Subledger, error) {
 	r.rec.note(book)
-	return r.Tx.GetSubledger(ctx, book, id)
+	return r.BankTx.GetSubledger(ctx, book, id)
 }
 
-func (r *recordingTx) ListSubledgers(ctx context.Context, book ledger.BookID) ([]ledger.Subledger, error) {
+func (r *recordingBankTx) ListSubledgers(ctx context.Context, book ledger.BookID) ([]ledger.Subledger, error) {
 	r.rec.note(book)
-	return r.Tx.ListSubledgers(ctx, book)
+	return r.BankTx.ListSubledgers(ctx, book)
 }
 
-func (r *recordingTx) PutAccount(ctx context.Context, book ledger.BookID, a ledger.Account) error {
+func (r *recordingBankTx) PutAccount(ctx context.Context, book ledger.BookID, a ledger.Account) error {
 	r.rec.note(book)
-	return r.Tx.PutAccount(ctx, book, a)
+	return r.BankTx.PutAccount(ctx, book, a)
 }
 
-func (r *recordingTx) GetAccount(ctx context.Context, book ledger.BookID, id ledger.AccountID) (ledger.Account, error) {
+func (r *recordingBankTx) GetAccount(ctx context.Context, book ledger.BookID, id ledger.AccountID) (ledger.Account, error) {
 	r.rec.note(book)
-	return r.Tx.GetAccount(ctx, book, id)
+	return r.BankTx.GetAccount(ctx, book, id)
 }
 
-func (r *recordingTx) ListAccounts(ctx context.Context, book ledger.BookID) ([]ledger.Account, error) {
+func (r *recordingBankTx) ListAccounts(ctx context.Context, book ledger.BookID) ([]ledger.Account, error) {
 	r.rec.note(book)
-	return r.Tx.ListAccounts(ctx, book)
+	return r.BankTx.ListAccounts(ctx, book)
 }
 
-func (r *recordingTx) SubsidiaryBalances(ctx context.Context, book ledger.BookID, account ledger.AccountID, normal ledger.Direction) ([]ledger.SubsidiaryBalance, error) {
+func (r *recordingBankTx) SubsidiaryBalances(ctx context.Context, book ledger.BookID, account ledger.AccountID, normal ledger.Direction) ([]ledger.SubsidiaryBalance, error) {
 	r.rec.note(book)
-	return r.Tx.SubsidiaryBalances(ctx, book, account, normal)
+	return r.BankTx.SubsidiaryBalances(ctx, book, account, normal)
 }
 
-func (r *recordingTx) PutSlotAccount(ctx context.Context, book ledger.BookID, row ledger.SlotAccount) error {
+func (r *recordingBankTx) PutSlotAccount(ctx context.Context, book ledger.BookID, row ledger.SlotAccount) error {
 	r.rec.note(book)
-	return r.Tx.PutSlotAccount(ctx, book, row)
+	return r.BankTx.PutSlotAccount(ctx, book, row)
 }
 
-func (r *recordingTx) GetSlotAccount(ctx context.Context, book ledger.BookID, product, slot string, asset ledger.AssetCode) (ledger.AccountID, error) {
+func (r *recordingBankTx) GetSlotAccount(ctx context.Context, book ledger.BookID, product, slot string, asset ledger.AssetCode) (ledger.AccountID, error) {
 	r.rec.note(book)
-	return r.Tx.GetSlotAccount(ctx, book, product, slot, asset)
+	return r.BankTx.GetSlotAccount(ctx, book, product, slot, asset)
 }
 
-func (r *recordingTx) ListSlotAccounts(ctx context.Context, book ledger.BookID) ([]ledger.SlotAccount, error) {
+func (r *recordingBankTx) ListSlotAccounts(ctx context.Context, book ledger.BookID) ([]ledger.SlotAccount, error) {
 	r.rec.note(book)
-	return r.Tx.ListSlotAccounts(ctx, book)
+	return r.BankTx.ListSlotAccounts(ctx, book)
 }
 
-func (r *recordingTx) LockAccounts(ctx context.Context, book ledger.BookID, ids []ledger.AccountID) error {
+func (r *recordingBankTx) LockAccounts(ctx context.Context, book ledger.BookID, ids []ledger.AccountID) error {
 	r.rec.note(book)
-	return r.Tx.LockAccounts(ctx, book, ids)
+	return r.BankTx.LockAccounts(ctx, book, ids)
 }
 
-func (r *recordingTx) PutTransaction(ctx context.Context, book ledger.BookID, txn ledger.Transaction) error {
+func (r *recordingBankTx) PutTransaction(ctx context.Context, book ledger.BookID, txn ledger.Transaction) error {
 	r.rec.note(book)
-	return r.Tx.PutTransaction(ctx, book, txn)
+	return r.BankTx.PutTransaction(ctx, book, txn)
 }
 
-func (r *recordingTx) GetTransaction(ctx context.Context, book ledger.BookID, id ledger.TransactionID) (ledger.Transaction, error) {
+func (r *recordingBankTx) GetTransaction(ctx context.Context, book ledger.BookID, id ledger.TransactionID) (ledger.Transaction, error) {
 	r.rec.note(book)
-	return r.Tx.GetTransaction(ctx, book, id)
+	return r.BankTx.GetTransaction(ctx, book, id)
 }
 
-func (r *recordingTx) GetTransactionByIdempotencyKey(ctx context.Context, book ledger.BookID, key string) (ledger.Transaction, error) {
+func (r *recordingBankTx) GetTransactionByIdempotencyKey(ctx context.Context, book ledger.BookID, key string) (ledger.Transaction, error) {
 	r.rec.note(book)
-	return r.Tx.GetTransactionByIdempotencyKey(ctx, book, key)
+	return r.BankTx.GetTransactionByIdempotencyKey(ctx, book, key)
 }
 
-func (r *recordingTx) ListTransactions(ctx context.Context, book ledger.BookID) ([]ledger.Transaction, error) {
+func (r *recordingBankTx) ListTransactions(ctx context.Context, book ledger.BookID) ([]ledger.Transaction, error) {
 	r.rec.note(book)
-	return r.Tx.ListTransactions(ctx, book)
+	return r.BankTx.ListTransactions(ctx, book)
 }
 
-func (r *recordingTx) ListTransactionsForPosition(ctx context.Context, book ledger.BookID, pos ledger.Position) ([]ledger.Transaction, error) {
+func (r *recordingBankTx) ListTransactionsForPosition(ctx context.Context, book ledger.BookID, pos ledger.Position) ([]ledger.Transaction, error) {
 	r.rec.note(book)
-	return r.Tx.ListTransactionsForPosition(ctx, book, pos)
+	return r.BankTx.ListTransactionsForPosition(ctx, book, pos)
 }
 
-func (r *recordingTx) MarkReversed(ctx context.Context, book ledger.BookID, id ledger.TransactionID) error {
+func (r *recordingBankTx) MarkReversed(ctx context.Context, book ledger.BookID, id ledger.TransactionID) error {
 	r.rec.note(book)
-	return r.Tx.MarkReversed(ctx, book, id)
+	return r.BankTx.MarkReversed(ctx, book, id)
 }
 
-func (r *recordingTx) BookBalance(ctx context.Context, book ledger.BookID, pos ledger.Position, normal ledger.Direction) (ledger.Amount, error) {
+func (r *recordingBankTx) BookBalance(ctx context.Context, book ledger.BookID, pos ledger.Position, normal ledger.Direction) (ledger.Amount, error) {
 	r.rec.note(book)
-	return r.Tx.BookBalance(ctx, book, pos, normal)
+	return r.BankTx.BookBalance(ctx, book, pos, normal)
 }
 
-func (r *recordingTx) ValueDateBalance(ctx context.Context, book ledger.BookID, pos ledger.Position, normal ledger.Direction, before time.Time) (ledger.Amount, error) {
+func (r *recordingBankTx) ValueDateBalance(ctx context.Context, book ledger.BookID, pos ledger.Position, normal ledger.Direction, before time.Time) (ledger.Amount, error) {
 	r.rec.note(book)
-	return r.Tx.ValueDateBalance(ctx, book, pos, normal, before)
+	return r.BankTx.ValueDateBalance(ctx, book, pos, normal, before)
 }
 
-func (r *recordingTx) ValueDatedSeries(ctx context.Context, book ledger.BookID, pos ledger.Position, normal ledger.Direction, from, to time.Time) (ledger.Series, error) {
+func (r *recordingBankTx) ValueDatedSeries(ctx context.Context, book ledger.BookID, pos ledger.Position, normal ledger.Direction, from, to time.Time) (ledger.Series, error) {
 	r.rec.note(book)
-	return r.Tx.ValueDatedSeries(ctx, book, pos, normal, from, to)
+	return r.BankTx.ValueDatedSeries(ctx, book, pos, normal, from, to)
 }
 
 // The two whose book travels inside the argument. See structCarriedBooks.
 
-func (r *recordingTx) AppendAudit(ctx context.Context, e ledger.AuditEvent) error {
+func (r *recordingBankTx) AppendAudit(ctx context.Context, e ledger.AuditEvent) error {
 	r.rec.note(bookOf(e.BookID))
-	return r.Tx.AppendAudit(ctx, e)
+	return r.BankTx.AppendAudit(ctx, e)
 }
 
-func (r *recordingTx) ListAudit(ctx context.Context, f ledger.AuditFilter) ([]ledger.AuditEvent, error) {
+func (r *recordingBankTx) ListAudit(ctx context.Context, f ledger.AuditFilter) ([]ledger.AuditEvent, error) {
 	r.rec.note(bookOf(f.BookID))
-	return r.Tx.ListAudit(ctx, f)
+	return r.BankTx.ListAudit(ctx, f)
 }
 
 // --- product.Tx ---
 
-func (r *recordingTx) PutProduct(ctx context.Context, book ledger.BookID, p product.Product) error {
+func (r *recordingBankTx) PutProduct(ctx context.Context, book ledger.BookID, p product.Product) error {
 	r.rec.note(book)
-	return r.Tx.PutProduct(ctx, book, p)
+	return r.BankTx.PutProduct(ctx, book, p)
 }
 
-func (r *recordingTx) GetProduct(ctx context.Context, book ledger.BookID, id product.ID) (product.Product, error) {
+func (r *recordingBankTx) GetProduct(ctx context.Context, book ledger.BookID, id product.ID) (product.Product, error) {
 	r.rec.note(book)
-	return r.Tx.GetProduct(ctx, book, id)
+	return r.BankTx.GetProduct(ctx, book, id)
 }
 
-func (r *recordingTx) ListProducts(ctx context.Context, book ledger.BookID) ([]product.Product, error) {
+func (r *recordingBankTx) ListProducts(ctx context.Context, book ledger.BookID) ([]product.Product, error) {
 	r.rec.note(book)
-	return r.Tx.ListProducts(ctx, book)
+	return r.BankTx.ListProducts(ctx, book)
 }
 
-func (r *recordingTx) PutProductVersion(ctx context.Context, book ledger.BookID, v product.Version) error {
+func (r *recordingBankTx) PutProductVersion(ctx context.Context, book ledger.BookID, v product.Version) error {
 	r.rec.note(book)
-	return r.Tx.PutProductVersion(ctx, book, v)
+	return r.BankTx.PutProductVersion(ctx, book, v)
 }
 
-func (r *recordingTx) ListProductVersions(ctx context.Context, book ledger.BookID, id product.ID) ([]product.Version, error) {
+func (r *recordingBankTx) ListProductVersions(ctx context.Context, book ledger.BookID, id product.ID) ([]product.Version, error) {
 	r.rec.note(book)
-	return r.Tx.ListProductVersions(ctx, book, id)
+	return r.BankTx.ListProductVersions(ctx, book, id)
 }
 
-func (r *recordingTx) GetProductVersionAsOf(ctx context.Context, book ledger.BookID, id product.ID, day time.Time) (product.Version, error) {
+func (r *recordingBankTx) GetProductVersionAsOf(ctx context.Context, book ledger.BookID, id product.ID, day time.Time) (product.Version, error) {
 	r.rec.note(book)
-	return r.Tx.GetProductVersionAsOf(ctx, book, id, day)
+	return r.BankTx.GetProductVersionAsOf(ctx, book, id, day)
 }
 
 // --- deposit.Tx ---
 
-func (r *recordingTx) PutDepositAccount(ctx context.Context, book ledger.BookID, a deposit.Account) error {
+func (r *recordingBankTx) PutDepositAccount(ctx context.Context, book ledger.BookID, a deposit.Account) error {
 	r.rec.note(book)
-	return r.Tx.PutDepositAccount(ctx, book, a)
+	return r.BankTx.PutDepositAccount(ctx, book, a)
 }
 
-func (r *recordingTx) GetDepositAccount(ctx context.Context, book ledger.BookID, id deposit.AccountID) (deposit.Account, error) {
+func (r *recordingBankTx) GetDepositAccount(ctx context.Context, book ledger.BookID, id deposit.AccountID) (deposit.Account, error) {
 	r.rec.note(book)
-	return r.Tx.GetDepositAccount(ctx, book, id)
+	return r.BankTx.GetDepositAccount(ctx, book, id)
 }
 
-func (r *recordingTx) ListDepositAccounts(ctx context.Context, book ledger.BookID) ([]deposit.Account, error) {
+func (r *recordingBankTx) ListDepositAccounts(ctx context.Context, book ledger.BookID) ([]deposit.Account, error) {
 	r.rec.note(book)
-	return r.Tx.ListDepositAccounts(ctx, book)
+	return r.BankTx.ListDepositAccounts(ctx, book)
 }
 
-func (r *recordingTx) ListDepositAccountsByIdentifier(ctx context.Context, book ledger.BookID, ident deposit.Identifier) ([]deposit.Account, error) {
+func (r *recordingBankTx) ListDepositAccountsByIdentifier(ctx context.Context, book ledger.BookID, ident deposit.Identifier) ([]deposit.Account, error) {
 	r.rec.note(book)
-	return r.Tx.ListDepositAccountsByIdentifier(ctx, book, ident)
+	return r.BankTx.ListDepositAccountsByIdentifier(ctx, book, ident)
 }
 
-func (r *recordingTx) NextAddressSerial(ctx context.Context, book ledger.BookID) (uint64, error) {
+func (r *recordingBankTx) NextAddressSerial(ctx context.Context, book ledger.BookID) (uint64, error) {
 	r.rec.note(book)
-	return r.Tx.NextAddressSerial(ctx, book)
+	return r.BankTx.NextAddressSerial(ctx, book)
 }
 
-func (r *recordingTx) NextBankCodeSerial(ctx context.Context, book ledger.BookID, country iban.Country) (uint64, error) {
+func (r *recordingBankTx) PutHold(ctx context.Context, book ledger.BookID, h deposit.Hold) error {
 	r.rec.note(book)
-	return r.Tx.NextBankCodeSerial(ctx, book, country)
+	return r.BankTx.PutHold(ctx, book, h)
 }
 
-func (r *recordingTx) PutHold(ctx context.Context, book ledger.BookID, h deposit.Hold) error {
+func (r *recordingBankTx) GetHold(ctx context.Context, book ledger.BookID, id deposit.HoldID) (deposit.Hold, error) {
 	r.rec.note(book)
-	return r.Tx.PutHold(ctx, book, h)
+	return r.BankTx.GetHold(ctx, book, id)
 }
 
-func (r *recordingTx) GetHold(ctx context.Context, book ledger.BookID, id deposit.HoldID) (deposit.Hold, error) {
+func (r *recordingBankTx) ListHoldsForAccount(ctx context.Context, book ledger.BookID, id deposit.AccountID) ([]deposit.Hold, error) {
 	r.rec.note(book)
-	return r.Tx.GetHold(ctx, book, id)
+	return r.BankTx.ListHoldsForAccount(ctx, book, id)
 }
 
-func (r *recordingTx) ListHoldsForAccount(ctx context.Context, book ledger.BookID, id deposit.AccountID) ([]deposit.Hold, error) {
+func (r *recordingBankTx) ActiveHoldTotal(ctx context.Context, book ledger.BookID, id deposit.AccountID, now time.Time) (ledger.Amount, error) {
 	r.rec.note(book)
-	return r.Tx.ListHoldsForAccount(ctx, book, id)
+	return r.BankTx.ActiveHoldTotal(ctx, book, id, now)
 }
 
-func (r *recordingTx) ActiveHoldTotal(ctx context.Context, book ledger.BookID, id deposit.AccountID, now time.Time) (ledger.Amount, error) {
+func (r *recordingBankTx) PutSnapshot(ctx context.Context, book ledger.BookID, s deposit.Snapshot) error {
 	r.rec.note(book)
-	return r.Tx.ActiveHoldTotal(ctx, book, id, now)
+	return r.BankTx.PutSnapshot(ctx, book, s)
 }
 
-func (r *recordingTx) PutSnapshot(ctx context.Context, book ledger.BookID, s deposit.Snapshot) error {
+func (r *recordingBankTx) GetSnapshot(ctx context.Context, book ledger.BookID, id deposit.AccountID, dateKey string) (deposit.Snapshot, error) {
 	r.rec.note(book)
-	return r.Tx.PutSnapshot(ctx, book, s)
+	return r.BankTx.GetSnapshot(ctx, book, id, dateKey)
 }
 
-func (r *recordingTx) GetSnapshot(ctx context.Context, book ledger.BookID, id deposit.AccountID, dateKey string) (deposit.Snapshot, error) {
+func (r *recordingBankTx) ListSnapshotsForAccount(ctx context.Context, book ledger.BookID, id deposit.AccountID) ([]deposit.Snapshot, error) {
 	r.rec.note(book)
-	return r.Tx.GetSnapshot(ctx, book, id, dateKey)
+	return r.BankTx.ListSnapshotsForAccount(ctx, book, id)
 }
 
-func (r *recordingTx) ListSnapshotsForAccount(ctx context.Context, book ledger.BookID, id deposit.AccountID) ([]deposit.Snapshot, error) {
+func (r *recordingBankTx) PutOverdraftTerms(ctx context.Context, book ledger.BookID, terms deposit.OverdraftTerms) error {
 	r.rec.note(book)
-	return r.Tx.ListSnapshotsForAccount(ctx, book, id)
+	return r.BankTx.PutOverdraftTerms(ctx, book, terms)
 }
 
-func (r *recordingTx) PutOverdraftTerms(ctx context.Context, book ledger.BookID, terms deposit.OverdraftTerms) error {
+func (r *recordingBankTx) ListOverdraftTermsForAccount(ctx context.Context, book ledger.BookID, id deposit.AccountID) ([]deposit.OverdraftTerms, error) {
 	r.rec.note(book)
-	return r.Tx.PutOverdraftTerms(ctx, book, terms)
+	return r.BankTx.ListOverdraftTermsForAccount(ctx, book, id)
 }
 
-func (r *recordingTx) ListOverdraftTermsForAccount(ctx context.Context, book ledger.BookID, id deposit.AccountID) ([]deposit.OverdraftTerms, error) {
+func (r *recordingBankTx) GetOverdraftTermsAsOf(ctx context.Context, book ledger.BookID, id deposit.AccountID, day time.Time) (deposit.OverdraftTerms, error) {
 	r.rec.note(book)
-	return r.Tx.ListOverdraftTermsForAccount(ctx, book, id)
-}
-
-func (r *recordingTx) GetOverdraftTermsAsOf(ctx context.Context, book ledger.BookID, id deposit.AccountID, day time.Time) (deposit.OverdraftTerms, error) {
-	r.rec.note(book)
-	return r.Tx.GetOverdraftTermsAsOf(ctx, book, id, day)
+	return r.BankTx.GetOverdraftTermsAsOf(ctx, book, id, day)
 }
 
 // --- lending.Tx ---
 
-func (r *recordingTx) PutFacility(ctx context.Context, book ledger.BookID, f lending.Facility) error {
+func (r *recordingBankTx) PutFacility(ctx context.Context, book ledger.BookID, f lending.Facility) error {
 	r.rec.note(book)
-	return r.Tx.PutFacility(ctx, book, f)
+	return r.BankTx.PutFacility(ctx, book, f)
 }
 
-func (r *recordingTx) GetFacility(ctx context.Context, book ledger.BookID, id lending.FacilityID) (lending.Facility, error) {
+func (r *recordingBankTx) GetFacility(ctx context.Context, book ledger.BookID, id lending.FacilityID) (lending.Facility, error) {
 	r.rec.note(book)
-	return r.Tx.GetFacility(ctx, book, id)
+	return r.BankTx.GetFacility(ctx, book, id)
 }
 
-func (r *recordingTx) ListFacilities(ctx context.Context, book ledger.BookID) ([]lending.Facility, error) {
+func (r *recordingBankTx) ListFacilities(ctx context.Context, book ledger.BookID) ([]lending.Facility, error) {
 	r.rec.note(book)
-	return r.Tx.ListFacilities(ctx, book)
+	return r.BankTx.ListFacilities(ctx, book)
 }
 
-func (r *recordingTx) PutInstallment(ctx context.Context, book ledger.BookID, i lending.Installment) error {
+func (r *recordingBankTx) PutInstallment(ctx context.Context, book ledger.BookID, i lending.Installment) error {
 	r.rec.note(book)
-	return r.Tx.PutInstallment(ctx, book, i)
+	return r.BankTx.PutInstallment(ctx, book, i)
 }
 
-func (r *recordingTx) ListInstallments(ctx context.Context, book ledger.BookID, id lending.FacilityID) ([]lending.Installment, error) {
+func (r *recordingBankTx) ListInstallments(ctx context.Context, book ledger.BookID, id lending.FacilityID) ([]lending.Installment, error) {
 	r.rec.note(book)
-	return r.Tx.ListInstallments(ctx, book, id)
+	return r.BankTx.ListInstallments(ctx, book, id)
 }
 
-func (r *recordingTx) PutFacilityTerms(ctx context.Context, book ledger.BookID, terms lending.FacilityTerms) error {
+func (r *recordingBankTx) PutFacilityTerms(ctx context.Context, book ledger.BookID, terms lending.FacilityTerms) error {
 	r.rec.note(book)
-	return r.Tx.PutFacilityTerms(ctx, book, terms)
+	return r.BankTx.PutFacilityTerms(ctx, book, terms)
 }
 
-func (r *recordingTx) ListFacilityTerms(ctx context.Context, book ledger.BookID, id lending.FacilityID) ([]lending.FacilityTerms, error) {
+func (r *recordingBankTx) ListFacilityTerms(ctx context.Context, book ledger.BookID, id lending.FacilityID) ([]lending.FacilityTerms, error) {
 	r.rec.note(book)
-	return r.Tx.ListFacilityTerms(ctx, book, id)
+	return r.BankTx.ListFacilityTerms(ctx, book, id)
 }
 
-func (r *recordingTx) GetFacilityTermsAsOf(ctx context.Context, book ledger.BookID, id lending.FacilityID, day time.Time) (lending.FacilityTerms, error) {
+func (r *recordingBankTx) GetFacilityTermsAsOf(ctx context.Context, book ledger.BookID, id lending.FacilityID, day time.Time) (lending.FacilityTerms, error) {
 	r.rec.note(book)
-	return r.Tx.GetFacilityTermsAsOf(ctx, book, id, day)
+	return r.BankTx.GetFacilityTermsAsOf(ctx, book, id, day)
 }
 
 // --- payment.Tx ---
@@ -649,19 +700,194 @@ func (r *recordingTx) GetFacilityTermsAsOf(ctx context.Context, book ledger.Book
 // Only the settlement advice. Every other method payment.Tx declares is
 // network-scoped — see the comment above recordingTx — and takes no book at all.
 
-func (r *recordingTx) PutSettlementAdvice(ctx context.Context, book ledger.BookID, a payment.SettlementAdvice) error {
+func (r *recordingBankTx) PutSettlementAdvice(ctx context.Context, book ledger.BookID, a payment.SettlementAdvice) error {
 	r.rec.note(book)
-	return r.Tx.PutSettlementAdvice(ctx, book, a)
+	return r.BankTx.PutSettlementAdvice(ctx, book, a)
 }
 
-func (r *recordingTx) GetSettlementAdvice(ctx context.Context, book ledger.BookID, reference string, asset ledger.AssetCode) (payment.SettlementAdvice, error) {
+func (r *recordingBankTx) GetSettlementAdvice(ctx context.Context, book ledger.BookID, reference string, asset ledger.AssetCode) (payment.SettlementAdvice, error) {
 	r.rec.note(book)
-	return r.Tx.GetSettlementAdvice(ctx, book, reference, asset)
+	return r.BankTx.GetSettlementAdvice(ctx, book, reference, asset)
 }
 
-func (r *recordingTx) ListSettlementAdvices(ctx context.Context, book ledger.BookID) ([]payment.SettlementAdvice, error) {
+func (r *recordingBankTx) ListSettlementAdvices(ctx context.Context, book ledger.BookID) ([]payment.SettlementAdvice, error) {
 	r.rec.note(book)
-	return r.Tx.ListSettlementAdvices(ctx, book)
+	return r.BankTx.ListSettlementAdvices(ctx, book)
+}
+
+// recordingCsmTx and recordingCentralBankTx are the same decorator for the other
+// two institutions, and there are three because there are three transaction
+// types. A single recorder over all three is exactly what the store split
+// removed: the clearing house's unit of work cannot name a deposit account, so
+// there is no one interface left to write one decorator against.
+//
+// Each declares the overrides ITS institution's chain reaches and no others,
+// which is what TestRecordingTxOverridesEveryBookScopedMethod holds all three to,
+// once per institution.
+//
+// The clearing house's is three methods. It keeps an audit trail and allocates
+// ids and has no book of accounts at all, so those three ARE its book-scoped
+// surface — which is the clearing house's whole reach, stated as a type.
+type recordingCsmTx struct {
+	payment.CsmTx
+	rec bookNoter
+}
+
+var _ payment.CsmTx = (*recordingCsmTx)(nil)
+
+func (r *recordingCsmTx) NextID(ctx context.Context, book ledger.BookID, prefix string) (string, error) {
+	r.rec.note(book)
+	return r.CsmTx.NextID(ctx, book, prefix)
+}
+
+func (r *recordingCsmTx) AppendAudit(ctx context.Context, e ledger.AuditEvent) error {
+	r.rec.note(bookOf(e.BookID))
+	return r.CsmTx.AppendAudit(ctx, e)
+}
+
+func (r *recordingCsmTx) ListAudit(ctx context.Context, f ledger.AuditFilter) ([]ledger.AuditEvent, error) {
+	r.rec.note(bookOf(f.BookID))
+	return r.CsmTx.ListAudit(ctx, f)
+}
+
+// The settlement agent's is the ledger and the bank-code counter. No slot
+// mapping, because slot_accounts is a bank's alone; no deposit, product or
+// lending, because it has no customers.
+type recordingCentralBankTx struct {
+	payment.CentralBankTx
+	rec bookNoter
+}
+
+var _ payment.CentralBankTx = (*recordingCentralBankTx)(nil)
+
+func (r *recordingCentralBankTx) NextID(ctx context.Context, book ledger.BookID, prefix string) (string, error) {
+	r.rec.note(book)
+	return r.CentralBankTx.NextID(ctx, book, prefix)
+}
+
+func (r *recordingCentralBankTx) NextSubledgerBlock(ctx context.Context, book ledger.BookID) (int, error) {
+	r.rec.note(book)
+	return r.CentralBankTx.NextSubledgerBlock(ctx, book)
+}
+
+func (r *recordingCentralBankTx) NextAccountSeq(ctx context.Context, book ledger.BookID, typeBlock int, subledger ledger.SubledgerID) (int, error) {
+	r.rec.note(book)
+	return r.CentralBankTx.NextAccountSeq(ctx, book, typeBlock, subledger)
+}
+
+func (r *recordingCentralBankTx) PutLedger(ctx context.Context, book ledger.BookID, l ledger.Ledger) error {
+	r.rec.note(book)
+	return r.CentralBankTx.PutLedger(ctx, book, l)
+}
+
+func (r *recordingCentralBankTx) GetLedger(ctx context.Context, book ledger.BookID, id ledger.LedgerID) (ledger.Ledger, error) {
+	r.rec.note(book)
+	return r.CentralBankTx.GetLedger(ctx, book, id)
+}
+
+func (r *recordingCentralBankTx) ListLedgers(ctx context.Context, book ledger.BookID) ([]ledger.Ledger, error) {
+	r.rec.note(book)
+	return r.CentralBankTx.ListLedgers(ctx, book)
+}
+
+func (r *recordingCentralBankTx) PutSubledger(ctx context.Context, book ledger.BookID, sl ledger.Subledger) error {
+	r.rec.note(book)
+	return r.CentralBankTx.PutSubledger(ctx, book, sl)
+}
+
+func (r *recordingCentralBankTx) GetSubledger(ctx context.Context, book ledger.BookID, id ledger.SubledgerID) (ledger.Subledger, error) {
+	r.rec.note(book)
+	return r.CentralBankTx.GetSubledger(ctx, book, id)
+}
+
+func (r *recordingCentralBankTx) ListSubledgers(ctx context.Context, book ledger.BookID) ([]ledger.Subledger, error) {
+	r.rec.note(book)
+	return r.CentralBankTx.ListSubledgers(ctx, book)
+}
+
+func (r *recordingCentralBankTx) PutAccount(ctx context.Context, book ledger.BookID, a ledger.Account) error {
+	r.rec.note(book)
+	return r.CentralBankTx.PutAccount(ctx, book, a)
+}
+
+func (r *recordingCentralBankTx) GetAccount(ctx context.Context, book ledger.BookID, id ledger.AccountID) (ledger.Account, error) {
+	r.rec.note(book)
+	return r.CentralBankTx.GetAccount(ctx, book, id)
+}
+
+func (r *recordingCentralBankTx) ListAccounts(ctx context.Context, book ledger.BookID) ([]ledger.Account, error) {
+	r.rec.note(book)
+	return r.CentralBankTx.ListAccounts(ctx, book)
+}
+
+func (r *recordingCentralBankTx) SubsidiaryBalances(ctx context.Context, book ledger.BookID, account ledger.AccountID, normal ledger.Direction) ([]ledger.SubsidiaryBalance, error) {
+	r.rec.note(book)
+	return r.CentralBankTx.SubsidiaryBalances(ctx, book, account, normal)
+}
+
+func (r *recordingCentralBankTx) LockAccounts(ctx context.Context, book ledger.BookID, ids []ledger.AccountID) error {
+	r.rec.note(book)
+	return r.CentralBankTx.LockAccounts(ctx, book, ids)
+}
+
+func (r *recordingCentralBankTx) PutTransaction(ctx context.Context, book ledger.BookID, txn ledger.Transaction) error {
+	r.rec.note(book)
+	return r.CentralBankTx.PutTransaction(ctx, book, txn)
+}
+
+func (r *recordingCentralBankTx) GetTransaction(ctx context.Context, book ledger.BookID, id ledger.TransactionID) (ledger.Transaction, error) {
+	r.rec.note(book)
+	return r.CentralBankTx.GetTransaction(ctx, book, id)
+}
+
+func (r *recordingCentralBankTx) GetTransactionByIdempotencyKey(ctx context.Context, book ledger.BookID, key string) (ledger.Transaction, error) {
+	r.rec.note(book)
+	return r.CentralBankTx.GetTransactionByIdempotencyKey(ctx, book, key)
+}
+
+func (r *recordingCentralBankTx) ListTransactions(ctx context.Context, book ledger.BookID) ([]ledger.Transaction, error) {
+	r.rec.note(book)
+	return r.CentralBankTx.ListTransactions(ctx, book)
+}
+
+func (r *recordingCentralBankTx) ListTransactionsForPosition(ctx context.Context, book ledger.BookID, pos ledger.Position) ([]ledger.Transaction, error) {
+	r.rec.note(book)
+	return r.CentralBankTx.ListTransactionsForPosition(ctx, book, pos)
+}
+
+func (r *recordingCentralBankTx) MarkReversed(ctx context.Context, book ledger.BookID, id ledger.TransactionID) error {
+	r.rec.note(book)
+	return r.CentralBankTx.MarkReversed(ctx, book, id)
+}
+
+func (r *recordingCentralBankTx) BookBalance(ctx context.Context, book ledger.BookID, pos ledger.Position, normal ledger.Direction) (ledger.Amount, error) {
+	r.rec.note(book)
+	return r.CentralBankTx.BookBalance(ctx, book, pos, normal)
+}
+
+func (r *recordingCentralBankTx) ValueDateBalance(ctx context.Context, book ledger.BookID, pos ledger.Position, normal ledger.Direction, before time.Time) (ledger.Amount, error) {
+	r.rec.note(book)
+	return r.CentralBankTx.ValueDateBalance(ctx, book, pos, normal, before)
+}
+
+func (r *recordingCentralBankTx) ValueDatedSeries(ctx context.Context, book ledger.BookID, pos ledger.Position, normal ledger.Direction, from, to time.Time) (ledger.Series, error) {
+	r.rec.note(book)
+	return r.CentralBankTx.ValueDatedSeries(ctx, book, pos, normal, from, to)
+}
+
+func (r *recordingCentralBankTx) AppendAudit(ctx context.Context, e ledger.AuditEvent) error {
+	r.rec.note(bookOf(e.BookID))
+	return r.CentralBankTx.AppendAudit(ctx, e)
+}
+
+func (r *recordingCentralBankTx) ListAudit(ctx context.Context, f ledger.AuditFilter) ([]ledger.AuditEvent, error) {
+	r.rec.note(bookOf(f.BookID))
+	return r.CentralBankTx.ListAudit(ctx, f)
+}
+
+func (r *recordingCentralBankTx) NextBankCodeSerial(ctx context.Context, book ledger.BookID, country iban.Country) (uint64, error) {
+	r.rec.note(book)
+	return r.CentralBankTx.NextBankCodeSerial(ctx, book, country)
 }
 
 // ---------------------------------------------------------------------------
@@ -1611,29 +1837,34 @@ func TestTakingCashInReachesNoOtherInstitution(t *testing.T) {
 // reflect cannot tell a method a type declares from one it inherits — which is
 // the only distinction that matters here.
 func TestRecordingTxOverridesEveryBookScopedMethod(t *testing.T) {
-	methods := bookScopedTxMethods(t)
-	if len(methods) == 0 {
-		t.Fatal("walked payment.Tx and found no book-scoped methods; the parser is wrong, not the decorator")
-	}
-	want := make([]string, 0, len(methods))
-	for _, m := range methods {
-		want = append(want, m.Name)
-	}
-	got := recordingTxMethods(t)
+	for _, in := range institutions {
+		t.Run(in.entry, func(t *testing.T) {
+			methods := bookScopedIn(t, walkOrFail(t, in.entry).methods)
+			if len(methods) == 0 {
+				t.Fatalf("walked %s and found no book-scoped methods; the parser is wrong, not the decorator", in.entry)
+			}
+			want := make([]string, 0, len(methods))
+			for _, m := range methods {
+				want = append(want, m.Name)
+			}
+			got := recordingTxMethods(t, in.recorder)
 
-	for _, m := range methods {
-		if !slices.Contains(got, m.Name) {
-			t.Errorf("recordingTx does not declare %s (%s.Tx).\n"+
-				"It carries a book, so a handler can reach any book through it.\n"+
-				"Embedding promotes it silently and records nothing: declare the override.", m.Name, m.Pkg)
-		}
-	}
-	for _, name := range got {
-		if !slices.Contains(want, name) {
-			t.Errorf("recordingTx declares %s, which is not a book-scoped method reachable through payment.Tx.\n"+
-				"Either it was renamed in its own layer and this override is now dead, or it\n"+
-				"shadows something it should not.", name)
-		}
+			for _, m := range methods {
+				if !slices.Contains(got, m.Name) {
+					t.Errorf("%s does not declare %s (%s).\n"+
+						"It carries a book, so a handler can reach any book through it.\n"+
+						"Embedding promotes it silently and records nothing: declare the override.",
+						in.recorder, m.Name, m.Pkg)
+				}
+			}
+			for _, name := range got {
+				if !slices.Contains(want, name) {
+					t.Errorf("%s declares %s, which is not a book-scoped method reachable through %s.\n"+
+						"Either it was renamed in its own layer and this override is now dead, or it\n"+
+						"shadows something it should not.", in.recorder, name, in.entry)
+				}
+			}
+		})
 	}
 }
 
@@ -1741,7 +1972,7 @@ func TestWritingAParticipantTouchesNoBankBook(t *testing.T) {
 	}
 	victim := ledger.BookID("VERDITMMXXX")
 
-	if err := store.Update(ctx, func(ctx context.Context, tx payment.Tx) error {
+	if err := store.Update(ctx, func(ctx context.Context, tx payment.BankTx) error {
 		return tx.PutBank(ctx, payment.Bank{
 			ID:        "AURODEFFXXX",
 			Name:      "Aurora Bank",
@@ -1755,7 +1986,7 @@ func TestWritingAParticipantTouchesNoBankBook(t *testing.T) {
 
 	// The book the row names is not one this database answers for, so nothing
 	// could have landed in it and the store says so rather than answering empty.
-	if err := store.View(ctx, func(ctx context.Context, tx payment.Tx) error {
+	if err := store.View(ctx, func(ctx context.Context, tx payment.BankTx) error {
 		if _, err := tx.ListLedgers(ctx, victim); !errors.Is(err, sqlite.ErrNotThisStoresBook) {
 			t.Errorf("listing ledgers in %s = %v, want ErrNotThisStoresBook; writing a bank row must not make its BookID reachable here", victim, err)
 		}
@@ -1770,7 +2001,7 @@ func TestWritingAParticipantTouchesNoBankBook(t *testing.T) {
 	// And the row itself is readable without naming any book at all, carrying THIS
 	// bank's book rather than the one it was written with — the field is derived
 	// from the id, so it cannot name somebody else's book even by mistake.
-	if err := store.View(ctx, func(ctx context.Context, tx payment.Tx) error {
+	if err := store.View(ctx, func(ctx context.Context, tx payment.BankTx) error {
 		p, err := tx.GetBank(ctx, "AURODEFFXXX")
 		if err != nil {
 			return err
@@ -1801,6 +2032,15 @@ func TestWritingAParticipantTouchesNoBankBook(t *testing.T) {
 // every method on it is checked against this shape. That is deliberate — reach
 // for a free function instead, as bookOf is.
 func TestEveryRecordingTxMethodNotesItsBookThenDelegates(t *testing.T) {
+	for _, in := range institutions {
+		t.Run(in.entry, func(t *testing.T) {
+			everyOverrideNotesThenDelegates(t, in.recorder, in.embedded)
+		})
+	}
+}
+
+func everyOverrideNotesThenDelegates(t *testing.T, recorder, embedded string) {
+	t.Helper()
 	shape := map[string]bookMethod{}
 	for _, m := range bookScopedTxMethods(t) {
 		shape[m.Name] = m
@@ -1810,7 +2050,7 @@ func TestEveryRecordingTxMethodNotesItsBookThenDelegates(t *testing.T) {
 	var checked int
 	for _, d := range file.Decls {
 		fd, ok := d.(*ast.FuncDecl)
-		if !ok || receiverTypeName(fd) != "recordingTx" {
+		if !ok || receiverTypeName(fd) != recorder {
 			continue
 		}
 		checked++
@@ -1822,7 +2062,7 @@ func TestEveryRecordingTxMethodNotesItsBookThenDelegates(t *testing.T) {
 			continue // the completeness test reports this one; nothing to shape-check
 		}
 		if len(names) < 2 {
-			t.Errorf("recordingTx.%s takes no book argument", fd.Name.Name)
+			t.Errorf("%s.%s takes no book argument", recorder, fd.Name.Name)
 			continue
 		}
 		var wantNote string
@@ -1834,21 +2074,21 @@ func TestEveryRecordingTxMethodNotesItsBookThenDelegates(t *testing.T) {
 		}
 
 		if fd.Body == nil || len(fd.Body.List) != 2 {
-			t.Errorf("recordingTx.%s is not two statements; every override notes its book and delegates", fd.Name.Name)
+			t.Errorf("%s.%s is not two statements; every override notes its book and delegates", recorder, fd.Name.Name)
 			continue
 		}
 		if got := render(t, fset, fd.Body.List[0]); got != wantNote {
-			t.Errorf("recordingTx.%s starts with %q, want %q — an override that does not note records nothing",
-				fd.Name.Name, got, wantNote)
+			t.Errorf("%s.%s starts with %q, want %q — an override that does not note records nothing",
+				recorder, fd.Name.Name, got, wantNote)
 		}
-		want := "return " + recv + ".Tx." + fd.Name.Name + "(" + strings.Join(names, ", ") + ")"
+		want := "return " + recv + "." + embedded + "." + fd.Name.Name + "(" + strings.Join(names, ", ") + ")"
 		if got := render(t, fset, fd.Body.List[1]); got != want {
-			t.Errorf("recordingTx.%s ends with %q, want %q — an override that does not delegate returns a zero value",
-				fd.Name.Name, got, want)
+			t.Errorf("%s.%s ends with %q, want %q — an override that does not delegate returns a zero value",
+				recorder, fd.Name.Name, got, want)
 		}
 	}
 	if checked == 0 {
-		t.Fatal("found no methods on recordingTx; the parser is wrong, not the decorator")
+		t.Fatalf("found no methods on %s; the parser is wrong, not the decorator", recorder)
 	}
 }
 
@@ -1884,38 +2124,63 @@ var errProbeDone = errors.New("probe finished")
 func TestRecordingStoreRecordsTheBookOfEveryCall(t *testing.T) {
 	clock := func() time.Time { return testTime }
 	recs := newRecordingStores(testenv.NewSet(t, clock))
-	rec := recs.ClearingHouse()
 	ctx := context.Background()
 
-	methods := bookScopedTxMethods(t)
-	if len(methods) == 0 {
-		t.Fatal("no book-scoped methods parsed; the parser is wrong, not the recorder")
+	// One probe per institution, each opening ITS store's unit of work and
+	// handing the transaction over untyped. The three callbacks are the whole
+	// difference between them; everything below is one loop.
+	bank, err := recs.Bank(ctx, "AURODEFFXXX")
+	if err != nil {
+		t.Fatalf("opening the bank's store: %v", err)
 	}
-	for _, m := range methods {
-		recs.reset()
-		book := ledger.BookID("book_" + m.Name)
-		err := rec.Update(ctx, func(ctx context.Context, tx payment.Tx) error {
-			fn := reflect.ValueOf(tx).MethodByName(m.Name)
-			if !fn.IsValid() {
-				t.Errorf("recordingTx has no method %s (%s.Tx)", m.Name, m.Pkg)
-				return errProbeDone
+	probes := []struct {
+		entry string
+		probe func(func(any) error) error
+	}{
+		{"payment.BankTx", func(fn func(any) error) error {
+			return bank.Update(ctx, func(ctx context.Context, tx payment.BankTx) error { return fn(tx) })
+		}},
+		{"payment.CsmTx", func(fn func(any) error) error {
+			return recs.ClearingHouse().Update(ctx, func(ctx context.Context, tx payment.CsmTx) error { return fn(tx) })
+		}},
+		{"payment.CentralBankTx", func(fn func(any) error) error {
+			return recs.CentralBank().Update(ctx, func(ctx context.Context, tx payment.CentralBankTx) error { return fn(tx) })
+		}},
+	}
+
+	for _, in := range probes {
+		t.Run(in.entry, func(t *testing.T) {
+			methods := bookScopedIn(t, walkOrFail(t, in.entry).methods)
+			if len(methods) == 0 {
+				t.Fatalf("no book-scoped methods parsed for %s; the parser is wrong, not the recorder", in.entry)
 			}
-			args := make([]reflect.Value, fn.Type().NumIn())
-			args[0] = reflect.ValueOf(ctx)
-			args[1] = bookArgument(t, fn.Type().In(1), m, book)
-			for i := 2; i < len(args); i++ {
-				args[i] = reflect.Zero(fn.Type().In(i))
+			for _, m := range methods {
+				recs.reset()
+				book := ledger.BookID("book_" + m.Name)
+				err := in.probe(func(tx any) error {
+					fn := reflect.ValueOf(tx).MethodByName(m.Name)
+					if !fn.IsValid() {
+						t.Errorf("the recorder over %s has no method %s (%s)", in.entry, m.Name, m.Pkg)
+						return errProbeDone
+					}
+					args := make([]reflect.Value, fn.Type().NumIn())
+					args[0] = reflect.ValueOf(ctx)
+					args[1] = bookArgument(t, fn.Type().In(1), m, book)
+					for i := 2; i < len(args); i++ {
+						args[i] = reflect.Zero(fn.Type().In(i))
+					}
+					fn.Call(args)
+					return errProbeDone
+				})
+				if !errors.Is(err, errProbeDone) {
+					t.Errorf("probing %s (%s): Update returned %v, want the callback's own error back", m.Name, m.Pkg, err)
+				}
+				got := recs.touched()
+				if len(got) != 1 || got[0] != book {
+					t.Errorf("calling %s (%s) on book %q recorded %v, want exactly [%s]", m.Name, m.Pkg, book, got, book)
+				}
 			}
-			fn.Call(args)
-			return errProbeDone
 		})
-		if !errors.Is(err, errProbeDone) {
-			t.Errorf("probing %s (%s.Tx): Update returned %v, want the callback's own error back", m.Name, m.Pkg, err)
-		}
-		got := recs.touched()
-		if len(got) != 1 || got[0] != book {
-			t.Errorf("calling %s (%s.Tx) on book %q recorded %v, want exactly [%s]", m.Name, m.Pkg, book, got, book)
-		}
 	}
 }
 
@@ -1966,7 +2231,7 @@ func TestACrossBookAuditReadIsRecorded(t *testing.T) {
 	}
 	victim := ledger.BookID("VERDITMMXXX")
 
-	_ = rec.View(ctx, func(ctx context.Context, tx payment.Tx) error {
+	_ = rec.View(ctx, func(ctx context.Context, tx payment.BankTx) error {
 		_, err := tx.ListAudit(ctx, ledger.AuditFilter{BookID: victim})
 		return err
 	})
@@ -1975,7 +2240,7 @@ func TestACrossBookAuditReadIsRecorded(t *testing.T) {
 	}
 
 	recs.reset()
-	_ = rec.View(ctx, func(ctx context.Context, tx payment.Tx) error {
+	_ = rec.View(ctx, func(ctx context.Context, tx payment.BankTx) error {
 		_, err := tx.ListAudit(ctx, ledger.AuditFilter{})
 		return err
 	})
@@ -2114,7 +2379,7 @@ func TestRecordingTxReachesTheStoreUnderneath(t *testing.T) {
 		t.Fatalf("opening the reading bank's store: %v", err)
 	}
 
-	err = writer.Update(ctx, func(ctx context.Context, tx payment.Tx) error {
+	err = writer.Update(ctx, func(ctx context.Context, tx payment.BankTx) error {
 		first, err := tx.NextID(ctx, written, "ldg")
 		if err != nil {
 			return err
@@ -2132,7 +2397,7 @@ func TestRecordingTxReachesTheStoreUnderneath(t *testing.T) {
 		t.Fatalf("Update: %v", err)
 	}
 
-	err = reader.View(ctx, func(ctx context.Context, tx payment.Tx) error {
+	err = reader.View(ctx, func(ctx context.Context, tx payment.BankTx) error {
 		if _, err := tx.GetLedger(ctx, read, "ldg_nope"); !errors.Is(err, ledger.ErrLedgerNotFound) {
 			t.Errorf("GetLedger on a missing row returned %v, want ledger.ErrLedgerNotFound from the store underneath", err)
 		}
@@ -2592,7 +2857,35 @@ func txBookCandidates(t *testing.T) []bookMethod {
 // failures.
 func realChainWalk(t *testing.T) *chainWalk {
 	t.Helper()
-	w := walkTxChain(repoRoot(t), modulePath(t), "payment.Tx")
+	entries := make([]string, 0, len(institutions))
+	for _, in := range institutions {
+		entries = append(entries, in.entry)
+	}
+	return walkOrFail(t, entries...)
+}
+
+// institutions is the three transaction chains and the recorder over each.
+//
+// There are three because there is one transaction type per institution: a
+// clearing house's unit of work cannot name a deposit account, so there is no
+// single chain left to walk and no single decorator left to write. What each
+// recorder must cover is ITS institution's chain, which is what the two tests
+// below check one institution at a time.
+var institutions = []struct {
+	entry    string // the package.Interface the chain starts at
+	recorder string // the decorator over it, declared in this file
+	embedded string // the field each override delegates through
+}{
+	{"payment.BankTx", "recordingBankTx", "BankTx"},
+	{"payment.CsmTx", "recordingCsmTx", "CsmTx"},
+	{"payment.CentralBankTx", "recordingCentralBankTx", "CentralBankTx"},
+}
+
+// walkOrFail walks the given entry points and turns every refusal into a
+// failure. The refusals are only data to the walk; here is where they bite.
+func walkOrFail(t *testing.T, entries ...string) *chainWalk {
+	t.Helper()
+	w := walkTxChain(repoRoot(t), modulePath(t), entries...)
 	for _, r := range w.refusals {
 		t.Error(r)
 	}
@@ -2604,8 +2897,14 @@ func realChainWalk(t *testing.T) *chainWalk {
 // structCarriedBooks says really scopes its operation.
 func bookScopedTxMethods(t *testing.T) []bookMethod {
 	t.Helper()
+	return bookScopedIn(t, txBookCandidates(t))
+}
+
+// bookScopedIn is bookScopedTxMethods over one institution's candidates.
+func bookScopedIn(t *testing.T, candidates []bookMethod) []bookMethod {
+	t.Helper()
 	var out []bookMethod
-	for _, m := range txBookCandidates(t) {
+	for _, m := range candidates {
 		switch m.Carry {
 		case bookIsTheArg:
 			out = append(out, m)
@@ -3213,12 +3512,12 @@ func flatParams(fn *ast.FuncType) []param {
 // recordingTxMethods is every method declared DIRECTLY on recordingTx in this
 // file. Declared, not promoted — which is the whole point, and the reason this
 // reads the source instead of asking reflect.
-func recordingTxMethods(t *testing.T) []string {
+func recordingTxMethods(t *testing.T, recorder string) []string {
 	t.Helper()
 	_, file := parseSourceFile(t, "books_test.go")
 	var out []string
 	for _, d := range file.Decls {
-		if fd, ok := d.(*ast.FuncDecl); ok && receiverTypeName(fd) == "recordingTx" {
+		if fd, ok := d.(*ast.FuncDecl); ok && receiverTypeName(fd) == recorder {
 			out = append(out, fd.Name.Name)
 		}
 	}

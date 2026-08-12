@@ -11,18 +11,72 @@ import (
 	"github.com/raphi011/cbs/product"
 )
 
-// Store owns the payment layer's persistent state. Like ledger.Store and
-// deposit.Store it is declared here, by the consumer, and implemented by
-// store/sqlite — so the store package imports the domain packages and never the
-// reverse.
+// The payment layer's persistent state, declared here by the consumer and
+// implemented by store/sqlite — so the store package imports the domain
+// packages and never the reverse.
 //
-// It is the only store handle the Network takes. The narrower ledger.Store and
-// deposit.Store views the Network needs for its books and registers are derived
-// from it (see ledgerView and depositView), which is what makes it impossible to
-// hand the network two different stores and silently split the layers apart.
-type Store interface {
-	Update(ctx context.Context, fn func(context.Context, Tx) error) error
-	View(ctx context.Context, fn func(context.Context, Tx) error) error
+// # One store type per institution
+//
+// There is no payment.Store and no payment.Tx, and their absence is the design.
+// One interface over three schemas is what let the clearing house's transaction
+// carry GetDepositAccount and PutFacility: every institution's store had to
+// implement every method, and two thirds of them had no table underneath. What
+// refused the crossing was a runtime sentinel, on a store whose schema was
+// chosen by a value passed to Open.
+//
+// Now an act that belongs to one institution cannot be NAMED through another's
+// handle, which is [ADR-0006]'s ruling applied to the layer underneath it. A
+// bank reaches 74 methods, the clearing house 30, the settlement agent 46, and
+// nothing reaches a table its schema does not create.
+//
+// What no type can express is which COLUMNS a shared table has: a bank's
+// payments row carries the legs it posted, the clearing house's carries the
+// cut-off it was cleared in. See PaymentRowsTx.
+//
+// [ADR-0006]: ../docs/adr/0006-one-type-per-institution.md
+
+// CommonStore is the unit of work every institution can open, whatever tables it
+// has. It is what Network keeps, because the audit trail and the id counters are
+// in all three schemas and nothing an institution does with them can be a
+// crossing.
+//
+// The three stores below are what an institution's own acts run in. Each is the
+// SAME database seen at its own width; a network holds one of them and this one,
+// derived from it rather than passed beside it.
+type CommonStore interface {
+	Update(ctx context.Context, fn func(context.Context, ledger.CommonTx) error) error
+	View(ctx context.Context, fn func(context.Context, ledger.CommonTx) error) error
+	Reset(ctx context.Context) error
+	Close() error
+}
+
+// BankStore owns one member bank's database: its ledger, its deposit register,
+// its products, its loans, its own row in banks, its copy of the routing
+// directory, the mandates it holds as creditor bank, its copy of each payment it
+// is a party to, and the advices it was sent.
+type BankStore interface {
+	Update(ctx context.Context, fn func(context.Context, BankTx) error) error
+	View(ctx context.Context, fn func(context.Context, BankTx) error) error
+	Reset(ctx context.Context) error
+	Close() error
+}
+
+// ClearingHouseStore owns the clearing house's database: the roster, the cycles,
+// its copy of each payment it carries, and the files and returns it has taken in
+// and not yet handed over. No book of accounts of any kind.
+type ClearingHouseStore interface {
+	Update(ctx context.Context, fn func(context.Context, CsmTx) error) error
+	View(ctx context.Context, fn func(context.Context, CsmTx) error) error
+	Reset(ctx context.Context) error
+	Close() error
+}
+
+// CentralBankStore owns the settlement agent's database: the ledger holding the
+// members' reserve accounts, its member register, the bank codes it allocates
+// and the settlements it discharged. No customers and no payments.
+type CentralBankStore interface {
+	Update(ctx context.Context, fn func(context.Context, CentralBankTx) error) error
+	View(ctx context.Context, fn func(context.Context, CentralBankTx) error) error
 	Reset(ctx context.Context) error
 	Close() error
 }
@@ -61,7 +115,7 @@ type Stores interface {
 	// the first ask and returning the same handle thereafter. Two calls for one
 	// BIC must return stores that see each other's rows — otherwise a bank would
 	// forget what it wrote between two acts.
-	Bank(ctx context.Context, bic iso20022.BIC) (Store, error)
+	Bank(ctx context.Context, bic iso20022.BIC) (BankStore, error)
 
 	// Banks is every member bank this set holds a database for, ascending by
 	// address so that two calls agree and a restart plans the same listeners.
@@ -82,8 +136,8 @@ type Stores interface {
 	// configuration rather than data: there is exactly one of each, it exists
 	// before any bank does, and neither can fail to be there. That is why
 	// neither takes a context or returns an error where Bank does both.
-	ClearingHouse() Store
-	CentralBank() Store
+	ClearingHouse() ClearingHouseStore
+	CentralBank() CentralBankStore
 
 	// Reset empties every store in the set, so the system behaves like a freshly
 	// migrated one.
@@ -100,16 +154,21 @@ type Stores interface {
 	Close() error
 }
 
-// PaymentRowsTx is a party's own copy of the payments it is on.
+// ---------------------------------------------------------------------------
+// The capabilities two institutions share
+// ---------------------------------------------------------------------------
+
+// PaymentRowsTx is a party's own copy of the payments it is on: a bank's and the
+// clearing house's, and no third institution's.
 //
-// Two institutions keep one and they keep DIFFERENT COLUMNS: a bank's row
-// carries the legs it posted and no cut-off, the clearing house's carries the
-// cut-off it was cleared in and no legs. The settlement agent has no payments
-// table at all — it discharges cut-offs, and a cut-off names no payment.
+// The two keep DIFFERENT COLUMNS in the same table. A bank's row carries the legs
+// it posted and no cut-off; the clearing house's carries the cut-off it was
+// cleared in and no legs. That is finer than any interface can say, so it is the
+// one thing here the store still decides — see store/sqlite's Shape, whose
+// paymentLegs and paymentCycle choose the column list.
 //
-// So the methods are shared and the row is not, which is the one place in this
-// system where a type cannot say the whole truth: see store/sqlite's Shape, whose
-// paymentLegs and paymentCycle decide the column list.
+// The settlement agent has no payments table at all. It discharges cut-offs, and
+// a cut-off names no payment.
 type PaymentRowsTx interface {
 	PutPayment(ctx context.Context, p Payment) error
 	GetPayment(ctx context.Context, id PaymentID) (Payment, error)
@@ -117,44 +176,201 @@ type PaymentRowsTx interface {
 	ListPayments(ctx context.Context) ([]Payment, error)
 }
 
-// Tx embeds deposit.Tx — and, through it, ledger.Tx — plus lending.Tx, so one
-// concrete transaction spans every layer a participant drives. That is what
-// lets Bank.RunEndOfDay accrue an overdraft and a loan in a single unit
-// of work: two batches, one commit, so a failure halfway cannot leave a bank
-// with a day of interest on its loans and none on its overdrafts.
+// partyTx is what an institution that is a PARTY to a payment can reach: its own
+// copy of the row, and the audit trail every institution has.
 //
-// It is ONE interface over three schemas. Go has no way to give a clearing house
-// a Tx
-// without PutBank on it, so every institution's store implements every method
-// and two thirds of them have no table underneath. A method reached on the wrong
-// institution's store is refused by a named sentinel — store/sqlite's
-// ErrNotInThisShape — rather than by a driver string, because a crossing is
-// something a caller has to be able to handle and a test has to be able to
-// assert.
+// It is the parameter type of the few acts a bank and the clearing house perform
+// identically — see Network.CompleteReturnTx. Unexported because it is a
+// composition of two exported capabilities and not a fourth kind of institution.
+type partyTx interface {
+	PaymentRowsTx
+	ledger.CommonTx
+}
+
+// ---------------------------------------------------------------------------
+// One transaction type per institution
+// ---------------------------------------------------------------------------
+
+// BankTx is one member bank's unit of work. It spans every layer a bank drives —
+// deposit and, through it, product and the ledger; lending; the payment rows —
+// so Bank.RunEndOfDay accrues an overdraft and a loan in a single commit: two
+// batches, one unit of work, so a failure halfway cannot leave a bank with a day
+// of interest on its loans and none on its overdrafts.
 //
-// Every row it reaches has exactly one owner, each owner has a database, and
-// each row is keyed and sequenced under that owner's book. See Network.book.
-type Tx interface {
+// Every row it reaches is this bank's own, keyed and sequenced under this bank's
+// book. See Network.book.
+type BankTx interface {
 	deposit.Tx
 	lending.Tx
+	PaymentRowsTx
 
-	// The three rows admission writes, one per institution that acts in it.
+	// A bank's own record of ITSELF, and the only row in this table. The
+	// settlement agent's record of the account it opened and the clearing house's
+	// record of where to send a message are the other two rows admission writes,
+	// and each lives in that institution's own database — see
+	// SettlementMember and RosterEntry.
 	//
-	// They are three rows and not one because each has exactly one writer and
-	// each lives in a different DATABASE: the bank's own record of itself, the
-	// settlement agent's record of the account it opened, the clearing house's
-	// record of where to send a message. Two of the three methods in each block
-	// below therefore answer sqlite.ErrNotInThisShape on any given store, which
-	// is the split being a fact rather than a convention.
-	//
-	// The two BIC-keyed rows are keyed that way because the BIC is the only
-	// identifier that crosses an institutional boundary in this system. Neither
-	// carries a ParticipantID: an id the network allocates is not something a
-	// message ever tells anybody.
+	// It is keyed by BIC because the BIC is the only identifier that crosses an
+	// institutional boundary in this system. It carries no ParticipantID: an id
+	// the network allocates is not something a message ever tells anybody.
 	PutBank(ctx context.Context, b Bank) error
 	GetBank(ctx context.Context, id ParticipantID) (Bank, error)
 	ListBanks(ctx context.Context) ([]Bank, error)
 
+	// A MEMBER BANK's copy of the clearing house's roster, in that bank's own
+	// database. See DirectoryEntry.
+	//
+	// ReplaceRoutingDirectory is a REPLACE and not an upsert, and it is the only
+	// method on this interface that is. Every other Put here writes one row an
+	// institution decided about; this one takes delivery of a whole file, and a
+	// row that has left the roster has to leave the copy — a merge would make a
+	// subscriber's directory the union of every snapshot it ever pulled, which is
+	// not a copy of anything. It is also why there is no delete: a directory is
+	// replaced wholesale or not at all.
+	//
+	// GetDirectoryEntry answers ErrBankCodeUnknown on a miss, which is a
+	// subscriber's answer about ITSELF and not the registry's about an
+	// allocation; the two sentinels' docs set out why neither can stand in for
+	// the other.
+	//
+	// ListDirectoryEntries has two readers and they want the same thing for
+	// different reasons: a bank's own console, showing what it holds and when it
+	// pulled it, and payment/recon, holding it against the published roster in
+	// order to REPORT a difference it must not fail on.
+	ReplaceRoutingDirectory(ctx context.Context, entries []DirectoryEntry) error
+	GetDirectoryEntry(ctx context.Context, issuer iban.Issuer) (DirectoryEntry, error)
+	ListDirectoryEntries(ctx context.Context) ([]DirectoryEntry, error)
+
+	// The mandates this bank holds as CREDITOR bank. A mandate is the creditor's
+	// bank's row (see Mandate), so the row set is this institution's by
+	// construction and there is no creditor to filter on.
+	PutMandate(ctx context.Context, m Mandate) error
+	GetMandate(ctx context.Context, id MandateID) (Mandate, error)
+	ListMandates(ctx context.Context) ([]Mandate, error)
+
+	// The advice rows are BOOK-SCOPED, unlike every other method in this
+	// interface. Every other row here belongs to the ONE institution whose
+	// database it is in and is keyed under that institution's book; an advice is
+	// one member bank's record of what it was told, and the book is part of its
+	// identity rather than a scope over rows that could have been somebody
+	// else's. Two banks advised of one movement write two rows in two databases —
+	// see SettlementAdvice, where that is the whole design — and it is also what
+	// makes the recorder in cmd/server/books_test.go see a bank reaching its own
+	// book when it books a settlement.
+	//
+	// ListSettlementAdvices has two KINDS of reader and they see different
+	// amounts.
+	//
+	// payment/recon, the reconciliation harness, holds every institution's
+	// advices against the settlement agent's own register, so that a movement the
+	// agent made and a member never booked can be told apart from a member's
+	// books simply being wrong. That comparison is the one thing no institution
+	// in this system may make, which is why that reader is a harness.
+	//
+	// The others are one member bank reading its OWN, which is an act that bank
+	// may perform: Network.ReconcileTx, which is what reads
+	// SettlementAdvice.ClosingBalance — every advised movement against the
+	// running balance of the leg booked from it — and
+	// Network.ListSettlementAdvicesTx, which shows the same rows unchecked, for
+	// the operator a break sends looking. What neither can see is a statement
+	// that never arrived, because a closing balance only ever arrives on a
+	// statement the bank holds.
+	PutSettlementAdvice(ctx context.Context, book ledger.BookID, a SettlementAdvice) error
+	GetSettlementAdvice(ctx context.Context, book ledger.BookID, reference string, asset ledger.AssetCode) (SettlementAdvice, error)
+	ListSettlementAdvices(ctx context.Context, book ledger.BookID) ([]SettlementAdvice, error)
+}
+
+// CsmTx is the clearing house's unit of work.
+//
+// It has NO ledger and no chart of accounts, which is why it embeds
+// ledger.CommonTx and not ledger.Tx: the clearing house keeps an audit trail and
+// allocates ids, and it moves no money. It has no customers, no products and no
+// loans either — the whole of what it holds is below.
+type CsmTx interface {
+	ledger.CommonTx
+	PaymentRowsTx
+
+	// The cycles this clearing house opens, closes and settles.
+	//
+	// GetOpenCycle returns the single open cycle for a scheme, or
+	// ErrCycleNotFound. It is what the network asks instead of remembering.
+	PutCycle(ctx context.Context, c ClearingCycle) error
+	GetCycle(ctx context.Context, id CycleID) (ClearingCycle, error)
+	GetOpenCycle(ctx context.Context, scheme SchemeID) (ClearingCycle, error)
+	ListCycles(ctx context.Context) ([]ClearingCycle, error)
+
+	// WHO IS A MEMBER, which is this institution's register and nobody else's. A
+	// member bank keeps a COPY of it as its routing directory — see
+	// DirectoryEntry — and the two are held against each other by payment/recon
+	// and by no institution.
+	//
+	// PutRosterEntry and GetRosterEntry are called by AdmitMemberTx and by
+	// Network.GetRosterEntryByBIC, which is what a caller asking whether an
+	// address is a member gets instead of a whole bank. ListRosterEntries is
+	// asked by the deployment at startup and by package provision, and it asks
+	// WHO IS A MEMBER rather than which banks exist, so that a founded and
+	// unadmitted bank is enrolled as a subscriber nowhere.
+	//
+	// GetRosterEntryByIssuer is the roster's secondary lookup, and it exists for
+	// one refusal: two members published under one bank code would make one
+	// address ambiguous for every member that copies this table. Same shape as
+	// GetPaymentByEndToEndID — the row is keyed by the identifier this
+	// institution routes on, and the question arrives quoting a different one —
+	// and the same sentinel as the primary, ErrRosterEntryNotFound, because "no
+	// member holds this code" is the answer either lookup gives when it misses.
+	PutRosterEntry(ctx context.Context, e RosterEntry) error
+	GetRosterEntry(ctx context.Context, bic iso20022.BIC) (RosterEntry, error)
+	GetRosterEntryByIssuer(ctx context.Context, issuer iban.Issuer) (RosterEntry, error)
+	ListRosterEntries(ctx context.Context) ([]RosterEntry, error)
+
+	// The clearing house's unfinished business: see HeldFile and HeldReturn.
+	// There is no institution in which both a book of accounts and a held file
+	// exist.
+	//
+	// AddHeldFile is the one write on this interface that is not an upsert. A
+	// share has no key its caller knows — it is the Nth file built for a cut-off,
+	// and the store allocates that N — so there is nothing for a second call to
+	// conflict with, and two identical shares are two obligations to the same
+	// bank rather than one recorded twice.
+	//
+	// DeleteHeldFile takes ONE share and names it by the N above, which
+	// ListHeldFiles reports for exactly this reason. A share is discharged when
+	// the bank it is addressed to has been handed it, and the hand-over is a
+	// write to another table that this transaction may not touch — so the two
+	// happen one share at a time and in that order. Deleting a cut-off's shares
+	// together would discharge the ones that never left.
+	AddHeldFile(ctx context.Context, f HeldFile) error
+	ListHeldFiles(ctx context.Context, id CycleID) ([]HeldFile, error)
+	DeleteHeldFile(ctx context.Context, id CycleID, seq int64) error
+
+	PutHeldReturn(ctx context.Context, r HeldReturn) error
+	GetHeldReturn(ctx context.Context, id PaymentID) (HeldReturn, error)
+	DeleteHeldReturn(ctx context.Context, id PaymentID) error
+}
+
+// CentralBankTx is the settlement agent's unit of work.
+//
+// It embeds ledger.Tx and not deposit.Tx: the settlement agent keeps a book of
+// accounts — the members' reserves are in it — and has no customers, no
+// products, no loans and no slot mapping. It keeps no payments either, which is
+// what "the central bank never sees an individual payment" means at the store.
+type CentralBankTx interface {
+	ledger.Tx
+
+	// The settlement agent's record of the account it opened for a member, keyed
+	// by BIC for the reason a bank's own row is: the BIC is the only identifier
+	// that crosses an institutional boundary here.
+	//
+	// PutSettlementMember and GetSettlementMember are called by
+	// OpenSettlementAccountTx and by settlementAccountTx — which is every reserve
+	// movement in the system, since SettleCycleTx, SettleReturnTx and
+	// ReserveBalance all resolve their account through it.
+	//
+	// ListSettlementMembers has two callers: settlementLegsTx walks it to turn a
+	// cycle's net positions into legs, in the order the agent opened the
+	// accounts, and api's GET /reserves reports one row per (member, asset) from
+	// it. Its ordering contract is load-bearing because it decides the entry
+	// order of a settlement transaction that is persisted.
 	PutSettlementMember(ctx context.Context, m SettlementMember) error
 	GetSettlementMember(ctx context.Context, bic iso20022.BIC) (SettlementMember, error)
 	ListSettlementMembers(ctx context.Context) ([]SettlementMember, error)
@@ -186,103 +402,10 @@ type Tx interface {
 	ListBankCodes(ctx context.Context) ([]BankCodeAllocation, error)
 	NextBankCodeSerial(ctx context.Context, book ledger.BookID, country iban.Country) (uint64, error)
 
-	// Which of these has a production caller, exactly, because the alternative
-	// is a reader guessing from the placement.
+	// The cut-offs this agent has discharged.
 	//
-	// PutSettlementMember and GetSettlementMember are the settlement agent's,
-	// called by OpenSettlementAccountTx and by settlementAccountTx — which is
-	// every reserve movement in the system, since SettleCycleTx, SettleReturnTx
-	// and ReserveBalance all resolve their account through it. PutRosterEntry and
-	// GetRosterEntry are the clearing house's, called by AdmitMemberTx and by
-	// Network.GetRosterEntryByBIC, which is what a caller asking whether an
-	// address is a member gets instead of a whole bank.
-	//
-	// ListSettlementMembers has two callers: settlementLegsTx walks it to turn a
-	// cycle's net positions into legs, in the order the agent opened the
-	// accounts, and api's GET /reserves reports one row per (member, asset) from
-	// it. Its ordering contract is load-bearing because it decides the entry
-	// order of a settlement transaction that is persisted. ListRosterEntries is
-	// asked by the deployment at startup and by package provision, and it asks
-	// WHO IS A MEMBER rather than which banks exist, so that a founded and
-	// unadmitted bank is enrolled as a subscriber nowhere.
-	//
-	// GetRosterEntryByIssuer is the roster's secondary lookup, and it exists for
-	// one refusal: two members published under one bank code would make one
-	// address ambiguous for every member that copies this table. Same shape as
-	// GetPaymentByEndToEndID — the row is keyed by the identifier this
-	// institution routes on, and the question arrives quoting a different one —
-	// and the same sentinel as the primary, ErrRosterEntryNotFound, because "no
-	// member holds this code" is the answer either lookup gives when it misses.
-	PutRosterEntry(ctx context.Context, e RosterEntry) error
-	GetRosterEntry(ctx context.Context, bic iso20022.BIC) (RosterEntry, error)
-	GetRosterEntryByIssuer(ctx context.Context, issuer iban.Issuer) (RosterEntry, error)
-	ListRosterEntries(ctx context.Context) ([]RosterEntry, error)
-
-	// A MEMBER BANK's copy of the roster above, in that bank's own database.
-	// See DirectoryEntry.
-	//
-	// ReplaceRoutingDirectory is a REPLACE and not an upsert, and it is the only
-	// method on this interface that is. Every other Put here writes one row an
-	// institution decided about; this one takes delivery of a whole file, and a
-	// row that has left the roster has to leave the copy — a merge would make a
-	// subscriber's directory the union of every snapshot it ever pulled, which is
-	// not a copy of anything. It is also why there is no delete: a directory is
-	// replaced wholesale or not at all.
-	//
-	// GetDirectoryEntry answers ErrBankCodeUnknown on a miss, which is a
-	// subscriber's answer about ITSELF and not the registry's about an
-	// allocation; the two sentinels' docs set out why neither can stand in for
-	// the other.
-	//
-	// ListDirectoryEntries has two readers and they want the same thing for
-	// different reasons: a bank's own console, showing what it holds and when it
-	// pulled it, and payment/recon, holding it against the published roster in
-	// order to REPORT a difference it must not fail on.
-	ReplaceRoutingDirectory(ctx context.Context, entries []DirectoryEntry) error
-	GetDirectoryEntry(ctx context.Context, issuer iban.Issuer) (DirectoryEntry, error)
-	ListDirectoryEntries(ctx context.Context) ([]DirectoryEntry, error)
-
-	PaymentRowsTx
-
-	PutMandate(ctx context.Context, m Mandate) error
-	GetMandate(ctx context.Context, id MandateID) (Mandate, error)
-	ListMandates(ctx context.Context) ([]Mandate, error)
-
-	PutCycle(ctx context.Context, c ClearingCycle) error
-	GetCycle(ctx context.Context, id CycleID) (ClearingCycle, error)
-	// GetOpenCycle returns the single open cycle for a scheme, or the existing
-	// ErrCycleNotFound. Replaces the openCycle map on Network.
-	GetOpenCycle(ctx context.Context, scheme SchemeID) (ClearingCycle, error)
-	ListCycles(ctx context.Context) ([]ClearingCycle, error)
-
-	// The clearing house's unfinished business: see HeldFile and HeldReturn.
-	// Every one of these answers ErrNotInThisShape on the other two stores, and
-	// there is no shape in which both a book of accounts and a held file exist.
-	//
-	// AddHeldFile is the one write on this interface that is not an upsert. A
-	// share has no key its caller knows — it is the Nth file built for a cut-off,
-	// and the store allocates that N — so there is nothing for a second call to
-	// conflict with, and two identical shares are two obligations to the same
-	// bank rather than one recorded twice.
-	//
-	// DeleteHeldFile takes ONE share and names it by the N above, which
-	// ListHeldFiles reports for exactly this reason. A share is discharged when
-	// the bank it is addressed to has been handed it, and the hand-over is a
-	// write to another table that this transaction may not touch — so the two
-	// happen one share at a time and in that order. Deleting a cut-off's shares
-	// together would discharge the ones that never left.
-	AddHeldFile(ctx context.Context, f HeldFile) error
-	ListHeldFiles(ctx context.Context, id CycleID) ([]HeldFile, error)
-	DeleteHeldFile(ctx context.Context, id CycleID, seq int64) error
-
-	PutHeldReturn(ctx context.Context, r HeldReturn) error
-	GetHeldReturn(ctx context.Context, id PaymentID) (HeldReturn, error)
-	DeleteHeldReturn(ctx context.Context, id PaymentID) error
-
-	PutSettlement(ctx context.Context, s Settlement) error
-	GetSettlement(ctx context.Context, id SettlementID) (Settlement, error)
-	// GetSettlementByCycle is the settlement agent's answer to "have I already
-	// discharged this cut-off", and it is a secondary lookup for the same reason
+	// GetSettlementByCycle is its answer to "have I already discharged this
+	// cut-off", and it is a secondary lookup for the same reason
 	// GetPaymentByEndToEndID is: the row is keyed by an id this institution
 	// allocated, and the question arrives quoting somebody else's.
 	//
@@ -291,39 +414,10 @@ type Tx interface {
 	// after the reserve check had already run against reserves the first
 	// settlement moved, which turns a duplicate into a spurious AM04. Same
 	// sentinel shape as the rest of this block: ErrSettlementNotFound.
+	PutSettlement(ctx context.Context, s Settlement) error
+	GetSettlement(ctx context.Context, id SettlementID) (Settlement, error)
 	GetSettlementByCycle(ctx context.Context, id CycleID) (Settlement, error)
 	ListSettlements(ctx context.Context) ([]Settlement, error)
-
-	// The advice rows are BOOK-SCOPED, unlike every other method in this block.
-	// Every other row here belongs to the ONE institution whose database it is
-	// in and is keyed under that institution's book; an advice is one member
-	// bank's record of what it was told, and the book is part of its identity
-	// rather than a scope over rows that could have been somebody else's. Two
-	// banks advised of one movement write two rows in two databases — see
-	// SettlementAdvice, where that is the whole design — and it is also what
-	// makes the recorder in cmd/server/books_test.go see a bank reaching its own book
-	// when it books a settlement.
-	//
-	// ListSettlementAdvices has two KINDS of reader and they see different
-	// amounts.
-	//
-	// payment/recon, the reconciliation harness, holds every institution's
-	// advices against the settlement agent's own register, so that a movement the
-	// agent made and a member never booked can be told apart from a member's
-	// books simply being wrong. That comparison is the one thing no institution
-	// in this system may make, which is why that reader is a harness.
-	//
-	// The others are one member bank reading its OWN, which is an act that bank
-	// may perform: Network.ReconcileTx, which is what reads
-	// SettlementAdvice.ClosingBalance — every advised movement against the
-	// running balance of the leg booked from it — and
-	// Network.ListSettlementAdvicesTx, which shows the same rows unchecked, for
-	// the operator a break sends looking. What neither can see is a statement
-	// that never arrived, because a closing balance only ever arrives on a
-	// statement the bank holds.
-	PutSettlementAdvice(ctx context.Context, book ledger.BookID, a SettlementAdvice) error
-	GetSettlementAdvice(ctx context.Context, book ledger.BookID, reference string, asset ledger.AssetCode) (SettlementAdvice, error)
-	ListSettlementAdvices(ctx context.Context, book ledger.BookID) ([]SettlementAdvice, error)
 }
 
 // Contract notes for implementers. Each of these is asserted by one of the three
@@ -408,7 +502,7 @@ type Tx interface {
 //     are handed their files in the order the files arrived.
 //     (HeldFilesSurviveTheirCycleAndReleaseInBuildOrder.)
 //
-//   - Reset clears the payment tables too — this SHAPE's, which is the only
+//   - Reset clears the payment tables too — this INSTITUTION's, which is the only
 //     thing it could now mean. (ResetClearsPaymentState, and its two
 //     institution halves, ResetClearsTheClearingHousesState and
 //     ResetClearsTheCentralBanksState.)
@@ -417,66 +511,120 @@ type Tx interface {
 // Narrower views of the same store
 // ---------------------------------------------------------------------------
 
-// ledgerView presents a payment.Store as a ledger.Store.
+// Every view below re-types a store's callback and holds no state of its own.
+// They exist because Go allows a type one Update method and each Store interface
+// declares it with a callback of its own; each view hands the callback the very
+// same transaction.
 //
-// A payment.Tx is a ledger.Tx — it embeds one, transitively — so the adapter
-// only has to re-type the callback. It exists because Go allows a type one
-// Update method, and the three Store interfaces declare Update with three
-// different callback types.
+// The point is that a Book built over a view and a Network built over the same
+// store cannot be talking to different databases: the view is DERIVED from the
+// store rather than passed in beside it.
+
+// bankCommon and the two beside it present an institution's store as the
+// CommonStore the Network core keeps — the audit trail and the counters, which
+// every schema holds.
+type bankCommon struct{ BankStore }
+
+var _ CommonStore = bankCommon{}
+
+func (v bankCommon) Update(ctx context.Context, fn func(context.Context, ledger.CommonTx) error) error {
+	return v.BankStore.Update(ctx, func(ctx context.Context, tx BankTx) error { return fn(ctx, tx) })
+}
+
+func (v bankCommon) View(ctx context.Context, fn func(context.Context, ledger.CommonTx) error) error {
+	return v.BankStore.View(ctx, func(ctx context.Context, tx BankTx) error { return fn(ctx, tx) })
+}
+
+type clearingHouseCommon struct{ ClearingHouseStore }
+
+var _ CommonStore = clearingHouseCommon{}
+
+func (v clearingHouseCommon) Update(ctx context.Context, fn func(context.Context, ledger.CommonTx) error) error {
+	return v.ClearingHouseStore.Update(ctx, func(ctx context.Context, tx CsmTx) error { return fn(ctx, tx) })
+}
+
+func (v clearingHouseCommon) View(ctx context.Context, fn func(context.Context, ledger.CommonTx) error) error {
+	return v.ClearingHouseStore.View(ctx, func(ctx context.Context, tx CsmTx) error { return fn(ctx, tx) })
+}
+
+type centralBankCommon struct{ CentralBankStore }
+
+var _ CommonStore = centralBankCommon{}
+
+func (v centralBankCommon) Update(ctx context.Context, fn func(context.Context, ledger.CommonTx) error) error {
+	return v.CentralBankStore.Update(ctx, func(ctx context.Context, tx CentralBankTx) error { return fn(ctx, tx) })
+}
+
+func (v centralBankCommon) View(ctx context.Context, fn func(context.Context, ledger.CommonTx) error) error {
+	return v.CentralBankStore.View(ctx, func(ctx context.Context, tx CentralBankTx) error { return fn(ctx, tx) })
+}
+
+// ledgerView presents a bank's store as the ledger.Store a Book takes.
 //
-// The point is that a Book built over this view and a Network built over the
-// same Store cannot be talking to different databases: the view is derived from
-// the Store rather than passed in beside it.
-type ledgerView struct{ Store }
+// A Book is the ledger BOTH institutions that keep one have, so it is the narrow
+// interface even here: the slot mapping is reached through the transaction a
+// deposit or lending act already holds, never through a store.
+type ledgerView struct{ BankStore }
 
 var _ ledger.Store = ledgerView{}
 
 func (v ledgerView) Update(ctx context.Context, fn func(context.Context, ledger.Tx) error) error {
-	return v.Store.Update(ctx, func(ctx context.Context, tx Tx) error { return fn(ctx, tx) })
+	return v.BankStore.Update(ctx, func(ctx context.Context, tx BankTx) error { return fn(ctx, tx) })
 }
 
 func (v ledgerView) View(ctx context.Context, fn func(context.Context, ledger.Tx) error) error {
-	return v.Store.View(ctx, func(ctx context.Context, tx Tx) error { return fn(ctx, tx) })
+	return v.BankStore.View(ctx, func(ctx context.Context, tx BankTx) error { return fn(ctx, tx) })
 }
 
-// depositView presents a payment.Store as a deposit.Store, for the same reason
-// and in the same way as ledgerView.
-type depositView struct{ Store }
+// centralBankLedgerView presents the settlement agent's store as a ledger.Store,
+// for the Book holding the members' reserve accounts.
+type centralBankLedgerView struct{ CentralBankStore }
+
+var _ ledger.Store = centralBankLedgerView{}
+
+func (v centralBankLedgerView) Update(ctx context.Context, fn func(context.Context, ledger.Tx) error) error {
+	return v.CentralBankStore.Update(ctx, func(ctx context.Context, tx CentralBankTx) error { return fn(ctx, tx) })
+}
+
+func (v centralBankLedgerView) View(ctx context.Context, fn func(context.Context, ledger.Tx) error) error {
+	return v.CentralBankStore.View(ctx, func(ctx context.Context, tx CentralBankTx) error { return fn(ctx, tx) })
+}
+
+// depositView presents a bank's store as a deposit.Store.
+type depositView struct{ BankStore }
 
 var _ deposit.Store = depositView{}
 
 func (v depositView) Update(ctx context.Context, fn func(context.Context, deposit.Tx) error) error {
-	return v.Store.Update(ctx, func(ctx context.Context, tx Tx) error { return fn(ctx, tx) })
+	return v.BankStore.Update(ctx, func(ctx context.Context, tx BankTx) error { return fn(ctx, tx) })
 }
 
 func (v depositView) View(ctx context.Context, fn func(context.Context, deposit.Tx) error) error {
-	return v.Store.View(ctx, func(ctx context.Context, tx Tx) error { return fn(ctx, tx) })
+	return v.BankStore.View(ctx, func(ctx context.Context, tx BankTx) error { return fn(ctx, tx) })
 }
 
-// productView presents a payment.Store as a product.Store, for the same reason
-// and in the same way as ledgerView and depositView.
-type productView struct{ Store }
+// productView presents a bank's store as a product.Store.
+type productView struct{ BankStore }
 
 var _ product.Store = productView{}
 
 func (v productView) Update(ctx context.Context, fn func(context.Context, product.Tx) error) error {
-	return v.Store.Update(ctx, func(ctx context.Context, tx Tx) error { return fn(ctx, tx) })
+	return v.BankStore.Update(ctx, func(ctx context.Context, tx BankTx) error { return fn(ctx, tx) })
 }
 
 func (v productView) View(ctx context.Context, fn func(context.Context, product.Tx) error) error {
-	return v.Store.View(ctx, func(ctx context.Context, tx Tx) error { return fn(ctx, tx) })
+	return v.BankStore.View(ctx, func(ctx context.Context, tx BankTx) error { return fn(ctx, tx) })
 }
 
-// lendingView presents a payment.Store as a lending.Store, for the same reason
-// and in the same way as ledgerView and depositView.
-type lendingView struct{ Store }
+// lendingView presents a bank's store as a lending.Store.
+type lendingView struct{ BankStore }
 
 var _ lending.Store = lendingView{}
 
 func (v lendingView) Update(ctx context.Context, fn func(context.Context, lending.Tx) error) error {
-	return v.Store.Update(ctx, func(ctx context.Context, tx Tx) error { return fn(ctx, tx) })
+	return v.BankStore.Update(ctx, func(ctx context.Context, tx BankTx) error { return fn(ctx, tx) })
 }
 
 func (v lendingView) View(ctx context.Context, fn func(context.Context, lending.Tx) error) error {
-	return v.Store.View(ctx, func(ctx context.Context, tx Tx) error { return fn(ctx, tx) })
+	return v.BankStore.View(ctx, func(ctx context.Context, tx BankTx) error { return fn(ctx, tx) })
 }

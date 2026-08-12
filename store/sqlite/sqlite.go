@@ -85,6 +85,7 @@ import (
 	sqlite3lib "modernc.org/sqlite/lib"
 
 	"github.com/raphi011/cbs/deposit"
+	"github.com/raphi011/cbs/ebics"
 	"github.com/raphi011/cbs/ledger"
 	"github.com/raphi011/cbs/lending"
 	"github.com/raphi011/cbs/payment"
@@ -307,8 +308,14 @@ const (
 // handful that are reading only queue up to contend for the same lock.
 const maxOpenConns = 8
 
-// Store is a SQLite-backed ledger.Store. Call Open; the zero value is unusable.
-type Store struct {
+// store is the ONE implementation. There is a type per institution over it —
+// BankStore, ClearingHouseStore, CentralBankStore — and each is a set of
+// re-typed units of work over this, not a second body of SQL.
+//
+// It is unexported because no caller has a database without an institution
+// attached: OpenBank, OpenClearingHouse and OpenCentralBank are the three ways
+// in, and each returns the type whose methods that schema can answer.
+type store struct {
 	db    *sql.DB
 	clock func() time.Time
 
@@ -334,25 +341,58 @@ type Store struct {
 	keep *sql.Conn
 }
 
-// Open opens the database at path as one institution, applies that shape's
-// migrations and returns a store reading time from clock.
+// The three ways to open a database, one per institution.
 //
-// shape is which schema goes in and book is the one BookID the result answers
-// for; see Shape and ErrNotThisStoresBook. Both are required: a database with no
-// institution attached is not a thing this system has.
+// The SHAPE IS A CONSTRUCTOR and not a parameter, which is what makes each
+// result a type whose methods its schema can answer. A single Open returning one
+// type whatever it was handed would leave the mismatch it removes: open the
+// clearing house's schema, ask for a bank's unit of work, and every bank-only
+// method reaches a table that is not there.
+//
+// Two of the three take no book, because there is one clearing house and one
+// settlement agent and each answers for a BookID that is a constant. A bank's is
+// the one value no schema knows at build time: it is minted when that bank's
+// database is provisioned, and it is the bank's BIC (see payment.AsBank), which
+// is also the name of the file. The four layers below payment know nothing of
+// institutions and open a bank's schema under a book of their own, which is why
+// this takes a BookID rather than a BIC.
 //
 // An empty path means an ephemeral in-memory database of its own: the name is
 // random, so two stores opened with an empty path never see each other's rows.
 // That is what a test suite wants and it is what `cmd/server` with no -database
 // means — ephemeral, and needing no setup. A test opens N+2 of these, and two
 // banks sharing rows would be the split silently not happening.
-func Open(ctx context.Context, shape Shape, book ledger.BookID, path string, clock func() time.Time) (*Store, error) {
-	if shape.holds == nil {
-		return nil, fmt.Errorf("sqlite: open: no shape; every store answers for exactly one institution")
-	}
+
+func OpenBank(ctx context.Context, book ledger.BookID, path string, clock func() time.Time) (*BankStore, error) {
 	if book == "" {
-		return nil, fmt.Errorf("sqlite: open %s: no book; every store answers for exactly one and refuses the rest", shape)
+		return nil, fmt.Errorf("sqlite: open bank: no book; every store answers for exactly one and refuses the rest")
 	}
+	s, err := open(ctx, Bank, book, path, clock)
+	if err != nil {
+		return nil, err
+	}
+	return &BankStore{s}, nil
+}
+
+func OpenClearingHouse(ctx context.Context, path string, clock func() time.Time) (*ClearingHouseStore, error) {
+	s, err := open(ctx, CSM, payment.ClearingHouseBook, path, clock)
+	if err != nil {
+		return nil, err
+	}
+	return &ClearingHouseStore{s}, nil
+}
+
+func OpenCentralBank(ctx context.Context, path string, clock func() time.Time) (*CentralBankStore, error) {
+	s, err := open(ctx, CentralBank, payment.CentralBankBook, path, clock)
+	if err != nil {
+		return nil, err
+	}
+	return &CentralBankStore{s}, nil
+}
+
+// open is the body the three constructors share: the pool, the pragmas and the
+// migrations for one shape.
+func open(ctx context.Context, shape Shape, book ledger.BookID, path string, clock func() time.Time) (*store, error) {
 	dsn, ephemeral := dsn(path)
 
 	db, err := sql.Open("sqlite", dsn)
@@ -370,7 +410,7 @@ func Open(ctx context.Context, shape Shape, book ledger.BookID, path string, clo
 	db.SetConnMaxLifetime(0)
 	db.SetConnMaxIdleTime(0)
 
-	s := &Store{db: db, clock: clock, shape: shape, book: book}
+	s := &store{db: db, clock: clock, shape: shape, book: book}
 
 	if ephemeral {
 		conn, err := db.Conn(ctx)
@@ -392,15 +432,16 @@ func Open(ctx context.Context, shape Shape, book ledger.BookID, path string, clo
 	return s, nil
 }
 
-// Shape is which schema this store carries, and Book is the one BookID it
-// answers for.
+// Book is the one BookID this store answers for.
 //
-// Both are exported because the composition root has to be able to ask. Nothing
-// in the domain does: an institution's handle knows which institution it is (see
+// It is exported because the composition root has to be able to ask. Nothing in
+// the domain does: an institution's handle knows which institution it is (see
 // payment.Identity), and a store that had to be interrogated about its own
 // identity would be one the caller had not been given deliberately.
-func (s *Store) Shape() Shape        { return s.shape }
-func (s *Store) Book() ledger.BookID { return s.book }
+//
+// There is no exported Shape accessor beside it, and there is nothing left to
+// ask: the shape is the TYPE now.
+func (s *store) Book() ledger.BookID { return s.book }
 
 // dsn builds the connection string, and every setting the store depends on is in
 // it rather than issued afterwards. It reports whether the database is
@@ -435,35 +476,26 @@ func dsn(path string) (string, bool) {
 	return "file:" + url.PathEscape(path) + "?" + strings.Join(pragmas, "&"), false
 }
 
-// Update runs fn in one atomic unit of work: BEGIN, fn, COMMIT, or ROLLBACK if
-// fn returns an error.
+// update and view are the shared bodies every Update and View in this package
+// delegates to.
 //
-// It retries, with a delay, on the transient failures isTransient names. See
-// isTransient for why a retry is needed at all and backoff for why it is not
-// enough on its own.
-func (s *Store) Update(ctx context.Context, fn func(context.Context, ledger.Tx) error) error {
-	return s.update(ctx, func(ctx context.Context, t *tx) error { return fn(ctx, t) })
-}
-
-// View runs fn in a read-only unit of work. Writes through the Tx it provides
-// fail with ErrReadOnly.
-func (s *Store) View(ctx context.Context, fn func(context.Context, ledger.Tx) error) error {
-	return s.view(ctx, func(ctx context.Context, t *tx) error { return fn(ctx, t) })
-}
-
-// update and view are the shared bodies the five Store interfaces' Update and
-// View methods delegate to. Go allows one Update method per type and the
-// interfaces declare it with five different callback types, so the adapters at
-// the foot of this file re-type these rather than reimplementing them — the
-// callback gets the very same *tx, which is what lets a Register and a Book over
-// one store share a transaction.
-func (s *Store) update(ctx context.Context, fn func(context.Context, *tx) error) error {
+// Update runs fn in one atomic unit of work: BEGIN, fn, COMMIT, or ROLLBACK if
+// fn returns an error, retrying with a delay on the transient failures
+// isTransient names. View opens the same thing read-only, and a write through
+// its Tx fails with ErrReadOnly.
+//
+// Go allows one Update method per type and the interfaces declare it with a
+// callback type each, so the institution types and the layer adapters below
+// re-type these rather than reimplementing them — the callback gets the very
+// same *tx, which is what lets a Register and a Book over one store share a
+// transaction.
+func (s *store) update(ctx context.Context, fn func(context.Context, *tx) error) error {
 	return s.inUpdate(ctx, func(ctx context.Context, dbtx *sql.Tx) error {
 		return fn(ctx, s.newTx(dbtx, false))
 	})
 }
 
-func (s *Store) view(ctx context.Context, fn func(context.Context, *tx) error) error {
+func (s *store) view(ctx context.Context, fn func(context.Context, *tx) error) error {
 	return s.inView(ctx, func(ctx context.Context, dbtx *sql.Tx) error {
 		return fn(ctx, s.newTx(dbtx, true))
 	})
@@ -473,7 +505,7 @@ func (s *Store) view(ctx context.Context, fn func(context.Context, *tx) error) e
 // interfaces. A fresh books set per attempt is deliberate: a retried unit of
 // work has rolled its books rows back, so remembering them across attempts would
 // skip the insert that the foreign keys need.
-func (s *Store) newTx(dbtx *sql.Tx, readOnly bool) *tx {
+func (s *store) newTx(dbtx *sql.Tx, readOnly bool) *tx {
 	return &tx{store: s, tx: dbtx, readOnly: readOnly, books: make(map[ledger.BookID]struct{})}
 }
 
@@ -484,7 +516,7 @@ func (s *Store) newTx(dbtx *sql.Tx, readOnly bool) *tx {
 // transient classification were testable — and worth watching fail — before any
 // statement of the port existed, and the tests that pin them still drive this
 // directly rather than through a ledger.Tx.
-func (s *Store) inUpdate(ctx context.Context, fn func(context.Context, *sql.Tx) error) error {
+func (s *store) inUpdate(ctx context.Context, fn func(context.Context, *sql.Tx) error) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -543,7 +575,7 @@ func backoff(ctx context.Context, attempt int) error {
 }
 
 // inView runs fn in a read-only unit of work.
-func (s *Store) inView(ctx context.Context, fn func(context.Context, *sql.Tx) error) error {
+func (s *store) inView(ctx context.Context, fn func(context.Context, *sql.Tx) error) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -554,7 +586,7 @@ func (s *Store) inView(ctx context.Context, fn func(context.Context, *sql.Tx) er
 }
 
 // runInTx is one attempt: BEGIN, run fn, COMMIT or ROLLBACK.
-func (s *Store) runInTx(ctx context.Context, readOnly bool, fn func(context.Context, *sql.Tx) error) error {
+func (s *store) runInTx(ctx context.Context, readOnly bool, fn func(context.Context, *sql.Tx) error) error {
 	dbtx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: readOnly})
 	if err != nil {
 		return fmt.Errorf("sqlite: begin: %w", err)
@@ -574,13 +606,13 @@ func (s *Store) runInTx(ctx context.Context, readOnly bool, fn func(context.Cont
 
 // mark stamps the context handed to a callback so a unit of work opened from
 // inside it can be recognised.
-func (s *Store) mark(ctx context.Context) context.Context {
+func (s *store) mark(ctx context.Context) context.Context {
 	return context.WithValue(ctx, inUnitOfWork{}, s)
 }
 
 // checkNotNested refuses to open a unit of work inside another one on this
 // store. See ErrNestedTransaction.
-func (s *Store) checkNotNested(ctx context.Context) error {
+func (s *store) checkNotNested(ctx context.Context) error {
 	if ctx.Value(inUnitOfWork{}) == s {
 		return ErrNestedTransaction
 	}
@@ -593,7 +625,7 @@ func (s *Store) checkNotNested(ctx context.Context) error {
 //
 // It is idempotent, because store/testenv closes a store the suite it hands it
 // to also closes.
-func (s *Store) Close() error {
+func (s *store) Close() error {
 	if s.keep != nil {
 		_ = s.keep.Close()
 		s.keep = nil
@@ -697,7 +729,7 @@ func isUniqueViolation(err error) bool {
 // the delete.
 //
 // The schema itself survives; only rows are removed.
-func (s *Store) Reset(ctx context.Context) error {
+func (s *store) Reset(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -714,103 +746,152 @@ func (s *Store) Reset(ctx context.Context) error {
 }
 
 // ---------------------------------------------------------------------------
-// The four other shapes of the same store
+// One type per institution
 // ---------------------------------------------------------------------------
 
-// BankLedger returns this store as a ledger.BankStore — the ledger plus the slot
-// mapping, which is a bank's alone.
+// The three institution stores. Each is the ONE implementation above, seen at
+// the width its schema can answer: a bank reaches 74 methods through its unit of
+// work, the clearing house 30, the settlement agent 46, and none of the three
+// can NAME a table its schema does not create.
 //
-// The bare *Store is the narrower ledger.Store, which is what the settlement
-// agent's ledger is.
-func (s *Store) BankLedger() ledger.BankStore { return bankLedgerStore{s} }
+// Nothing is duplicated to get that. There is one tx struct, one Store body and
+// one set of statements; what differs is which interface a caller is handed.
+type (
+	BankStore          struct{ *store }
+	ClearingHouseStore struct{ *store }
+	CentralBankStore   struct{ *store }
+)
 
-type bankLedgerStore struct{ *Store }
+// compile-time checks that each is the store the domain declares for its
+// institution.
+var (
+	_ payment.BankStore          = (*BankStore)(nil)
+	_ payment.ClearingHouseStore = (*ClearingHouseStore)(nil)
+	_ payment.CentralBankStore   = (*CentralBankStore)(nil)
+)
+
+func (s *BankStore) Update(ctx context.Context, fn func(context.Context, payment.BankTx) error) error {
+	return s.store.update(ctx, func(ctx context.Context, t *tx) error { return fn(ctx, t) })
+}
+
+func (s *BankStore) View(ctx context.Context, fn func(context.Context, payment.BankTx) error) error {
+	return s.store.view(ctx, func(ctx context.Context, t *tx) error { return fn(ctx, t) })
+}
+
+func (s *ClearingHouseStore) Update(ctx context.Context, fn func(context.Context, payment.CsmTx) error) error {
+	return s.store.update(ctx, func(ctx context.Context, t *tx) error { return fn(ctx, t) })
+}
+
+func (s *ClearingHouseStore) View(ctx context.Context, fn func(context.Context, payment.CsmTx) error) error {
+	return s.store.view(ctx, func(ctx context.Context, t *tx) error { return fn(ctx, t) })
+}
+
+func (s *CentralBankStore) Update(ctx context.Context, fn func(context.Context, payment.CentralBankTx) error) error {
+	return s.store.update(ctx, func(ctx context.Context, t *tx) error { return fn(ctx, t) })
+}
+
+func (s *CentralBankStore) View(ctx context.Context, fn func(context.Context, payment.CentralBankTx) error) error {
+	return s.store.view(ctx, func(ctx context.Context, t *tx) error { return fn(ctx, t) })
+}
+
+// EBICS is the transport state of an institution that is DIALLED: its download
+// queues and its order log.
+//
+// It is on these two types and on no third, which is the topology rather than an
+// omission. EBICS has no push, so a member bank dials the two institutions that
+// host queues and is never dialled itself; the files it is owed wait in a queue
+// in somebody else's database until it comes to collect them.
+func (s *ClearingHouseStore) EBICS() ebics.Store { return ebicsStore{s.store} }
+func (s *CentralBankStore) EBICS() ebics.Store   { return ebicsStore{s.store} }
+
+// ---------------------------------------------------------------------------
+// The layers underneath a bank
+// ---------------------------------------------------------------------------
+
+// Every accessor below re-types update and view and holds no state, so each
+// hands its callback the very same *tx: a Register and a Book built over one
+// store share a database transaction.
+
+// Ledger is the ledger.Store a Book takes, and both institutions that keep a
+// book of accounts have one.
+//
+// BankLedger beside it is a bank's WIDER ledger: the same tables plus the slot
+// mapping, which slot_accounts makes a bank's alone. They are two accessors
+// rather than one because a Book is the ledger BOTH institutions have, so it
+// takes the narrow one even here; the mapping is reached through the transaction
+// a deposit or lending act already holds.
+func (s *BankStore) Ledger() ledger.Store         { return ledgerStore{s.store} }
+func (s *BankStore) BankLedger() ledger.BankStore { return bankLedgerStore{s.store} }
+
+type bankLedgerStore struct{ *store }
 
 var _ ledger.BankStore = bankLedgerStore{}
 
 func (b bankLedgerStore) Update(ctx context.Context, fn func(context.Context, ledger.BankTx) error) error {
-	return b.Store.update(ctx, func(ctx context.Context, t *tx) error { return fn(ctx, t) })
+	return b.store.update(ctx, func(ctx context.Context, t *tx) error { return fn(ctx, t) })
 }
 
 func (b bankLedgerStore) View(ctx context.Context, fn func(context.Context, ledger.BankTx) error) error {
-	return b.Store.view(ctx, func(ctx context.Context, t *tx) error { return fn(ctx, t) })
+	return b.store.view(ctx, func(ctx context.Context, t *tx) error { return fn(ctx, t) })
 }
 
-// Deposit returns this store as a deposit.Store.
-//
-// It is an adapter rather than a second implementation because Go allows one
-// Update method per type and the four Store interfaces declare Update with four
-// different callback types. The adapter holds no state and
-// hands the callback the very same *tx, so a Register and a Book built over one
-// Store share a database transaction.
-func (s *Store) Deposit() deposit.Store { return depositStore{s} }
+// Ledger is the settlement agent's book, holding the members' reserve accounts.
+// There is no BankLedger beside it: this schema creates no slot mapping.
+func (s *CentralBankStore) Ledger() ledger.Store { return ledgerStore{s.store} }
 
-type depositStore struct{ *Store }
+type ledgerStore struct{ *store }
+
+var _ ledger.Store = ledgerStore{}
+
+func (l ledgerStore) Update(ctx context.Context, fn func(context.Context, ledger.Tx) error) error {
+	return l.store.update(ctx, func(ctx context.Context, t *tx) error { return fn(ctx, t) })
+}
+
+func (l ledgerStore) View(ctx context.Context, fn func(context.Context, ledger.Tx) error) error {
+	return l.store.view(ctx, func(ctx context.Context, t *tx) error { return fn(ctx, t) })
+}
+
+// Deposit, Product and Lending are a bank's other three layers. There is no
+// equivalent on the other two types: no other schema creates a deposit account,
+// a product or a facility.
+func (s *BankStore) Deposit() deposit.Store { return depositStore{s.store} }
+
+type depositStore struct{ *store }
 
 var _ deposit.Store = depositStore{}
 
 func (d depositStore) Update(ctx context.Context, fn func(context.Context, deposit.Tx) error) error {
-	return d.Store.update(ctx, func(ctx context.Context, t *tx) error { return fn(ctx, t) })
+	return d.store.update(ctx, func(ctx context.Context, t *tx) error { return fn(ctx, t) })
 }
 
 func (d depositStore) View(ctx context.Context, fn func(context.Context, deposit.Tx) error) error {
-	return d.Store.view(ctx, func(ctx context.Context, t *tx) error { return fn(ctx, t) })
+	return d.store.view(ctx, func(ctx context.Context, t *tx) error { return fn(ctx, t) })
 }
 
-// Product returns this store as a product.Store.
-func (s *Store) Product() product.Store { return productStore{s} }
+func (s *BankStore) Product() product.Store { return productStore{s.store} }
 
-// productStore re-types Store's update and view; Reset and Close are promoted
-// unchanged from the embedded *Store.
-type productStore struct{ *Store }
+type productStore struct{ *store }
 
-// compile-time check that the adapter satisfies the interface it exists for.
 var _ product.Store = productStore{}
 
 func (p productStore) Update(ctx context.Context, fn func(context.Context, product.Tx) error) error {
-	return p.Store.update(ctx, func(ctx context.Context, t *tx) error { return fn(ctx, t) })
+	return p.store.update(ctx, func(ctx context.Context, t *tx) error { return fn(ctx, t) })
 }
 
 func (p productStore) View(ctx context.Context, fn func(context.Context, product.Tx) error) error {
-	return p.Store.view(ctx, func(ctx context.Context, t *tx) error { return fn(ctx, t) })
+	return p.store.view(ctx, func(ctx context.Context, t *tx) error { return fn(ctx, t) })
 }
 
-// Lending returns this store as a lending.Store.
-//
-// Like Deposit, it is an adapter over the same *tx rather than a second
-// implementation: a facility write and its GL posting share one transaction
-// because both go through the same value.
-func (s *Store) Lending() lending.Store { return lendingStore{s} }
+func (s *BankStore) Lending() lending.Store { return lendingStore{s.store} }
 
-type lendingStore struct{ *Store }
+type lendingStore struct{ *store }
 
 var _ lending.Store = lendingStore{}
 
 func (l lendingStore) Update(ctx context.Context, fn func(context.Context, lending.Tx) error) error {
-	return l.Store.update(ctx, func(ctx context.Context, t *tx) error { return fn(ctx, t) })
+	return l.store.update(ctx, func(ctx context.Context, t *tx) error { return fn(ctx, t) })
 }
 
 func (l lendingStore) View(ctx context.Context, fn func(context.Context, lending.Tx) error) error {
-	return l.Store.view(ctx, func(ctx context.Context, t *tx) error { return fn(ctx, t) })
+	return l.store.view(ctx, func(ctx context.Context, t *tx) error { return fn(ctx, t) })
 }
-
-// Payment returns this store as a payment.Store. It is the handle a
-// payment.Network takes, and the only one it needs: the Network derives its own
-// ledger and deposit views from it.
-func (s *Store) Payment() payment.Store { return paymentStore{s} }
-
-type paymentStore struct{ *Store }
-
-var _ payment.Store = paymentStore{}
-
-func (p paymentStore) Update(ctx context.Context, fn func(context.Context, payment.Tx) error) error {
-	return p.Store.update(ctx, func(ctx context.Context, t *tx) error { return fn(ctx, t) })
-}
-
-func (p paymentStore) View(ctx context.Context, fn func(context.Context, payment.Tx) error) error {
-	return p.Store.view(ctx, func(ctx context.Context, t *tx) error { return fn(ctx, t) })
-}
-
-// compile-time check that the store satisfies the interface it is written
-// against; the other four are checked on the adapters above.
-var _ ledger.Store = (*Store)(nil)

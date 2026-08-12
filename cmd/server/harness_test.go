@@ -693,7 +693,7 @@ func (h *harness) getBank(t *testing.T, id payment.ParticipantID) *payment.Bank 
 func (h *harness) centralBankTransactionCount(t *testing.T) int {
 	t.Helper()
 	var n int
-	if err := h.cb().Store().View(context.Background(), func(ctx context.Context, tx payment.Tx) error {
+	if err := h.cb().Store().View(context.Background(), func(ctx context.Context, tx payment.CentralBankTx) error {
 		txs, err := tx.ListTransactions(ctx, payment.CentralBankBook)
 		n = len(txs)
 		return err
@@ -717,7 +717,7 @@ func (h *harness) centralBankTransactionCount(t *testing.T) int {
 func (h *harness) getSettlementMember(t *testing.T, bic iso20022.BIC) payment.SettlementMember {
 	t.Helper()
 	var out payment.SettlementMember
-	if err := h.cb().Store().View(context.Background(), func(ctx context.Context, tx payment.Tx) error {
+	if err := h.cb().Store().View(context.Background(), func(ctx context.Context, tx payment.CentralBankTx) error {
 		var err error
 		out, err = tx.GetSettlementMember(ctx, bic)
 		return err

@@ -145,7 +145,7 @@ func RunSystemRaces(t *testing.T, newStores func(*testing.T) payment.Stores) {
 		// The account numbers come off the CENTRAL BANK's own member rows, which is
 		// the institution that opened them.
 		var members []payment.SettlementMember
-		assertNoError(t, stores.CentralBank().View(ctx, func(ctx context.Context, tx payment.Tx) error {
+		assertNoError(t, stores.CentralBank().View(ctx, func(ctx context.Context, tx payment.CentralBankTx) error {
 			var err error
 			members, err = tx.ListSettlementMembers(ctx)
 			return err
@@ -251,11 +251,9 @@ func RunSystemRaces(t *testing.T, newStores func(*testing.T) payment.Stores) {
 // HOUSE's database.
 //
 // newStore must return that institution's store with no state in it; the suite
-// calls it once per subtest. It takes a payment.Store rather than the wider
-// Store because the clearing house has no book of accounts to reach — its schema
-// creates no ledger tables at all — so a wider handle would be a promise this
-// institution cannot keep.
-func RunClearingHouseRaces(t *testing.T, newStore func(*testing.T) payment.Store) {
+// calls it once per subtest. A ClearingHouseStore's unit of work names no book,
+// no account and no entry, because the clearing house's schema creates none.
+func RunClearingHouseRaces(t *testing.T, newStore func(*testing.T) payment.ClearingHouseStore) {
 	t.Helper()
 
 	// Two admissions of one address, and they were live in the commit that split
@@ -333,7 +331,7 @@ func RunClearingHouseRaces(t *testing.T, newStore func(*testing.T) payment.Store
 						"EUR": ledger.AccountID(fmt.Sprintf("200.100.00%d", i)),
 					},
 				}
-				return s.Update(ctx, func(ctx context.Context, tx payment.Tx) error {
+				return s.Update(ctx, func(ctx context.Context, tx payment.CsmTx) error {
 					_, err := csm.AdmitMemberTx(ctx, tx, ack)
 					return err
 				})
@@ -351,7 +349,7 @@ func RunClearingHouseRaces(t *testing.T, newStore func(*testing.T) payment.Store
 			// produces is an applicant told it was admitted while the entry
 			// names somebody else's admission, and that is what this reads.
 			var entry payment.RosterEntry
-			assertNoError(t, s.View(ctx, func(ctx context.Context, tx payment.Tx) error {
+			assertNoError(t, s.View(ctx, func(ctx context.Context, tx payment.CsmTx) error {
 				var err error
 				entry, err = tx.GetRosterEntry(ctx, bic)
 				return err
@@ -372,11 +370,10 @@ func RunClearingHouseRaces(t *testing.T, newStore func(*testing.T) payment.Store
 // database.
 //
 // newStore must return that institution's store with no state in it; the suite
-// calls it once per subtest. See RunClearingHouseRaces on why the argument is a
-// payment.Store — here the reason is the other way round: the settlement agent
-// HAS a book, and the case below reaches it through payment.Tx, which embeds
-// ledger.Tx.
-func RunCentralBankRaces(t *testing.T, newStore func(*testing.T) payment.Store) {
+// calls it once per subtest. The mirror of RunClearingHouseRaces: the settlement
+// agent HAS a book, and the case below reaches it through CentralBankTx, which
+// embeds ledger.Tx.
+func RunCentralBankRaces(t *testing.T, newStore func(*testing.T) payment.CentralBankStore) {
 	t.Helper()
 
 	// The lost update the same ordering closes, on the settlement agent's own
@@ -396,7 +393,7 @@ func RunCentralBankRaces(t *testing.T, newStore func(*testing.T) payment.Store) 
 
 		assets := []ledger.AssetCode{"EUR", "USD"}
 		errs := runConcurrently(len(assets), func(i int) error {
-			return s.Update(ctx, func(ctx context.Context, tx payment.Tx) error {
+			return s.Update(ctx, func(ctx context.Context, tx payment.CentralBankTx) error {
 				_, _, err := cb.OpenSettlementAccountTx(ctx, tx, payment.AdmissionRequest{
 					Name: "Aurora Bank", BIC: "AURODEFFXXX", Country: FixtureCountry,
 					Asset: assets[i], Ref: "adm-aurora",
@@ -410,7 +407,7 @@ func RunCentralBankRaces(t *testing.T, newStore func(*testing.T) payment.Store) 
 
 		// Both requests are legitimate and both must survive: one request names one
 		// currency, so this is how a two-currency bank is admitted.
-		assertNoError(t, s.View(ctx, func(ctx context.Context, tx payment.Tx) error {
+		assertNoError(t, s.View(ctx, func(ctx context.Context, tx payment.CentralBankTx) error {
 			member, err := tx.GetSettlementMember(ctx, "AURODEFFXXX")
 			if err != nil {
 				return err
@@ -428,7 +425,7 @@ func RunCentralBankRaces(t *testing.T, newStore func(*testing.T) payment.Store) 
 		// what catches the lost update from the other side: the row can name two
 		// accounts while the book holds three.
 		reserves := 0
-		assertNoError(t, s.View(ctx, func(ctx context.Context, tx payment.Tx) error {
+		assertNoError(t, s.View(ctx, func(ctx context.Context, tx payment.CentralBankTx) error {
 			accounts, err := tx.ListAccounts(ctx, payment.CentralBankBook)
 			if err != nil {
 				return err
@@ -463,7 +460,7 @@ func RunCentralBankRaces(t *testing.T, newStore func(*testing.T) payment.Store) 
 // it fail, and says so about itself. What the ephemeral store can and cannot
 // show is recorded on the cases themselves and, for the balance check, in
 // store/sqlite.LockAccounts.
-func RunConcurrentTxRaces(t *testing.T, newStore func(*testing.T) Store) {
+func RunConcurrentTxRaces(t *testing.T, newStore func(*testing.T) ledger.Store) {
 	t.Helper()
 
 	// A balance check followed by a posting.

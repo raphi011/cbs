@@ -177,18 +177,18 @@ func (n *Networks) Bank(ctx context.Context, pid ParticipantID) (*BankNetwork, e
 	if err != nil {
 		return nil, fmt.Errorf("payment: opening member bank %s's store: %w", pid, err)
 	}
-	return &BankNetwork{core: *newNetwork(store, n.clock, AsBank(pid), n.schemes)}, nil
+	return newBankNetwork(store, n.clock, pid, n.schemes), nil
 }
 
 // ClearingHouse returns the CSM's view, over the clearing house's database.
 func (n *Networks) ClearingHouse() *ClearingHouseNetwork {
-	return &ClearingHouseNetwork{core: *newNetwork(n.stores.ClearingHouse(), n.clock, AsClearingHouse(), n.schemes)}
+	return newClearingHouseNetwork(n.stores.ClearingHouse(), n.clock, n.schemes)
 }
 
 // CentralBank returns the settlement agent's view, which is the only one holding
 // the central bank's book, over the central bank's database.
 func (n *Networks) CentralBank() *CentralBankNetwork {
-	return &CentralBankNetwork{core: *newNetwork(n.stores.CentralBank(), n.clock, AsCentralBank(), n.schemes)}
+	return newCentralBankNetwork(n.stores.CentralBank(), n.clock, n.schemes)
 }
 
 // Stores is the set of databases these networks are minted over, so a caller

@@ -63,11 +63,11 @@ type Set struct {
 
 	// csm and cb are opened by OpenSet and never change: there is one of each
 	// and it exists before the first bank does.
-	csm *Store
-	cb  *Store
+	csm *ClearingHouseStore
+	cb  *CentralBankStore
 
 	mu     sync.Mutex
-	banks  map[iso20022.BIC]*Store
+	banks  map[iso20022.BIC]*BankStore
 	closed bool
 }
 
@@ -98,7 +98,7 @@ const dbExt = ".db"
 // which is the right outcome: a member the roster names and this process cannot
 // open is a bank that would answer nothing and say nothing about why.
 func OpenSet(ctx context.Context, dir string, clock func() time.Time) (*Set, error) {
-	s := &Set{dir: dir, clock: clock, banks: map[iso20022.BIC]*Store{}}
+	s := &Set{dir: dir, clock: clock, banks: map[iso20022.BIC]*BankStore{}}
 
 	if dir != "" {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -107,10 +107,10 @@ func OpenSet(ctx context.Context, dir string, clock func() time.Time) (*Set, err
 	}
 
 	var err error
-	if s.csm, err = Open(ctx, CSM, payment.ClearingHouseBook, s.path(clearingHouseFile), clock); err != nil {
+	if s.csm, err = OpenClearingHouse(ctx, s.path(clearingHouseFile), clock); err != nil {
 		return nil, err
 	}
-	if s.cb, err = Open(ctx, CentralBank, payment.CentralBankBook, s.path(centralBankFile), clock); err != nil {
+	if s.cb, err = OpenCentralBank(ctx, s.path(centralBankFile), clock); err != nil {
 		_ = s.Close()
 		return nil, err
 	}
@@ -172,12 +172,8 @@ func (s *Set) existingBanks() ([]iso20022.BIC, error) {
 
 // Bank is payment.Stores.Bank: one member bank's database, opened on the first
 // ask.
-func (s *Set) Bank(ctx context.Context, bic iso20022.BIC) (payment.Store, error) {
-	st, err := s.bank(ctx, bic)
-	if err != nil {
-		return nil, err
-	}
-	return st.Payment(), nil
+func (s *Set) Bank(ctx context.Context, bic iso20022.BIC) (payment.BankStore, error) {
+	return s.bank(ctx, bic)
 }
 
 // Banks is every bank this set holds a database for, ascending by address.
@@ -219,7 +215,7 @@ func (s *Set) Banks(ctx context.Context) ([]iso20022.BIC, error) {
 		s.mu.Unlock()
 		return nil, errors.New("sqlite: the store set is closed")
 	}
-	candidates := make(map[iso20022.BIC]*Store, len(s.banks))
+	candidates := make(map[iso20022.BIC]*BankStore, len(s.banks))
 	for bic, st := range s.banks {
 		candidates[bic] = st
 	}
@@ -245,9 +241,9 @@ func (s *Set) Banks(ctx context.Context) ([]iso20022.BIC, error) {
 // It asks for the row keyed by the address the file is named after rather than
 // listing the table, because a bank's database holds exactly its own row and a
 // listing would be the same read with a slice around it.
-func (s *Store) holdsABank(ctx context.Context, bic iso20022.BIC) (bool, error) {
+func (s *BankStore) holdsABank(ctx context.Context, bic iso20022.BIC) (bool, error) {
 	var found bool
-	err := s.Payment().View(ctx, func(ctx context.Context, tx payment.Tx) error {
+	err := s.View(ctx, func(ctx context.Context, tx payment.BankTx) error {
 		_, err := tx.GetBank(ctx, payment.ParticipantID(bic))
 		switch {
 		case errors.Is(err, payment.ErrParticipantNotFound):
@@ -264,18 +260,14 @@ func (s *Store) holdsABank(ctx context.Context, bic iso20022.BIC) (bool, error) 
 	return found, nil
 }
 
-// BankStore is Bank as the concrete store, for the composition root and the test
-// suites that need a layer the payment view does not name — a bank's ledger, its
-// deposit register, its own Reset.
-func (s *Set) BankStore(ctx context.Context, bic iso20022.BIC) (*Store, error) {
-	return s.bank(ctx, bic)
-}
-
 // bank is the cached open. It validates the BIC first, because the value names a
 // FILE here: an unvalidated one is a path this set would create on somebody
 // else's behalf, and "which banks exist" is a question answered by the contents
 // of a directory.
-func (s *Set) bank(ctx context.Context, bic iso20022.BIC) (*Store, error) {
+//
+// A bank IS its book and that id is its BIC, so the file name and the BookID are
+// the same string. See payment.AsBank for the ruling.
+func (s *Set) bank(ctx context.Context, bic iso20022.BIC) (*BankStore, error) {
 	if err := bic.Validate(); err != nil {
 		return nil, fmt.Errorf("sqlite: no database for %q: %w", bic, err)
 	}
@@ -288,7 +280,7 @@ func (s *Set) bank(ctx context.Context, bic iso20022.BIC) (*Store, error) {
 	if st, ok := s.banks[bic]; ok {
 		return st, nil
 	}
-	st, err := Open(ctx, Bank, ledger.BookID(bic), s.path(string(bic)+dbExt), s.clock)
+	st, err := OpenBank(ctx, ledger.BookID(bic), s.path(string(bic)+dbExt), s.clock)
 	if err != nil {
 		return nil, err
 	}
@@ -299,21 +291,15 @@ func (s *Set) bank(ctx context.Context, bic iso20022.BIC) (*Store, error) {
 // ClearingHouse and CentralBank are the two institutions' databases. Neither
 // takes a context or returns an error, because both were opened by OpenSet and
 // there is exactly one of each. See payment.Stores.
-func (s *Set) ClearingHouse() payment.Store { return s.csm.Payment() }
-func (s *Set) CentralBank() payment.Store   { return s.cb.Payment() }
-
-// ClearingHouseStore and CentralBankStore are the same two as concrete stores,
-// for the same reason BankStore exists.
-func (s *Set) ClearingHouseStore() *Store { return s.csm }
-func (s *Set) CentralBankStore() *Store   { return s.cb }
+func (s *Set) ClearingHouse() payment.ClearingHouseStore { return s.csm }
+func (s *Set) CentralBank() payment.CentralBankStore     { return s.cb }
 
 // ClearingHouseEBICS and CentralBankEBICS are the two hosts' transport state:
 // the download queues and the order log of each institution that is DIALLED.
 //
-// There is no bank equivalent and there cannot be one. A member bank hosts
-// nothing, so a *Store opened as the Bank shape answers ErrNotInThisShape to
-// every method on this interface, and there is nothing here to hand one out
-// from.
+// There is no bank equivalent and there cannot be one: EBICS is on the two store
+// types that host a queue and on no third, so a member bank's store has no such
+// method to call.
 //
 // They are on the set rather than on payment.Stores because the domain must not
 // name the transport: a payment.Network that could reach a queue would be an
@@ -351,11 +337,11 @@ func (s *Set) Reset(ctx context.Context) error {
 func (s *Set) Close() error {
 	s.mu.Lock()
 	s.closed = true
-	banks := make([]*Store, 0, len(s.banks))
+	banks := make([]*BankStore, 0, len(s.banks))
 	for _, st := range s.banks {
 		banks = append(banks, st)
 	}
-	s.banks = map[iso20022.BIC]*Store{}
+	s.banks = map[iso20022.BIC]*BankStore{}
 	s.mu.Unlock()
 
 	var errs []error
@@ -373,13 +359,13 @@ func (s *Set) Close() error {
 
 // all is every store currently open, the two institutions first. It takes the
 // lock, so a caller iterating it is not holding one while it does I/O.
-func (s *Set) all() []*Store {
+func (s *Set) all() []*store {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	out := make([]*Store, 0, len(s.banks)+2)
-	out = append(out, s.csm, s.cb)
+	out := make([]*store, 0, len(s.banks)+2)
+	out = append(out, s.csm.store, s.cb.store)
 	for _, st := range s.banks {
-		out = append(out, st)
+		out = append(out, st.store)
 	}
 	return out
 }

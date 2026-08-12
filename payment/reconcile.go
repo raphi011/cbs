@@ -105,7 +105,7 @@ const MetadataLodgementRef = "lodgement_ref"
 // it opens a file.
 func (s *BankNetwork) Reconcile(ctx context.Context, asset ledger.AssetCode) (Reconciliation, error) {
 	var out Reconciliation
-	err := s.store.Update(ctx, func(ctx context.Context, tx Tx) error {
+	err := s.store.Update(ctx, func(ctx context.Context, tx BankTx) error {
 		var err error
 		out, err = s.ReconcileTx(ctx, tx, asset)
 		return err
@@ -118,7 +118,7 @@ func (s *BankNetwork) Reconcile(ctx context.Context, asset ledger.AssetCode) (Re
 // It refuses an institution that is no bank: the clearing house has no ledger at
 // all and the settlement agent holds no reserve of its own, so the question has
 // no answer at either of them rather than an empty one.
-func (s *BankNetwork) ReconcileTx(ctx context.Context, tx Tx, asset ledger.AssetCode) (Reconciliation, error) {
+func (s *BankNetwork) ReconcileTx(ctx context.Context, tx BankTx, asset ledger.AssetCode) (Reconciliation, error) {
 	bank, err := s.selfBankTx(ctx, tx)
 	if err != nil {
 		return Reconciliation{}, err
@@ -206,7 +206,7 @@ func (s *BankNetwork) ReconcileTx(ctx context.Context, tx Tx, asset ledger.Asset
 // this bank at all — it is the settlement agent's own liability to the member,
 // which recon compares across the two databases, or a periodic statement. There
 // is no periodic statement.
-func (s *Network) reserveHoldsTogether(ctx context.Context, tx Tx, bank *Bank, accts BankAccounts,
+func (s *BankNetwork) reserveHoldsTogether(ctx context.Context, tx BankTx, bank *Bank, accts BankAccounts,
 	byMirror map[ledger.TransactionID]SettlementAdvice, rec *Reconciliation,
 ) error {
 	hist, err := bank.Ledger.AccountHistoryTx(ctx, tx, accts.Reserve.Total())
@@ -269,7 +269,7 @@ func (s *Network) reserveHoldsTogether(ctx context.Context, tx Tx, bank *Bank, a
 // clock on a clearing suspense — what discharges it is a conversation — so there
 // is no deadline to apply here or anywhere. See AgeClearingSuspense, whose
 // report this is.
-func (s *Network) suspenseIsAged(ctx context.Context, tx Tx, bank *Bank, accts BankAccounts,
+func (s *BankNetwork) suspenseIsAged(ctx context.Context, tx BankTx, bank *Bank, accts BankAccounts,
 	rec *Reconciliation,
 ) error {
 	rep, _, err := s.ageTx(ctx, tx, bank, accts.Suspense, rec.Asset)
@@ -297,7 +297,7 @@ func (s *Network) suspenseIsAged(ctx context.Context, tx Tx, bank *Bank, accts B
 // neither of the other two institutions holds one.
 func (s *BankNetwork) ListSettlementAdvices(ctx context.Context) ([]SettlementAdvice, error) {
 	var out []SettlementAdvice
-	err := s.store.View(ctx, func(ctx context.Context, tx Tx) error {
+	err := s.store.View(ctx, func(ctx context.Context, tx BankTx) error {
 		var err error
 		out, err = s.ListSettlementAdvicesTx(ctx, tx)
 		return err
@@ -307,7 +307,7 @@ func (s *BankNetwork) ListSettlementAdvices(ctx context.Context) ([]SettlementAd
 
 // ListSettlementAdvicesTx is ListSettlementAdvices within a caller-supplied unit
 // of work.
-func (s *BankNetwork) ListSettlementAdvicesTx(ctx context.Context, tx Tx) ([]SettlementAdvice, error) {
+func (s *BankNetwork) ListSettlementAdvicesTx(ctx context.Context, tx BankTx) ([]SettlementAdvice, error) {
 	bank, err := s.selfBankTx(ctx, tx)
 	if err != nil {
 		return nil, err

@@ -118,7 +118,7 @@ func (l AgedLot) Overdue() bool { return l.Deadline > 0 && l.Days >= l.Deadline 
 // reading it is what no institution may do. See payment/recon, which can.
 func (s *BankNetwork) AgeClearingSuspense(ctx context.Context, asset ledger.AssetCode) (AgeingReport, error) {
 	var out AgeingReport
-	err := s.store.View(ctx, func(ctx context.Context, tx Tx) error {
+	err := s.store.View(ctx, func(ctx context.Context, tx BankTx) error {
 		var err error
 		out, err = s.AgeClearingSuspenseTx(ctx, tx, asset)
 		return err
@@ -128,7 +128,7 @@ func (s *BankNetwork) AgeClearingSuspense(ctx context.Context, asset ledger.Asse
 
 // AgeClearingSuspenseTx is AgeClearingSuspense within a caller-supplied unit of
 // work.
-func (s *BankNetwork) AgeClearingSuspenseTx(ctx context.Context, tx Tx, asset ledger.AssetCode) (AgeingReport, error) {
+func (s *BankNetwork) AgeClearingSuspenseTx(ctx context.Context, tx BankTx, asset ledger.AssetCode) (AgeingReport, error) {
 	bank, accts, err := s.ownAccountsTx(ctx, tx, asset)
 	if err != nil {
 		return AgeingReport{}, err
@@ -168,7 +168,7 @@ func (s *BankNetwork) AgeClearingSuspenseTx(ctx context.Context, tx Tx, asset le
 //     than for a missing message.
 func (s *BankNetwork) AgeUnclaimedBalances(ctx context.Context, asset ledger.AssetCode) (AgeingReport, error) {
 	var out AgeingReport
-	err := s.store.View(ctx, func(ctx context.Context, tx Tx) error {
+	err := s.store.View(ctx, func(ctx context.Context, tx BankTx) error {
 		var err error
 		out, err = s.AgeUnclaimedBalancesTx(ctx, tx, asset)
 		return err
@@ -178,7 +178,7 @@ func (s *BankNetwork) AgeUnclaimedBalances(ctx context.Context, asset ledger.Ass
 
 // AgeUnclaimedBalancesTx is AgeUnclaimedBalances within a caller-supplied unit
 // of work.
-func (s *BankNetwork) AgeUnclaimedBalancesTx(ctx context.Context, tx Tx, asset ledger.AssetCode) (AgeingReport, error) {
+func (s *BankNetwork) AgeUnclaimedBalancesTx(ctx context.Context, tx BankTx, asset ledger.AssetCode) (AgeingReport, error) {
 	bank, accts, err := s.ownAccountsTx(ctx, tx, asset)
 	if err != nil {
 		return AgeingReport{}, err
@@ -229,7 +229,7 @@ func (s *BankNetwork) AgeUnclaimedBalancesTx(ctx context.Context, tx Tx, asset l
 // accounts in one asset. The clearing house has no ledger and the settlement
 // agent holds no suspense of its own, so both are refused here rather than
 // answered with an empty report.
-func (s *BankNetwork) ownAccountsTx(ctx context.Context, tx Tx, asset ledger.AssetCode) (*Bank, BankAccounts, error) {
+func (s *BankNetwork) ownAccountsTx(ctx context.Context, tx BankTx, asset ledger.AssetCode) (*Bank, BankAccounts, error) {
 	bank, err := s.selfBankTx(ctx, tx)
 	if err != nil {
 		return nil, BankAccounts{}, err
@@ -248,7 +248,7 @@ func (s *BankNetwork) ownAccountsTx(ctx context.Context, tx Tx, asset ledger.Ass
 // posting carries (paymentMetadata) and the netted mirror leg does not. Reading
 // it here rather than in each report is what keeps "which payment put this
 // here" one rule instead of two.
-func (s *Network) ageTx(ctx context.Context, tx Tx, bank *Bank, account ledger.AccountID,
+func (s *BankNetwork) ageTx(ctx context.Context, tx BankTx, bank *Bank, account ledger.AccountID,
 	asset ledger.AssetCode,
 ) (AgeingReport, iso20022.BIC, error) {
 	hist, err := bank.Ledger.AccountHistoryTx(ctx, tx, account.Total())

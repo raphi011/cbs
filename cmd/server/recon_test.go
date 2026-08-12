@@ -731,35 +731,35 @@ func (h *harness) onlySettledPayment(t *testing.T) payment.Payment {
 
 func (h *harness) putCycle(t *testing.T, c payment.ClearingCycle) {
 	t.Helper()
-	h.write(t, h.rec.ClearingHouse(), "the clearing house", func(ctx context.Context, tx payment.Tx) error {
+	h.writeCsm(t, func(ctx context.Context, tx payment.CsmTx) error {
 		return tx.PutCycle(ctx, c)
 	})
 }
 
 func (h *harness) putRosterEntry(t *testing.T, e payment.RosterEntry) {
 	t.Helper()
-	h.write(t, h.rec.ClearingHouse(), "the clearing house", func(ctx context.Context, tx payment.Tx) error {
+	h.writeCsm(t, func(ctx context.Context, tx payment.CsmTx) error {
 		return tx.PutRosterEntry(ctx, e)
 	})
 }
 
 func (h *harness) putSettlement(t *testing.T, s payment.Settlement) {
 	t.Helper()
-	h.write(t, h.rec.CentralBank(), "the central bank", func(ctx context.Context, tx payment.Tx) error {
+	h.writeCentralBank(t, func(ctx context.Context, tx payment.CentralBankTx) error {
 		return tx.PutSettlement(ctx, s)
 	})
 }
 
 func (h *harness) putClearingHousePayment(t *testing.T, p payment.Payment) {
 	t.Helper()
-	h.write(t, h.rec.ClearingHouse(), "the clearing house", func(ctx context.Context, tx payment.Tx) error {
+	h.writeCsm(t, func(ctx context.Context, tx payment.CsmTx) error {
 		return tx.PutPayment(ctx, p)
 	})
 }
 
 func (h *harness) putPayment(t *testing.T, bic iso20022.BIC, p payment.Payment) {
 	t.Helper()
-	h.write(t, h.store(t, bic), string(bic), func(ctx context.Context, tx payment.Tx) error {
+	h.write(t, h.store(t, bic), string(bic), func(ctx context.Context, tx payment.BankTx) error {
 		return tx.PutPayment(ctx, p)
 	})
 }
@@ -769,14 +769,14 @@ func (h *harness) putPayment(t *testing.T, bic iso20022.BIC, p payment.Payment) 
 // institution, which is what makes the states it reaches invisible from outside.
 func (h *harness) putBank(t *testing.T, b payment.Bank) {
 	t.Helper()
-	h.write(t, h.store(t, b.BIC), string(b.BIC), func(ctx context.Context, tx payment.Tx) error {
+	h.write(t, h.store(t, b.BIC), string(b.BIC), func(ctx context.Context, tx payment.BankTx) error {
 		return tx.PutBank(ctx, b)
 	})
 }
 
 func (h *harness) putDepositAccount(t *testing.T, bic iso20022.BIC, book ledger.BookID, a deposit.Account) {
 	t.Helper()
-	h.write(t, h.store(t, bic), string(bic), func(ctx context.Context, tx payment.Tx) error {
+	h.write(t, h.store(t, bic), string(bic), func(ctx context.Context, tx payment.BankTx) error {
 		return tx.PutDepositAccount(ctx, book, a)
 	})
 }
@@ -794,12 +794,12 @@ func (h *harness) rosterEntry(t *testing.T, bic iso20022.BIC) payment.RosterEntr
 
 func (h *harness) putSettlementAdvice(t *testing.T, bic iso20022.BIC, a payment.SettlementAdvice) {
 	t.Helper()
-	h.write(t, h.store(t, bic), string(bic), func(ctx context.Context, tx payment.Tx) error {
+	h.write(t, h.store(t, bic), string(bic), func(ctx context.Context, tx payment.BankTx) error {
 		return tx.PutSettlementAdvice(ctx, a.Book, a)
 	})
 }
 
-func (h *harness) store(t *testing.T, bic iso20022.BIC) payment.Store {
+func (h *harness) store(t *testing.T, bic iso20022.BIC) payment.BankStore {
 	t.Helper()
 	store, err := h.rec.Bank(context.Background(), bic)
 	if err != nil {
@@ -808,9 +808,25 @@ func (h *harness) store(t *testing.T, bic iso20022.BIC) payment.Store {
 	return store
 }
 
-func (h *harness) write(t *testing.T, store payment.Store, who string, fn func(context.Context, payment.Tx) error) {
+// write, one per institution, because a row this harness plants goes into one
+// database and there are three kinds.
+func (h *harness) write(t *testing.T, store payment.BankStore, who string, fn func(context.Context, payment.BankTx) error) {
 	t.Helper()
 	if err := store.Update(context.Background(), fn); err != nil {
 		t.Fatalf("writing into %s's database: %v", who, err)
+	}
+}
+
+func (h *harness) writeCsm(t *testing.T, fn func(context.Context, payment.CsmTx) error) {
+	t.Helper()
+	if err := h.rec.ClearingHouse().Update(context.Background(), fn); err != nil {
+		t.Fatalf("writing into the clearing house's database: %v", err)
+	}
+}
+
+func (h *harness) writeCentralBank(t *testing.T, fn func(context.Context, payment.CentralBankTx) error) {
+	t.Helper()
+	if err := h.rec.CentralBank().Update(context.Background(), fn); err != nil {
+		t.Fatalf("writing into the central bank's database: %v", err)
 	}
 }

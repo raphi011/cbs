@@ -322,10 +322,10 @@ func newTestRegisterOnFile(t *testing.T) (*Register, *ledger.Book, ledger.Subled
 	t.Helper()
 	ctx := context.Background()
 	clock := func() time.Time { return fixedTime }
-	store, err := sqlite.Open(ctx, sqlite.Bank, testenv.BankBook, filepath.Join(t.TempDir(), "transfers.db"), clock)
+	store, err := sqlite.OpenBank(ctx, testenv.BankBook, filepath.Join(t.TempDir(), "transfers.db"), clock)
 	assertNoError(t, err)
 	t.Cleanup(func() { assertNoError(t, store.Close()) })
-	book := ledger.NewBook(store, testenv.BankBook, clock)
+	book := ledger.NewBook(store.Ledger(), testenv.BankBook, clock)
 	cat := product.NewCatalogue(store.Product(), book, book.ID(), clock)
 
 	gl, err := book.CreateLedger(ctx, "General Ledger")

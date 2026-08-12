@@ -39,7 +39,7 @@ func newTestPortfolioOn(t *testing.T, clock func() time.Time) (*lending.Portfoli
 	ctx := context.Background()
 
 	store := testenv.New(t, clock)
-	book := ledger.NewBook(store, bookID, clock)
+	book := ledger.NewBook(store.Ledger(), bookID, clock)
 
 	gl, err := book.CreateLedger(ctx, "GL")
 	if err != nil {

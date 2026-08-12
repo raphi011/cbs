@@ -11,12 +11,16 @@ import (
 	"github.com/raphi011/cbs/ledger"
 )
 
-// tx is one unit of work: one SQLite transaction on one pooled connection. The
-// same value implements ledger.Tx, deposit.Tx, product.Tx, lending.Tx and
-// payment.Tx, which is what lets a settlement post across several banks' books
-// and record itself in a single BEGIN … COMMIT.
+// tx is one unit of work: one SQLite transaction on one pooled connection.
+//
+// ONE value implements every transaction interface in this system — ledger.Tx
+// and ledger.BankTx, deposit.Tx, product.Tx, lending.Tx, ebics.Tx, and all three
+// of payment.BankTx, payment.CsmTx and payment.CentralBankTx. Which of them a
+// caller may NAME is decided by the store it was handed (see BankStore and the
+// two beside it); what it is handed is always this, so a bank's deposit write
+// and the GL posting under it are one BEGIN … COMMIT.
 type tx struct {
-	store    *Store
+	store    *store
 	tx       *sql.Tx
 	readOnly bool
 

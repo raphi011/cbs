@@ -656,7 +656,7 @@ func TestSettlementMessageRefusesAnUnknownAsset(t *testing.T) {
 // to a View, while every remaining GetDepositAccount call site in payment runs
 // inside an Update.
 type failingTx struct {
-	Tx
+	BankTx
 	err error
 }
 
@@ -673,13 +673,13 @@ func (t failingTx) ListDepositAccountsByIdentifier(ctx context.Context, book led
 // demand from a test. A synthetic error injected at the seam reaches the code
 // under test whatever is underneath and depends on no driver behaviour at all.
 type failingStore struct {
-	Store
+	BankStore
 	err error
 }
 
-func (s failingStore) View(ctx context.Context, fn func(context.Context, Tx) error) error {
-	return s.Store.View(ctx, func(ctx context.Context, tx Tx) error {
-		return fn(ctx, failingTx{Tx: tx, err: s.err})
+func (s failingStore) View(ctx context.Context, fn func(context.Context, BankTx) error) error {
+	return s.BankStore.View(ctx, func(ctx context.Context, tx BankTx) error {
+		return fn(ctx, failingTx{BankTx: tx, err: s.err})
 	})
 }
 
@@ -1115,7 +1115,7 @@ func TestCreditTransferRequestDoesNotBlameTheCounterpartyForAStoreFailure(t *tes
 	// Wrapping the clearing house's store instead reported a missing table
 	// rather than the injected failure, which is a true statement about the
 	// wrong institution.
-	broken := NewBankNetwork(failingStore{Store: n.bank(p.CreditorDetails.Agent).Store(), err: dropped},
+	broken := NewBankNetwork(failingStore{BankStore: n.bank(p.CreditorDetails.Agent).Store(), err: dropped},
 		func() time.Time { return fixedTime }, ParticipantID(p.CreditorDetails.Agent))
 
 	_, err = broken.CreditTransferRequest(ctx, env.Document.(*iso20022.Pacs008))

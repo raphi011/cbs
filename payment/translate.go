@@ -1001,8 +1001,9 @@ func groupSettlementDate(out []outbound, mc MessageContext) (iso20022.ISODate, e
 // It is the only builder that reads a store, and only on a pull: a pacs.003
 // carries each debtor's own mandate and a payment holds nothing of one but its
 // id. The read is a View over the submitting bank's own database — a mandate is
-// held by the CREDITOR's bank in SEPA, which is the bank reaching this cut-off.
-func (s *Network) InstructionMessage(ctx context.Context, ps []Payment, mc MessageContext) (iso20022.Envelope, error) {
+// held by the CREDITOR's bank in SEPA, which is the bank reaching this cut-off —
+// and that read is why this is a BANK's act rather than the core's.
+func (s *BankNetwork) InstructionMessage(ctx context.Context, ps []Payment, mc MessageContext) (iso20022.Envelope, error) {
 	if len(ps) == 0 {
 		return iso20022.Envelope{}, fmt.Errorf("payment: a file with no transactions is not a message")
 	}
@@ -1019,7 +1020,7 @@ func (s *Network) InstructionMessage(ctx context.Context, ps []Payment, mc Messa
 		return s.CreditTransferMessage(ps, mc)
 	}
 	var cs []Collection
-	err := s.store.View(ctx, func(ctx context.Context, tx Tx) error {
+	err := s.store.View(ctx, func(ctx context.Context, tx BankTx) error {
 		cs = make([]Collection, 0, len(ps))
 		for _, p := range ps {
 			m, err := tx.GetMandate(ctx, p.MandateID)
@@ -1054,7 +1055,7 @@ func (s *Network) InstructionMessage(ctx context.Context, ps []Payment, mc Messa
 // What it costs is one rendering per payment that is thrown away, and the
 // transaction it renders is rendered again at the cut-off. That is the price of
 // the check being the real thing rather than a summary of it.
-func (s *Network) instructableTx(ctx context.Context, tx Tx, p Payment) error {
+func (s *BankNetwork) instructableTx(ctx context.Context, tx BankTx, p Payment) error {
 	scheme, ok := s.scheme(p.Scheme)
 	if !ok {
 		return fmt.Errorf("%w: %s", ErrSchemeNotFound, p.Scheme)
@@ -1823,7 +1824,7 @@ func amountIn(amt iso20022.ActiveCurrencyAndAmount) (ledger.Amount, ledger.Asset
 // than an argument the caller supplies — see ResolveIdentifier.
 func (s *BankNetwork) localPartyIn(ctx context.Context, ident deposit.Identifier) (PartyRef, error) {
 	var ref PartyRef
-	err := s.store.View(ctx, func(ctx context.Context, tx Tx) error {
+	err := s.store.View(ctx, func(ctx context.Context, tx BankTx) error {
 		var err error
 		ref, err = s.addressedPartyTx(ctx, tx, ident)
 		return err
@@ -1856,7 +1857,7 @@ func (s *BankNetwork) localPartyIn(ctx context.Context, ident deposit.Identifier
 // TestCreditTransferRequestRefusesAnAddressTwoBanksClaim and
 // TestCreditTransferRequestDoesNotBlameTheCounterpartyForAStoreFailure; both
 // fail on the collapsed shape.
-func (s *BankNetwork) addressedPartyTx(ctx context.Context, tx Tx, ident deposit.Identifier) (PartyRef, error) {
+func (s *BankNetwork) addressedPartyTx(ctx context.Context, tx BankTx, ident deposit.Identifier) (PartyRef, error) {
 	ref, err := s.ResolveIdentifierTx(ctx, tx, ident)
 	if errors.Is(err, deposit.ErrIdentifierNotFound) {
 		return PartyRef{}, fmt.Errorf("%w: %s", ErrAccountNotInParticipant, ident.Value)

@@ -47,7 +47,7 @@ import (
 // Their data fields are a snapshot; mutating them changes nothing.
 func (s *BankNetwork) ListBanks(ctx context.Context) ([]*Bank, error) {
 	var out []*Bank
-	err := s.store.View(ctx, func(ctx context.Context, tx Tx) error {
+	err := s.store.View(ctx, func(ctx context.Context, tx BankTx) error {
 		records, err := tx.ListBanks(ctx)
 		if err != nil {
 			return err
@@ -79,7 +79,7 @@ func (s *BankNetwork) ListBanks(ctx context.Context) ([]*Bank, error) {
 // submitting bank's door asks.
 func (s *BankNetwork) GetBank(ctx context.Context, id ParticipantID) (*Bank, error) {
 	var out *Bank
-	err := s.store.View(ctx, func(ctx context.Context, tx Tx) error {
+	err := s.store.View(ctx, func(ctx context.Context, tx BankTx) error {
 		var err error
 		out, err = s.bankTx(ctx, tx, id)
 		return err
@@ -130,7 +130,7 @@ func (s *BankNetwork) GetBank(ctx context.Context, id ParticipantID) (*Bank, err
 // between this is what the clearing house's own row says about that address.
 func (s *ClearingHouseNetwork) GetRosterEntryByBIC(ctx context.Context, bic iso20022.BIC) (RosterEntry, error) {
 	var out RosterEntry
-	err := s.store.View(ctx, func(ctx context.Context, tx Tx) error {
+	err := s.store.View(ctx, func(ctx context.Context, tx CsmTx) error {
 		var err error
 		out, err = tx.GetRosterEntry(ctx, bic)
 		return err
@@ -151,7 +151,7 @@ func (s *ClearingHouseNetwork) GetRosterEntryByBIC(ctx context.Context, bic iso2
 // being enrolled as a subscriber.
 func (s *ClearingHouseNetwork) ListRosterEntries(ctx context.Context) ([]RosterEntry, error) {
 	var out []RosterEntry
-	err := s.store.View(ctx, func(ctx context.Context, tx Tx) error {
+	err := s.store.View(ctx, func(ctx context.Context, tx CsmTx) error {
 		var err error
 		out, err = tx.ListRosterEntries(ctx)
 		return err
@@ -174,7 +174,7 @@ func (s *ClearingHouseNetwork) ListRosterEntries(ctx context.Context) ([]RosterE
 // wants a different institution.
 func (s *CentralBankNetwork) ListSettlementMembers(ctx context.Context) ([]SettlementMember, error) {
 	var out []SettlementMember
-	err := s.store.View(ctx, func(ctx context.Context, tx Tx) error {
+	err := s.store.View(ctx, func(ctx context.Context, tx CentralBankTx) error {
 		var err error
 		out, err = tx.ListSettlementMembers(ctx)
 		return err
@@ -192,7 +192,7 @@ func (s *CentralBankNetwork) ListSettlementMembers(ctx context.Context) ([]Settl
 // accounts in, which is not necessarily what the bank thinks it operates in.
 func (s *CentralBankNetwork) GetSettlementMember(ctx context.Context, bic iso20022.BIC) (SettlementMember, error) {
 	var out SettlementMember
-	err := s.store.View(ctx, func(ctx context.Context, tx Tx) error {
+	err := s.store.View(ctx, func(ctx context.Context, tx CentralBankTx) error {
 		var err error
 		out, err = tx.GetSettlementMember(ctx, bic)
 		return err
@@ -200,10 +200,27 @@ func (s *CentralBankNetwork) GetSettlementMember(ctx context.Context, bic iso200
 	return out, err
 }
 
-// ListPayments returns all payments, oldest first.
-func (s *Network) ListPayments(ctx context.Context) ([]Payment, error) {
+// ListPayments returns this institution's own copy of every payment it is a
+// party to, oldest first.
+//
+// It is a method on each of the two institutions that keep payment rows rather
+// than one on the core they share, because the settlement agent keeps none: it
+// discharges cut-offs, and a cut-off names no payment. The two bodies are the
+// same three lines over two different units of work, which is what the
+// duplication buys — a CentralBankNetwork cannot name this at all.
+func (s *BankNetwork) ListPayments(ctx context.Context) ([]Payment, error) {
 	var out []Payment
-	err := s.store.View(ctx, func(ctx context.Context, tx Tx) error {
+	err := s.store.View(ctx, func(ctx context.Context, tx BankTx) error {
+		var err error
+		out, err = tx.ListPayments(ctx)
+		return err
+	})
+	return out, err
+}
+
+func (s *ClearingHouseNetwork) ListPayments(ctx context.Context) ([]Payment, error) {
+	var out []Payment
+	err := s.store.View(ctx, func(ctx context.Context, tx CsmTx) error {
 		var err error
 		out, err = tx.ListPayments(ctx)
 		return err
@@ -243,7 +260,7 @@ func (s *BankNetwork) ListMandates(ctx context.Context) ([]Mandate, error) {
 		return nil, err
 	}
 	var out []Mandate
-	err := s.store.View(ctx, func(ctx context.Context, tx Tx) error {
+	err := s.store.View(ctx, func(ctx context.Context, tx BankTx) error {
 		var err error
 		out, err = tx.ListMandates(ctx)
 		return err
@@ -254,7 +271,7 @@ func (s *BankNetwork) ListMandates(ctx context.Context) ([]Mandate, error) {
 // ListCycles returns all clearing cycles, oldest first by the time they opened.
 func (s *ClearingHouseNetwork) ListCycles(ctx context.Context) ([]ClearingCycle, error) {
 	var out []ClearingCycle
-	err := s.store.View(ctx, func(ctx context.Context, tx Tx) error {
+	err := s.store.View(ctx, func(ctx context.Context, tx CsmTx) error {
 		var err error
 		out, err = tx.ListCycles(ctx)
 		return err
@@ -266,7 +283,7 @@ func (s *ClearingHouseNetwork) ListCycles(ctx context.Context) ([]ClearingCycle,
 // settled.
 func (s *CentralBankNetwork) ListSettlements(ctx context.Context) ([]Settlement, error) {
 	var out []Settlement
-	err := s.store.View(ctx, func(ctx context.Context, tx Tx) error {
+	err := s.store.View(ctx, func(ctx context.Context, tx CentralBankTx) error {
 		var err error
 		out, err = tx.ListSettlements(ctx)
 		return err
@@ -278,7 +295,7 @@ func (s *CentralBankNetwork) ListSettlements(ctx context.Context) ([]Settlement,
 // ErrSettlementNotFound if it does not exist.
 func (s *CentralBankNetwork) GetSettlement(ctx context.Context, id SettlementID) (Settlement, error) {
 	var out Settlement
-	err := s.store.View(ctx, func(ctx context.Context, tx Tx) error {
+	err := s.store.View(ctx, func(ctx context.Context, tx CentralBankTx) error {
 		var err error
 		out, err = tx.GetSettlement(ctx, id)
 		return err
@@ -296,7 +313,7 @@ func (s *CentralBankNetwork) GetSettlement(ctx context.Context, id SettlementID)
 // is answerable at the agent alone. See ClearingCycle.
 func (s *CentralBankNetwork) GetSettlementByCycleID(ctx context.Context, id CycleID) (Settlement, error) {
 	var out Settlement
-	err := s.store.View(ctx, func(ctx context.Context, tx Tx) error {
+	err := s.store.View(ctx, func(ctx context.Context, tx CentralBankTx) error {
 		var err error
 		out, err = tx.GetSettlementByCycle(ctx, id)
 		return err

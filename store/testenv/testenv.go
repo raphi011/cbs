@@ -38,19 +38,17 @@ import (
 	"github.com/raphi011/cbs/ledger"
 	"github.com/raphi011/cbs/payment"
 	"github.com/raphi011/cbs/store/sqlite"
-	"github.com/raphi011/cbs/store/storetest"
 )
 
-// Store is the shape a suite needs when it wants several layers of the store at
-// once. It is storetest.Store, aliased so that the suites which already say
-// testenv.Store keep saying it.
-type Store = storetest.Store
-
-// compile-time checks that the implementation really does satisfy the two
-// interfaces this package hands out.
+// compile-time checks that the implementation really does satisfy the interfaces
+// this package hands out. There is one per institution now, which is the store
+// split: a bank's store, the clearing house's and the settlement agent's are
+// three types and no interface spans them.
 var (
-	_ Store          = (*sqlite.Store)(nil)
-	_ payment.Stores = (*sqlite.Set)(nil)
+	_ payment.BankStore          = (*sqlite.BankStore)(nil)
+	_ payment.ClearingHouseStore = (*sqlite.ClearingHouseStore)(nil)
+	_ payment.CentralBankStore   = (*sqlite.CentralBankStore)(nil)
+	_ payment.Stores             = (*sqlite.Set)(nil)
 )
 
 // BankBook is the book the store New opens answers for.
@@ -88,9 +86,9 @@ const BankBook ledger.BookID = "bank"
 // An ephemeral database is isolation for free: there is nothing to create and
 // nothing to drop, and truncation would have made every test depend on the order
 // tables are emptied in.
-func New(t *testing.T, clock func() time.Time) *sqlite.Store {
+func New(t *testing.T, clock func() time.Time) *sqlite.BankStore {
 	t.Helper()
-	store, err := sqlite.Open(context.Background(), sqlite.Bank, BankBook, "", clock)
+	store, err := sqlite.OpenBank(context.Background(), BankBook, "", clock)
 	if err != nil {
 		t.Fatalf("testenv: open sqlite: %v", err)
 	}

@@ -36,7 +36,7 @@ import (
 // budget's own limit is TestTheRetryBudgetOutlastsASlowWriter's subject.
 func TestConcurrentPostingsOnAFileReachTheDomainGuard(t *testing.T) {
 	ctx := context.Background()
-	s, err := sqlite.Open(ctx, sqlite.Bank, testenv.BankBook, filepath.Join(t.TempDir(), "postings.db"), frozen)
+	s, err := sqlite.OpenBank(ctx, testenv.BankBook, filepath.Join(t.TempDir(), "postings.db"), frozen)
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -46,7 +46,7 @@ func TestConcurrentPostingsOnAFileReachTheDomainGuard(t *testing.T) {
 		}
 	})
 
-	book := ledger.NewBook(s, testenv.BankBook, frozen)
+	book := ledger.NewBook(s.Ledger(), testenv.BankBook, frozen)
 	cash, equity := fundedChart(t, book, 1_000)
 
 	const hold = 50 * time.Millisecond
@@ -62,7 +62,7 @@ func TestConcurrentPostingsOnAFileReachTheDomainGuard(t *testing.T) {
 		go func() {
 			defer done.Done()
 			first := true
-			errs[i] = s.Update(ctx, func(ctx context.Context, tx ledger.Tx) error {
+			errs[i] = s.Ledger().Update(ctx, func(ctx context.Context, tx ledger.Tx) error {
 				// Only the first attempt waits at the barrier. A retry must not,
 				// or the retries wait for racers that have finished.
 				if first {

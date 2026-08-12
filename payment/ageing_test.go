@@ -386,11 +386,11 @@ func TestAgeingIsNotAnActTheOtherTwoInstitutionsCanPerform(t *testing.T) {
 	sys := agedNetwork(t)
 	setupTwoBanks(t, sys.testSystem)
 
-	asCSM := BankHandleOverClearingHouse(sys.ClearingHouseNetwork)
+	asCSM := BankHandleOverClearingHouse(sys.bank(testBIC), sys.ClearingHouseNetwork)
 	if _, err := asCSM.AgeClearingSuspense(ctx, testAsset); err == nil {
 		t.Fatal("the clearing house aged a suspense it does not have")
 	}
-	asCB := BankHandleOverCentralBank(sys.cb())
+	asCB := BankHandleOverCentralBank(sys.bank(testBIC), sys.cb())
 	if _, err := asCB.AgeUnclaimedBalances(ctx, testAsset); err == nil {
 		t.Fatal("the settlement agent aged unclaimed balances it does not have")
 	}

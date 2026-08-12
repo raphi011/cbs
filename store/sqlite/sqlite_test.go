@@ -35,16 +35,20 @@ const testBook ledger.BookID = "bank"
 // member register — so a case about the driver rather than about an institution
 // has the most to reach for. The three cases that ARE about a shape say which
 // one; see newShapeStore.
-func newStore(t *testing.T) *Store {
+func newStore(t *testing.T) *store {
 	t.Helper()
 	return newShapeStore(t, Bank, testBook)
 }
 
 // newShapeStore opens an ephemeral store of a named shape, for the cases that
 // are about the schema rather than about the store.
-func newShapeStore(t *testing.T, shape Shape, book ledger.BookID) *Store {
+//
+// It reaches past the three constructors to the body they share, because these
+// cases are about the DRIVER — the retry, the pragmas, what sqlite_master holds —
+// and an institution is not what any of them is measuring.
+func newShapeStore(t *testing.T, shape Shape, book ledger.BookID) *store {
 	t.Helper()
-	s, err := Open(context.Background(), shape, book, "", frozen)
+	s, err := open(context.Background(), shape, book, "", frozen)
 	if err != nil {
 		t.Fatalf("open %s: %v", shape, err)
 	}
@@ -358,7 +362,7 @@ func TestOrderingIsChronologicalWithinOneSecond(t *testing.T) {
 		{"ldg_4", base.Add(500 * time.Millisecond)},
 		{"ldg_2", base.Add(45 * time.Millisecond).In(time.FixedZone("CEST", 2*60*60))},
 	}
-	if err := s.Update(ctx, func(ctx context.Context, tx ledger.Tx) error {
+	if err := (ledgerStore{s}).Update(ctx, func(ctx context.Context, tx ledger.Tx) error {
 		for _, r := range rows {
 			if err := tx.PutLedger(ctx, "bank", ledger.Ledger{ID: ledger.LedgerID(r.id), CreatedAt: r.at}); err != nil {
 				return err
@@ -370,7 +374,7 @@ func TestOrderingIsChronologicalWithinOneSecond(t *testing.T) {
 	}
 
 	var got []string
-	if err := s.View(ctx, func(ctx context.Context, tx ledger.Tx) error {
+	if err := (ledgerStore{s}).View(ctx, func(ctx context.Context, tx ledger.Tx) error {
 		out, err := tx.ListLedgers(ctx, "bank")
 		if err != nil {
 			return err
@@ -507,7 +511,7 @@ func TestUpdateRetriesUntilTheDomainGuardDecides(t *testing.T) {
 // budget, so this fails if the budget is cut and passes if it is kept.
 func TestTheRetryBudgetOutlastsASlowWriter(t *testing.T) {
 	ctx := context.Background()
-	s, err := Open(ctx, Bank, testBook, filepath.Join(t.TempDir(), "budget.db"), frozen)
+	s, err := open(ctx, Bank, testBook, filepath.Join(t.TempDir(), "budget.db"), frozen)
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}

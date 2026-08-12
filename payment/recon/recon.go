@@ -388,7 +388,7 @@ func take(ctx context.Context, nets *payment.Networks) (*snapshot, error) {
 			advices:  map[adviceKey]payment.SettlementAdvice{},
 			payments: map[payment.PaymentID]payment.Payment{},
 		}
-		if err := store.View(ctx, func(ctx context.Context, tx payment.Tx) error {
+		if err := store.View(ctx, func(ctx context.Context, tx payment.BankTx) error {
 			row, err := tx.GetBank(ctx, payment.ParticipantID(bic))
 			if err != nil {
 				return err
@@ -435,7 +435,7 @@ func take(ctx context.Context, nets *payment.Networks) (*snapshot, error) {
 		snap.banks[bic] = view
 	}
 
-	if err := stores.CentralBank().View(ctx, func(ctx context.Context, tx payment.Tx) error {
+	if err := stores.CentralBank().View(ctx, func(ctx context.Context, tx payment.CentralBankTx) error {
 		members, err := tx.ListSettlementMembers(ctx)
 		if err != nil {
 			return err
@@ -463,7 +463,7 @@ func take(ctx context.Context, nets *payment.Networks) (*snapshot, error) {
 		return nil, fmt.Errorf("recon: reading the settlement agent's books: %w", err)
 	}
 
-	if err := stores.ClearingHouse().View(ctx, func(ctx context.Context, tx payment.Tx) error {
+	if err := stores.ClearingHouse().View(ctx, func(ctx context.Context, tx payment.CsmTx) error {
 		entries, err := tx.ListRosterEntries(ctx)
 		if err != nil {
 			return err
@@ -487,7 +487,7 @@ func take(ctx context.Context, nets *payment.Networks) (*snapshot, error) {
 // positive. It reads the account first because the sign convention lives on
 // AccountType and nowhere else (ledger.AccountType.NormalBalance), so a caller
 // that assumed one would be right about a reserve and wrong about a suspense.
-func balanceOf(ctx context.Context, tx payment.Tx, book ledger.BookID, id ledger.AccountID) (ledger.Amount, error) {
+func balanceOf(ctx context.Context, tx ledger.Tx, book ledger.BookID, id ledger.AccountID) (ledger.Amount, error) {
 	acct, err := tx.GetAccount(ctx, book, id)
 	if err != nil {
 		return 0, fmt.Errorf("account %s in %s: %w", id, book, err)

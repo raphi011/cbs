@@ -21,7 +21,7 @@ func (c *mutableClock) set(t time.Time) { c.at = t }
 func newTestCatalogue(t *testing.T, clock func() time.Time) *Catalogue {
 	t.Helper()
 	s := testenv.New(t, clock)
-	book := ledger.NewBook(s, "bank", clock)
+	book := ledger.NewBook(s.Ledger(), "bank", clock)
 	return NewCatalogue(s.Product(), book, "bank", clock)
 }
 

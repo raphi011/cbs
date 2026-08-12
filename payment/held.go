@@ -108,7 +108,7 @@ func (s *ClearingHouseNetwork) HoldFile(ctx context.Context, f HeldFile) error {
 	if err := s.clearingHouse(); err != nil {
 		return err
 	}
-	return s.store.Update(ctx, func(ctx context.Context, tx Tx) error {
+	return s.store.Update(ctx, func(ctx context.Context, tx CsmTx) error {
 		return tx.AddHeldFile(ctx, f)
 	})
 }
@@ -126,7 +126,7 @@ func (s *ClearingHouseNetwork) ListHeldFiles(ctx context.Context, id CycleID) ([
 		return nil, err
 	}
 	var out []HeldFile
-	err := s.store.View(ctx, func(ctx context.Context, tx Tx) error {
+	err := s.store.View(ctx, func(ctx context.Context, tx CsmTx) error {
 		var err error
 		out, err = tx.ListHeldFiles(ctx, id)
 		return err
@@ -160,7 +160,7 @@ func (s *ClearingHouseNetwork) DropHeldFile(ctx context.Context, id CycleID, seq
 	if err := s.clearingHouse(); err != nil {
 		return err
 	}
-	return s.store.Update(ctx, func(ctx context.Context, tx Tx) error {
+	return s.store.Update(ctx, func(ctx context.Context, tx CsmTx) error {
 		return tx.DeleteHeldFile(ctx, id, seq)
 	})
 }
@@ -171,7 +171,7 @@ func (s *ClearingHouseNetwork) HoldReturn(ctx context.Context, r HeldReturn) err
 	if err := s.clearingHouse(); err != nil {
 		return err
 	}
-	return s.store.Update(ctx, func(ctx context.Context, tx Tx) error {
+	return s.store.Update(ctx, func(ctx context.Context, tx CsmTx) error {
 		return tx.PutHeldReturn(ctx, r)
 	})
 }
@@ -187,7 +187,7 @@ func (s *ClearingHouseNetwork) GetHeldReturn(ctx context.Context, id PaymentID) 
 		return HeldReturn{}, err
 	}
 	var out HeldReturn
-	err := s.store.View(ctx, func(ctx context.Context, tx Tx) error {
+	err := s.store.View(ctx, func(ctx context.Context, tx CsmTx) error {
 		var err error
 		out, err = tx.GetHeldReturn(ctx, id)
 		return err
@@ -206,7 +206,7 @@ func (s *ClearingHouseNetwork) DropHeldReturn(ctx context.Context, id PaymentID)
 	if err := s.clearingHouse(); err != nil {
 		return err
 	}
-	return s.store.Update(ctx, func(ctx context.Context, tx Tx) error {
+	return s.store.Update(ctx, func(ctx context.Context, tx CsmTx) error {
 		return tx.DeleteHeldReturn(ctx, id)
 	})
 }

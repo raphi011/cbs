@@ -397,7 +397,7 @@ func (b *Bank) RunEndOfDay(ctx context.Context, date time.Time) error {
 // returns ErrAccountNotInParticipant if the deposit account does not exist at
 // this bank, and if the bank holds no control line for its asset, which is a
 // chart of accounts this bank cannot post the account's money into either way.
-func (b *Bank) positionTx(ctx context.Context, tx Tx, id deposit.AccountID) (ledger.Position, error) {
+func (b *Bank) positionTx(ctx context.Context, tx deposit.Tx, id deposit.AccountID) (ledger.Position, error) {
 	pos, err := b.Deposit.PositionTx(ctx, tx, id)
 	if err != nil {
 		return ledger.Position{}, ErrAccountNotInParticipant

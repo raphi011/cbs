@@ -51,7 +51,7 @@ const (
 // newStore must return a store answering for the given book with no state in it;
 // the suite calls it once per subtest and closes the result. It takes a book
 // because the advice cases need a SECOND bank, which means a second store.
-func RunPayment(t *testing.T, newStore func(*testing.T, ledger.BookID) payment.Store) {
+func RunPayment(t *testing.T, newStore func(*testing.T, ledger.BookID) payment.BankStore) {
 	t.Helper()
 
 	t.Run("BankRoundTripsAndDropsLiveHandles", func(t *testing.T) {
@@ -64,13 +64,13 @@ func RunPayment(t *testing.T, newStore func(*testing.T, ledger.BookID) payment.S
 		// to whatever it was wired to when it was written.
 		p.Ledger = ledger.NewBook(nil, ledger.BookID(auroraBIC), nil)
 
-		updatePayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+		updateBank(t, s, func(ctx context.Context, tx payment.BankTx) error {
 			return tx.PutBank(ctx, p)
 		})
 
 		var got payment.Bank
 		var listed []payment.Bank
-		viewPayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+		viewBank(t, s, func(ctx context.Context, tx payment.BankTx) error {
 			var err error
 			if got, err = tx.GetBank(ctx, payment.ParticipantID(auroraBIC)); err != nil {
 				return err
@@ -121,12 +121,12 @@ func RunPayment(t *testing.T, newStore func(*testing.T, ledger.BookID) payment.S
 
 		// PutBank is an upsert on ID: renaming a bank must not create a
 		// second one.
-		updatePayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+		updateBank(t, s, func(ctx context.Context, tx payment.BankTx) error {
 			renamed := got
 			renamed.Name = "Aurora Bank AB"
 			return tx.PutBank(ctx, renamed)
 		})
-		viewPayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+		viewBank(t, s, func(ctx context.Context, tx payment.BankTx) error {
 			all, err := tx.ListBanks(ctx)
 			if err != nil {
 				return err
@@ -141,7 +141,7 @@ func RunPayment(t *testing.T, newStore func(*testing.T, ledger.BookID) payment.S
 	t.Run("BankAssetsRoundTripAndReplaceOnUpsert", func(t *testing.T) {
 		s := openPayment(t, newStore, bookA)
 
-		updatePayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+		updateBank(t, s, func(ctx context.Context, tx payment.BankTx) error {
 			return tx.PutBank(ctx, payment.Bank{
 				ID: "alpha", Name: "Alpha", BookID: "alpha", CreatedAt: early,
 				Assets: map[ledger.AssetCode]payment.BankAccounts{
@@ -151,7 +151,7 @@ func RunPayment(t *testing.T, newStore func(*testing.T, ledger.BookID) payment.S
 			})
 		})
 
-		viewPayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+		viewBank(t, s, func(ctx context.Context, tx payment.BankTx) error {
 			got, err := tx.GetBank(ctx, "alpha")
 			if err != nil {
 				return err
@@ -186,7 +186,7 @@ func RunPayment(t *testing.T, newStore func(*testing.T, ledger.BookID) payment.S
 		// An upsert must replace the set, not merge into it: a stale asset
 		// left behind would settle through an account the bank no
 		// longer holds.
-		updatePayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+		updateBank(t, s, func(ctx context.Context, tx payment.BankTx) error {
 			return tx.PutBank(ctx, payment.Bank{
 				ID: "alpha", Name: "Alpha", BookID: "alpha", CreatedAt: early,
 				Assets: map[ledger.AssetCode]payment.BankAccounts{
@@ -195,7 +195,7 @@ func RunPayment(t *testing.T, newStore func(*testing.T, ledger.BookID) payment.S
 			})
 		})
 
-		viewPayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+		viewBank(t, s, func(ctx context.Context, tx payment.BankTx) error {
 			got, err := tx.GetBank(ctx, "alpha")
 			if err != nil {
 				return err
@@ -210,7 +210,7 @@ func RunPayment(t *testing.T, newStore func(*testing.T, ledger.BookID) payment.S
 		// must not reach into the store. A SQL store cannot get that wrong; an
 		// in-Go one gets it wrong by handing out the map it stored, which is why
 		// the rule is written down rather than assumed.
-		viewPayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+		viewBank(t, s, func(ctx context.Context, tx payment.BankTx) error {
 			got, err := tx.GetBank(ctx, "alpha")
 			if err != nil {
 				return err
@@ -235,7 +235,7 @@ func RunPayment(t *testing.T, newStore func(*testing.T, ledger.BookID) payment.S
 
 		// Seed one row of every kind, so the not-found path is exercised on a
 		// populated store rather than only on an empty one.
-		updatePayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+		updateBank(t, s, func(ctx context.Context, tx payment.BankTx) error {
 			if err := tx.PutBank(ctx, bankRow(auroraBIC, "Aurora Bank", early)); err != nil {
 				return err
 			}
@@ -245,7 +245,7 @@ func RunPayment(t *testing.T, newStore func(*testing.T, ledger.BookID) payment.S
 			return tx.PutMandate(ctx, mandate("mnd_1", early))
 		})
 
-		viewPayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+		viewBank(t, s, func(ctx context.Context, tx payment.BankTx) error {
 			_, err := tx.GetBank(ctx, "bank_nope")
 			assertErrorIs(t, "GetBank on an unknown bank", err, payment.ErrParticipantNotFound)
 
@@ -270,14 +270,14 @@ func RunPayment(t *testing.T, newStore func(*testing.T, ledger.BookID) payment.S
 		// TEXT columns is exactly the case a transposed insert argument or scan
 		// target would not fail on — it would just read back wrong. Asserting both
 		// sides, on both entities, independently is what would catch that.
-		updatePayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+		updateBank(t, s, func(ctx context.Context, tx payment.BankTx) error {
 			if err := tx.PutPayment(ctx, samplePayment("pay_1", "e2e-1", early)); err != nil {
 				return err
 			}
 			return tx.PutMandate(ctx, mandate("mnd_1", early))
 		})
 
-		viewPayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+		viewBank(t, s, func(ctx context.Context, tx payment.BankTx) error {
 			gotPayment, err := tx.GetPayment(ctx, "pay_1")
 			if err != nil {
 				return err
@@ -320,13 +320,13 @@ func RunPayment(t *testing.T, newStore func(*testing.T, ledger.BookID) payment.S
 		p.DebtorLegTx = ""
 		p.CreditorLegTx = ""
 
-		updatePayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+		updateBank(t, s, func(ctx context.Context, tx payment.BankTx) error {
 			return tx.PutPayment(ctx, p)
 		})
 
 		var got payment.Payment
 		var listed []payment.Payment
-		viewPayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+		viewBank(t, s, func(ctx context.Context, tx payment.BankTx) error {
 			var err error
 			if got, err = tx.GetPayment(ctx, p.ID); err != nil {
 				return err
@@ -345,7 +345,7 @@ func RunPayment(t *testing.T, newStore func(*testing.T, ledger.BookID) payment.S
 		// payment is a payment, so the duplicate check at submission — the
 		// only thing standing between a customer and paying twice — has to see
 		// it.
-		viewPayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+		viewBank(t, s, func(ctx context.Context, tx payment.BankTx) error {
 			byRef, err := tx.GetPaymentByEndToEndID(ctx, "e2e-1")
 			if err != nil {
 				return err
@@ -366,13 +366,13 @@ func RunPayment(t *testing.T, newStore func(*testing.T, ledger.BookID) payment.S
 		// that keeps only the text silently turns every rejection back into prose.
 		p.RejectCode = "AC04"
 
-		updatePayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+		updateBank(t, s, func(ctx context.Context, tx payment.BankTx) error {
 			return tx.PutPayment(ctx, p)
 		})
 
 		var got payment.Payment
 		var listed []payment.Payment
-		viewPayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+		viewBank(t, s, func(ctx context.Context, tx payment.BankTx) error {
 			var err error
 			if got, err = tx.GetPayment(ctx, p.ID); err != nil {
 				return err
@@ -408,7 +408,7 @@ func RunPayment(t *testing.T, newStore func(*testing.T, ledger.BookID) payment.S
 		// bank's id is its BIC and a BIC has a fixed shape. Four addresses whose
 		// alphabetical order is not their insertion order make the same two
 		// mistakes available, which is all the boundary was ever for.
-		updatePayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+		updateBank(t, s, func(ctx context.Context, tx payment.BankTx) error {
 			for _, p := range []struct {
 				id string
 				at time.Time
@@ -439,7 +439,7 @@ func RunPayment(t *testing.T, newStore func(*testing.T, ledger.BookID) payment.S
 		var banks []payment.Bank
 		var payments []payment.Payment
 		var mandates []payment.Mandate
-		viewPayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+		viewBank(t, s, func(ctx context.Context, tx payment.BankTx) error {
 			var err error
 			if banks, err = tx.ListBanks(ctx); err != nil {
 				return err
@@ -461,12 +461,12 @@ func RunPayment(t *testing.T, newStore func(*testing.T, ledger.BookID) payment.S
 		// An upsert keeps a row where it was: rejecting a payment must not move
 		// it to the bottom of the list. The cycle's half of this claim is
 		// CycleListOrderingIsOpenedAtThenSeq, in the clearing house's suite.
-		updatePayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+		updateBank(t, s, func(ctx context.Context, tx payment.BankTx) error {
 			p := samplePayment("pay_8", "e2e-pay_8", early)
 			p.Status = payment.Rejected
 			return tx.PutPayment(ctx, p)
 		})
-		viewPayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+		viewBank(t, s, func(ctx context.Context, tx payment.BankTx) error {
 			reordered, err := tx.ListPayments(ctx)
 			if err != nil {
 				return err
@@ -480,7 +480,7 @@ func RunPayment(t *testing.T, newStore func(*testing.T, ledger.BookID) payment.S
 	t.Run("GetPaymentByEndToEndIDIsExactAndIgnoresEmpty", func(t *testing.T) {
 		s := openPayment(t, newStore, bookA)
 
-		updatePayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+		updateBank(t, s, func(ctx context.Context, tx payment.BankTx) error {
 			if err := tx.PutPayment(ctx, samplePayment("pay_1", "SCT-001", early)); err != nil {
 				return err
 			}
@@ -493,7 +493,7 @@ func RunPayment(t *testing.T, newStore func(*testing.T, ledger.BookID) payment.S
 			return tx.PutPayment(ctx, samplePayment("pay_3", "", early))
 		})
 
-		viewPayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+		viewBank(t, s, func(ctx context.Context, tx payment.BankTx) error {
 			got, err := tx.GetPaymentByEndToEndID(ctx, "SCT-001")
 			if err != nil {
 				return err
@@ -525,14 +525,14 @@ func RunPayment(t *testing.T, newStore func(*testing.T, ledger.BookID) payment.S
 		// end-to-end id index is maintained by the store, so a store that only ever
 		// adds to it goes on resolving a reference the payment no longer carries —
 		// and then refuses the next payment that legitimately claims it.
-		updatePayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+		updateBank(t, s, func(ctx context.Context, tx payment.BankTx) error {
 			return tx.PutPayment(ctx, samplePayment("pay_1", "SCT-001", early))
 		})
-		updatePayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+		updateBank(t, s, func(ctx context.Context, tx payment.BankTx) error {
 			return tx.PutPayment(ctx, samplePayment("pay_1", "SCT-002", early))
 		})
 
-		viewPayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+		viewBank(t, s, func(ctx context.Context, tx payment.BankTx) error {
 			_, err := tx.GetPaymentByEndToEndID(ctx, "SCT-001")
 			assertErrorIs(t, "lookup by the reference that was replaced", err, payment.ErrPaymentNotFound)
 
@@ -552,10 +552,10 @@ func RunPayment(t *testing.T, newStore func(*testing.T, ledger.BookID) payment.S
 		})
 
 		// Clearing the reference releases it as well.
-		updatePayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+		updateBank(t, s, func(ctx context.Context, tx payment.BankTx) error {
 			return tx.PutPayment(ctx, samplePayment("pay_1", "", early))
 		})
-		viewPayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+		viewBank(t, s, func(ctx context.Context, tx payment.BankTx) error {
 			_, err := tx.GetPaymentByEndToEndID(ctx, "SCT-002")
 			assertErrorIs(t, "lookup by a reference that was cleared", err, payment.ErrPaymentNotFound)
 			return nil
@@ -577,7 +577,7 @@ func RunPayment(t *testing.T, newStore func(*testing.T, ledger.BookID) payment.S
 		p.Metadata = map[string]string{"scheme": "sepa.ct"}
 		bank := bankRow(auroraBIC, "Aurora Bank", early)
 
-		updatePayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+		updateBank(t, s, func(ctx context.Context, tx payment.BankTx) error {
 			if err := tx.PutPayment(ctx, p); err != nil {
 				return err
 			}
@@ -588,7 +588,7 @@ func RunPayment(t *testing.T, newStore func(*testing.T, ledger.BookID) payment.S
 		p.Metadata["scheme"] = "tampered"
 		bank.Assets["EUR"] = payment.BankAccounts{Suspense: "tampered"}
 
-		viewPayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+		viewBank(t, s, func(ctx context.Context, tx payment.BankTx) error {
 			gotPayment, err := tx.GetPayment(ctx, "pay_1")
 			if err != nil {
 				return err
@@ -608,7 +608,7 @@ func RunPayment(t *testing.T, newStore func(*testing.T, ledger.BookID) payment.S
 			return nil
 		})
 
-		viewPayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+		viewBank(t, s, func(ctx context.Context, tx payment.BankTx) error {
 			gotPayment, err := tx.GetPayment(ctx, "pay_1")
 			if err != nil {
 				return err
@@ -619,12 +619,12 @@ func RunPayment(t *testing.T, newStore func(*testing.T, ledger.BookID) payment.S
 
 		// The upsert: a rejected payment replaces the accepted one rather than
 		// adding a second row, and the status change is what is read back.
-		updatePayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+		updateBank(t, s, func(ctx context.Context, tx payment.BankTx) error {
 			rejected := samplePayment("pay_1", "SCT-001", early)
 			rejected.Status = payment.Rejected
 			return tx.PutPayment(ctx, rejected)
 		})
-		viewPayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+		viewBank(t, s, func(ctx context.Context, tx payment.BankTx) error {
 			all, err := tx.ListPayments(ctx)
 			if err != nil {
 				return err
@@ -656,7 +656,7 @@ func RunPayment(t *testing.T, newStore func(*testing.T, ledger.BookID) payment.S
 		paymentRecordsBothReturnLegs(t, openPayment(t, newStore, bookA))
 	})
 
-	// RoutingDirectoryIsReplacedWholesale pins the one write on payment.Tx that is
+	// RoutingDirectoryIsReplacedWholesale pins the one write on payment.BankTx that is
 	// not an upsert, and the reason it is not one.
 	//
 	// A member's routing directory is a COPY of a file somebody else publishes.
@@ -676,7 +676,7 @@ func RunPayment(t *testing.T, newStore func(*testing.T, ledger.BookID) payment.S
 		it := iban.Issuer{Country: iban.IT, BankCode: "99999"}
 		fr := iban.Issuer{Country: iban.FR, BankCode: "99999"}
 
-		updatePayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+		updateBank(t, s, func(ctx context.Context, tx payment.BankTx) error {
 			return tx.ReplaceRoutingDirectory(ctx, []payment.DirectoryEntry{
 				{Issuer: de, BIC: auroraBIC, RefreshedAt: early},
 				{Issuer: it, BIC: verdeBIC, RefreshedAt: early},
@@ -684,7 +684,7 @@ func RunPayment(t *testing.T, newStore func(*testing.T, ledger.BookID) payment.S
 			})
 		})
 
-		viewPayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+		viewBank(t, s, func(ctx context.Context, tx payment.BankTx) error {
 			// One code, two countries, two banks.
 			got, err := tx.GetDirectoryEntry(ctx, it)
 			if err != nil {
@@ -717,14 +717,14 @@ func RunPayment(t *testing.T, newStore func(*testing.T, ledger.BookID) payment.S
 
 		// A second delivery, later, with Verde no longer in it.
 		later := early.Add(48 * time.Hour)
-		updatePayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+		updateBank(t, s, func(ctx context.Context, tx payment.BankTx) error {
 			return tx.ReplaceRoutingDirectory(ctx, []payment.DirectoryEntry{
 				{Issuer: de, BIC: auroraBIC, RefreshedAt: later},
 				{Issuer: fr, BIC: "SOLEFRPPXXX", RefreshedAt: later},
 			})
 		})
 
-		viewPayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+		viewBank(t, s, func(ctx context.Context, tx payment.BankTx) error {
 			_, err := tx.GetDirectoryEntry(ctx, it)
 			assertErrorIs(t, "GetDirectoryEntry on a code the new snapshot omits",
 				err, payment.ErrBankCodeUnknown)
@@ -755,12 +755,12 @@ func RunPayment(t *testing.T, newStore func(*testing.T, ledger.BookID) payment.S
 		// statement about those is the opposite one: they cannot roll back with
 		// these, because no transaction spans two databases. That is what the
 		// business day models everywhere else.
-		updatePayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+		updateBank(t, s, func(ctx context.Context, tx payment.BankTx) error {
 			return tx.PutBank(ctx, bankRow(auroraBIC, "Aurora Bank", early))
 		})
 
 		boom := errors.New("storetest: deliberate failure")
-		err := s.Update(context.Background(), func(ctx context.Context, tx payment.Tx) error {
+		err := s.Update(context.Background(), func(ctx context.Context, tx payment.BankTx) error {
 			if err := tx.PutBank(ctx, bankRow(verdeBIC, "Banca Verde", early)); err != nil {
 				return err
 			}
@@ -785,7 +785,7 @@ func RunPayment(t *testing.T, newStore func(*testing.T, ledger.BookID) payment.S
 		})
 		assertErrorIs(t, "Update return", err, boom)
 
-		viewPayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+		viewBank(t, s, func(ctx context.Context, tx payment.BankTx) error {
 			_, err := tx.GetBank(ctx, payment.ParticipantID(verdeBIC))
 			assertErrorIs(t, "bank from the failed unit of work", err, payment.ErrParticipantNotFound)
 
@@ -828,7 +828,7 @@ func RunPayment(t *testing.T, newStore func(*testing.T, ledger.BookID) payment.S
 	t.Run("ResetClearsPaymentState", func(t *testing.T) {
 		s := openPayment(t, newStore, bookA)
 
-		updatePayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+		updateBank(t, s, func(ctx context.Context, tx payment.BankTx) error {
 			if err := tx.PutBank(ctx, bankRow(auroraBIC, "Aurora Bank", early)); err != nil {
 				return err
 			}
@@ -847,7 +847,7 @@ func RunPayment(t *testing.T, newStore func(*testing.T, ledger.BookID) payment.S
 			t.Fatalf("Reset: %v", err)
 		}
 
-		viewPayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+		viewBank(t, s, func(ctx context.Context, tx payment.BankTx) error {
 			banks, err := tx.ListBanks(ctx)
 			if err != nil {
 				return err
@@ -894,20 +894,20 @@ func RunPayment(t *testing.T, newStore func(*testing.T, ledger.BookID) payment.S
 //
 // newStore must return the clearing house's store with no state in it; the suite
 // calls it once per subtest and closes the result.
-func RunClearingHousePayment(t *testing.T, newStore func(*testing.T) payment.Store) {
+func RunClearingHousePayment(t *testing.T, newStore func(*testing.T) payment.ClearingHouseStore) {
 	t.Helper()
 
 	// The cycle sentinels, which are the clearing house's half of what
 	// GetOnMissingPaymentRowsReturnsSentinels asserts for the bank.
 	t.Run("GetOnMissingCycleRowsReturnsSentinels", func(t *testing.T) {
-		s := openInstitution(t, newStore)
+		s := openClearingHouse(t, newStore)
 
 		// A row to make the not-found path run against a populated store.
-		updatePayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+		updateCsm(t, s, func(ctx context.Context, tx payment.CsmTx) error {
 			return tx.PutCycle(ctx, cycle("cyc_1", payment.SchemeSEPACT, payment.CycleSettled, early))
 		})
 
-		viewPayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+		viewCsm(t, s, func(ctx context.Context, tx payment.CsmTx) error {
 			_, err := tx.GetCycle(ctx, "cyc_nope")
 			assertErrorIs(t, "GetCycle on an unknown cycle", err, payment.ErrCycleNotFound)
 
@@ -935,9 +935,9 @@ func RunClearingHousePayment(t *testing.T, newStore func(*testing.T) payment.Sto
 	// and the whole point of Reset is that a reset store behaves like a fresh
 	// one.
 	t.Run("ResetClearsTheClearingHousesState", func(t *testing.T) {
-		s := openInstitution(t, newStore)
+		s := openClearingHouse(t, newStore)
 
-		updatePayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+		updateCsm(t, s, func(ctx context.Context, tx payment.CsmTx) error {
 			if err := tx.PutRosterEntry(ctx, rosterEntry("AURODEFFXXX", early)); err != nil {
 				return err
 			}
@@ -961,7 +961,7 @@ func RunClearingHousePayment(t *testing.T, newStore func(*testing.T) payment.Sto
 		if err := s.Reset(context.Background()); err != nil {
 			t.Fatalf("Reset: %v", err)
 		}
-		viewPayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+		viewCsm(t, s, func(ctx context.Context, tx payment.CsmTx) error {
 			entries, err := tx.ListRosterEntries(ctx)
 			if err != nil {
 				return err
@@ -991,13 +991,13 @@ func RunClearingHousePayment(t *testing.T, newStore func(*testing.T) payment.Sto
 	})
 
 	t.Run("CycleIsAnUpsertAndDeepCopies", func(t *testing.T) {
-		s := openInstitution(t, newStore)
+		s := openClearingHouse(t, newStore)
 
 		c := cycle("cyc_1", payment.SchemeSEPACT, payment.CycleClosed, early)
 		c.PaymentIDs = []payment.PaymentID{"pay_1"}
 		c.NetPositions = map[iso20022.BIC]ledger.Amount{auroraBIC: 100}
 
-		updatePayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+		updateCsm(t, s, func(ctx context.Context, tx payment.CsmTx) error {
 			return tx.PutCycle(ctx, c)
 		})
 
@@ -1005,7 +1005,7 @@ func RunClearingHousePayment(t *testing.T, newStore func(*testing.T) payment.Sto
 		c.PaymentIDs[0] = "pay_tampered"
 		c.NetPositions[auroraBIC] = 999
 
-		viewPayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+		viewCsm(t, s, func(ctx context.Context, tx payment.CsmTx) error {
 			got, err := tx.GetCycle(ctx, "cyc_1")
 			if err != nil {
 				return err
@@ -1019,7 +1019,7 @@ func RunClearingHousePayment(t *testing.T, newStore func(*testing.T) payment.Sto
 			got.NetPositions[auroraBIC] = 999
 			return nil
 		})
-		viewPayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+		viewCsm(t, s, func(ctx context.Context, tx payment.CsmTx) error {
 			got, err := tx.GetCycle(ctx, "cyc_1")
 			if err != nil {
 				return err
@@ -1031,10 +1031,10 @@ func RunClearingHousePayment(t *testing.T, newStore func(*testing.T) payment.Sto
 
 		// The upsert: a settled cycle replaces the closed one rather than
 		// adding a second row, and the status change is what is read back.
-		updatePayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+		updateCsm(t, s, func(ctx context.Context, tx payment.CsmTx) error {
 			return tx.PutCycle(ctx, cycle("cyc_1", payment.SchemeSEPACT, payment.CycleSettled, early))
 		})
-		viewPayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+		viewCsm(t, s, func(ctx context.Context, tx payment.CsmTx) error {
 			all, err := tx.ListCycles(ctx)
 			if err != nil {
 				return err
@@ -1061,7 +1061,7 @@ func RunClearingHousePayment(t *testing.T, newStore func(*testing.T) payment.Sto
 	// removable whatever became of the cut-off that names it, so the fixture
 	// never writes one.
 	t.Run("HeldFilesSurviveTheirCycleAndReleaseInBuildOrder", func(t *testing.T) {
-		s := openInstitution(t, newStore)
+		s := openClearingHouse(t, newStore)
 
 		files := []payment.HeldFile{
 			{CycleID: "cyc_1", Destination: auroraBIC, File: []byte("<first/>"), Transactions: []payment.HeldTransaction{
@@ -1074,7 +1074,7 @@ func RunClearingHousePayment(t *testing.T, newStore func(*testing.T) payment.Sto
 				{Position: 0, PaymentID: "pay_4"},
 			}},
 		}
-		updatePayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+		updateCsm(t, s, func(ctx context.Context, tx payment.CsmTx) error {
 			for _, f := range files {
 				if err := tx.AddHeldFile(ctx, f); err != nil {
 					return err
@@ -1083,7 +1083,7 @@ func RunClearingHousePayment(t *testing.T, newStore func(*testing.T) payment.Sto
 			return nil
 		})
 
-		viewPayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+		viewCsm(t, s, func(ctx context.Context, tx payment.CsmTx) error {
 			got, err := tx.ListHeldFiles(ctx, "cyc_1")
 			if err != nil {
 				return err
@@ -1110,10 +1110,10 @@ func RunClearingHousePayment(t *testing.T, newStore func(*testing.T) payment.Sto
 		// The append: the same value written again is a SECOND share. Nothing here
 		// upserts, because two files addressed to one bank in one cut-off is what a
 		// bank uploading twice before the cut-off produces.
-		updatePayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+		updateCsm(t, s, func(ctx context.Context, tx payment.CsmTx) error {
 			return tx.AddHeldFile(ctx, files[0])
 		})
-		viewPayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+		viewCsm(t, s, func(ctx context.Context, tx payment.CsmTx) error {
 			got, err := tx.ListHeldFiles(ctx, "cyc_1")
 			if err != nil {
 				return err
@@ -1127,7 +1127,7 @@ func RunClearingHousePayment(t *testing.T, newStore func(*testing.T) payment.Sto
 		// discharge that took the cut-off's would take shares no bank has been
 		// handed — see payment.DropHeldFile.
 		var first payment.HeldFile
-		viewPayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+		viewCsm(t, s, func(ctx context.Context, tx payment.CsmTx) error {
 			held, err := tx.ListHeldFiles(ctx, "cyc_1")
 			if err != nil {
 				return err
@@ -1135,10 +1135,10 @@ func RunClearingHousePayment(t *testing.T, newStore func(*testing.T) payment.Sto
 			first = held[0]
 			return nil
 		})
-		updatePayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+		updateCsm(t, s, func(ctx context.Context, tx payment.CsmTx) error {
 			return tx.DeleteHeldFile(ctx, "cyc_1", first.Seq)
 		})
-		viewPayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+		viewCsm(t, s, func(ctx context.Context, tx payment.CsmTx) error {
 			left, err := tx.ListHeldFiles(ctx, "cyc_1")
 			if err != nil {
 				return err
@@ -1164,14 +1164,14 @@ func RunClearingHousePayment(t *testing.T, newStore func(*testing.T) payment.Sto
 	})
 
 	t.Run("HeldReturnsAreKeyedByThePaymentTheAnswerNames", func(t *testing.T) {
-		s := openInstitution(t, newStore)
+		s := openClearingHouse(t, newStore)
 
-		updatePayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+		updateCsm(t, s, func(ctx context.Context, tx payment.CsmTx) error {
 			return tx.PutHeldReturn(ctx, payment.HeldReturn{
 				PaymentID: "pay_1", ReturnedBy: auroraBIC, File: []byte("<rtn/>"),
 			})
 		})
-		viewPayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+		viewCsm(t, s, func(ctx context.Context, tx payment.CsmTx) error {
 			got, err := tx.GetHeldReturn(ctx, "pay_1")
 			if err != nil {
 				return err
@@ -1187,12 +1187,12 @@ func RunClearingHousePayment(t *testing.T, newStore func(*testing.T) payment.Sto
 		// An upsert, unlike a share: the key is the payment, and one payment has at
 		// most one return in flight — the second hop of a conversation that has
 		// already had its first.
-		updatePayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+		updateCsm(t, s, func(ctx context.Context, tx payment.CsmTx) error {
 			return tx.PutHeldReturn(ctx, payment.HeldReturn{
 				PaymentID: "pay_1", ReturnedBy: verdeBIC, File: []byte("<rtn2/>"),
 			})
 		})
-		updatePayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+		updateCsm(t, s, func(ctx context.Context, tx payment.CsmTx) error {
 			got, err := tx.GetHeldReturn(ctx, "pay_1")
 			if err != nil {
 				return err
@@ -1201,7 +1201,7 @@ func RunClearingHousePayment(t *testing.T, newStore func(*testing.T) payment.Sto
 			assertEqual(t, "the held message, after an upsert", string(got.File), "<rtn2/>")
 			return tx.DeleteHeldReturn(ctx, "pay_1")
 		})
-		viewPayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+		viewCsm(t, s, func(ctx context.Context, tx payment.CsmTx) error {
 			_, err := tx.GetHeldReturn(ctx, "pay_1")
 			assertErrorIs(t, "GetHeldReturn after the answer arrived", err, payment.ErrHeldReturnNotFound)
 			return nil
@@ -1209,10 +1209,10 @@ func RunClearingHousePayment(t *testing.T, newStore func(*testing.T) payment.Sto
 	})
 
 	t.Run("CycleListOrderingIsOpenedAtThenSeq", func(t *testing.T) {
-		s := openInstitution(t, newStore)
+		s := openClearingHouse(t, newStore)
 		late := early.Add(time.Hour)
 
-		updatePayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+		updateCsm(t, s, func(ctx context.Context, tx payment.CsmTx) error {
 			for _, c := range []struct {
 				id string
 				at time.Time
@@ -1224,7 +1224,7 @@ func RunClearingHousePayment(t *testing.T, newStore func(*testing.T) payment.Sto
 			return nil
 		})
 
-		viewPayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+		viewCsm(t, s, func(ctx context.Context, tx payment.CsmTx) error {
 			cycles, err := tx.ListCycles(ctx)
 			if err != nil {
 				return err
@@ -1236,10 +1236,10 @@ func RunClearingHousePayment(t *testing.T, newStore func(*testing.T) payment.Sto
 
 		// An upsert keeps a row where it was: settling a cycle must not move it
 		// to the bottom of the list.
-		updatePayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+		updateCsm(t, s, func(ctx context.Context, tx payment.CsmTx) error {
 			return tx.PutCycle(ctx, cycle("cyc_8", payment.SchemeSEPACT, payment.CycleSettled, early))
 		})
-		viewPayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+		viewCsm(t, s, func(ctx context.Context, tx payment.CsmTx) error {
 			cs, err := tx.ListCycles(ctx)
 			if err != nil {
 				return err
@@ -1277,7 +1277,7 @@ func RunClearingHousePayment(t *testing.T, newStore func(*testing.T) payment.Sto
 	// filled by the clearing house being told one it was never sent. This case is
 	// what makes putting it back a failure rather than a quiet regression.
 	t.Run("RosterEntryCarriesNoAccountIdentifiers", func(t *testing.T) {
-		s := openInstitution(t, newStore)
+		s := openClearingHouse(t, newStore)
 
 		allowed := map[string]bool{
 			"BIC":          true,
@@ -1303,14 +1303,14 @@ func RunClearingHousePayment(t *testing.T, newStore func(*testing.T) payment.Sto
 			}
 		}
 
-		updatePayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+		updateCsm(t, s, func(ctx context.Context, tx payment.CsmTx) error {
 			if err := tx.PutRosterEntry(ctx, rosterEntry("AURODEFFXXX", early)); err != nil {
 				return err
 			}
 			return tx.PutRosterEntry(ctx, rosterEntry("VERDITMMXXX", early.Add(time.Hour)))
 		})
 
-		viewPayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+		viewCsm(t, s, func(ctx context.Context, tx payment.CsmTx) error {
 			got, err := tx.GetRosterEntry(ctx, "AURODEFFXXX")
 			if err != nil {
 				return err
@@ -1375,15 +1375,15 @@ func RunClearingHousePayment(t *testing.T, newStore func(*testing.T) payment.Sto
 	// The other roster case uses EUR, USD, which a store that sorted its child
 	// rows would pass by accident.
 	t.Run("RosterEntryAssetsAreAnOrderedList", func(t *testing.T) {
-		s := openInstitution(t, newStore)
+		s := openClearingHouse(t, newStore)
 
-		updatePayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+		updateCsm(t, s, func(ctx context.Context, tx payment.CsmTx) error {
 			e := rosterEntry("AURODEFFXXX", early)
 			e.Assets = []ledger.AssetCode{"USD", "EUR", "USD"}
 			return tx.PutRosterEntry(ctx, e)
 		})
 
-		viewPayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+		viewCsm(t, s, func(ctx context.Context, tx payment.CsmTx) error {
 			got, err := tx.GetRosterEntry(ctx, "AURODEFFXXX")
 			if err != nil {
 				return err
@@ -1409,13 +1409,13 @@ func RunClearingHousePayment(t *testing.T, newStore func(*testing.T) payment.Sto
 
 		// An upsert replaces the list wholesale, duplicates and all, so a
 		// shorter list does not leave the tail of the longer one behind.
-		updatePayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+		updateCsm(t, s, func(ctx context.Context, tx payment.CsmTx) error {
 			e := rosterEntry("AURODEFFXXX", early)
 			e.Assets = []ledger.AssetCode{"GBP"}
 			return tx.PutRosterEntry(ctx, e)
 		})
 
-		viewPayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+		viewCsm(t, s, func(ctx context.Context, tx payment.CsmTx) error {
 			got, err := tx.GetRosterEntry(ctx, "AURODEFFXXX")
 			if err != nil {
 				return err
@@ -1428,9 +1428,9 @@ func RunClearingHousePayment(t *testing.T, newStore func(*testing.T) payment.Sto
 	})
 
 	t.Run("GetOpenCycleFindsTheOpenCycleForItsScheme", func(t *testing.T) {
-		s := openInstitution(t, newStore)
+		s := openClearingHouse(t, newStore)
 
-		updatePayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+		updateCsm(t, s, func(ctx context.Context, tx payment.CsmTx) error {
 			// A settled cycle for the same scheme, an open cycle for a
 			// different scheme, and the one that should be found.
 			if err := tx.PutCycle(ctx, cycle("cyc_1", payment.SchemeSEPACT, payment.CycleSettled, early)); err != nil {
@@ -1442,7 +1442,7 @@ func RunClearingHousePayment(t *testing.T, newStore func(*testing.T) payment.Sto
 			return tx.PutCycle(ctx, cycle("cyc_3", payment.SchemeSEPACT, payment.CycleOpen, early))
 		})
 
-		viewPayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+		viewCsm(t, s, func(ctx context.Context, tx payment.CsmTx) error {
 			ct, err := tx.GetOpenCycle(ctx, payment.SchemeSEPACT)
 			if err != nil {
 				return err
@@ -1459,10 +1459,10 @@ func RunClearingHousePayment(t *testing.T, newStore func(*testing.T) payment.Sto
 
 		// Closing it makes it invisible here — that is what lets OpenCycle
 		// enforce one open cycle per scheme.
-		updatePayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+		updateCsm(t, s, func(ctx context.Context, tx payment.CsmTx) error {
 			return tx.PutCycle(ctx, cycle("cyc_3", payment.SchemeSEPACT, payment.CycleClosed, early))
 		})
-		viewPayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+		viewCsm(t, s, func(ctx context.Context, tx payment.CsmTx) error {
 			_, err := tx.GetOpenCycle(ctx, payment.SchemeSEPACT)
 			assertErrorIs(t, "GetOpenCycle after closing", err, payment.ErrCycleNotFound)
 			return nil
@@ -1477,18 +1477,18 @@ func RunClearingHousePayment(t *testing.T, newStore func(*testing.T) payment.Sto
 //
 // newStore must return the central bank's store with no state in it; the suite
 // calls it once per subtest and closes the result.
-func RunCentralBankPayment(t *testing.T, newStore func(*testing.T) payment.Store) {
+func RunCentralBankPayment(t *testing.T, newStore func(*testing.T) payment.CentralBankStore) {
 	t.Helper()
 
 	// The settlement sentinel and the settlement listing's order, which were the
 	// central bank's share of two cases that ran against one store.
 	t.Run("GetOnAMissingSettlementReturnsTheSentinel", func(t *testing.T) {
-		s := openInstitution(t, newStore)
+		s := openCentralBank(t, newStore)
 
-		updatePayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+		updateCentralBank(t, s, func(ctx context.Context, tx payment.CentralBankTx) error {
 			return tx.PutSettlement(ctx, settlement("set_1", "cyc_1", early))
 		})
-		viewPayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+		viewCentralBank(t, s, func(ctx context.Context, tx payment.CentralBankTx) error {
 			_, err := tx.GetSettlement(ctx, "set_nope")
 			assertErrorIs(t, "GetSettlement on an unknown settlement", err, payment.ErrSettlementNotFound)
 			return nil
@@ -1499,9 +1499,9 @@ func RunCentralBankPayment(t *testing.T, newStore func(*testing.T) payment.Store
 	// same one PutIsAnUpsertAndDeepCopies states for the bank's rows.
 	// See ResetClearsTheClearingHousesState for what this is a share of.
 	t.Run("ResetClearsTheCentralBanksState", func(t *testing.T) {
-		s := openInstitution(t, newStore)
+		s := openCentralBank(t, newStore)
 
-		updatePayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+		updateCentralBank(t, s, func(ctx context.Context, tx payment.CentralBankTx) error {
 			if err := tx.PutSettlementMember(ctx, settlementMember("AURODEFFXXX", "Aurora Bank", early)); err != nil {
 				return err
 			}
@@ -1510,7 +1510,7 @@ func RunCentralBankPayment(t *testing.T, newStore func(*testing.T) payment.Store
 		if err := s.Reset(context.Background()); err != nil {
 			t.Fatalf("Reset: %v", err)
 		}
-		viewPayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+		viewCentralBank(t, s, func(ctx context.Context, tx payment.CentralBankTx) error {
 			members, err := tx.ListSettlementMembers(ctx)
 			if err != nil {
 				return err
@@ -1527,16 +1527,16 @@ func RunCentralBankPayment(t *testing.T, newStore func(*testing.T) payment.Store
 	})
 
 	t.Run("SettlementDeepCopiesItsNetPositions", func(t *testing.T) {
-		s := openInstitution(t, newStore)
+		s := openCentralBank(t, newStore)
 
 		st := settlement("set_1", "cyc_1", early)
 		st.NetPositions = map[iso20022.BIC]ledger.Amount{auroraBIC: 100}
-		updatePayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+		updateCentralBank(t, s, func(ctx context.Context, tx payment.CentralBankTx) error {
 			return tx.PutSettlement(ctx, st)
 		})
 		st.NetPositions[auroraBIC] = 999
 
-		viewPayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+		viewCentralBank(t, s, func(ctx context.Context, tx payment.CentralBankTx) error {
 			got, err := tx.GetSettlement(ctx, "set_1")
 			if err != nil {
 				return err
@@ -1547,10 +1547,10 @@ func RunCentralBankPayment(t *testing.T, newStore func(*testing.T) payment.Store
 	})
 
 	t.Run("SettlementListOrderingIsSettledAtThenSeq", func(t *testing.T) {
-		s := openInstitution(t, newStore)
+		s := openCentralBank(t, newStore)
 		late := early.Add(time.Hour)
 
-		updatePayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+		updateCentralBank(t, s, func(ctx context.Context, tx payment.CentralBankTx) error {
 			for _, st := range []struct {
 				id string
 				at time.Time
@@ -1561,7 +1561,7 @@ func RunCentralBankPayment(t *testing.T, newStore func(*testing.T) payment.Store
 			}
 			return nil
 		})
-		viewPayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+		viewCentralBank(t, s, func(ctx context.Context, tx payment.CentralBankTx) error {
 			settlements, err := tx.ListSettlements(ctx)
 			if err != nil {
 				return err
@@ -1580,16 +1580,16 @@ func RunCentralBankPayment(t *testing.T, newStore func(*testing.T) payment.Store
 	// make — which is why the store is asked for this row by BIC here and never by
 	// a bank id.
 	t.Run("SettlementMemberIsKeyedByBIC", func(t *testing.T) {
-		s := openInstitution(t, newStore)
+		s := openCentralBank(t, newStore)
 
-		updatePayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+		updateCentralBank(t, s, func(ctx context.Context, tx payment.CentralBankTx) error {
 			if err := tx.PutSettlementMember(ctx, settlementMember("AURODEFFXXX", "Aurora Bank", early)); err != nil {
 				return err
 			}
 			return tx.PutSettlementMember(ctx, settlementMember("VERDITMMXXX", "Banca Verde", early.Add(time.Hour)))
 		})
 
-		viewPayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+		viewCentralBank(t, s, func(ctx context.Context, tx payment.CentralBankTx) error {
 			got, err := tx.GetSettlementMember(ctx, "VERDITMMXXX")
 			if err != nil {
 				return err
@@ -1616,11 +1616,11 @@ func RunCentralBankPayment(t *testing.T, newStore func(*testing.T) payment.Store
 
 		// The upsert is on the BIC, which is what makes re-driving an admission
 		// safe: the same bank asking twice must not become two members.
-		updatePayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+		updateCentralBank(t, s, func(ctx context.Context, tx payment.CentralBankTx) error {
 			renamed := settlementMember("VERDITMMXXX", "Banca Verde SpA", early.Add(time.Hour))
 			return tx.PutSettlementMember(ctx, renamed)
 		})
-		viewPayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+		viewCentralBank(t, s, func(ctx context.Context, tx payment.CentralBankTx) error {
 			members, err := tx.ListSettlementMembers(ctx)
 			if err != nil {
 				return err
@@ -1643,9 +1643,9 @@ func RunCentralBankPayment(t *testing.T, newStore func(*testing.T) payment.Store
 	// the map is a second TABLE, so "the row came back" and "the accounts came
 	// back" are two different claims about two different reads.
 	t.Run("SettlementMemberKeepsOneAccountPerAsset", func(t *testing.T) {
-		s := openInstitution(t, newStore)
+		s := openCentralBank(t, newStore)
 
-		updatePayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+		updateCentralBank(t, s, func(ctx context.Context, tx payment.CentralBankTx) error {
 			return tx.PutSettlementMember(ctx, payment.SettlementMember{
 				BIC: "AURODEFFXXX", Name: "Aurora Bank", OpenedAt: early,
 				Accounts: map[ledger.AssetCode]ledger.AccountID{
@@ -1655,7 +1655,7 @@ func RunCentralBankPayment(t *testing.T, newStore func(*testing.T) payment.Store
 			})
 		})
 
-		viewPayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+		viewCentralBank(t, s, func(ctx context.Context, tx payment.CentralBankTx) error {
 			got, err := tx.GetSettlementMember(ctx, "AURODEFFXXX")
 			if err != nil {
 				return err
@@ -1679,14 +1679,14 @@ func RunCentralBankPayment(t *testing.T, newStore func(*testing.T) payment.Store
 		// An upsert replaces the set rather than merging into it: an account for
 		// an asset the member no longer holds would be settled through after the
 		// member gave it up.
-		updatePayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+		updateCentralBank(t, s, func(ctx context.Context, tx payment.CentralBankTx) error {
 			return tx.PutSettlementMember(ctx, payment.SettlementMember{
 				BIC: "AURODEFFXXX", Name: "Aurora Bank", OpenedAt: early,
 				Accounts: map[ledger.AssetCode]ledger.AccountID{"EUR": "200.100.001"},
 			})
 		})
 
-		viewPayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+		viewCentralBank(t, s, func(ctx context.Context, tx payment.CentralBankTx) error {
 			got, err := tx.GetSettlementMember(ctx, "AURODEFFXXX")
 			if err != nil {
 				return err
@@ -1786,20 +1786,20 @@ func samplePayment(id payment.PaymentID, endToEndID string, createdAt time.Time)
 // It is stored rather than looked up because looking it up is a read of another
 // bank's deposit register. A store that dropped these fields would send the
 // name-reading code back.
-func paymentRoundTripsPartyDetails(t *testing.T, st payment.Store) {
+func paymentRoundTripsPartyDetails(t *testing.T, st payment.BankStore) {
 	ctx := context.Background()
 	p := samplePayment("pay_details", "e2e-details", early)
 	p.DebtorDetails = payment.PartyDetails{Agent: "AURODEFFXXX", Name: "Ada Lovelace"}
 	p.CreditorDetails = payment.PartyDetails{Agent: "BRVODEFFXXX", Name: "Grace Hopper"}
 
-	if err := st.Update(ctx, func(ctx context.Context, tx payment.Tx) error {
+	if err := st.Update(ctx, func(ctx context.Context, tx payment.BankTx) error {
 		return tx.PutPayment(ctx, p)
 	}); err != nil {
 		t.Fatalf("PutPayment: %v", err)
 	}
 
 	var got payment.Payment
-	if err := st.View(ctx, func(ctx context.Context, tx payment.Tx) error {
+	if err := st.View(ctx, func(ctx context.Context, tx payment.BankTx) error {
 		var err error
 		got, err = tx.GetPayment(ctx, p.ID)
 		return err
@@ -1829,7 +1829,7 @@ func paymentRoundTripsPartyDetails(t *testing.T, st payment.Store) {
 // payment carries until its creditor leg posts, and it is stored as ” under a
 // NOT NULL DEFAULT ”, so a store that turned it into a NULL — or a CHECK that
 // refused it — would refuse the ordinary case.
-func paymentRecordsWhereTheCreditorLegLanded(t *testing.T, st payment.Store) {
+func paymentRecordsWhereTheCreditorLegLanded(t *testing.T, st payment.BankStore) {
 	ctx := context.Background()
 
 	// The ordinary settlement: the payee's own GL account.
@@ -1851,7 +1851,7 @@ func paymentRecordsWhereTheCreditorLegLanded(t *testing.T, st payment.Store) {
 	pending.CreditorLegTx = ""
 	pending.CreditorLegAccount = ""
 
-	if err := st.Update(ctx, func(ctx context.Context, tx payment.Tx) error {
+	if err := st.Update(ctx, func(ctx context.Context, tx payment.BankTx) error {
 		for _, p := range []payment.Payment{paid, diverted, pending} {
 			if err := tx.PutPayment(ctx, p); err != nil {
 				return err
@@ -1864,7 +1864,7 @@ func paymentRecordsWhereTheCreditorLegLanded(t *testing.T, st payment.Store) {
 
 	var listed []payment.Payment
 	got := map[payment.PaymentID]payment.Payment{}
-	if err := st.View(ctx, func(ctx context.Context, tx payment.Tx) error {
+	if err := st.View(ctx, func(ctx context.Context, tx payment.BankTx) error {
 		for _, id := range []payment.PaymentID{paid.ID, diverted.ID, pending.ID} {
 			p, err := tx.GetPayment(ctx, id)
 			if err != nil {
@@ -1914,7 +1914,7 @@ func paymentRecordsWhereTheCreditorLegLanded(t *testing.T, st payment.Store) {
 //
 // A leg that has not been posted has no transaction, and an absent id and an
 // empty one are the same fact here.
-func paymentRecordsBothReturnLegs(t *testing.T, st payment.Store) {
+func paymentRecordsBothReturnLegs(t *testing.T, st payment.BankStore) {
 	ctx := context.Background()
 
 	// A return that has completed: both banks have posted.
@@ -1937,7 +1937,7 @@ func paymentRecordsBothReturnLegs(t *testing.T, st payment.Store) {
 	settled.CreditorLegAccount = "acc_bob"
 
 	all := []payment.Payment{returned, halfway, settled}
-	if err := st.Update(ctx, func(ctx context.Context, tx payment.Tx) error {
+	if err := st.Update(ctx, func(ctx context.Context, tx payment.BankTx) error {
 		for _, p := range all {
 			if err := tx.PutPayment(ctx, p); err != nil {
 				return err
@@ -1950,7 +1950,7 @@ func paymentRecordsBothReturnLegs(t *testing.T, st payment.Store) {
 
 	got := map[payment.PaymentID]payment.Payment{}
 	var listed []payment.Payment
-	if err := st.View(ctx, func(ctx context.Context, tx payment.Tx) error {
+	if err := st.View(ctx, func(ctx context.Context, tx payment.BankTx) error {
 		for _, want := range all {
 			p, err := tx.GetPayment(ctx, want.ID)
 			if err != nil {
@@ -1994,7 +1994,7 @@ func paymentRecordsBothReturnLegs(t *testing.T, st payment.Store) {
 // what it was told about a cut-off is its own — it lives in that bank's store
 // and nowhere else — and a key that omitted the book would make the second
 // bank's advice overwrite the first's.
-func settlementAdviceIsScopedToTheBankThatWasAdvised(t *testing.T, st, other payment.Store) {
+func settlementAdviceIsScopedToTheBankThatWasAdvised(t *testing.T, st, other payment.BankStore) {
 	ctx := context.Background()
 	one := payment.SettlementAdvice{
 		Book: bookA, Reference: "cyc_1", Asset: "EUR",
@@ -2011,12 +2011,12 @@ func settlementAdviceIsScopedToTheBankThatWasAdvised(t *testing.T, st, other pay
 	// each bank holds its own database. The scoping this case is named for used
 	// to be a book_id column in one store; it is two databases now, and the
 	// listing below is scoped because there is nothing else in it.
-	if err := st.Update(ctx, func(ctx context.Context, tx payment.Tx) error {
+	if err := st.Update(ctx, func(ctx context.Context, tx payment.BankTx) error {
 		return tx.PutSettlementAdvice(ctx, one.Book, one)
 	}); err != nil {
 		t.Fatalf("PutSettlementAdvice: %v", err)
 	}
-	if err := other.Update(ctx, func(ctx context.Context, tx payment.Tx) error {
+	if err := other.Update(ctx, func(ctx context.Context, tx payment.BankTx) error {
 		return tx.PutSettlementAdvice(ctx, two.Book, two)
 	}); err != nil {
 		t.Fatalf("PutSettlementAdvice at the second bank: %v", err)
@@ -2024,7 +2024,7 @@ func settlementAdviceIsScopedToTheBankThatWasAdvised(t *testing.T, st, other pay
 
 	var gotOne, gotTwo payment.SettlementAdvice
 	var listed []payment.SettlementAdvice
-	if err := st.View(ctx, func(ctx context.Context, tx payment.Tx) error {
+	if err := st.View(ctx, func(ctx context.Context, tx payment.BankTx) error {
 		var err error
 		if gotOne, err = tx.GetSettlementAdvice(ctx, bookA, "cyc_1", "EUR"); err != nil {
 			return err
@@ -2034,7 +2034,7 @@ func settlementAdviceIsScopedToTheBankThatWasAdvised(t *testing.T, st, other pay
 	}); err != nil {
 		t.Fatalf("reading advices: %v", err)
 	}
-	if err := other.View(ctx, func(ctx context.Context, tx payment.Tx) error {
+	if err := other.View(ctx, func(ctx context.Context, tx payment.BankTx) error {
 		var err error
 		gotTwo, err = tx.GetSettlementAdvice(ctx, bookB, "cyc_1", "EUR")
 		return err
@@ -2054,7 +2054,7 @@ func settlementAdviceIsScopedToTheBankThatWasAdvised(t *testing.T, st, other pay
 	// The ORDER, which the scoping assertion above could not reach: bank_2 held
 	// exactly one row, so a listing that sorted by nothing at all passed.
 	//
-	// payment.Store documents this list as AdvisedAt then seq, like every other
+	// payment.BankStore documents this list as AdvisedAt then seq, like every other
 	// listing in the interface. A SQL store gets there with ORDER BY advised_at,
 	// seq; an in-Go one had to sort a map whose iteration order the runtime
 	// randomises, which is how a missing ORDER BY and a missing sort were both
@@ -2073,14 +2073,14 @@ func settlementAdviceIsScopedToTheBankThatWasAdvised(t *testing.T, st, other pay
 		{Book: bookA, Reference: "cyc_3", Asset: "EUR", Movement: 30, ClosingBalance: 30,
 			Status: payment.AdviceAdvised, AdvisedAt: later},
 	} {
-		if err := st.Update(ctx, func(ctx context.Context, tx payment.Tx) error {
+		if err := st.Update(ctx, func(ctx context.Context, tx payment.BankTx) error {
 			return tx.PutSettlementAdvice(ctx, a.Book, a)
 		}); err != nil {
 			t.Fatalf("PutSettlementAdvice %s: %v", a.Reference, err)
 		}
 	}
 	var ordered []payment.SettlementAdvice
-	if err := st.View(ctx, func(ctx context.Context, tx payment.Tx) error {
+	if err := st.View(ctx, func(ctx context.Context, tx payment.BankTx) error {
 		var err error
 		ordered, err = tx.ListSettlementAdvices(ctx, bookA)
 		return err
@@ -2105,7 +2105,7 @@ func settlementAdviceIsScopedToTheBankThatWasAdvised(t *testing.T, st, other pay
 	// A cycle this bank was never advised of is a sentinel, not a zero value: a
 	// bank that read a zero advice would post a mirror leg of nothing and mark
 	// a cut-off it never heard about as settled.
-	if err := st.View(ctx, func(ctx context.Context, tx payment.Tx) error {
+	if err := st.View(ctx, func(ctx context.Context, tx payment.BankTx) error {
 		_, err := tx.GetSettlementAdvice(ctx, bookA, "cyc_nope", "EUR")
 		if !errors.Is(err, payment.ErrSettlementAdviceNotFound) {
 			t.Errorf("got %v, want ErrSettlementAdviceNotFound", err)
@@ -2117,7 +2117,7 @@ func settlementAdviceIsScopedToTheBankThatWasAdvised(t *testing.T, st, other pay
 
 	// The book ARGUMENT is the scope; the Book FIELD is the row's record of it.
 	//
-	// This is the only method in payment.Tx that carries a book twice, and
+	// This is the only method in payment.BankTx that carries a book twice, and
 	// cmd/server/books_test.go's recorder relies on the two being the same thing: its
 	// override notes the argument alone, and structCarriedBooks["PutSettlementAdvice"]
 	// cites this subtest as the evidence that nothing else could be recorded.
@@ -2129,12 +2129,12 @@ func settlementAdviceIsScopedToTheBankThatWasAdvised(t *testing.T, st, other pay
 		Movement: 100, ClosingBalance: 100,
 		Status: payment.AdviceAdvised, AdvisedAt: early,
 	}
-	if err := st.Update(ctx, func(ctx context.Context, tx payment.Tx) error {
+	if err := st.Update(ctx, func(ctx context.Context, tx payment.BankTx) error {
 		return tx.PutSettlementAdvice(ctx, bookA, misfiled)
 	}); err != nil {
 		t.Fatalf("PutSettlementAdvice with a mismatched Book: %v", err)
 	}
-	if err := st.View(ctx, func(ctx context.Context, tx payment.Tx) error {
+	if err := st.View(ctx, func(ctx context.Context, tx payment.BankTx) error {
 		got, err := tx.GetSettlementAdvice(ctx, bookA, "cyc_2", "EUR")
 		if err != nil {
 			return err
@@ -2149,7 +2149,7 @@ func settlementAdviceIsScopedToTheBankThatWasAdvised(t *testing.T, st, other pay
 	}
 	// And the field filed it nowhere: the OTHER bank, whose book the field
 	// named, holds no such row — in a database this store cannot write to.
-	if err := other.View(ctx, func(ctx context.Context, tx payment.Tx) error {
+	if err := other.View(ctx, func(ctx context.Context, tx payment.BankTx) error {
 		if _, err := tx.GetSettlementAdvice(ctx, bookB, "cyc_2", "EUR"); !errors.Is(err, payment.ErrSettlementAdviceNotFound) {
 			t.Errorf("the second bank holds the advice the Book field named: got %v, want ErrSettlementAdviceNotFound", err)
 		}
@@ -2164,7 +2164,7 @@ func settlementAdviceIsScopedToTheBankThatWasAdvised(t *testing.T, st, other pay
 // cut-off or a single return: the two put here differ only in what their
 // Reference names — a cycle id and a payment id — and neither collides with
 // the other, in the same book and the same asset.
-func advicesAreKeyedByReferenceNotByCycle(t *testing.T, st payment.Store) {
+func advicesAreKeyedByReferenceNotByCycle(t *testing.T, st payment.BankStore) {
 	ctx := context.Background()
 	cutOff := payment.SettlementAdvice{
 		Book: bookA, Reference: "cyc_1", Asset: "EUR",
@@ -2177,7 +2177,7 @@ func advicesAreKeyedByReferenceNotByCycle(t *testing.T, st payment.Store) {
 		Status: payment.AdvicePosted, MirrorTx: "txn_5",
 		AdvisedAt: early, PostedAt: early,
 	}
-	if err := st.Update(ctx, func(ctx context.Context, tx payment.Tx) error {
+	if err := st.Update(ctx, func(ctx context.Context, tx payment.BankTx) error {
 		if err := tx.PutSettlementAdvice(ctx, cutOff.Book, cutOff); err != nil {
 			return err
 		}
@@ -2188,7 +2188,7 @@ func advicesAreKeyedByReferenceNotByCycle(t *testing.T, st payment.Store) {
 
 	var gotCutOff, gotReturn payment.SettlementAdvice
 	var listed []payment.SettlementAdvice
-	if err := st.View(ctx, func(ctx context.Context, tx payment.Tx) error {
+	if err := st.View(ctx, func(ctx context.Context, tx payment.BankTx) error {
 		var err error
 		if gotCutOff, err = tx.GetSettlementAdvice(ctx, bookA, "cyc_1", "EUR"); err != nil {
 			return err
@@ -2252,21 +2252,17 @@ func settlement(id payment.SettlementID, cycleID payment.CycleID, settledAt time
 
 // openPayment builds a fresh store for one subtest and closes it when the
 // subtest ends.
-// openInstitution is openPayment for the two institution suites, whose factories
-// take no book: there is exactly one clearing house and one central bank, each
-// answering for a book that is a constant.
-func openInstitution(t *testing.T, newStore func(*testing.T) payment.Store) payment.Store {
-	t.Helper()
-	s := newStore(t)
-	t.Cleanup(func() {
-		if err := s.Close(); err != nil {
-			t.Errorf("Close: %v", err)
-		}
-	})
-	return s
-}
+// The three suites' open-and-close helpers, one set per institution.
+//
+// There are three because there are three store types, and that is the split
+// itself rather than a repetition: a helper written against one interface over
+// all three is exactly what a bank suite reaching for a cycle used to compile
+// through.
 
-func openPayment(t *testing.T, newStore func(*testing.T, ledger.BookID) payment.Store, book ledger.BookID) payment.Store {
+// openPayment builds a fresh bank store for one subtest and closes it when the
+// subtest ends. It takes a book because the advice cases need a SECOND bank,
+// which means a second store.
+func openPayment(t *testing.T, newStore func(*testing.T, ledger.BookID) payment.BankStore, book ledger.BookID) payment.BankStore {
 	t.Helper()
 	s := newStore(t, book)
 	t.Cleanup(func() {
@@ -2277,16 +2273,68 @@ func openPayment(t *testing.T, newStore func(*testing.T, ledger.BookID) payment.
 	return s
 }
 
-// updatePayment runs a unit of work that is expected to succeed.
-func updatePayment(t *testing.T, s payment.Store, fn func(context.Context, payment.Tx) error) {
+// openClearingHouse and openCentralBank take no book: there is exactly one of
+// each institution, and each answers for a book that is a constant.
+func openClearingHouse(t *testing.T, newStore func(*testing.T) payment.ClearingHouseStore) payment.ClearingHouseStore {
+	t.Helper()
+	s := newStore(t)
+	t.Cleanup(func() {
+		if err := s.Close(); err != nil {
+			t.Errorf("Close: %v", err)
+		}
+	})
+	return s
+}
+
+func openCentralBank(t *testing.T, newStore func(*testing.T) payment.CentralBankStore) payment.CentralBankStore {
+	t.Helper()
+	s := newStore(t)
+	t.Cleanup(func() {
+		if err := s.Close(); err != nil {
+			t.Errorf("Close: %v", err)
+		}
+	})
+	return s
+}
+
+// update… and view… run a unit of work that is expected to succeed, one pair per
+// institution.
+func updateBank(t *testing.T, s payment.BankStore, fn func(context.Context, payment.BankTx) error) {
 	t.Helper()
 	if err := s.Update(context.Background(), fn); err != nil {
 		t.Fatalf("Update: %v", err)
 	}
 }
 
-// viewPayment runs a read-only unit of work that is expected to succeed.
-func viewPayment(t *testing.T, s payment.Store, fn func(context.Context, payment.Tx) error) {
+func viewBank(t *testing.T, s payment.BankStore, fn func(context.Context, payment.BankTx) error) {
+	t.Helper()
+	if err := s.View(context.Background(), fn); err != nil {
+		t.Fatalf("View: %v", err)
+	}
+}
+
+func updateCsm(t *testing.T, s payment.ClearingHouseStore, fn func(context.Context, payment.CsmTx) error) {
+	t.Helper()
+	if err := s.Update(context.Background(), fn); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+}
+
+func viewCsm(t *testing.T, s payment.ClearingHouseStore, fn func(context.Context, payment.CsmTx) error) {
+	t.Helper()
+	if err := s.View(context.Background(), fn); err != nil {
+		t.Fatalf("View: %v", err)
+	}
+}
+
+func updateCentralBank(t *testing.T, s payment.CentralBankStore, fn func(context.Context, payment.CentralBankTx) error) {
+	t.Helper()
+	if err := s.Update(context.Background(), fn); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+}
+
+func viewCentralBank(t *testing.T, s payment.CentralBankStore, fn func(context.Context, payment.CentralBankTx) error) {
 	t.Helper()
 	if err := s.View(context.Background(), fn); err != nil {
 		t.Fatalf("View: %v", err)

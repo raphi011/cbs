@@ -22,7 +22,7 @@ import (
 // RefreshDirectory is RefreshDirectoryTx in its own unit of work.
 func (s *BankNetwork) RefreshDirectory(ctx context.Context, published []RosterEntry) ([]DirectoryEntry, error) {
 	var out []DirectoryEntry
-	err := s.store.Update(ctx, func(ctx context.Context, tx Tx) error {
+	err := s.store.Update(ctx, func(ctx context.Context, tx BankTx) error {
 		var err error
 		out, err = s.RefreshDirectoryTx(ctx, tx, published)
 		return err
@@ -65,7 +65,7 @@ func (s *BankNetwork) RefreshDirectory(ctx context.Context, published []RosterEn
 // row carries the same RefreshedAt, because a snapshot is one act. What that
 // costs is that a member which has left the roster stops being routable here,
 // which is the point of taking delivery rather than merging.
-func (s *BankNetwork) RefreshDirectoryTx(ctx context.Context, tx Tx, published []RosterEntry) ([]DirectoryEntry, error) {
+func (s *BankNetwork) RefreshDirectoryTx(ctx context.Context, tx BankTx, published []RosterEntry) ([]DirectoryEntry, error) {
 	if _, err := s.self(); err != nil {
 		return nil, err
 	}
@@ -107,7 +107,7 @@ func (s *BankNetwork) ListDirectory(ctx context.Context) ([]DirectoryEntry, erro
 		return nil, err
 	}
 	var out []DirectoryEntry
-	err := s.store.View(ctx, func(ctx context.Context, tx Tx) error {
+	err := s.store.View(ctx, func(ctx context.Context, tx BankTx) error {
 		var err error
 		out, err = tx.ListDirectoryEntries(ctx)
 		return err
@@ -150,7 +150,7 @@ func (s *BankNetwork) ListDirectory(ctx context.Context) ([]DirectoryEntry, erro
 // an agent from" — a much narrower claim, and the one a real scheme makes. Proxy aliases are resolved by a separate central service in the
 // real world (the EPC's Proxy Lookup Service, UPI) precisely because no bank can
 // guarantee they are unique, and this system has no such service.
-func (s *Network) routeTx(ctx context.Context, tx Tx, ident deposit.Identifier, asserted iso20022.BIC) (iso20022.BIC, error) {
+func (s *BankNetwork) routeTx(ctx context.Context, tx BankTx, ident deposit.Identifier, asserted iso20022.BIC) (iso20022.BIC, error) {
 	if ident.Scheme != deposit.IdentifierIBAN {
 		if asserted == "" {
 			return "", ErrCounterpartyAgentNotNamed
@@ -209,7 +209,7 @@ func (s *ClearingHouseNetwork) RosterAgentFor(ctx context.Context, ident deposit
 		return "", err
 	}
 	var out RosterEntry
-	err = s.store.View(ctx, func(ctx context.Context, tx Tx) error {
+	err = s.store.View(ctx, func(ctx context.Context, tx CsmTx) error {
 		var err error
 		out, err = tx.GetRosterEntryByIssuer(ctx, iban.Issuer{Country: addr.Country(), BankCode: code})
 		return err
@@ -233,7 +233,7 @@ func (s *BankNetwork) ResolveBankCode(ctx context.Context, issuer iban.Issuer) (
 		return DirectoryEntry{}, err
 	}
 	var out DirectoryEntry
-	err := s.store.View(ctx, func(ctx context.Context, tx Tx) error {
+	err := s.store.View(ctx, func(ctx context.Context, tx BankTx) error {
 		var err error
 		out, err = tx.GetDirectoryEntry(ctx, issuer)
 		return err

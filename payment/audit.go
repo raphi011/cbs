@@ -36,7 +36,7 @@ import (
 // payload is marshalled now rather than held by reference, so later mutation of
 // the entity cannot rewrite the record of what happened. The event's Seq is
 // assigned by the store.
-func (s *Network) appendAuditTx(ctx context.Context, tx Tx, eventType, entityID string, payload any) error {
+func (s *Network) appendAuditTx(ctx context.Context, tx ledger.CommonTx, eventType, entityID string, payload any) error {
 	raw, err := json.Marshal(payload)
 	if err != nil {
 		return fmt.Errorf("audit %s: marshal payload: %w", eventType, err)
@@ -66,7 +66,7 @@ func (s *Network) appendAuditTx(ctx context.Context, tx Tx, eventType, entityID 
 // together with the filter that produced it.
 func (s *Network) ListAudit(ctx context.Context, f ledger.AuditFilter) ([]ledger.AuditEvent, error) {
 	var out []ledger.AuditEvent
-	err := s.store.View(ctx, func(ctx context.Context, tx Tx) error {
+	err := s.common.View(ctx, func(ctx context.Context, tx ledger.CommonTx) error {
 		var err error
 		out, err = tx.ListAudit(ctx, f)
 		return err

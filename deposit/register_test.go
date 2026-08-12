@@ -109,7 +109,7 @@ func newTestRegisterWithCatalogueIssuedBy(t *testing.T, clock func() time.Time, 
 	t.Helper()
 	ctx := context.Background()
 	store := testenv.New(t, clock)
-	book := ledger.NewBook(store, "bank", clock)
+	book := ledger.NewBook(store.Ledger(), "bank", clock)
 	cat := product.NewCatalogue(store.Product(), book, book.ID(), clock)
 
 	gl, err := book.CreateLedger(ctx, "General Ledger")

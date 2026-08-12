@@ -575,7 +575,7 @@ func TestAnAssetTheAgentHasNotAnsweredForYetIsAMissingRowNotA422(t *testing.T) {
 	// there is no transaction that can span them. The window this rewinds to is
 	// precisely a moment when two databases disagree, so a fixture that could write
 	// both atomically would be reproducing a state the system cannot reach.
-	if err := h.nets.CentralBank().Store().Update(context.Background(), func(ctx context.Context, tx payment.Tx) error {
+	if err := h.nets.CentralBank().Store().Update(context.Background(), func(ctx context.Context, tx payment.CentralBankTx) error {
 		member, err := tx.GetSettlementMember(ctx, "BNKADEFFXXX")
 		if err != nil {
 			return err
@@ -589,7 +589,7 @@ func TestAnAssetTheAgentHasNotAnsweredForYetIsAMissingRowNotA422(t *testing.T) {
 	if err != nil {
 		t.Fatalf("opening the applicant's store: %v", err)
 	}
-	if err := bankNet.Store().Update(context.Background(), func(ctx context.Context, tx payment.Tx) error {
+	if err := bankNet.Store().Update(context.Background(), func(ctx context.Context, tx payment.BankTx) error {
 		b, err := tx.GetBank(ctx, payment.ParticipantID(pid))
 		if err != nil {
 			return err

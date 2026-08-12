@@ -91,7 +91,7 @@ type SchemeContext struct {
 	// both of those are the payer's. A scheme therefore reads the payer's own
 	// deposit register without asking which institution it is running as.
 	Network *BankNetwork
-	Tx      Tx
+	Tx      BankTx
 	Now     time.Time
 }
 

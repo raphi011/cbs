@@ -119,8 +119,8 @@ func TestAMemberBanksActsAreRefusedOnAnyOtherInstitutionsNetwork(t *testing.T) {
 		who string
 		net *BankNetwork
 	}{
-		{"the clearing house", BankHandleOverClearingHouse(sys.ClearingHouseNetwork)},
-		{"the central bank", BankHandleOverCentralBank(sys.cb())},
+		{"the clearing house", BankHandleOverClearingHouse(sys.bank(a.BIC), sys.ClearingHouseNetwork)},
+		{"the central bank", BankHandleOverCentralBank(sys.bank(a.BIC), sys.cb())},
 	} {
 		for _, act := range acts {
 			t.Run(act.name+" as "+imposter.who, func(t *testing.T) {
@@ -191,8 +191,8 @@ func TestTheCentralBanksBookIsReachableOnlyFromTheSettlementAgentsNetwork(t *tes
 		who string
 		net *CentralBankNetwork
 	}{
-		{"the clearing house", CentralBankHandleOverClearingHouse(sys.ClearingHouseNetwork)},
-		{"a member bank", CentralBankHandleOverBank(sys.bank(a.BIC))},
+		{"the clearing house", CentralBankHandleOverClearingHouse(sys.cb(), sys.ClearingHouseNetwork)},
+		{"a member bank", CentralBankHandleOverBank(sys.cb(), sys.bank(a.BIC))},
 	} {
 		for _, act := range acts {
 			t.Run(act.name+" as "+imposter.who, func(t *testing.T) {
@@ -219,13 +219,13 @@ func TestANetworkBelongingToNobodyIsRefusedAtConstruction(t *testing.T) {
 	defer func() {
 		r := recover()
 		if r == nil {
-			t.Fatal("NewNetwork accepted the zero Identity; a network belonging to no institution has no answer to whose book an act is about")
+			t.Fatal("the core accepted the zero Identity; a network belonging to no institution has no answer to whose book an act is about")
 		}
 		if got, ok := r.(string); !ok || !strings.Contains(got, "identity") {
 			t.Errorf("panicked with %v, want a message naming the missing identity", r)
 		}
 	}()
-	NewNetwork(sys.Store(), sys.Now, Identity{})
+	NetworkWithoutAnIdentity(sys.Now)
 }
 
 // TestARegisteredSchemeReachesEveryInstitutionsNetwork is the one thing per-

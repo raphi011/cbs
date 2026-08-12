@@ -410,7 +410,7 @@ func (h *harness) advice(t *testing.T, id payment.ParticipantID, reference strin
 		t.Fatalf("GetBank %s: %v", id, err)
 	}
 	var out payment.SettlementAdvice
-	if err := member.Store().View(ctx, func(ctx context.Context, tx payment.Tx) error {
+	if err := member.Store().View(ctx, func(ctx context.Context, tx payment.BankTx) error {
 		out, err = tx.GetSettlementAdvice(ctx, p.BookID, reference, "EUR")
 		return err
 	}); err != nil {

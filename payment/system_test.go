@@ -981,7 +981,7 @@ func TestASettlementStoreFailureDoesNotRouteMoneyToUnclaimedBalances(t *testing.
 	// under test is that bank's own, in its own unit of work, and the settlement
 	// agent is not in it at all.
 	dropped := errors.New("connection reset by peer")
-	broken := NewBankNetwork(failingUpdateStore{Store: sys.Store(), accountErr: dropped},
+	broken := NewBankNetwork(failingUpdateStore{BankStore: sys.bank(b.BIC).Store(), accountErr: dropped},
 		func() time.Time { return fixedTime }, b.ID)
 
 	if _, err := broken.SettleAtBank(ctx, pay.ID); err == nil {
@@ -1859,7 +1859,7 @@ func TestABankJoinsWithAReturnsReceivableAccount(t *testing.T) {
 // FOUR: what composes them is a conversation between three institutions, and a
 // single unit of work spanning them is exactly what an admission across a store
 // boundary cannot be.
-func mustUpdate(t *testing.T, ctx context.Context, sys *testSystem, fn func(context.Context, Tx) error) {
+func mustUpdate(t *testing.T, ctx context.Context, sys *testSystem, fn func(context.Context, CsmTx) error) {
 	t.Helper()
 	assertNoError(t, sys.Store().Update(ctx, fn))
 }
@@ -1874,7 +1874,15 @@ func mustUpdate(t *testing.T, ctx context.Context, sys *testSystem, fn func(cont
 //
 // It is held by the one method it needs rather than by an institution's type,
 // because all three have a database and the callers below name two of them.
-func mustUpdateAt(t *testing.T, ctx context.Context, net interface{ Store() Store }, fn func(context.Context, Tx) error) {
+func mustUpdateAt(t *testing.T, ctx context.Context, net *BankNetwork, fn func(context.Context, BankTx) error) {
+	t.Helper()
+	assertNoError(t, net.Store().Update(ctx, fn))
+}
+
+// mustUpdateAtCB is mustUpdateAt for the settlement agent, whose unit of work is
+// its own type. There are three store types now, so a helper written over all
+// three is exactly the thing this split removed.
+func mustUpdateAtCB(t *testing.T, ctx context.Context, net *CentralBankNetwork, fn func(context.Context, CentralBankTx) error) {
 	t.Helper()
 	assertNoError(t, net.Store().Update(ctx, fn))
 }
@@ -1958,7 +1966,7 @@ func assertCentralBankReserveAccountCount(t *testing.T, ctx context.Context, sys
 	// embedded clearing-house network is refused by name — that store does not
 	// answer for another institution's book — so the routing here is what makes the
 	// count a count rather than an error.
-	assertNoError(t, sys.cb().Store().View(ctx, func(ctx context.Context, tx Tx) error {
+	assertNoError(t, sys.cb().Store().View(ctx, func(ctx context.Context, tx CentralBankTx) error {
 		accounts, err := tx.ListAccounts(ctx, CentralBankBook)
 		if err != nil {
 			return err
@@ -1985,7 +1993,7 @@ func TestFoundingABankTouchesNoOtherInstitution(t *testing.T) {
 
 	var b *Bank
 	aurora := sys.bank("AURODEFFXXX")
-	mustUpdateAt(t, ctx, aurora, func(ctx context.Context, tx Tx) (err error) {
+	mustUpdateAt(t, ctx, aurora, func(ctx context.Context, tx BankTx) (err error) {
 		b, err = aurora.FoundBankTx(ctx, tx, "Aurora Bank", "AURODEFFXXX", storetest.FixtureCountry, euroOnly)
 		return err
 	})
@@ -2007,13 +2015,13 @@ func TestFoundingABankTouchesNoOtherInstitution(t *testing.T) {
 	// inconvenience: "no other institution was touched" is a claim about the
 	// central bank's database AND about the clearing house's, and neither can be
 	// asked about the other's table.
-	assertNoError(t, sys.cb().Store().View(ctx, func(ctx context.Context, tx Tx) error {
+	assertNoError(t, sys.cb().Store().View(ctx, func(ctx context.Context, tx CentralBankTx) error {
 		if _, err := tx.GetSettlementMember(ctx, "AURODEFFXXX"); !errors.Is(err, ErrSettlementMemberNotFound) {
 			t.Errorf("the central bank has a member row for a bank that only founded itself: %v", err)
 		}
 		return nil
 	}))
-	assertNoError(t, sys.Store().View(ctx, func(ctx context.Context, tx Tx) error {
+	assertNoError(t, sys.Store().View(ctx, func(ctx context.Context, tx CsmTx) error {
 		if _, err := tx.GetRosterEntry(ctx, "AURODEFFXXX"); !errors.Is(err, ErrRosterEntryNotFound) {
 			t.Errorf("the clearing house has a routing entry for a bank that has not applied: %v", err)
 		}
@@ -2040,11 +2048,11 @@ func TestOpeningASettlementAccountTwiceOpensOne(t *testing.T) {
 		first, second         SettlementMember
 		firstCode, secondCode iban.Issuer
 	)
-	mustUpdateAt(t, ctx, sys.cb(), func(ctx context.Context, tx Tx) (err error) {
+	mustUpdateAtCB(t, ctx, sys.cb(), func(ctx context.Context, tx CentralBankTx) (err error) {
 		first, firstCode, err = sys.cb().OpenSettlementAccountTx(ctx, tx, in)
 		return err
 	})
-	mustUpdateAt(t, ctx, sys.cb(), func(ctx context.Context, tx Tx) (err error) {
+	mustUpdateAtCB(t, ctx, sys.cb(), func(ctx context.Context, tx CentralBankTx) (err error) {
 		second, secondCode, err = sys.cb().OpenSettlementAccountTx(ctx, tx, in)
 		return err
 	})
@@ -2072,7 +2080,7 @@ func TestOpeningASettlementAccountTwiceOpensOne(t *testing.T) {
 		extended     SettlementMember
 		extendedCode iban.Issuer
 	)
-	mustUpdateAt(t, ctx, sys.cb(), func(ctx context.Context, tx Tx) (err error) {
+	mustUpdateAtCB(t, ctx, sys.cb(), func(ctx context.Context, tx CentralBankTx) (err error) {
 		extended, extendedCode, err = sys.cb().OpenSettlementAccountTx(ctx, tx, AdmissionRequest{
 			Name: "Aurora Bank", BIC: "AURODEFFXXX", Country: testAllocation.Country, Asset: "USD", Ref: "adm-2",
 		})
@@ -2113,7 +2121,7 @@ func TestAdmittingABICTwiceIsRefused(t *testing.T) {
 		Accounts: map[ledger.AssetCode]ledger.AccountID{testAsset: "200.100.001"},
 		Ref:      "adm-1",
 	}
-	mustUpdate(t, ctx, sys, func(ctx context.Context, tx Tx) error {
+	mustUpdate(t, ctx, sys, func(ctx context.Context, tx CsmTx) error {
 		_, err := sys.AdmitMemberTx(ctx, tx, ack)
 		return err
 	})
@@ -2121,7 +2129,7 @@ func TestAdmittingABICTwiceIsRefused(t *testing.T) {
 	clash := ack
 	clash.Accounts = map[ledger.AssetCode]ledger.AccountID{testAsset: "200.100.009"}
 	clash.Ref = "adm-2"
-	err := sys.Store().Update(ctx, func(ctx context.Context, tx Tx) error {
+	err := sys.Store().Update(ctx, func(ctx context.Context, tx CsmTx) error {
 		_, err := sys.AdmitMemberTx(ctx, tx, clash)
 		return err
 	})
@@ -2133,7 +2141,7 @@ func TestAdmittingABICTwiceIsRefused(t *testing.T) {
 	// which is what the ADMISSION REFERENCE on it is for, and the only field that
 	// could show it: the row records an address and the admission that put it
 	// there, and the impostor quoted the same address.
-	assertNoError(t, sys.Store().View(ctx, func(ctx context.Context, tx Tx) error {
+	assertNoError(t, sys.Store().View(ctx, func(ctx context.Context, tx CsmTx) error {
 		e, err := tx.GetRosterEntry(ctx, "AURODEFFXXX")
 		if err != nil {
 			return err
@@ -2152,7 +2160,7 @@ func TestAdmittingABICTwiceIsRefused(t *testing.T) {
 	second := ack
 	second.Accounts = map[ledger.AssetCode]ledger.AccountID{testAsset: "200.100.001", "USD": "200.100.002"}
 	var extended RosterEntry
-	mustUpdate(t, ctx, sys, func(ctx context.Context, tx Tx) (err error) {
+	mustUpdate(t, ctx, sys, func(ctx context.Context, tx CsmTx) (err error) {
 		extended, err = sys.AdmitMemberTx(ctx, tx, second)
 		return err
 	})
@@ -2180,7 +2188,7 @@ func TestABankRefusesAnAcknowledgementOfAnotherAdmission(t *testing.T) {
 
 	var bank *Bank
 	own := sys.bank(testBIC)
-	mustUpdateAt(t, ctx, own, func(ctx context.Context, tx Tx) (err error) {
+	mustUpdateAt(t, ctx, own, func(ctx context.Context, tx BankTx) (err error) {
 		bank, err = own.FoundBankTx(ctx, tx, "Aurora Bank", testBIC, storetest.FixtureCountry, euroOnly)
 		return err
 	})
@@ -2195,7 +2203,7 @@ func TestABankRefusesAnAcknowledgementOfAnotherAdmission(t *testing.T) {
 		Accounts: map[ledger.AssetCode]ledger.AccountID{testAsset: "200.100.001"},
 	}
 	// A bank with nothing recorded takes the first that names it.
-	mustUpdateAt(t, ctx, sys.bank(bank.BIC), func(ctx context.Context, tx Tx) error {
+	mustUpdateAt(t, ctx, sys.bank(bank.BIC), func(ctx context.Context, tx BankTx) error {
 		_, err := sys.bank(bank.BIC).RecordMembershipTx(ctx, tx, ack)
 		return err
 	})
@@ -2208,7 +2216,7 @@ func TestABankRefusesAnAcknowledgementOfAnotherAdmission(t *testing.T) {
 	// currency makes ordinary.
 	second := ack
 	second.Accounts = map[ledger.AssetCode]ledger.AccountID{testAsset: "200.100.001", "USD": "200.100.002"}
-	mustUpdateAt(t, ctx, sys.bank(bank.BIC), func(ctx context.Context, tx Tx) error {
+	mustUpdateAt(t, ctx, sys.bank(bank.BIC), func(ctx context.Context, tx BankTx) error {
 		_, err := sys.bank(bank.BIC).RecordMembershipTx(ctx, tx, second)
 		return err
 	})
@@ -2218,7 +2226,7 @@ func TestABankRefusesAnAcknowledgementOfAnotherAdmission(t *testing.T) {
 	forged := ack
 	forged.Ref = "adm-someone-else"
 	forged.Accounts = map[ledger.AssetCode]ledger.AccountID{testAsset: "acc_bogus"}
-	err := sys.bank(bank.BIC).Store().Update(ctx, func(ctx context.Context, tx Tx) error {
+	err := sys.bank(bank.BIC).Store().Update(ctx, func(ctx context.Context, tx BankTx) error {
 		_, err := sys.bank(bank.BIC).RecordMembershipTx(ctx, tx, forged)
 		return err
 	})
@@ -2267,14 +2275,14 @@ func TestABankRefusesAnAcknowledgementThatWouldLeaveItWrong(t *testing.T) {
 		sys := testNetwork(t)
 		var bank *Bank
 		own := sys.bank(testBIC)
-		mustUpdateAt(t, ctx, own, func(ctx context.Context, tx Tx) (err error) {
+		mustUpdateAt(t, ctx, own, func(ctx context.Context, tx BankTx) (err error) {
 			bank, err = own.FoundBankTx(ctx, tx, "Aurora Bank", testBIC, storetest.FixtureCountry, euroOnly)
 			return err
 		})
 		return sys, bank
 	}
 	record := func(sys *testSystem, id ParticipantID, ack AdmissionAcknowledgement) error {
-		return sys.bank(iso20022.BIC(id)).Store().Update(ctx, func(ctx context.Context, tx Tx) error {
+		return sys.bank(iso20022.BIC(id)).Store().Update(ctx, func(ctx context.Context, tx BankTx) error {
 			_, err := sys.bank(iso20022.BIC(id)).RecordMembershipTx(ctx, tx, ack)
 			return err
 		})
@@ -2330,7 +2338,7 @@ func TestABankRefusesAnAcknowledgementThatWouldLeaveItWrong(t *testing.T) {
 		sys := testNetwork(t)
 		var bank *Bank
 		own := sys.bank(testBIC)
-		mustUpdateAt(t, ctx, own, func(ctx context.Context, tx Tx) (err error) {
+		mustUpdateAt(t, ctx, own, func(ctx context.Context, tx BankTx) (err error) {
 			bank, err = own.FoundBankTx(ctx, tx, "Aurora Bank", testBIC, storetest.FixtureCountry, []ledger.AssetCode{testAsset, "USD"})
 			return err
 		})
@@ -2383,7 +2391,7 @@ func TestAnAcknowledgementQuotingNoAdmissionIsRefusedByBothActs(t *testing.T) {
 
 	var bank *Bank
 	own := sys.bank(testBIC)
-	mustUpdateAt(t, ctx, own, func(ctx context.Context, tx Tx) (err error) {
+	mustUpdateAt(t, ctx, own, func(ctx context.Context, tx BankTx) (err error) {
 		bank, err = own.FoundBankTx(ctx, tx, "Aurora Bank", testBIC, storetest.FixtureCountry, euroOnly)
 		return err
 	})
@@ -2396,7 +2404,7 @@ func TestAnAcknowledgementQuotingNoAdmissionIsRefusedByBothActs(t *testing.T) {
 
 	// The BANK. A membership recorded under no admission is a row that settles
 	// through a real account and reads as "accepted nothing", which is the reset.
-	err := sys.bank(bank.BIC).Store().Update(ctx, func(ctx context.Context, tx Tx) error {
+	err := sys.bank(bank.BIC).Store().Update(ctx, func(ctx context.Context, tx BankTx) error {
 		_, err := sys.bank(bank.BIC).RecordMembershipTx(ctx, tx, noRef)
 		return err
 	})
@@ -2410,14 +2418,14 @@ func TestAnAcknowledgementQuotingNoAdmissionIsRefusedByBothActs(t *testing.T) {
 
 	// The CLEARING HOUSE. Two institutions on one address, both quoting nothing,
 	// compare equal — so the refusal that row exists for never fires.
-	err = sys.Store().Update(ctx, func(ctx context.Context, tx Tx) error {
+	err = sys.Store().Update(ctx, func(ctx context.Context, tx CsmTx) error {
 		_, err := sys.AdmitMemberTx(ctx, tx, noRef)
 		return err
 	})
 	if !errors.Is(err, ErrAdmissionNotIdentified) {
 		t.Errorf("the clearing house admitted a member under no admission: %v, want ErrAdmissionNotIdentified", err)
 	}
-	assertNoError(t, sys.Store().View(ctx, func(ctx context.Context, tx Tx) error {
+	assertNoError(t, sys.Store().View(ctx, func(ctx context.Context, tx CsmTx) error {
 		if _, err := tx.GetRosterEntry(ctx, testBIC); !errors.Is(err, ErrRosterEntryNotFound) {
 			t.Errorf("an acknowledgement quoting no admission put %s in the roster: %v", testBIC, err)
 		}
@@ -2428,7 +2436,7 @@ func TestAnAcknowledgementQuotingNoAdmissionIsRefusedByBothActs(t *testing.T) {
 	// SENTINEL rather than the field.
 	real := noRef
 	real.Ref = "adm-1"
-	mustUpdateAt(t, ctx, sys.bank(bank.BIC), func(ctx context.Context, tx Tx) error {
+	mustUpdateAt(t, ctx, sys.bank(bank.BIC), func(ctx context.Context, tx BankTx) error {
 		_, err := sys.bank(bank.BIC).RecordMembershipTx(ctx, tx, real)
 		return err
 	})
@@ -2526,12 +2534,12 @@ func TestAnUnusableAcknowledgementIsRefusedByBothActs(t *testing.T) {
 			sys := testNetwork(t)
 			var bank *Bank
 			own := sys.bank(testBIC)
-			mustUpdateAt(t, ctx, own, func(ctx context.Context, tx Tx) (err error) {
+			mustUpdateAt(t, ctx, own, func(ctx context.Context, tx BankTx) (err error) {
 				bank, err = own.FoundBankTx(ctx, tx, "Aurora Bank", testBIC, storetest.FixtureCountry, euroOnly)
 				return err
 			})
 
-			if err := sys.Store().Update(ctx, func(ctx context.Context, tx Tx) error {
+			if err := sys.Store().Update(ctx, func(ctx context.Context, tx CsmTx) error {
 				_, err := sys.AdmitMemberTx(ctx, tx, tc.in)
 				return err
 			}); !errors.Is(err, tc.want) {
@@ -2541,7 +2549,7 @@ func TestAnUnusableAcknowledgementIsRefusedByBothActs(t *testing.T) {
 			// the clearing house's above, which is what the split takes away: the
 			// two refusals are two institutions', asked separately because they
 			// have to be.
-			if err := sys.bank(bank.BIC).Store().Update(ctx, func(ctx context.Context, tx Tx) error {
+			if err := sys.bank(bank.BIC).Store().Update(ctx, func(ctx context.Context, tx BankTx) error {
 				_, err := sys.bank(bank.BIC).RecordMembershipTx(ctx, tx, tc.in)
 				return err
 			}); !errors.Is(err, tc.want) {
@@ -2554,11 +2562,11 @@ func TestAnUnusableAcknowledgementIsRefusedByBothActs(t *testing.T) {
 			if got := mustGetBank(t, ctx, sys, bank.ID); got.Assets[testAsset].Settlement != "" {
 				t.Errorf("the bank settles through %q after the refusal", got.Assets[testAsset].Settlement)
 			}
-			mustUpdate(t, ctx, sys, func(ctx context.Context, tx Tx) error {
+			mustUpdate(t, ctx, sys, func(ctx context.Context, tx CsmTx) error {
 				_, err := sys.AdmitMemberTx(ctx, tx, real)
 				return err
 			})
-			mustUpdateAt(t, ctx, sys.bank(bank.BIC), func(ctx context.Context, tx Tx) error {
+			mustUpdateAt(t, ctx, sys.bank(bank.BIC), func(ctx context.Context, tx BankTx) error {
 				_, err := sys.bank(bank.BIC).RecordMembershipTx(ctx, tx, real)
 				return err
 			})
@@ -2581,11 +2589,11 @@ func TestABankCannotRecordAnotherBanksMembership(t *testing.T) {
 	// founding themselves is two institutions, and a Tx belongs to one.
 	var aurora, verde *Bank
 	auroraNet, verdeNet := sys.bank("AURODEFFXXX"), sys.bank("VERDITMMXXX")
-	mustUpdateAt(t, ctx, auroraNet, func(ctx context.Context, tx Tx) (err error) {
+	mustUpdateAt(t, ctx, auroraNet, func(ctx context.Context, tx BankTx) (err error) {
 		aurora, err = auroraNet.FoundBankTx(ctx, tx, "Aurora Bank", "AURODEFFXXX", storetest.FixtureCountry, euroOnly)
 		return err
 	})
-	mustUpdateAt(t, ctx, verdeNet, func(ctx context.Context, tx Tx) (err error) {
+	mustUpdateAt(t, ctx, verdeNet, func(ctx context.Context, tx BankTx) (err error) {
 		verde, err = verdeNet.FoundBankTx(ctx, tx, "Banca Verde", "VERDITMMXXX", storetest.FixtureCountry, euroOnly)
 		return err
 	})
@@ -2597,7 +2605,7 @@ func TestABankCannotRecordAnotherBanksMembership(t *testing.T) {
 		Accounts: map[ledger.AssetCode]ledger.AccountID{testAsset: "200.100.001"},
 		Ref:      "adm-1",
 	}
-	err := sys.bank(verde.BIC).Store().Update(ctx, func(ctx context.Context, tx Tx) error {
+	err := sys.bank(verde.BIC).Store().Update(ctx, func(ctx context.Context, tx BankTx) error {
 		_, err := sys.bank(verde.BIC).RecordMembershipTx(ctx, tx, ack)
 		return err
 	})
@@ -2614,7 +2622,7 @@ func TestABankCannotRecordAnotherBanksMembership(t *testing.T) {
 	}
 
 	// And the bank the acknowledgement IS addressed to records it.
-	mustUpdateAt(t, ctx, sys.bank(aurora.BIC), func(ctx context.Context, tx Tx) error {
+	mustUpdateAt(t, ctx, sys.bank(aurora.BIC), func(ctx context.Context, tx BankTx) error {
 		_, err := sys.bank(aurora.BIC).RecordMembershipTx(ctx, tx, ack)
 		return err
 	})
@@ -2657,7 +2665,7 @@ func TestSettleCycleFailsWhenParticipantLacksTheAsset(t *testing.T) {
 	_, err = sys.CloseCycle(ctx, cyc.ID)
 	assertNoError(t, err)
 
-	assertNoError(t, sys.stores.CentralBank().Update(ctx, func(ctx context.Context, tx Tx) error {
+	assertNoError(t, sys.stores.CentralBank().Update(ctx, func(ctx context.Context, tx CentralBankTx) error {
 		member, err := tx.GetSettlementMember(ctx, b.BIC)
 		if err != nil {
 			return err
@@ -2914,7 +2922,7 @@ func TestAMandateBelongsToItsCreditorsBankAndToNoOther(t *testing.T) {
 	// The clearing house cannot either: it is not a member bank, so this is not
 	// its act at all. Recording one is a method on BankNetwork, so the crossing
 	// left to measure is a bank's handle over the clearing house's core.
-	asCSM := BankHandleOverClearingHouse(sys.ClearingHouseNetwork)
+	asCSM := BankHandleOverClearingHouse(sys.bank(a.BIC), sys.ClearingHouseNetwork)
 	_, err = asCSM.CreateMandate(ctx, a.BIC, debtor, creditor, 0)
 	assertError(t, err, ErrNotThisInstitutionsAct)
 
@@ -2997,7 +3005,7 @@ func TestCrossAssetPaymentSurvivesInitiationAndFailsAtThePayeesBank(t *testing.T
 	// exists to prevent. On the PAYEE'S BANK's copy, because that is the row its
 	// own PostCreditorLegTx reads — poking the clearing house's changed a row
 	// nothing in this flow looks at.
-	assertNoError(t, sys.bank(b.BIC).Store().Update(ctx, func(ctx context.Context, tx Tx) error {
+	assertNoError(t, sys.bank(b.BIC).Store().Update(ctx, func(ctx context.Context, tx BankTx) error {
 		stored, err := tx.GetPayment(ctx, pay.ID)
 		if err != nil {
 			return err
@@ -4448,7 +4456,7 @@ func TestAcceptInboundDoesNotRewriteEitherPartysDetails(t *testing.T) {
 // would leave the deposit-account arm untested while looking as though it were
 // covered.
 type failingUpdateTx struct {
-	Tx
+	BankTx
 	participantErr error
 	accountErr     error
 }
@@ -4457,28 +4465,28 @@ func (t failingUpdateTx) GetBank(ctx context.Context, id ParticipantID) (Bank, e
 	if t.participantErr != nil {
 		return Bank{}, t.participantErr
 	}
-	return t.Tx.GetBank(ctx, id)
+	return t.BankTx.GetBank(ctx, id)
 }
 
 func (t failingUpdateTx) GetDepositAccount(ctx context.Context, book ledger.BookID, id deposit.AccountID) (deposit.Account, error) {
 	if t.accountErr != nil {
 		return deposit.Account{}, t.accountErr
 	}
-	return t.Tx.GetDepositAccount(ctx, book, id)
+	return t.BankTx.GetDepositAccount(ctx, book, id)
 }
 
-// failingUpdateStore wraps a real Store and hands every UPDATE a failingUpdateTx.
-// See message_test.go's failingStore for why a synthetic error at the seam is
-// the only way to provoke a store failure on demand.
+// failingUpdateStore wraps a real bank store and hands every UPDATE a
+// failingUpdateTx. See message_test.go's failingStore for why a synthetic error
+// at the seam is the only way to provoke a store failure on demand.
 type failingUpdateStore struct {
-	Store
+	BankStore
 	participantErr error
 	accountErr     error
 }
 
-func (s failingUpdateStore) Update(ctx context.Context, fn func(context.Context, Tx) error) error {
-	return s.Store.Update(ctx, func(ctx context.Context, tx Tx) error {
-		return fn(ctx, failingUpdateTx{Tx: tx, participantErr: s.participantErr, accountErr: s.accountErr})
+func (s failingUpdateStore) Update(ctx context.Context, fn func(context.Context, BankTx) error) error {
+	return s.BankStore.Update(ctx, func(ctx context.Context, tx BankTx) error {
+		return fn(ctx, failingUpdateTx{BankTx: tx, participantErr: s.participantErr, accountErr: s.accountErr})
 	})
 }
 
@@ -4545,7 +4553,7 @@ func TestAcceptInboundDoesNotBlameTheSenderForAStoreFailure(t *testing.T) {
 				// about the wrong institution, and one that would have hidden
 				// the very confusion this test exists to prevent.
 				broken := NewBankNetwork(failingUpdateStore{
-					Store:          n.bank(receiverOf(n, p)).Store(),
+					BankStore:      n.bank(receiverOf(n, p)).Store(),
 					participantErr: tc.participantErr,
 					accountErr:     tc.accountErr,
 				}, func() time.Time { return fixedTime }, ParticipantID(receiverOf(n, p)))
@@ -5505,7 +5513,7 @@ func TestAReturnStoreFailureDoesNotRouteTheRefundToUnclaimedBalances(t *testing.
 		_, err := sys.bank(b.BIC).PostReturnLeg(ctx, pay.ID, "AC04: account closed")
 		assertNoError(t, err)
 
-		broken := NewBankNetwork(failingUpdateStore{Store: sys.Store(), accountErr: dropped},
+		broken := NewBankNetwork(failingUpdateStore{BankStore: sys.bank(a.BIC).Store(), accountErr: dropped},
 			func() time.Time { return fixedTime }, a.ID)
 		if _, err := broken.PostReturnLeg(ctx, pay.ID, "AC04: account closed"); err == nil {
 			t.Error("a refund over a store that could not read the payer's account succeeded; " +
@@ -5527,7 +5535,7 @@ func TestAReturnStoreFailureDoesNotRouteTheRefundToUnclaimedBalances(t *testing.
 		a, b, alice, biller := setupTwoBanks(t, sys)
 		pay := settledCollection(t, sys, a, alice, b, biller, 25000)
 
-		broken := NewBankNetwork(failingUpdateStore{Store: sys.Store(), accountErr: dropped},
+		broken := NewBankNetwork(failingUpdateStore{BankStore: sys.bank(b.BIC).Store(), accountErr: dropped},
 			func() time.Time { return fixedTime }, b.ID)
 		if _, err := broken.PostReturnLeg(ctx, pay.ID, "MD06: refund requested by the payer"); err == nil {
 			t.Error("a forced clawback over a store that could not read the biller's account succeeded; " +

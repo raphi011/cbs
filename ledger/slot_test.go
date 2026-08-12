@@ -28,7 +28,7 @@ type slotBook struct {
 func newSlotBook(t *testing.T) slotBook {
 	t.Helper()
 	store := testenv.New(t, testClock)
-	return slotBook{Book: NewBook(store, "bank", testClock), store: store.BankLedger()}
+	return slotBook{Book: NewBook(store.Ledger(), "bank", testClock), store: store.BankLedger()}
 }
 
 func mapSlot(t *testing.T, book slotBook, product string, slot Slot, account AccountID) error {
