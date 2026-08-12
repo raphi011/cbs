@@ -30,10 +30,7 @@ func TestPacs004RoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Minor() error = %v", err)
 	}
-	// This system's returns are always whole, so the two are equal here. The
-	// fields are nonetheless separate, because the standard is shaped to
-	// express a PARTIAL return and dropping one would make a hole a reader
-	// comparing against the real schema could not explain.
+	// This system's returns are always whole, so the two are equal here.
 	if orig != returned {
 		t.Fatalf("original %d and returned %d differ; this system returns whole payments", orig, returned)
 	}
@@ -55,10 +52,6 @@ func TestPacs004RoundTrip(t *testing.T) {
 // originator on the return reason — the same element pacs.002 carries, and the
 // same reason: the message is sent TO the clearing house, so the header alone
 // cannot say which institution decided to send the money back.
-//
-// Here that institution is the creditor's own bank rather than a clearing
-// house, which is what the account-closed reason implies: only the bank holding
-// the beneficiary account knows it is closed.
 func TestPacs004NamesTheReturningBank(t *testing.T) {
 	env := assertGoldenRoundTrip(t, "pacs004.xml")
 	tx := env.Document.(*Pacs004).PmtRtr.TxInf

@@ -12,11 +12,6 @@ import (
 )
 
 // The book transfer over HTTP, and the route it is the other side of.
-//
-// These tests take the seeded harness rather than a bare Server, because the
-// pairing is the subject: one address, two routes, and which one carries it is
-// decided by whether the payee banks here. Aurora's first two customers are the
-// on-us pair — Alice at serial 1 and Aaron at serial 2, under one bank code.
 
 // auroraIBAN is the address of Aurora's account at that serial. Minted the way
 // the register mints it, so these tests name the seed's accounts by the only

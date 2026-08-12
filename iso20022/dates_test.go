@@ -44,9 +44,7 @@ func TestDatesUnmarshal(t *testing.T) {
 }
 
 // TestDateTimeUsesSecondPrecision pins that a Go timestamp carrying nanoseconds
-// does not leak them onto the wire. The standard permits fractional seconds;
-// emitting a nanosecond-precision stamp would make every golden file depend on
-// the clock that produced it.
+// does not leak them onto the wire.
 func TestDateTimeUsesSecondPrecision(t *testing.T) {
 	h := dateHolder{
 		Date:  ISODate{time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)},

@@ -12,29 +12,14 @@ import (
 
 // Wire format for the lending layer: facilities, their schedules, and their
 // requests.
-//
-// Rates cross the wire as their millionths integer — 150000 is 15% — and carry
-// `RateScale` alongside, for the same reason a balance carries its asset: an
-// integer whose scale a client has to know from documentation is an integer a
-// client will render wrong. Amounts follow the existing convention and are the
-// asset's minor units.
-//
-// Rate and DayCount are RESOLVED AS OF TODAY from the facility's effective-dated
-// terms timeline rather than read off the facility row — the facility has no such
-// columns any more. So this is what the credit costs today and nothing else: a
-// future-dated repricing is not visible here until it takes effect, and a past
-// one is not visible here at all. lending.Portfolio.FacilityTermsHistory is what
-// shows the whole timeline; there is no HTTP route onto it yet.
 type FacilityDTO struct {
 	ID    string `json:"id"`
 	Kind  string `json:"kind"`
 	Name  string `json:"name"`
 	Asset string `json:"asset"`
 
-	// The three control accounts this facility's money sits in: what it has
-	// drawn, what it owes in interest, and what the bank owes it back. The
-	// subsidiary under each is this facility's own ID, above, which is why there
-	// is no fourth field for it — see lending.FacilityPositions.
+	// The three control accounts this facility's money sits in: what it has drawn,
+	// what it owes in interest, and what the bank owes it back.
 	PrincipalAccount string `json:"principalAccount"`
 	InterestAccount  string `json:"interestAccount"`
 	RefundAccount    string `json:"refundAccount"`
@@ -42,18 +27,13 @@ type FacilityDTO struct {
 	Commitment int64 `json:"commitment"`
 	// Drawn and AccruedInterest are derived, not stored: Drawn is the balance of
 	// the principal control account under this facility; AccruedInterest is
-	// Minor() of the facility's own stored accrued figure, which that
-	// facility's share of the receivable always equals but is not read from.
+	// Minor() of the facility's own stored accrued figure, which that facility's
+	// share of the receivable always equals but is not read from.
 	Drawn           int64 `json:"drawn"`
 	AccruedInterest int64 `json:"accruedInterest"`
 	Outstanding     int64 `json:"outstanding"`
 	// RefundPayable is interest the bank owes THIS borrower back, and it is not
-	// part of Outstanding: it runs the other way. Outstanding is what the
-	// borrower owes the bank, and netting a debt the bank owes into it would
-	// report a smaller loan rather than an obligation.
-	//
-	// Derived, like Drawn: the book balance of RefundGL, and 0 when there is no
-	// such account. See lending.RefundPayableFor.
+	// part of Outstanding: it runs the other way.
 	RefundPayable int64 `json:"refundPayable"`
 
 	Rate       int64  `json:"rate"`
@@ -76,14 +56,11 @@ type FacilityDTO struct {
 // accrued and refund are resolved by the caller so this function does no I/O of
 // its own, the same convention ToTransactionDTO follows for entry assets: drawn
 // is the principal GL account's book balance (Portfolio.Drawn), genuinely
-// derived; accrued is f.Accrued.Minor(), the facility's own stored figure, not a
-// GL read — it only agrees with the interest GL account's balance because the
-// system maintains that as an invariant; refund is the refunds-payable account's
-// balance (Portfolio.RefundPayableFor), 0 when there is no such account.
-//
-// Method is rendered only for a term loan: AmortMethod's zero value (Annuity)
-// is indistinguishable from an explicitly-set one, and a revolving line — which
-// has no amortization method — would otherwise render a misleading "Annuity".
+// derived; accrued is f.Accrued.Minor(), the facility's own stored figure, not
+// a GL read — it only agrees with the interest GL account's balance because the
+// system maintains that as an invariant; refund is the refunds-payable
+// account's balance (Portfolio.RefundPayableFor), 0 when there is no such
+// account.
 func ToFacilityDTO(f lending.Facility, t lending.FacilityTerms, at lending.FacilityPositions, drawn, accrued, refund ledger.Amount) FacilityDTO {
 	dto := FacilityDTO{
 		ID:    string(f.ID),
@@ -128,16 +105,6 @@ func ToFacilityDTO(f lending.Facility, t lending.FacilityTerms, at lending.Facil
 
 // ChargeDTO is the outcome of billing one of a revolving line's cycles, and it
 // carries BOTH halves because they are independent — see lending.Charge.
-//
-// A cycle whose accrued interest has not yet reached a whole minor unit posts
-// no transaction and still bills an instalment; a cycle on an undrawn line that
-// owes nothing does neither. A bare transaction cannot express the difference,
-// so a client rendering one would report "nothing happened" while the schedule
-// below it gained a row.
-//
-// Both fields are pointers rather than zero values: an absent posting is
-// genuinely absent, and a `transaction` rendered with an empty id would read as
-// a real posting the client failed to parse.
 type ChargeDTO struct {
 	// Transaction is the capitalization posting, absent when nothing posted.
 	Transaction *TransactionDTO `json:"transaction,omitempty"`
@@ -225,11 +192,8 @@ func ToTotalsDTOs(t deposit.Totals) []TotalsDTO {
 // ---------------------------------------------------------------------------
 
 // OpenFacilityRequest opens either product behind one route: Kind selects
-// which, the same dispatch-by-field convention StatusRequest uses for a
-// deposit account's lifecycle actions. Method and TermMonths apply only to a
-// TermLoan (and Method is required there — the handler parses it exactly as
-// it parses Kind and DayCount, so an unknown or absent value is a 400); a
-// RevolvingLine reads only MinPayment, and neither Method nor TermMonths.
+// which, the same dispatch-by-field convention StatusRequest uses for a deposit
+// account's lifecycle actions.
 type OpenFacilityRequest struct {
 	Kind       string `json:"kind"`
 	Name       string `json:"name"`
@@ -243,11 +207,10 @@ type OpenFacilityRequest struct {
 }
 
 type DisburseFacilityRequest struct {
-	// Counterparty is any account in the facility's asset — the control account
-	// a customer's current account is pooled in, or the vault for a cash
-	// advance — and Subsidiary is which one within it, a deposit account's id on
-	// the first and empty on the second. The two travel together everywhere
-	// money moves; see CaptureHoldRequest, where the same pair is documented.
+	// Counterparty is any account in the facility's asset — the control account a
+	// customer's current account is pooled in, or the vault for a cash advance —
+	// and Subsidiary is which one within it, a deposit account's id on the first
+	// and empty on the second.
 	Counterparty string `json:"counterparty"`
 	Subsidiary   string `json:"subsidiary,omitempty"`
 	FirstDue     string `json:"firstDue"`
@@ -278,11 +241,6 @@ type ChargeFacilityInterestRequest struct {
 // RefundPayableDTO is one outstanding interest refund: what the bank owes one
 // borrower back because a backdated correction showed it charged interest the
 // borrower had already paid and never owed. See lending.RefundPayable.
-//
-// FacilityStatus is rendered because it may be `Closed` and a client should not
-// read that as stale data. A refund outlives the lending contract — closing a
-// facility is a statement about what the BORROWER owes — so a settled loan with
-// an outstanding refund is an ordinary row here, not a contradiction.
 type RefundPayableDTO struct {
 	FacilityID     string `json:"facilityId"`
 	Name           string `json:"name"`
@@ -304,17 +262,6 @@ func ToRefundPayableDTO(r lending.RefundPayable) RefundPayableDTO {
 }
 
 // RefundFacilityInterestRequest pays an interest refund out to a GL account.
-//
-// Counterparty is a GL account rather than a deposit account id, which is what
-// DisburseFacilityRequest and DrawFacilityRequest also take and the opposite of
-// RepayFacilityRequest. The asymmetry is real: a repayment has to be checked
-// against a deposit account's available balance and status before it can post,
-// so that route spans both layers; money going OUT to the customer has no such
-// check to make, and the lending layer does not know what a deposit account is.
-//
-// Amount is required and bounded by what is owed — a partial refund is fine, an
-// over-refund is a 400. There is no "pay it all" default: an amount the caller
-// did not state is an amount the caller did not check.
 type RefundFacilityInterestRequest struct {
 	Counterparty string `json:"counterparty"`
 	Subsidiary   string `json:"subsidiary,omitempty"`

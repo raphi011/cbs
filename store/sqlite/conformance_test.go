@@ -1,24 +1,4 @@
 // The shared suites, run against store/sqlite.
-//
-// Almost nothing is written here. What tests this store is store/storetest, and
-// this file is one line per suite. Those suites are written against the domain's
-// store and transaction interfaces and name no table, so what they pin is the
-// CONTRACT.
-//
-// WHICH INSTITUTION each suite opens is decided here, and the three are not
-// interchangeable — nor could they be, since each suite takes that
-// institution's own store type. The five capability suites take newBank, because
-// a bank's schema is the only one holding every table they reach; the clearing
-// house's and the settlement agent's payment suites take a constructor each,
-// because they are different cases over different tables rather than the same
-// file re-run. What is NOT here is as deliberate: the refusals this package owns
-// (ErrReadOnly, ErrNestedTransaction) and the guards on the driver and the
-// schema are in sqlite_test.go, which is an internal test package because it
-// reads sqlite_master and drives the retry directly.
-//
-// It is an external test package for the ordinary reason: store/testenv imports
-// this package, so a test file inside it that imported testenv back would be a
-// cycle.
 package sqlite_test
 
 import (
@@ -42,14 +22,9 @@ import (
 // than on wall-clock luck.
 func frozen() time.Time { return time.Unix(0, 0).UTC() }
 
-// newBank opens an ephemeral BANK store of its own answering for the given book,
-// migrated and empty, discarded when the test ends. No skip and no environment
-// variable: this store needs no setup.
-//
-// It takes the book because a store answers for exactly ONE of them, so a suite
-// wanting two books asks for two stores — see storetest's bookA and bookB. The
-// institution is the bank because its schema is the only one of the three that
-// holds every table these five suites reach.
+// newBank opens an ephemeral BANK store of its own answering for the given
+// book, migrated and empty, discarded when the test ends. No skip and no
+// environment variable: this store needs no setup.
 func newBank(t *testing.T, book ledger.BookID) *sqlite.BankStore {
 	t.Helper()
 	s, err := sqlite.OpenBank(context.Background(), book, "", frozen)
@@ -116,12 +91,6 @@ func TestConformance(t *testing.T) {
 }
 
 // TestRaces runs the race suite that needs only concurrent units of work.
-//
-// Each case pins that exactly one racer wins and that every loser lost for the
-// DOCUMENTED reason. With payment.admissionSequenceTx made to return nil, all
-// four still pass ten runs out of ten, because SQLite admits one writer and
-// Store.Update re-runs a loser against the winner's committed row. They are
-// regression guards on an ordering this store does not need.
 func TestRaces(t *testing.T) {
 	storetest.RunSystemRaces(t, func(t *testing.T) payment.Stores { return testenv.NewSet(t, frozen) })
 	storetest.RunClearingHouseRaces(t, func(t *testing.T) payment.ClearingHouseStore { return newClearingHouse(t) })
@@ -130,32 +99,11 @@ func TestRaces(t *testing.T) {
 
 // TestConcurrentTxRaces runs the races that need several units of work open at
 // once.
-//
-// The precondition is that two calls to Update can be inside their callbacks at
-// the same instant, and this store meets it: the pool hands out maxOpenConns
-// connections and each unit of work takes one, which is why maxOpenConns is not
-// 1. That was established by running this suite rather than by reasoning about
-// it — a store that admitted one at a time would not fail these cases, it would
-// STOP in them, because the barrier waits for a racer that cannot arrive.
-//
-// Two of the nine cases do not bite on a single run —
-// ConcurrentAdmissionsAgreeOnOneCentralBank in TestRaces and
-// ConcurrentMarkReversedOnlyOneWins here. A single green run of either is not
-// evidence about them; use -count=10 for anything that rests on one.
 func TestConcurrentTxRaces(t *testing.T) {
 	storetest.RunConcurrentTxRaces(t, func(t *testing.T) ledger.Store { return newStore(t).Ledger() })
 }
 
 // A unit of work must never be opened inside another one on the same store.
-//
-// Without the guard the nested Update takes a SECOND connection and runs a
-// SEPARATE transaction, so its writes would commit even when the outer ones roll
-// back — and worse under SQLite, because the inner transaction then contends
-// with the outer one for the write lock and the pair can wedge. It is refused
-// outright.
-//
-// Every layer a bank has is driven, not just the ledger's, because each is a
-// separate Update method on a separate adapter type and the guard is per method.
 func TestNestedUnitOfWorkIsRefused(t *testing.T) {
 	s := newStore(t)
 

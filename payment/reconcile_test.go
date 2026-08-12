@@ -19,19 +19,6 @@ import (
 // ---------------------------------------------------------------------------
 // Calibrating one bank's own reconciliation
 // ---------------------------------------------------------------------------
-//
-// Same method as cmd/server/recon_test.go, and for the same reason: an instrument
-// that has never been shown a break is one nobody has any reason to believe.
-// Each test takes a network that reconciles, puts ONE thing wrong in it, and
-// checks that the run says so — and says which account, because a finding that
-// named none would send its reader to the whole chart.
-//
-// The difference from that file is the SIZE of the damage. The harness holds
-// five databases against each other, so its fixtures can make two institutions
-// disagree. This instrument sees one bank's own database and its statements, so
-// every fixture here damages one bank alone. Where a fixture cannot be built
-// that way, the case is not this instrument's, and two tests below say so by
-// asserting a clean run.
 
 // settledPair carries one payment between two banks to finality, books every
 // advice and pays every creditor, and hands back the two banks and the cycle.
@@ -99,12 +86,6 @@ func assertBreakMentions(t *testing.T, rec Reconciliation, substr string) {
 }
 
 // damageAdvice rewrites one of a bank's own advice rows behind its back.
-//
-// Through the store, because none of these states is reachable through the
-// domain — which is the whole reason the instrument exists.
-// PostSettlementAdviceTx writes the row and posts the leg in one unit of work,
-// so nothing a bank can do leaves the two disagreeing. What CAN produce it is a
-// defect in that function, and a defect leaves rows rather than conversations.
 func damageAdvice(t *testing.T, sys *testSystem, bank *Bank, reference string, edit func(*SettlementAdvice)) {
 	t.Helper()
 	ctx := context.Background()
@@ -123,11 +104,6 @@ func damageAdvice(t *testing.T, sys *testSystem, bank *Bank, reference string, e
 // TestABanksOwnBooksReconcile is the control, and without it every test below
 // proves nothing: an instrument that reported a break on a healthy bank would
 // "catch" all of them.
-//
-// It asserts the absence of POSITIONS too, which is a claim about the flow
-// rather than about the instrument. Everything this fixture started is finished
-// — the mirror leg is booked at both banks and the creditor leg is posted — so
-// there is nothing left for a clearing suspense to be holding.
 func TestABanksOwnBooksReconcile(t *testing.T) {
 	sys := testNetwork(t)
 	a, b, _, _ := settledPair(t, sys)
@@ -149,10 +125,6 @@ func TestABanksOwnBooksReconcile(t *testing.T) {
 // TestABankCatchesItsMirrorLegPostedAgainstTheWrongAmount is the defect class
 // the closing balance was stored for: a bank that booked a movement other than
 // the one it was advised of.
-//
-// It is the shape 7b kept finding — a test that still passes with the bug
-// reinstated — and under isolation no institution may look in another's store
-// to catch it. This is the check that does, from inside.
 func TestABankCatchesItsMirrorLegPostedAgainstTheWrongAmount(t *testing.T) {
 	sys := testNetwork(t)
 	_, b, _, cycle := settledPair(t, sys)
@@ -168,30 +140,16 @@ func TestABankCatchesItsMirrorLegPostedAgainstTheWrongAmount(t *testing.T) {
 }
 
 // TestABankCatchesAReserveMovedWithNoStatementBehindIt is the damage
-// cmd/server/recon_test.go's diverged-mirror fixture injects, caught from inside ONE
-// database.
-//
-// That test needed all five: the bank's reserve and the settlement agent's are
-// two records of one account in two institutions, and holding them against each
-// other is the comparison no actor may make. What this exploits instead is that
-// exactly two things post to a bank's reserve — an advice's mirror leg and a
-// lodgement — so an entry that is neither is a break a bank can stand behind
-// without reading anybody's books but its own.
-//
-// The harness keeps its fixture. It catches the OTHER member's side and the
-// agent's, which this cannot see at all.
+// cmd/server/recon_test.go's diverged-mirror fixture injects, caught from
+// inside ONE database.
 func TestABankCatchesAReserveMovedWithNoStatementBehindIt(t *testing.T) {
 	ctx := context.Background()
 	sys := testNetwork(t)
 	_, b, _, _ := settledPair(t, sys)
 	accts := accountsOf(t, b)
 
-	// Debit Reserve, Credit Unclaimed: this bank's claim on the central bank
-	// rises by a thousand it was never advised of. The contra is a liability, so
-	// the book balances and no ledger guard fires — which is exactly why a
-	// reconciliation is what finds it. Unclaimed pools holders, so the leg
-	// names one, and it names an account that does not exist: nothing in the
-	// ledger resolves a subsidiary, and the break here is about the reserve.
+	// Debit Reserve, Credit Unclaimed: this bank's claim on the central bank rises
+	// by a thousand it was never advised of.
 	_, err := b.Ledger.PostTransaction(ctx, ledger.PostTransactionRequest{
 		Description: "a movement nobody advised",
 		Entries: []ledger.Entry{
@@ -208,14 +166,8 @@ func TestABankCatchesAReserveMovedWithNoStatementBehindIt(t *testing.T) {
 }
 
 // TestABankCatchesAnAdviceClaimingAPostingThatIsNotThere is the other direction
-// of the same walk, and it is the one that would catch a row written without its
-// leg.
-//
-// The two are not the same check and both are needed: an entry with no row says
-// money moved that nobody advised, and a row with no entry says this bank's own
-// record asserts a booking it never made. The second is the worse of the two,
-// because it is the state PostSettlementAdviceTx's atomicity exists to prevent
-// and the one that would make a redelivered statement a silent no-op.
+// of the same walk, and it is the one that would catch a row written without
+// its leg.
 func TestABankCatchesAnAdviceClaimingAPostingThatIsNotThere(t *testing.T) {
 	sys := testNetwork(t)
 	_, b, _, cycle := settledPair(t, sys)
@@ -232,16 +184,6 @@ func TestABankCatchesAnAdviceClaimingAPostingThatIsNotThere(t *testing.T) {
 // TestAMissedStatementIsCaughtByTheNextOne is what the stored closing balance
 // really buys, and it is a narrower claim than three layers of this repository
 // currently make.
-//
-// A bank that misses a statement and books the NEXT one books a movement onto a
-// reserve that never took the earlier one, so the later advice's closing balance
-// and the running balance part company — and stay parted, because nothing
-// afterwards puts them back. That is detectable from inside, with no second
-// database, and it is the whole of what the figure detects about a missed
-// statement.
-//
-// What it does NOT detect is the statement that is simply the last one. See the
-// test below.
 func TestAMissedStatementIsCaughtByTheNextOne(t *testing.T) {
 	ctx := context.Background()
 	sys := testNetwork(t)
@@ -292,20 +234,6 @@ func TestAMissedStatementIsCaughtByTheNextOne(t *testing.T) {
 // result, asserted rather than written down, because a claim about what an
 // instrument cannot see is worth as much as one about what it can and only a
 // test keeps it true.
-//
-// A closing balance only ever arrives on a statement the bank HOLDS. A bank
-// that was never told holds nothing newer, and one that was told and could not
-// book rolled the whole unit of work back and also holds nothing newer. Both
-// leave the newest statement agreeing with the reserve, so this run is clean —
-// and the money is visibly still in suspense, which is a position and not a
-// defect.
-//
-// It is REACHABLE, because nothing is pushed at a member: a statement waits in
-// the bank's download queue until the bank collects, and a bank that stops
-// collecting stops being told while this run goes on agreeing with itself. What
-// would close it from inside is a periodic statement, which this system does not
-// have. payment/recon catches it because it can read the agent's register; this
-// cannot, and does not pretend to.
 func TestTheLastStatementNeverArrivingIsUndetectableFromInside(t *testing.T) {
 	ctx := context.Background()
 	sys := testNetwork(t)
@@ -338,15 +266,9 @@ func TestTheLastStatementNeverArrivingIsUndetectableFromInside(t *testing.T) {
 	assertEqual(t, "and what it is made of", len(rec.Positions[0].Lots), 1)
 }
 
-// TestALodgementInFlightIsNotABreak is the one legitimate reason the two figures
-// differ, and the instrument has to know it or it reports a bank doing the right
-// thing as broken.
-//
-// A lodgement posts the MEMBER's leg before the agent's, deliberately: a camt.025
-// carries no amount, so a bank cannot post from the answer. So the bank's own
-// reserve runs ahead of the last statement it holds, by exactly what it has
-// lodged since — and never the other way, because a movement the agent made and
-// this bank has not booked leaves no statement and moves neither figure.
+// TestALodgementInFlightIsNotABreak is the one legitimate reason the two
+// figures differ, and the instrument has to know it or it reports a bank doing
+// the right thing as broken.
 func TestALodgementInFlightIsNotABreak(t *testing.T) {
 	ctx := context.Background()
 	sys := testNetwork(t)
@@ -368,15 +290,6 @@ func TestALodgementInFlightIsNotABreak(t *testing.T) {
 
 // TestReconcileIsNotAnActTheOtherTwoInstitutionsCanPerform states the boundary
 // as a refusal rather than as an empty answer.
-//
-// The clearing house has no ledger at all and the settlement agent holds no
-// reserve of its own, so the question has no answer at either rather than the
-// answer zero.
-//
-// Reconcile is a method on BankNetwork, so neither institution's own handle can
-// name it. What is measured here is a bank's handle over one of their cores,
-// which is the crossing the identity still guards and which only this package
-// can assemble. See export_test.go.
 func TestReconcileIsNotAnActTheOtherTwoInstitutionsCanPerform(t *testing.T) {
 	ctx := context.Background()
 	sys := testNetwork(t)
@@ -394,13 +307,6 @@ func TestReconcileIsNotAnActTheOtherTwoInstitutionsCanPerform(t *testing.T) {
 
 // TestAReconciliationRunLeavesItsOwnAuditTrail is what replaces a findings
 // table.
-//
-// A finding is a pure function of the books at a moment, so a stored one is a
-// cache that can disagree with them — the defect class the instrument exists to
-// detect, reintroduced by the instrument. The audit log is per institution and
-// already ordered, and it is where a run's result is durable. What that costs is
-// a history of how long a break stood; what is kept is that a run happened, when,
-// and what it said.
 func TestAReconciliationRunLeavesItsOwnAuditTrail(t *testing.T) {
 	ctx := context.Background()
 	sys := testNetwork(t)
@@ -429,18 +335,6 @@ func TestAReconciliationRunLeavesItsOwnAuditTrail(t *testing.T) {
 
 // TestAConcurrentSettlementDoesNotMakeAReconciliationRunLie OPENS A FILE, and
 // that is the point of it.
-//
-// A run reads the books and then writes what it found, which is the one shape
-// the ephemeral store hides: on it a second connection's read blocks until the
-// writer commits, so a reader can never see a half-written world however the
-// code underneath behaves. Only a file, under WAL, lets a reader past an
-// uncommitted writer — see store/sqlite's TestTheRetryBudgetOutlastsASlowWriter,
-// which is the other test in this repository that has to.
-//
-// What must hold is that a run either sees a lodgement or does not, and is never
-// internally inconsistent about one: reserve, advised and lodged-since are read
-// in ONE unit of work, so they answer to one snapshot and no run reports a break
-// that a settled network does not have.
 func TestAConcurrentSettlementDoesNotMakeAReconciliationRunLie(t *testing.T) {
 	ctx := context.Background()
 	set, err := sqlite.OpenSet(ctx, filepath.Join(t.TempDir(), "recon"), func() time.Time { return fixedTime })
@@ -452,10 +346,7 @@ func TestAConcurrentSettlementDoesNotMakeAReconciliationRunLie(t *testing.T) {
 	a, _, alice, _ := settledPair(t, sys)
 	refillTheVault(t, sys, a, alice, 5000)
 
-	// Both handles are opened BEFORE the goroutines start. Two institutions'
-	// networks over one store is the deployment's shape; two goroutines racing
-	// to open the same one is a fixture's, and it would be measuring the map
-	// behind Networks.Bank rather than the store underneath it.
+	// Both handles are opened BEFORE the goroutines start.
 	lodger, reconciler := sys.bank(a.BIC), sys.bank(a.BIC)
 
 	const rounds = 8

@@ -119,12 +119,8 @@ func TestBuildSchedule_AwkwardRate(t *testing.T) {
 
 // BuildSchedule is pinned to the rate it is GIVEN, not to one read off the
 // facility — which is what makes the schedule a plan pinned to the terms in
-// force at activation rather than something derived from a facility row that can
-// now be repriced out from under it.
-//
-// The same Facility value and the same principal at two rates produce two
-// different Interest columns. Since a Facility no longer carries a rate at all,
-// the only way the two could agree is if the argument were ignored.
+// force at activation rather than something derived from a facility row that
+// can now be repriced out from under it.
 func TestBuildScheduleUsesTheRateItIsGiven(t *testing.T) {
 	const (
 		principal ledger.Amount = 1_000_000 // €10,000 in cents
@@ -141,11 +137,8 @@ func TestBuildScheduleUsesTheRateItIsGiven(t *testing.T) {
 		t.Fatalf("instalments = %d and %d, want 12 each", len(atCheap), len(atDear))
 	}
 
-	// The first instalment's scheduled interest is outstanding × rate / 12,
-	// stated from the definition rather than copied from a run:
-	//
-	//	1_000_000 × 60_000  / 12_000_000 =  5_000
-	//	1_000_000 × 120_000 / 12_000_000 = 10_000
+	// The first instalment's scheduled interest is outstanding × rate / 12, stated
+	// from the definition rather than copied from a run.
 	assertAmount(t, "first interest at 6%", atCheap[0].Interest, 5_000)
 	assertAmount(t, "first interest at 12%", atDear[0].Interest, 10_000)
 

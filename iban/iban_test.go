@@ -10,12 +10,6 @@ import (
 // published are the standard example addresses for the four countries this
 // package issues in, taken from the registry's own documentation and in wide
 // circulation as test data.
-//
-// They are what holds the CIN and the clé RIB honest. Both algorithms are
-// lookup tables transcribed from a published description, and a transcription
-// error in either produces a package that mints self-consistent addresses
-// nobody else agrees with — which every round-trip test in this file would pass.
-// These four are the only values here this package did not compute itself.
 var published = []struct {
 	iban    string
 	country Country
@@ -50,11 +44,6 @@ func TestThePublishedAddressesVerify(t *testing.T) {
 
 // mod97Independently is a second implementation, written the obvious way: build
 // the whole number and divide.
-//
-// It exists because mod97's running accumulator is the kind of arithmetic that
-// is wrong in a way tests written against the same idea do not notice — in
-// particular the two-place advance for a letter. This one cannot make that
-// mistake, because it never advances anything.
 func mod97Independently(t *testing.T, compact string) int {
 	t.Helper()
 	var b strings.Builder

@@ -7,23 +7,8 @@ import (
 	"github.com/raphi011/cbs/ledger"
 )
 
-// The book transfer: two of this bank's own customers, one posting, nobody told.
-//
-// It is the act payment.ErrOnUsPayment sends a caller to. Both accounts are in this
-// register's book by construction — a register spans one — so no obligation
-// between institutions exists, there is nothing for a clearing house to net,
-// nothing for a settlement agent to move, and no statement that could tell this
-// bank about a book it already holds.
-//
-// It is the REGISTER's act rather than the payment layer's, because nothing in
-// it needs to know what an institution is: it touches the two customers' own
-// money and no plumbing account of the bank's. payment.Network.DepositTx is
-// the contrast that settles where the line falls — cash over the counter is up
-// there because it debits VAULT CASH, which is the bank's own.
-//
-// Both legs name ONE chart-of-accounts row, one customer apart, so the bank's
-// total customer deposits does not move — which is exactly what happens
-// economically when money changes hands inside a bank and nothing leaves it.
+// The book transfer: two of this bank's own customers, one posting, nobody
+// told.
 
 // Transfer moves amount between two deposit accounts in this bank's book. See
 // TransferTx, which is where the rules are.
@@ -41,21 +26,6 @@ func (r *Register) Transfer(ctx context.Context, from, to AccountID, amount ledg
 }
 
 // TransferTx is Transfer within a caller-supplied unit of work.
-//
-// # Money out is harder than money in
-//
-// The payer is put through CheckWithdrawalTx and the payee through
-// CheckCreditTx, and the asymmetry between them is the whole of what a transfer
-// enforces. A withdrawal requires an ACTIVE account, so a frozen or dormant
-// payer is refused, and it is measured against the AVAILABLE balance — which
-// already carries the overdraft limit in force today, so a transfer may
-// legitimately push the payer overdrawn, exactly as a card capture may. A credit
-// refuses only a Closed payee: money lands in a frozen account, and landing in a
-// dormant one is what revives it.
-//
-// Both checks are in the same unit of work as the postings, for the reason
-// payment.Network.DepositTx states: an account must not be able to close between
-// being checked and being posted to.
 func (r *Register) TransferTx(ctx context.Context, tx Tx, from, to AccountID, amount ledger.Amount, description string) (ledger.Transaction, error) {
 	// A transfer to the account it came from would post a self-cancelling pair
 	// and log that something happened. Refused before anything is read, because
@@ -111,9 +81,7 @@ func (r *Register) TransferTx(ctx context.Context, tx Tx, from, to AccountID, am
 
 	// ONE event, keyed by the payer. A transfer is one act by one institution and
 	// the payer is who asked for it; the payload names both sides, and the two
-	// legs are already in the ledger under one transaction id. Compare
-	// ReissueIdentifierTx, which writes TWO because a withdrawal and a mint are
-	// two things that could have happened apart — these two cannot.
+	// legs are already in the ledger under one transaction id.
 	if err := r.appendAuditTx(ctx, tx, ledger.EventTransferPosted, string(from), map[string]string{
 		"from":           string(from),
 		"to":             string(to),

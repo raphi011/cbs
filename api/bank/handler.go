@@ -10,12 +10,6 @@ import (
 // The two adapters this surface registers through. They are api.Handle and
 // api.HandleBody with one step in front: this listener's own bank, resolved
 // before the handler runs.
-//
-// That resolution is the guard sixty-odd routes here begin with, and putting it
-// in the adapter is what stops it being sixty-odd copies of a lookup that can
-// each get the identity from somewhere else. A handler is handed the bank it
-// acts as; it has no argument it could name another one with, and nothing to
-// remember.
 
 // handle registers a handler that needs this bank and no request body.
 func handle[Res any](s *surface, status int, fn func(*http.Request, *payment.Bank) (Res, error)) http.HandlerFunc {

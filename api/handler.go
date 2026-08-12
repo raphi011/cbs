@@ -8,27 +8,6 @@ import (
 
 // The handler adapter: a handler RETURNS its response, and this is what turns
 // one into something an http.ServeMux can be given.
-//
-// # What it buys is not brevity
-//
-// The five steps every route was made of — resolve the caller, decode the body,
-// call the domain, map the error, encode the answer — are three of them
-// identical everywhere and two of them the route's own. Writing all five out
-// per handler is what let a route answer 200 with an error body, skip the error
-// mapping, or write a header twice, and no test could see any of it: those are
-// properties of a shape rather than of an answer. Here they are properties of
-// one function.
-//
-// It is also why the writers in respond.go are unexported. A surface package
-// cannot answer a request except through Handle, so the guarantee is enforced
-// rather than trusted — the same move cmd/server/ops.go makes one layer down.
-//
-// # A nil response is 204 No Content
-//
-// One rule, covering both shapes that need it: a route that never has a body —
-// a delete, a hold released — and a route whose body is sometimes absent, such
-// as an interest charge on a facility that accrued nothing. status is what a
-// response WITH a body gets; a nil one takes 204 whatever it says.
 
 // Handle adapts a handler that returns its response into an http.HandlerFunc.
 func Handle[Res any](status int, fn func(*http.Request) (Res, error)) http.HandlerFunc {
@@ -79,10 +58,6 @@ func (b badRequest) Unwrap() error { return b.err }
 
 // ParseDay reads a calendar day off a request field, in the one format every
 // date on this API is written in.
-//
-// field is named in the refusal because a request can carry two of them, and
-// "invalid date" against a body holding a date and a firstDue tells the caller
-// nothing about which to fix.
 func ParseDay(field, raw string) (time.Time, error) {
 	day, err := time.Parse("2006-01-02", raw)
 	if err != nil {

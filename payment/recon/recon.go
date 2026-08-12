@@ -1,89 +1,5 @@
 // Package recon is the reconciliation harness: the one view of this system that
 // no institution in it may have.
-//
-// It opens all N+2 databases at once — every member bank's, the clearing house's
-// and the settlement agent's — and asks the questions that can only be asked
-// from outside all of them. Does a bank's Reserve at Central Bank agree with the
-// central bank's reserve liability for that bank? Has every bank's clearing
-// suspense returned to zero, and if it has not, is there something in flight to
-// account for it? Do the clearing house's cycles and the settlement agent's
-// settlements describe the same cut-off? Do three institutions agree about the
-// same payment, the same member, the same admission?
-//
-// Every one of those spans two databases, so no act in the domain can make it
-// and none should be able to: an institution that could read another's books to
-// check its own would not need messages, and messages are what this system is
-// built on. The harness is what a supervisor or an auditor would be — somebody
-// with the right to see every ledger and no power to write in any of them.
-//
-// # It is the successor to the book recorder
-//
-// cmd/server/books_test.go's recordingStores watches which ledger book each unit of
-// work reached and fails a test when one reaches somebody else's. Its whole
-// subject is a CROSSING, and the store split made most crossings impossible
-// rather than merely wrong. What the split cannot see is the defect class that
-// replaces the crossing: two institutions' books that no longer agree, with no
-// crossing anywhere and no message misdelivered. A payment settled at the
-// central bank and never booked by the member, a return whose reserves reversed
-// at one end, a cut-off discharged twice — none of those touches a book it
-// should not, and every one of them is money in the wrong place.
-//
-// That class is invisible to every other instrument here. This is the one for
-// it.
-//
-// # It reports two kinds of finding and they are not the same kind
-//
-// A BREAK is something that cannot be true: two books disagree and there is
-// nothing in this system that could make them agree again. It is a defect.
-//
-// An UNRECONCILED POSITION is a bank's clearing suspense that has not returned
-// to zero with something outstanding to explain it — a payment still in flight,
-// or a reserve movement the central bank has made and this bank has not booked.
-// It is REAL, it is modelled on purpose, and it is not a defect: the interval
-// between the settlement agent's commit and a member's is what the Settlement
-// Finality Directive is about. Check fails a test on the first kind and reports
-// the second, because a harness that treated an unreconciled position as a break
-// would be a harness nobody could run against a network with a payment in it.
-//
-// # And ONE finding that is a report and can never be a break
-//
-// A member bank's routing directory is a COPY of the clearing house's roster,
-// pulled by that member and used to derive where its payments go. A copy that is
-// behind the roster is LEGAL BY CONSTRUCTION — it is the behaviour the whole
-// subscription model was chosen for, and it is why a bank admitted this morning
-// cannot be paid by a bank that pulled yesterday. So this harness says "Aurora's
-// directory is two entries behind" and passes.
-//
-// A reconciliation that FAILED on a stale copy would assert the opposite of the
-// design, and it would be an easy thing to write: the roster and the copy are two
-// tables holding one pairing, which is exactly the shape of every break above.
-// The difference is that the other pairs have no path back to agreement — nothing
-// in the system could make a bank's reserve and the agent's liability differ
-// legitimately — while this one has a path and the path is a request somebody
-// makes. This is the most likely way the design gets quietly undone later, which
-// is why it is written here and not only in a case.
-//
-// What IS a break is the pairing the copy comes FROM: the roster against the
-// settlement agent's registry, and every account's address against the registry
-// that issued its bank code. Those two cannot legitimately disagree.
-//
-// # Where the figures come from
-//
-// Nothing here goes through a payment.Network. A Network is one institution's
-// handle and every method on it is an act that institution may perform; reading
-// four institutions' books is not an act, so the harness reads through
-// payment.Stores — the composition root's handle, and the only thing in this
-// repository that holds more than one institution's database. See
-// payment.Networks.Stores, whose doc says the same thing from the other side.
-//
-// # It is test-only by convention and not by compiler
-//
-// It is an ordinary package because the suites that want it are in three
-// packages (cmd/server, seed and payment's own callers) and a _test.go file
-// cannot be
-// imported. Nothing in cmd/ or api/ may call it and nothing does: an institution
-// running this would be an institution reading everybody's books. store/storetest
-// and store/testenv are here for the same reason and under the same rule.
 package recon
 
 import (
@@ -110,10 +26,8 @@ import (
 // agree again.
 type Break struct {
 	// Where names the books the disagreement is between, in the words a reader
-	// needs: "AURODEFFXXX (EUR)" for one member's own, "the clearing house and
-	// the settlement agent" for the two rows about one cut-off. It is prose
-	// rather than an identifier because a break is read by a person deciding
-	// which institution to go and ask.
+	// needs: "AURODEFFXXX (EUR)" for one member's own, "the clearing house and the
+	// settlement agent" for the two rows about one cut-off.
 	Where string
 	// What is the disagreement, as one sentence, with both figures in it. A
 	// break that named only the difference would send its reader to the two
@@ -125,55 +39,26 @@ func (b Break) String() string { return b.Where + ": " + b.What }
 
 // Unreconciled is one member bank's clearing suspense that has not returned to
 // zero, together with everything outstanding that could account for it.
-//
-// It is the state the README calls the unreconciled position, and reporting it
-// is the whole reason this type exists beside Break. A suspense balance on its
-// own says nothing: the same figure is a bank mid-payment and a bank that has
-// lost money, and the difference is entirely in whether anything is still owed
-// to it. So the two lists travel with the figure.
-//
-// A bank with a non-zero suspense and BOTH lists empty is not one of these. It
-// is a Break, and it is the most serious one this harness can report: money has
-// left a customer, nothing is coming, and no institution in the system is in a
-// position to notice.
 type Unreconciled struct {
 	Bank  iso20022.BIC
 	Asset ledger.AssetCode
 	// Suspense is the balance itself. Positive means the bank owes it onward.
 	Suspense ledger.Amount
 
-	// Unbooked is what the settlement agent has moved this bank's reserves by
-	// and this bank has not booked: a cycle id per cut-off, a payment id per
-	// return. It is derived by holding the agent's settlement register against
-	// this bank's own advice rows, which is a comparison neither of them can
-	// make — see SettlementAdvice, whose absence is the only detector there is.
+	// Unbooked is what the settlement agent has moved this bank's reserves by and
+	// this bank has not booked: a cycle id per cut-off, a payment id per return.
 	Unbooked []string
 	// UnbookedMovement is what those references are worth, signed the way a
 	// SettlementAdvice is: positive means this bank's reserve is due to rise.
 	UnbookedMovement ledger.Amount
 
-	// InFlight is every payment this bank's own copy has not carried to a
-	// terminal state. Whose copy is the point: a bank's row and the clearing
-	// house's legitimately disagree, and what a bank's suspense answers to is
-	// what that bank was told.
+	// InFlight is every payment this bank's own copy has not carried to a terminal
+	// state.
 	InFlight []payment.PaymentID
 }
 
 // StaleDirectory is one member bank's copy of the routing directory disagreeing
 // with the roster it was copied from.
-//
-// It is a REPORT and never a break, and the distinction is the design rather than
-// a tolerance. A member pulls a snapshot and routes from it, so between two pulls
-// its copy is behind whatever the clearing house has published since — which is
-// what makes a bank admitted this morning unpayable by a bank that pulled
-// yesterday, and is the behaviour the subscription model exists to have. See the
-// package doc.
-//
-// Missing is the ordinary direction and Extra is the interesting one. A copy is
-// INCOMPLETE because allocations are never reassigned, so an entry the roster no
-// longer publishes means a member left the scheme and this bank has not pulled
-// since — still legal, still not a break, and still worth reporting, because a
-// bank routing to an ex-member is a payment the clearing house will refuse.
 type StaleDirectory struct {
 	Bank iso20022.BIC
 	// RefreshedAt is the instant the whole copy carries, or the zero time if this
@@ -221,10 +106,9 @@ func at(bic iso20022.BIC, asset ledger.AssetCode) string {
 // leaves in two institutions.
 const betweenCHAndAgent = "the clearing house and the settlement agent"
 
-// betweenCHAndRegistry is the Where of a finding about the pairing one admission
-// leaves in two registers: the one the settlement agent allocated from, and the
-// one the clearing house publishes. Separate from the constant above because the
-// settlement agent keeps two registers and a reader has to know which.
+// betweenCHAndRegistry is the Where of a finding about the pairing one
+// admission leaves in two registers: the one the settlement agent allocated
+// from, and the one the clearing house publishes.
 const betweenCHAndRegistry = "the clearing house and the bank-code registry"
 
 // ---------------------------------------------------------------------------
@@ -232,11 +116,6 @@ const betweenCHAndRegistry = "the clearing house and the bank-code registry"
 // ---------------------------------------------------------------------------
 
 // Check reconciles the whole deployment and fails the test on every break.
-//
-// It returns the report so that a test whose subject IS an unreconciled position
-// — a payment left mid-flight on purpose, a bank that was told and could not
-// book — can assert on it. A test that only wants "the books agree" ignores the
-// return value.
 func Check(tb testing.TB, nets *payment.Networks) *Report {
 	tb.Helper()
 	rep, err := Reconcile(context.Background(), nets)
@@ -251,16 +130,6 @@ func Check(tb testing.TB, nets *payment.Networks) *Report {
 
 // Reconcile takes one snapshot of every institution's books and reports what it
 // finds.
-//
-// The snapshot is taken store by store and NOT under one transaction, because
-// there is no such thing: five databases is five units of work and no reader can
-// span them. That is the honest shape of the question rather than a limitation
-// of this code — a real supervisor reading five banks' books reads them one at a
-// time too — but it means a run against a network that is still moving can
-// report a difference that closed a moment later. Every caller in this
-// repository runs it between business days, when nothing is in flight, and a
-// caller that reads mid-day should expect to see files in queues rather than the
-// ledgers.
 func Reconcile(ctx context.Context, nets *payment.Networks) (*Report, error) {
 	snap, err := take(ctx, nets)
 	if err != nil {
@@ -284,9 +153,7 @@ func Reconcile(ctx context.Context, nets *payment.Networks) (*Report, error) {
 // ---------------------------------------------------------------------------
 
 // adviceKey is what identifies one settlement advice within a bank: the
-// reference the statement carried and the asset it was in. Both, because a bank
-// operating in two assets settles each separately and a cut-off and a return can
-// be advised in the same asset under different references.
+// reference the statement carried and the asset it was in.
 type adviceKey struct {
 	reference string
 	asset     ledger.AssetCode
@@ -300,9 +167,7 @@ type bankView struct {
 	advices  map[adviceKey]payment.SettlementAdvice
 	payments map[payment.PaymentID]payment.Payment
 	// addresses is every IBAN this bank has issued to a customer account, in the
-	// order the register lists them. It is what the registry's allocations are
-	// held against: an account addressed under somebody else's code is a payment
-	// routable to the wrong institution, and no institution can see it.
+	// order the register lists them.
 	addresses []string
 	// directory is this bank's own copy of the scheme's routing directory, which
 	// is the one table here that is ALLOWED to disagree with its source. See
@@ -328,9 +193,7 @@ type snapshot struct {
 	reserves map[iso20022.BIC]map[ledger.AssetCode]ledger.Amount
 
 	// allocations is the settlement agent's SECOND register: which institution
-	// holds which bank code, in which country. It is the ISSUER's own record and
-	// no bank ever reads it, which is exactly why holding it against what banks
-	// have issued is this harness's and nobody else's.
+	// holds which bank code, in which country.
 	allocations map[iban.Issuer]payment.BankCodeAllocation
 
 	// The clearing house's.
@@ -338,17 +201,11 @@ type snapshot struct {
 	cycles   []payment.ClearingCycle
 	payments []payment.Payment
 
-	// assetOf resolves a scheme to the asset it settles in. It is a function
-	// rather than a map because schemes are code and not rows — see
-	// payment.Networks.schemes — so the registry is the only place to ask, and
-	// the clearing house's network is the one this harness asks through.
+	// assetOf resolves a scheme to the asset it settles in.
 	assetOf func(payment.SchemeID) (ledger.AssetCode, bool)
 
-	// schemeOf is the same registry read one step earlier, for the one question
-	// an asset cannot answer: which of a payment's two banks INSTRUCTED it. A
-	// push is submitted by the payer's bank and a pull by the payee's, so
-	// "the receiving bank" is a fact about the scheme's direction and about
-	// nothing on the payment itself.
+	// schemeOf is the same registry read one step earlier, for the one question an
+	// asset cannot answer: which of a payment's two banks INSTRUCTED it.
 	schemeOf func(payment.SchemeID) (payment.Scheme, bool)
 }
 
@@ -484,9 +341,7 @@ func take(ctx context.Context, nets *payment.Networks) (*snapshot, error) {
 }
 
 // balanceOf is one account's book balance, in the sign its own type says is
-// positive. It reads the account first because the sign convention lives on
-// AccountType and nowhere else (ledger.AccountType.NormalBalance), so a caller
-// that assumed one would be right about a reserve and wrong about a suspense.
+// positive.
 func balanceOf(ctx context.Context, tx ledger.Tx, book ledger.BookID, id ledger.AccountID) (ledger.Amount, error) {
 	acct, err := tx.GetAccount(ctx, book, id)
 	if err != nil {
@@ -507,35 +362,8 @@ func assetsOf(b payment.Bank) []ledger.AssetCode {
 // ---------------------------------------------------------------------------
 
 // unbooked is every reserve movement the settlement agent has made for one bank
-// in one asset that the bank holds no advice row against, and what they come to.
-//
-// It is the harness's central derivation and the one thing here that no single
-// institution could compute. The agent knows what it moved and not who booked
-// it; the bank knows what it booked and not what else it was sent. Holding the
-// two together is the whole job.
-//
-// There are two sources because reserves move for two reasons, and the second is
-// invisible in the agent's own register:
-//
-//   - A CUT-OFF leaves a settlements row with one position per member, so the
-//     movement is read straight off it, keyed by the cycle id the statement
-//     carried. A position of zero is skipped, because the agent sends no
-//     statement for one (payment.settlementLegsTx) and there is nothing for a
-//     bank to book.
-//   - A RETURN leaves the agent NOTHING — see settlements in
-//     store/sqlite/schema/centralbank/0001_init.sql, which says so in as many
-//     words: a cut-off writes a Settlement and a return writes no row at all,
-//     because the only durable trace it needs is the idempotency key on the
-//     reversal. So the movement is derived from the CLEARING HOUSE's copy of the
-//     returned payment, and its direction is domain knowledge rather than a
-//     lookup: a return sends the money back to the payer, so the DEBTOR's bank
-//     gains and the CREDITOR's bank loses, on a pull exactly as on a push. The
-//     debtor is the payer under both schemes; only who initiates differs.
-//
-// A payment whose two agents are one institution moves no reserves at all, and
-// is skipped for that reason: SettleReturn moves reserves BETWEEN two members
-// and there are none. See payment.PostReturnLegTx, which answers such a return
-// out of its own book.
+// in one asset that the bank holds no advice row against, and what they come
+// to.
 func (s *snapshot) unbooked(bic iso20022.BIC, asset ledger.AssetCode) (ledger.Amount, []string) {
 	view := s.banks[bic]
 	var movement ledger.Amount
@@ -589,17 +417,6 @@ func (s *snapshot) unbooked(bic iso20022.BIC, asset ledger.AssetCode) (ledger.Am
 
 // inFlight is every payment one bank's OWN copy has not carried to a terminal
 // state, in one asset.
-//
-// Whose copy is load-bearing. The clearing house's row runs the state machine
-// and a bank's row records what that bank was told, so the two legitimately
-// disagree — a bank that answered an instruction is never sent the ACCP and its
-// copy says Initiated while the network's says Accepted. What a bank's clearing
-// suspense answers to is what THAT bank did, so this reads that bank's copy.
-//
-// Rejected counts as terminal because a bank's copy reaches it only when the
-// reversal posted: a bank that cannot give the money back does not record the
-// rejection either (payment.RejectAtBankTx, and
-// TestAFailedRejectionAtABankLeavesThatBanksCopyUntouched).
 func (v *bankView) inFlight(asset ledger.AssetCode, assetOf func(payment.SchemeID) (ledger.AssetCode, bool)) []payment.PaymentID {
 	var out []payment.PaymentID
 	for id, p := range v.payments {
@@ -622,23 +439,6 @@ func (v *bankView) inFlight(asset ledger.AssetCode, assetOf func(payment.SchemeI
 
 // reservesMirror holds every bank's Reserve at Central Bank against the central
 // bank's own liability to that bank.
-//
-// It is the classic nostro/vostro check: the bank's asset and the central bank's
-// liability are two records of one account in two databases, written by two
-// institutions in two units of work. They can disagree, so it is worth asking
-// whether they do.
-//
-// They are ALLOWED to disagree by exactly the movements the agent has made and
-// the bank has not booked, and by nothing else. That is the equation:
-//
-//	the bank's own reserve  +  what it has been told and not booked
-//	  =  the central bank's reserve for it
-//
-// Anything left over is a break. It is worth being precise about what a break
-// here means, because the two directions are different failures: the bank
-// showing MORE than the agent is a bank that has booked a movement the agent
-// never made, and the bank showing less with nothing outstanding is a movement
-// the agent made that has gone nowhere.
 func (s *snapshot) reservesMirror(rep *Report) {
 	for _, bic := range s.order {
 		view := s.banks[bic]
@@ -648,10 +448,10 @@ func (s *snapshot) reservesMirror(rep *Report) {
 
 			held, isMember := s.reserves[bic][asset]
 			if !isMember {
-				// A founded bank has a Reserve account and no account at the
-				// agent to mirror, which is correct and quiet — until something
-				// has been put in it, which nothing can do: a lodgement is
-				// refused a bank the agent holds no account for.
+				// A founded bank has a Reserve account and no account at the agent to
+				// mirror, which is correct and quiet — until something has been put in it,
+				// which nothing can do: a lodgement is refused a bank the agent holds no
+				// account for.
 				if own != 0 || len(refs) > 0 {
 					rep.breakf(at(bic, asset),
 						"this bank's own reserve stands at %d and the settlement agent holds no account for it in this asset at all",
@@ -669,23 +469,8 @@ func (s *snapshot) reservesMirror(rep *Report) {
 	}
 }
 
-// suspenseIsExplained asks every bank's clearing suspense the only question that
-// can be asked of it: if it is not zero, what is still owed?
-//
-// A clearing suspense holds money that has left a customer and not yet settled
-// between banks, so at rest it is zero and in motion it is not. There are
-// exactly two things that can leave it non-zero legitimately — a payment this
-// bank has not carried to a terminal state, and a reserve movement it has been
-// told about and not booked — and a suspense balance with neither is the failure
-// this whole harness exists to find: money that left a customer, that nothing is
-// coming for, and that no institution in the system is in a position to notice.
-//
-// The absence of an advice row is the detector rather than a status on one,
-// which is the ruling payment.AdviceAdvised carries at length: the row is
-// written with the mirror leg in one unit of work, so a bank that was told and
-// could not book looks exactly like a bank that was never told. Reading it from
-// the agent's side is what makes the two distinguishable, and only somebody
-// holding both databases can.
+// suspenseIsExplained asks every bank's clearing suspense the only question
+// that can be asked of it: if it is not zero, what is still owed?
 func (s *snapshot) suspenseIsExplained(rep *Report) {
 	for _, bic := range s.order {
 		view := s.banks[bic]
@@ -716,18 +501,6 @@ func (s *snapshot) suspenseIsExplained(rep *Report) {
 
 // cyclesAndSettlementsAgree holds the clearing house's cut-off against the
 // settlement agent's discharge of it.
-//
-// These are two rows in two databases about one event and NEITHER points at the
-// other in the way a reader expects. A cycle carries no settlement id — the
-// agent allocates that inside its own unit of work and no message carries it
-// back — and the agent holds no cycles table to join to. The one link is
-// Settlement.CycleID, the agent's own row naming what it discharged, and that is
-// what this walks in both directions.
-//
-// The asset comparison is here because the settlement's asset is a column of the
-// agent's own (Settlement.Asset) and the cycle's is the clearing house's scheme.
-// The two institutions each say what the cut-off was in, out of their own books,
-// and the harness is what compares them.
 func (s *snapshot) cyclesAndSettlementsAgree(rep *Report) {
 	byCycle := map[payment.CycleID][]payment.Settlement{}
 	for _, st := range s.settlements {
@@ -750,12 +523,7 @@ func (s *snapshot) cyclesAndSettlementsAgree(rep *Report) {
 		}
 		switch len(found) {
 		case 0:
-			// Unless there was nothing to discharge. A cut-off whose positions all
-			// cancel is settled by the clearing house itself and instructs nobody,
-			// so the ABSENCE of a settlement row is what agreement looks like here
-			// — see payment.NetsToNothing. A settlement that DID exist against one
-			// is not waved through: it has rows to compare, so it takes the arms
-			// below and is held against the cycle's zeros like any other.
+			// Unless there was nothing to discharge.
 			if payment.NetsToNothing(c) {
 				continue
 			}
@@ -818,18 +586,6 @@ func (s *snapshot) cyclesAndSettlementsAgree(rep *Report) {
 
 // partiesHoldTheirCopy checks that the three institutions a payment passes
 // through hold three rows about the same payment.
-//
-// A payment is three rows and they legitimately differ — the clearing house's
-// has no legs, a bank's has no cycle, and their statuses run ahead of each
-// other. What they may NOT differ about is the payment itself: the amount and
-// the scheme are what was instructed, and a bank whose copy says a different
-// figure from the clearing house's is a bank that will settle the wrong number.
-//
-// It walks only payments the clearing house has taken into a cycle, and that
-// bound is the honest one rather than a convenience. A payment the receiving
-// bank REFUSED never became a row at that bank — it answered and wrote nothing —
-// so requiring two copies of every payment the clearing house holds would report
-// every rejection as a break. From Cleared onwards both banks have acted.
 func (s *snapshot) partiesHoldTheirCopy(rep *Report) {
 	for _, p := range s.payments {
 		switch p.Status {
@@ -868,24 +624,6 @@ func (s *snapshot) partiesHoldTheirCopy(rep *Report) {
 					p.ID, own.Scheme, p.Scheme)
 			}
 			// A settled payment whose RECEIVING bank has not moved off Initiated.
-			//
-			// The two copies are allowed to disagree about the status and mostly
-			// do — see the doc above — but not in this direction and not from
-			// here. Settled means the reserves behind this payment are final and
-			// the receiving bank has been handed the instruction it has to act
-			// on; a copy still at Initiated is a bank that was handed nothing,
-			// and it will stay that way, because release happens once.
-			//
-			// This is the arm that has to exist for suspenseIsExplained not to
-			// be fooled. That check reads an unreconciled suspense as explained
-			// when a payment is still in flight, which is exactly what this state
-			// looks like from inside one bank — so without this the position is
-			// explained for ever by a payment nothing will ever move.
-			//
-			// Asked of the RECEIVING bank alone, which the scheme's direction
-			// picks. The submitter's copy reaches Settled from the ACSC it is
-			// sent, and a submitter stuck at Initiated is a different fault, in a
-			// different message, with a different remedy.
 			if p.Status == payment.Settled && own.Status == payment.Initiated && bic == receiver {
 				rep.breakf(string(bic), "payment %s settled at the clearing house and this bank still holds it as Initiated; "+
 					"it was never handed the instruction, so %s", p.ID, uncredited)
@@ -896,14 +634,6 @@ func (s *snapshot) partiesHoldTheirCopy(rep *Report) {
 
 // receiverOf is the bank a released file is addressed to, and what it was never
 // able to do with the instruction it did not get.
-//
-// The direction decides both. On a PUSH the receiver is the payee's bank: it
-// never credits its customer, and the money the settlement moved sits in its
-// clearing suspense. On a PULL it is the payer's bank: the collection has been
-// settled against a debit that bank never took, so the shortfall is its own.
-//
-// A scheme this deployment does not hold answers as a push, which is the common
-// case and the one a missing registry entry is least likely to mislead about.
 func receiverOf(s *snapshot, p payment.Payment) (iso20022.BIC, string) {
 	if scheme, ok := s.schemeOf(p.Scheme); ok && scheme.Direction() == payment.Pull {
 		return p.DebtorDetails.Agent,
@@ -916,20 +646,6 @@ func receiverOf(s *snapshot, p payment.Payment) (iso20022.BIC, string) {
 // admissionWroteItsThreeRows holds one admission's three rows against each
 // other: the bank's own record of itself, the settlement agent's account, and
 // the clearing house's routing entry.
-//
-// This is the walk payment.BankAccounts.Settlement's doc names. Nothing records
-// how far through provisioning a bank got — the settlement references on its own
-// row are that record, and a status column beside them would say it twice. What
-// a stuck provisioning needs instead is both ends held against each other: a
-// bank quoting a settlement account no agent holds, or an agent holding one for
-// a bank the clearing house does not route to, is provisioning that half
-// happened, and neither end can see it alone.
-//
-// The per-asset comparison is the partly-admitted bank, which
-// payment.RosterEntry.Assets records as the case its own reader exists for: one
-// request asks for one currency, so a two-asset admission commits twice and an
-// agent that answers one and refuses the other leaves a bank with internal
-// accounts in both assets and a settlement account in one.
 func (s *snapshot) admissionWroteItsThreeRows(rep *Report) {
 	for _, bic := range s.order {
 		view := s.banks[bic]
@@ -969,13 +685,9 @@ func (s *snapshot) admissionWroteItsThreeRows(rep *Report) {
 				"this bank's own row settles %v through the settlement agent and the clearing house does not route to it",
 				recorded)
 		}
-		// And the NUMBERS, which is the third row read rather than counted. The
-		// two arms above ask whether the settlement agent holds anything for this
-		// bank; this asks whether it is the same account. A bank quotes its own
-		// copy when it lodges cash and when it checks an arriving statement, and
-		// the agent quotes its own when it settles a cut-off, so two different
-		// numbers is a reserve raised in one account and moved in another with
-		// neither institution able to see the other's.
+		// And the NUMBERS, which is the third row read rather than counted. The two
+		// arms above ask whether the settlement agent holds anything for this bank;
+		// this asks whether it is the same account.
 		if hasAccount {
 			for _, asset := range recorded {
 				own := view.row.Assets[asset].Settlement
@@ -1017,26 +729,8 @@ func (s *snapshot) admissionWroteItsThreeRows(rep *Report) {
 	}
 }
 
-// partiesAreMembers holds every payment the clearing house has taken against the
-// roster it took it under.
-//
-// This is payment.ErrBankNotAdmitted's counterpart, and it exists because that
-// refusal is now unreachable by construction. Which banks a deployment has is
-// decided before the process starts and every one of them is provisioned in
-// full, so no submission can name a bank the clearing house does not route to —
-// but that is a claim about today's callers and not an invariant, and the cost
-// of it being wrong is on record: one non-member in a cut-off took the WHOLE
-// settlement down, because the instruction turns net positions into addresses
-// through the roster and could not build one. Every other member's payments
-// stuck at Cleared, their payees unpaid and their payers' money in suspense.
-//
-// From Accepted onwards, because that is where the refusal sits: a payment the
-// clearing house has taken has passed it, and one it rejected never did. The
-// ASSET half of the same guard is not asked here — a cycle names a scheme and
-// what asset a scheme settles in is a running process's answer rather than a
-// database's — and it is asked where the asset is knowable, in
-// admissionWroteItsThreeRows' comparison of what the agent opened against what
-// the roster publishes.
+// partiesAreMembers holds every payment the clearing house has taken against
+// the roster it took it under.
 func (s *snapshot) partiesAreMembers(rep *Report) {
 	for _, p := range s.payments {
 		switch p.Status {
@@ -1060,24 +754,6 @@ func (s *snapshot) partiesAreMembers(rep *Report) {
 
 // addressesResolveToTheirIssuer holds every customer address in the deployment
 // against the registry that issued the bank code inside it.
-//
-// This is the invariant the whole routing design rests on: THE BANK CODE IN AN
-// IBAN IDENTIFIES THE BANK HOLDING THE ACCOUNT. A payer's bank derives a
-// counterparty's agent from it and sends there; if an account at one bank carries
-// another bank's code, the payment is routable to the wrong institution and the
-// bank it reaches answers AC01 for an address that genuinely exists somewhere.
-// That is a defect no institution can see — the issuing register is the settlement
-// agent's, the account is a member's, and the two never meet.
-//
-// Two shapes of break, and they are different defects. An address under a code
-// the registry has never allocated is an account nobody in this scheme can be
-// paid at; an address under a code allocated to a DIFFERENT bank is the
-// misrouting one, and it is the reason virtual IBANs are named as out of scope
-// (see the design): a PSP issuing addresses under another institution's range
-// would produce exactly this and would be legitimate.
-//
-// A malformed address is a break too, and a plain one: a register that minted a
-// value its own package will not parse has stored something no payer can use.
 func (s *snapshot) addressesResolveToTheirIssuer(rep *Report) {
 	for _, bic := range s.order {
 		for _, addr := range s.banks[bic].addresses {
@@ -1110,18 +786,6 @@ func (s *snapshot) addressesResolveToTheirIssuer(rep *Report) {
 
 // rosterAgreesWithTheRegistry holds the clearing house's published pairing
 // against the settlement agent's own record of what it allocated.
-//
-// The roster is what every member COPIES, so a roster that disagreed with the
-// registry would put the wrong pairing into every subscriber's directory at once
-// — and neither institution can check the other, which is the whole reason both
-// tables exist. The clearing house learns the allocation from the acknowledgement
-// that writes the row; a drift here means that answer and the register it came
-// from have parted company.
-//
-// A member with no allocation published is the other half, and it is a break
-// rather than a state: a bank whose customers have addresses and whose code
-// nobody publishes is a bank that can pay and cannot be paid, with nothing in the
-// system able to say so.
 func (s *snapshot) rosterAgreesWithTheRegistry(rep *Report) {
 	for _, bic := range slices.Sorted(maps.Keys(s.roster)) {
 		entry := s.roster[bic]
@@ -1157,17 +821,6 @@ func (s *snapshot) rosterAgreesWithTheRegistry(rep *Report) {
 
 // directoriesAgainstTheRoster REPORTS each member's copy against what the
 // clearing house publishes, and never fails on the difference.
-//
-// See StaleDirectory and the package doc. A copy that is behind is the behaviour
-// the subscription model was chosen for, so the finding is a line an operator
-// reads — "two entries not copied, pulled three days ago" — and a run holding one
-// still passes. Turning this into a break is the mistake to avoid; the pairings
-// that CANNOT legitimately differ are the two checks above.
-//
-// It reports a bank that has never pulled at all, with an empty copy, exactly as
-// it reports one behind by two entries. There is no third state and no threshold:
-// how far behind is too far is a question about a deployment, and this harness
-// answers questions about books.
 func (s *snapshot) directoriesAgainstTheRoster(rep *Report) {
 	for _, bic := range s.order {
 		view := s.banks[bic]

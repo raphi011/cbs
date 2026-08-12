@@ -8,10 +8,6 @@ import (
 // ReturnCode is the protocol's technical answer to a request. It says what
 // happened to the FILE — that it arrived, that the sender is not enrolled, that
 // there was nothing to collect — and never what the file's contents mean.
-//
-// The codes are carried by their symbolic names alone. The protocol pairs each
-// with a six-digit number, which is an artefact of the XML envelope this package
-// does not build, and the name is what a bank operator reads in a log.
 type ReturnCode string
 
 const (
@@ -41,11 +37,6 @@ const (
 )
 
 // Refusal is a request the host answered with something other than OK.
-//
-// It is a technical refusal, so a caller that gets one still holds its file and
-// has lost nothing. The business refusals — a payment the receiver cannot apply,
-// a cycle it will not settle — are not these: they arrive later, as messages,
-// on a download.
 type Refusal struct {
 	Code   ReturnCode
 	Detail string
@@ -75,12 +66,7 @@ func CodeOf(err error) ReturnCode {
 	return ""
 }
 
-// ErrUnknownOrder is an order id this host never minted, asked about from either
-// side: Client.OrderStatus finding no acknowledgement for one, and a Store asked
-// to record what became of one.
-//
-// It is not a return code. HAC answers with the orders the host knows about, and
-// one it has never heard of is simply absent from the file; Server is what turns
-// the store's answer into a refusal, so the protocol's error surface stays this
-// package's and no caller ever sees a store's.
+// ErrUnknownOrder is an order id this host never minted, asked about from
+// either side: Client.OrderStatus finding no acknowledgement for one, and a
+// Store asked to record what became of one.
 var ErrUnknownOrder = errors.New("ebics: no such order at this host")

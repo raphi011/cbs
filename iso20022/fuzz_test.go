@@ -12,14 +12,6 @@ import (
 // must hold for arbitrary bytes: Unmarshal returns or errors and never panics,
 // anything it does parse survives being re-marshalled, and no error it returns
 // is io.EOF.
-//
-// That last one is here rather than only in TestUnmarshalSurvivesHostileInput
-// because the claim in Unmarshal's doc comment is quantified over EVERY error
-// the function returns, and a table of hand-written inputs cannot hold a claim
-// of that shape — it can only pin the cases somebody thought of. Arbitrary
-// bytes can. io.EOF reads as "the peer closed cleanly" to the transport 7b is
-// about to put around this, which is why the property is worth a fuzz target's
-// time rather than a comment.
 func FuzzUnmarshal(f *testing.F) {
 	entries, err := filepath.Glob(filepath.Join("testdata", "*.xml"))
 	if err != nil {

@@ -98,9 +98,7 @@ func TestAccrued_Minor(t *testing.T) {
 }
 
 // A year of day-by-day accrual must come to the annual figure, because that is
-// the whole reason the record holds sub-minor-unit precision. Each day's
-// division truncates, so the loss is bounded by one micro-unit per day — well
-// inside a single minor unit over a year.
+// the whole reason the record holds sub-minor-unit precision.
 func TestAccrue_YearOfDaysMatchesTheAnnualFigure(t *testing.T) {
 	const balance ledger.Amount = 1_000_000 // €10,000
 	const rate Rate = 60_000                // 6%

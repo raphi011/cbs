@@ -12,48 +12,10 @@ import (
 )
 
 // What a Network's identity is worth, measured rather than asserted.
-//
-// The claim is that an institution cannot perform another's act through a handle
-// it legitimately holds. Everything else in this package measures what an act
-// DOES; these measure who may reach it at all, and each one fails if the guard is
-// removed from the act it names.
 
 // TestAMemberBanksActsAreRefusedOnAnyOtherInstitutionsNetwork is the plan's bar
 // for this task, in as many words: a bank's act performed with the clearing
 // house's identity must FAIL, not merely behave oddly.
-//
-// # It is a correspondence table, not a sample
-//
-// The list below is every method in this package that calls Network.self, and
-// it is derived from that side rather than from what seemed worth checking.
-// That method is the whole of the mechanism — an act reaches the acting bank
-// there or not at all — so a table written against it is complete by
-// construction and a new act added without a guard shows up as a row nobody
-// wrote. The two translators are on it for the same reason: they resolve one
-// party in this bank's own register, through ResolveIdentifierTx.
-//
-// # The handle is assembled, because a minted one cannot be wrong
-//
-// Every act below is a method on BankNetwork, so reaching one through the
-// handle Networks minted for another institution does not compile and there is
-// nothing here to measure. What these rows drive is a BankNetwork built over
-// another institution's core, which is a wiring mistake rather than a call — and
-// it is the shape the guard exists for now that the type carries the rest.
-//
-// Assembling one takes a test-only export, because the embedded field is
-// unexported and no package outside this one can name it. See export_test.go.
-//
-// # Both wrong identities, because they are wrong in different ways
-//
-// The clearing house has no book of accounts at all; the central bank has one
-// and it is the wrong one. A guard that read "is there a book here" would pass
-// the second, so both are run against every act.
-//
-// What this does NOT measure is one member bank acting as another, and it
-// cannot: two members are both members. That is what the subject guards are for
-// — ErrNotThisBanksPayment, ErrStatementNotForThisBank, ErrNotThisBanksAdmission
-// — and they are unchanged and tested where they always were. See
-// ErrNotThisInstitutionsAct, which says why the two are not redundant.
 func TestAMemberBanksActsAreRefusedOnAnyOtherInstitutionsNetwork(t *testing.T) {
 	ctx := context.Background()
 	sys := testNetwork(t)
@@ -144,16 +106,6 @@ func TestAMemberBanksActsAreRefusedOnAnyOtherInstitutionsNetwork(t *testing.T) {
 // TestTheCentralBanksBookIsReachableOnlyFromTheSettlementAgentsNetwork is the
 // other half of the identity, and the one that removes a handle rather than an
 // argument.
-//
-// A Network that held a ledger.Book over CentralBankBook would put the book
-// central-bank money lives in inside every institution in this system. All five
-// of these are methods on CentralBankNetwork, so a test fixture, api, seed or
-// payment/recon holding any other institution's handle cannot NAME one — which
-// is what leaves this suite measuring the assembled handle rather than the
-// minted one. See the note above the table in the test before this.
-//
-// The list is derived from the other side as the table above is: it is every
-// caller of Network.centralBankBook.
 func TestTheCentralBanksBookIsReachableOnlyFromTheSettlementAgentsNetwork(t *testing.T) {
 	ctx := context.Background()
 	sys := testNetwork(t)
@@ -208,12 +160,6 @@ func TestTheCentralBanksBookIsReachableOnlyFromTheSettlementAgentsNetwork(t *tes
 }
 
 // TestANetworkBelongingToNobodyIsRefusedAtConstruction pins the panic.
-//
-// The zero Identity is the shape this whole task removes — a network with no
-// answer to "whose book?" — and it is reachable by OMISSION, which is the
-// easiest way there is to reach anything. Accepting one would leave every act
-// below failing far from the line that got it wrong, with a refusal naming "no
-// institution".
 func TestANetworkBelongingToNobodyIsRefusedAtConstruction(t *testing.T) {
 	sys := testNetwork(t)
 	defer func() {
@@ -230,19 +176,6 @@ func TestANetworkBelongingToNobodyIsRefusedAtConstruction(t *testing.T) {
 
 // TestARegisteredSchemeReachesEveryInstitutionsNetwork is the one thing per-
 // entity networks must NOT disagree about.
-//
-// A scheme is code rather than data — RegisterScheme takes a Go value with
-// behaviour on it — so it is the only thing in this system that does not live in
-// the store and therefore the only thing separate Networks could hold different
-// answers to. The consequence of them disagreeing is not a narrower boundary, it
-// is a bank that cannot read a message another bank composed perfectly well:
-// ErrSchemeNotFound from a receiver whose registry never heard of the scheme,
-// about a payment row both of them can see.
-//
-// It was live, briefly. Minting a fresh registry per Network is the obvious
-// implementation and it broke two of payment's own translator tests and one of
-// cmd/server's, all of which register a scheme on one handle and then act on
-// another. See payment.Networks.schemes.
 func TestARegisteredSchemeReachesEveryInstitutionsNetwork(t *testing.T) {
 	sys := testNetwork(t)
 	before := len(sys.ListSchemes())

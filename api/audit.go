@@ -11,11 +11,6 @@ import (
 // The audit plumbing, shared by all three surfaces because there is one audit
 // endpoint with several filters: the log is a single table spanning every book
 // and every layer, and a route is just a (BookID, Scope) pair applied to it.
-//
-// It is here rather than three times over — a bank's ledger and deposit trails,
-// the clearing house's payment trail, the central bank's own book — because
-// three copies of the query parameters and the limit cap would be three
-// versions of them.
 
 // Pagination bounds shared by every audit endpoint.
 const (
@@ -25,13 +20,6 @@ const (
 
 // AuditFilterFrom parses the shared audit query parameters. A durable log is
 // unbounded, so limit is defaulted and capped rather than optional.
-//
-// book and scope come from the route, never from the client: they are what
-// distinguishes one audit endpoint from another. Both matter to `before` too —
-// Seq is a store-global total order, not a per-book or per-scope counter, so a
-// cursor only means "the next page" when it is replayed against the filter that
-// produced it. The store applies Before as one predicate among the rest and
-// takes Limit last; see ledger.AuditFilter.
 func AuditFilterFrom(r *http.Request, book ledger.BookID, scope ledger.Scope) ledger.AuditFilter {
 	f := ledger.AuditFilter{
 		BookID:   book,
@@ -51,8 +39,7 @@ func AuditFilterFrom(r *http.Request, book ledger.BookID, scope ledger.Scope) le
 
 // AuditReader is the one method this file needs, and it is named here rather
 // than taking an institution's network because all three kinds have an audit
-// trail and no two of them are the same type. Reading one's own events is the
-// rare act that is every institution's.
+// trail and no two of them are the same type.
 type AuditReader interface {
 	ListAudit(ctx context.Context, f ledger.AuditFilter) ([]ledger.AuditEvent, error)
 }

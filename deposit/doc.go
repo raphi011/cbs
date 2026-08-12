@@ -1,31 +1,4 @@
 // Package deposit implements the demand-deposit (DDA) layer of the banking
 // model. It sits on top of the pure general ledger in the ledger package and
-// adds the operational concerns of a customer-facing checking/current account:
-//
-//   - Account status and lifecycle (Active, Dormant, Frozen, Closed).
-//   - Overdraft limits.
-//   - Authorization holds and the available balance they reduce.
-//   - End-of-day balance snapshots.
-//
-// No deposit account is a line in the chart of accounts. Customer money is a
-// liability of the bank, and one Liability CONTROL account per asset holds all
-// of it: each posting names the account it belongs to, so a customer's
-// spendable funds are that control account's book balance under their id, and
-// the bank's total customer deposits is the same sum without it. The deposit
-// layer never stores money itself — every movement of value is a real
-// double-entry posting in the underlying ledger.Book. Holds and snapshots, by
-// contrast, are operational state tracked only in this layer; they do not
-// appear in the general ledger until a hold is captured into a real
-// transaction.
-//
-// # Where the state lives
-//
-// None of it lives in this package. Accounts, holds, snapshots and the audit
-// log are kept in a Store (store/sqlite), and the Register contributes
-// validation and orchestration only. Store and Tx are
-// declared here, by the consumer, and Tx embeds ledger.Tx — so one concrete
-// transaction covers both layers and a capture's hold write and GL posting are
-// a single unit of work.
-//
-// See README.md for a detailed explanation of the concepts modeled here.
+// adds the operational concerns of a customer-facing checking/current account.
 package deposit

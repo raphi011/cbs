@@ -1,9 +1,7 @@
 // The ledger tests live in package ledger_test rather than package ledger: they
 // build a Book over a store from store/testenv, which reaches store/sqlite,
 // which imports ledger, so an in-package test file could not import it without
-// a cycle. The package is dot-imported so the tests still read as if they were
-// inside it; the handful of unexported things they need are re-exported by
-// export_test.go.
+// a cycle.
 package ledger_test
 
 import (
@@ -34,27 +32,13 @@ const testAsset AssetCode = "EUR"
 
 // testBook creates a new Book over a fresh store with a fixed clock for
 // deterministic tests.
-//
-// The store comes from testenv, which opens an ephemeral store/sqlite. Every
-// assertion below is written against the interface and not against it, which is
-// what let the backend change twice underneath them without any of them moving
-// — and what makes them a statement about the ledger rather than about SQLite.
 func testBook(t *testing.T) *Book {
 	t.Helper()
 	store := testenv.New(t, testClock)
 	return NewBook(store.Ledger(), "bank", testClock)
 }
 
-// setupChartOfAccounts creates a standard chart of accounts for testing:
-//
-//	General Ledger
-//	  ├── Customer Deposits (subledger)
-//	  │     ├── Alice Checking (Liability)
-//	  │     └── Bob Checking   (Liability)
-//	  ├── Bank Assets (subledger)
-//	  │     └── Cash           (Asset)
-//	  └── Revenue (subledger)
-//	        └── Fee Income     (Revenue)
+// setupChartOfAccounts creates a standard chart of accounts for testing.
 func setupChartOfAccounts(t *testing.T, book *Book) (alice, bob, cash, feeIncome Account) {
 	t.Helper()
 	ctx := context.Background()
@@ -208,8 +192,7 @@ func TestGetAccount_NotFound(t *testing.T) {
 
 // countingStore wraps a Store to count View calls, so a test can assert how
 // many read units of work an operation opens without instrumenting the store
-// itself. Everything but View is the embedded store's own method, promoted
-// unchanged.
+// itself.
 type countingStore struct {
 	Store
 	views atomic.Int64
@@ -222,10 +205,7 @@ func (c *countingStore) View(ctx context.Context, fn func(context.Context, Tx) e
 
 // TestGetAccounts pins GetAccounts' reason for existing: resolving several
 // accounts costs exactly one View, regardless of how many distinct IDs (or
-// repeats of the same ID) are asked for. GetAccount, called once per ID
-// instead, would cost one View per ID — a full BEGIN…COMMIT each, which is what
-// made rendering a transaction listing's entries cost one unit of work per
-// entry.
+// repeats of the same ID) are asked for.
 func TestGetAccounts(t *testing.T) {
 	ctx := context.Background()
 	cs := &countingStore{Store: testenv.New(t, testClock).Ledger()}
@@ -319,13 +299,8 @@ func TestTransactionStatus_String(t *testing.T) {
 // Transaction Posting Tests
 // ---------------------------------------------------------------------------
 
-// TestPostTransaction_SimpleTransfer tests a basic two-legged transfer
-// between two liability (customer deposit) accounts.
-//
-// Scenario: Customer Alice transfers $50 to customer Bob.
-//
-//	Debit Alice  $50 (liability decreases — Alice has less)
-//	Credit Bob   $50 (liability increases — Bob has more)
+// TestPostTransaction_SimpleTransfer tests a basic two-legged transfer between
+// two liability (customer deposit) accounts.
 func TestPostTransaction_SimpleTransfer(t *testing.T) {
 	ctx := context.Background()
 	book := testBook(t)
@@ -366,10 +341,9 @@ func TestPostTransaction_SimpleTransfer(t *testing.T) {
 	assertEqual(t, "status", tx.Status, Posted)
 	assertEqual(t, "entries count", len(tx.Entries), 2)
 
-	// Check balances.
-	// Alice: credited 10000, debited 5000 -> net credit of 5000.
-	// For Liability (normal=Credit): credit adds, debit subtracts.
-	// Balance = +10000 - 5000 = 5000
+	// Check balances. Alice: credited 10000, debited 5000 -> net credit of 5000.
+	// For Liability (normal=Credit): credit adds, debit subtracts. Balance =
+	// +10000 - 5000 = 5000
 	aliceBal, err := book.BookBalance(ctx, alice.ID.Total())
 	assertNoError(t, err)
 	assertEqual(t, "alice book balance", aliceBal, Amount(5000))
@@ -380,14 +354,8 @@ func TestPostTransaction_SimpleTransfer(t *testing.T) {
 	assertEqual(t, "bob book balance", bobBal, Amount(5000))
 }
 
-// TestPostTransaction_MultiLeg tests a three-legged transaction that
-// includes a fee: transfer + fee split.
-//
-// Scenario: Alice sends $100 to Bob, with a $2 transfer fee.
-//
-//	Debit Alice   $102 (she pays principal + fee)
-//	Credit Bob    $100 (he receives the principal)
-//	Credit Fees   $2   (bank earns the fee)
+// TestPostTransaction_MultiLeg tests a three-legged transaction that includes a
+// fee: transfer + fee split.
 func TestPostTransaction_MultiLeg(t *testing.T) {
 	ctx := context.Background()
 	book := testBook(t)
@@ -709,12 +677,7 @@ func TestReverseTransaction(t *testing.T) {
 
 // TestReverseTransactionMirrorsPerLegValueDates asserts that a reversal's
 // entries carry the SAME per-leg value dates as the original's entries — not
-// the reversal transaction's own value date, and not zero. A value-dated
-// balance only nets a reversal against the original transaction it corrects
-// if the two mirrored legs land on the same day; dating the reversal leg by
-// the reversal transaction (or leaving it zero) would leave the original's
-// impact on the books on its original value date with nothing canceling it
-// there.
+// the reversal transaction's own value date, and not zero.
 func TestReverseTransactionMirrorsPerLegValueDates(t *testing.T) {
 	ctx := context.Background()
 	book := testBook(t)
@@ -998,12 +961,9 @@ func TestBookBalance_AllAccountTypes(t *testing.T) {
 		},
 	})
 
-	// Expected balances (in normal direction):
-	// Asset (normal=Debit): +1000 + 2000 = 3000
-	// Liability (normal=Credit): +1000
-	// Equity (normal=Credit): +2000
-	// Revenue (normal=Credit): +500
-	// Expense (normal=Debit): +500
+	// Expected balances (in normal direction): Asset (normal=Debit): +1000 + 2000
+	// = 3000 Liability (normal=Credit): +1000 Equity (normal=Credit): +2000
+	// Revenue (normal=Credit): +500 Expense (normal=Debit): +500
 	expected := []Amount{3000, 1000, 2000, 500, 500}
 
 	for i, acct := range accounts {
@@ -1022,10 +982,8 @@ func TestValueDateBalance_AccountNotFound(t *testing.T) {
 
 // TestValueDateBalance_AsOfDayBoundary pins the NextDay conversion:
 // Book.ValueDateBalance takes an inclusive asOf and must convert it to an
-// exclusive bound one day later, so an entry value-dated on asOf itself
-// counts and one value-dated the day after does not. Off by one day in
-// either direction is the easiest mistake in this task to make and the
-// hardest to notice, since it only shows up at a day boundary.
+// exclusive bound one day later, so an entry value-dated on asOf itself counts
+// and one value-dated the day after does not.
 func TestValueDateBalance_AsOfDayBoundary(t *testing.T) {
 	ctx := context.Background()
 	book := testBook(t)
@@ -1066,12 +1024,10 @@ func TestValueDateBalance_AsOfDayBoundary(t *testing.T) {
 	assertNoError(t, err)
 	assertEqual(t, "balance excluding the next day's entry", bal, Amount(1_000))
 
-	// The aggregate goes negative when the account's own normal direction is
-	// the one being subtracted from: Bob (Liability, normal=Credit) is
-	// debited here with no offsetting credit of his own, so his balance is
-	// -300, not clamped to zero. Liability accounts are not balance-checked
-	// (see TestPostTransaction_InsufficientBalance_LiabilityNotChecked), so
-	// this posts without error.
+	// The aggregate goes negative when the account's own normal direction is the
+	// one being subtracted from: Bob (Liability, normal=Credit) is debited here
+	// with no offsetting credit of his own, so his balance is -300, not clamped to
+	// zero.
 	_, err = book.PostTransaction(ctx, PostTransactionRequest{
 		Description: "debit Bob with no prior balance",
 		ValueDate:   asOf,
@@ -1091,12 +1047,6 @@ func TestValueDateBalance_AsOfDayBoundary(t *testing.T) {
 // a …Tx form at all: a layer that posts inside a unit of work has to be able to
 // read the result of that posting without opening a second one, which
 // Store.Update refuses.
-//
-// It also pins the property that makes a direction argument unnecessary. Both
-// balances come back POSITIVE from one call each: Cash is an Asset debited 1000,
-// Alice a Liability credited 1000, and each is signed by its own account's normal
-// direction. A caller passing one direction for both would have to get one of
-// them wrong.
 func TestDerivedReadsTx_SeeWritesInTheSameUnitOfWork(t *testing.T) {
 	ctx := context.Background()
 	book := testBook(t)
@@ -1146,9 +1096,7 @@ func TestDerivedReadsTx_SeeWritesInTheSameUnitOfWork(t *testing.T) {
 
 // TestSeriesTx_SnapsTheWindowBounds pins the snapping, so that each caller does
 // not have to: from is inclusive, and to is inclusive of the whole day it falls
-// in, so a window that accrues THROUGH to reads to's own movement. Both bounds
-// are handed in mid-afternoon here, which is what a caller's clock actually gives
-// you and what every consumer would otherwise have to remember to truncate.
+// in, so a window that accrues THROUGH to reads to's own movement.
 func TestSeriesTx_SnapsTheWindowBounds(t *testing.T) {
 	ctx := context.Background()
 	book := testBook(t)
@@ -1213,14 +1161,7 @@ func TestDerivedReadsTx_AccountNotFound(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 // TestFullLedgerWorkflow simulates a realistic banking day at the general
-// ledger level:
-//
-//  1. Set up chart of accounts.
-//  2. Customer deposits cash.
-//  3. Customer makes a card payment.
-//  4. Customer receives a wire transfer.
-//  5. An erroneous fee is posted and then reversed.
-//  6. Audit trail is verified.
+// ledger level.
 func TestFullLedgerWorkflow(t *testing.T) {
 	ctx := context.Background()
 	book := testBook(t)
@@ -1374,10 +1315,9 @@ func TestEnsureAccountTx_MatchesOnNameTypeAndAsset(t *testing.T) {
 		if usd, err = book.EnsureAccountTx(ctx, tx, sub.ID, "Interest Income", Revenue, "USD"); err != nil {
 			return err
 		}
-		// Same name and asset, different type: also separate. Matching on the
-		// name alone would hand back a Revenue account to a caller asking for
-		// an Expense one, and the mismatch would only surface as a balance
-		// with the wrong sign.
+		// Same name and asset, different type: also separate. Matching on the name
+		// alone would hand back a Revenue account to a caller asking for an Expense
+		// one, and the mismatch would only surface as a balance with the wrong sign.
 		expense, err = book.EnsureAccountTx(ctx, tx, sub.ID, "Interest Income", Expense, testAsset)
 		return err
 	}))

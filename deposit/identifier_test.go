@@ -56,11 +56,8 @@ func TestIdentifierValidateReportsTheField(t *testing.T) {
 }
 
 func TestIdentifierEquality(t *testing.T) {
-	// Identifier is a comparable struct on purpose: a slice or a map in this
-	// type would make even the zero-value test impossible. What == answers is
-	// "written the same way", which is not "the same address" — Matches is
-	// that question, and it is the one every caller deciding where money goes
-	// asks.
+	// Identifier is a comparable struct on purpose: a slice or a map in this type
+	// would make even the zero-value test impossible.
 	a := Identifier{Scheme: IdentifierIBAN, Value: "DE89370400440532013000"}
 	b := Identifier{Scheme: IdentifierIBAN, Value: "DE89370400440532013000"}
 	if a != b {
@@ -116,26 +113,7 @@ func TestIdentifierMatches(t *testing.T) {
 
 // The SEPARATOR SET is written twice — in iban.Compact, which this package
 // delegates to, and in iso20022.IBAN.Compact — for a reason that side states:
-// that package must import nothing from this repository. Two copies of a rule
-// drift, so this is the test that stops them.
-//
-// It is two and not three: this package holds no set of its own and delegates to
-// iban's.
-//
-// CASE IS THE ONE DELIBERATE DIFFERENCE, and it is folded in below rather than
-// asserted away. A register folds case because a person typed the value; the
-// message side must not, because the schema's pattern requires an upper-case
-// country code and iso20022.IBAN.Validate has to be able to refuse one that is
-// not. Two questions, two answers, and the separators are what both agree on.
-//
-// It imports iso20022 from a TEST file, which costs the package nothing: a test
-// import is not part of the dependency graph, and the direction that is
-// forbidden — iso20022 importing this repository — is unaffected and is itself
-// pinned by TestPackageImportsNothingFromThisRepository.
-//
-// The cases include every separator either side knows and a value carrying
-// both, so a set that gained a character on one side alone fails here rather
-// than in a payment that cannot be resolved.
+// that package must import nothing from this repository.
 func TestMatchValueAgreesWithTheWireCompaction(t *testing.T) {
 	for _, value := range []string{
 		"DE89 3704 0044 0532 0130 00",

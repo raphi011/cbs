@@ -6,12 +6,6 @@ import (
 )
 
 // The writers, and they are unexported on purpose.
-//
-// api/bank, api/csm and api/centralbank have no way to answer a request except
-// by returning a value and an error to Handle. That is what makes "every
-// response carries the JSON content type, every error goes through the mapping
-// in errors.go, and nothing writes twice" a fact about the package rather than a
-// convention seventy handlers keep.
 
 // writeJSON writes v as a JSON response with the given status code.
 func writeJSON(w http.ResponseWriter, status int, v any) {

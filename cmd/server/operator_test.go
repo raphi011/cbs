@@ -15,34 +15,9 @@ import (
 // The two entry points no file provokes: an operator rejecting a payment the
 // clearing house is holding, and a bank joining a deployment that is already
 // running.
-//
-// Both are the shape Deployment.Submit, ClearingHouse.CloseCycle and
-// Deployment.Return already have — synchronous, on the caller's goroutine, an
-// error the caller can be answered with — because an instruction from outside a
-// business day is not a file collected from a queue, and the layer that
-// instructs has somebody to tell.
 
 // An operator's rejection is TWO halves in two actors, and only the first one
 // has anybody to answer.
-//
-// The clearing house's half is what Reject returns: the payment is Rejected and
-// out of its cycle, then and there. Giving the payer their money back is their
-// own bank's act, in their own bank's book, and it happens when the pacs.002
-// gets there: a rejection and the refund it provokes are two institutions' acts,
-// in two databases, and nothing can make them one.
-//
-// # How that is measured, and how it deliberately is not
-//
-// Not by reading the suspense between the two calls. Nothing races here — the
-// pacs.002 sits in the payer's bank's download queue until that bank collects —
-// so "unchanged the moment Reject returned" would be true and would say nothing
-// about who is entitled to change it.
-//
-// It is measured by WHICH BOOKS each actor's units of work reached, which the
-// recording store answers exactly and without a clock. A clearing house that
-// refunded the payer itself would have had to post in the payer's bank's book,
-// and its set would say so. This is the rejection-shaped case of
-// TestTheCSMTouchesOnlyItsOwnBook.
 func TestAnOperatorRejectionRefundsThePayerOnlyOnceTheMessageArrives(t *testing.T) {
 	h := newHarness(t)
 	p := h.submitCreditTransfer(t)
@@ -65,16 +40,6 @@ func TestAnOperatorRejectionRefundsThePayerOnlyOnceTheMessageArrives(t *testing.
 	}
 	// The refund was posted by the payer's BANK and by nobody else. The clearing
 	// house reached the network book, where a payment row lives, and no bank's.
-	//
-	// What that catches, exactly: a clearing house that WROTE in a member's book.
-	// No interface can close that, because any posting method takes its book as an
-	// ordinary argument. Adding a write to the payer's bank in csm.reject fails
-	// this line.
-	//
-	// What it does not catch is a reject that forgot withActor. The clearing
-	// house's own goroutine has already written the network book carrying this
-	// payment, so the set contains it either way — worth saying, because the
-	// natural reading of this line is that it holds the attribution too.
 	assertBooksTouched(t, "the clearing house", h.booksTouchedBy(h.cfg.ClearingHouseBIC),
 		[]ledger.BookID{payment.ClearingHouseBook})
 	// The code the operator named travels, rather than being replaced by
@@ -85,12 +50,6 @@ func TestAnOperatorRejectionRefundsThePayerOnlyOnceTheMessageArrives(t *testing.
 
 // A payment the clearing house cannot reject is refused SYNCHRONOUSLY, and
 // nothing is sent.
-//
-// It is the answerable half of the split ruling 4 of this task's brief is about:
-// a refusal decided inside the clearing house's own unit of work is one the
-// operator who asked can be told about, with a status code, in the response to
-// their request. What cannot come back that way is anything a counterparty
-// decides — which for a rejection is the refund, three hops and one actor later.
 func TestAnOperatorRejectionOfASettledPaymentIsRefusedAndSendsNothing(t *testing.T) {
 	h := newHarness(t)
 	p := h.settledPayment(t)
@@ -109,23 +68,8 @@ func TestAnOperatorRejectionOfASettledPaymentIsRefusedAndSendsNothing(t *testing
 	}
 }
 
-// A bank the deployment does not know about is reachable in BOTH directions once
-// AddBank has been called, and unreachable until then.
-//
-// # Why the fixture builds it without the deployment
-//
-// The state this is about is a bank the deployment has not READ: rows written by
-// something other than its own door. storetest.Admit builds exactly that — three
-// institutions' rows, and no place in the network.
-//
-// Such a bank is not slow, it is unreachable: it cannot pay, because
-// Deployment.Submit holds no view of it to hand its customer's instruction to,
-// and it cannot be paid, because the clearing house holds no download queue under
-// its BIC to route a pacs.008 into.
-//
-// Both directions are asserted, because they fail for different reasons and one
-// of them can be fixed without the other: the bank index answers "can it pay"
-// and enrolment answers "can it be paid".
+// A bank the deployment does not know about is reachable in BOTH directions
+// once AddBank has been called, and unreachable until then.
 func TestABankAdmittedAfterStartCanPayAndBePaid(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()

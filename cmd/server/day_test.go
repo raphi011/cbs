@@ -10,22 +10,9 @@ import (
 
 // The business day, which is the one thing in this package that is new rather
 // than moved.
-//
-// Everything else here measures a flow that existed before the transport
-// changed. These measure the ENGINE: that one advance carries a payment the
-// whole way, that the clock moves one calendar day and not to the next open
-// one, that a day the scheme is shut clears nothing, and that the report says
-// what happened.
 
 // One advance is the whole life of a payment, and that is the shape of a
 // deployment that closes one cycle a day.
-//
-// A payment submitted before the cut-off is routed, answered, cleared, netted,
-// settled and booked on the same business day — which is what SEPA does and what
-// makes Accepted and Cleared states a payment PASSES THROUGH rather than states
-// it rests in. Every intermediate state is still reachable and still measured;
-// what it takes is standing between two phases (see workThrough), which is a
-// thing no operator can do and no day leaves room for.
 func TestOneBusinessDayCarriesAPaymentFromSubmissionToFinality(t *testing.T) {
 	h := newHarness(t)
 	p := h.submitCreditTransfer(t)
@@ -59,11 +46,6 @@ func TestOneBusinessDayCarriesAPaymentFromSubmissionToFinality(t *testing.T) {
 }
 
 // The clock moves ONE CALENDAR DAY, weekends included.
-//
-// Not to the next settlement day, which is the tempting version and the wrong
-// one: a deployment that never has a Saturday would carry a Friday evening's
-// instruction overnight, and the whole point of having a business calendar would
-// be invisible.
 func TestABusinessDayLeavesTheClockOnTheNextCalendarDay(t *testing.T) {
 	h := newHarness(t)
 
@@ -96,11 +78,6 @@ func TestABusinessDayLeavesTheClockOnTheNextCalendarDay(t *testing.T) {
 }
 
 // Nothing clears on a day the scheme is shut, and the date moves anyway.
-//
-// It is the lesson rather than a state to be prevented: the button still
-// advances, the report says why, and a customer's instruction waits for the next
-// open day. That is what a store-and-forward scheme against a cut-off clock
-// does, and it is why the ageing rules in payment count in business days.
 func TestNothingClearsOnADayTheSchemeIsShut(t *testing.T) {
 	h := newHarness(t)
 
@@ -119,10 +96,7 @@ func TestNothingClearsOnADayTheSchemeIsShut(t *testing.T) {
 	if got := h.bankPayment(t, h.debtorBIC, p.ID); got.Status != payment.Initiated {
 		t.Errorf("the payer's bank records %v after a day the scheme was shut, want Initiated", got.Status)
 	}
-	// NO file moved at all. The customer instructed their bank on a Saturday and
-	// the bank took the instruction into its hub, where it waits: a bank reaches
-	// its cut-off as a phase of a CLEARING day, so a day the scheme is shut is a
-	// day nothing is even uploaded.
+	// NO file moved at all.
 	if len(report.Files) != 0 {
 		t.Errorf("a shut day moved %v; no file may cross on one", report.Files)
 	}
@@ -155,12 +129,9 @@ func TestTheDayReportNamesWhatMovedAndWhoDecidedWhat(t *testing.T) {
 			t.Errorf("a file in the report is %+v; every one names both ends, a type and an order id", f)
 		}
 	}
-	// The payment's own life, in the order it was decided — and both decisions
-	// are the CLEARING HOUSE's, which is what settling before releasing did to
-	// the report. It validates the instruction and takes it into a cycle, and it
-	// reports the payment settled once the reserves have moved. The payee's bank
-	// decides nothing: it is handed an instruction that is already final, and its
-	// only remaining answer is a return.
+	// The payment's own life, in the order it was decided — and both decisions are
+	// the CLEARING HOUSE's, which is what settling before releasing did to the
+	// report.
 	var decided []iso20022.BIC
 	for _, o := range report.Outcomes {
 		if o.Payment != p.ID {
@@ -180,10 +151,6 @@ func TestTheDayReportNamesWhatMovedAndWhoDecidedWhat(t *testing.T) {
 }
 
 // The report is TAKEN at the end of a day, so no file is reported twice.
-//
-// Taken at the end and not started at the beginning, which is the decision worth
-// pinning: a customer's submission between two advances is carried by the day
-// that runs after it, so the day that carries it is the day that reports it.
 func TestTwoDaysDoNotReportTheSameFileTwice(t *testing.T) {
 	h := newHarness(t)
 	h.submitCreditTransfer(t)
@@ -203,10 +170,6 @@ func TestTwoDaysDoNotReportTheSameFileTwice(t *testing.T) {
 
 // The day cuts every open cycle off and opens a fresh one per scheme, which is
 // what makes the NEXT day able to clear anything at all.
-//
-// A scheme with no open cycle accepts nothing — AcceptAtCSM refuses, and the
-// clearing house answers TM01 — so without this a deployment would clear on its
-// first day and never again.
 func TestADayLeavesOneOpenCyclePerScheme(t *testing.T) {
 	h := newHarness(t)
 	h.submitCreditTransfer(t)
@@ -237,13 +200,6 @@ func TestADayLeavesOneOpenCyclePerScheme(t *testing.T) {
 
 // A cycle the day opens is stamped with the day it will accept payments on, not
 // the one that just ran.
-//
-// The two are one line apart in AdvanceDay — the cycles are opened after the
-// clock moves — and getting them the other way round is invisible to every
-// assertion above: the right number of cycles in the right states, all naming a
-// day that is over. What sees it is a console listing cycles by the day they
-// were opened on, where a settled cut-off and the window that replaced it share
-// a date and appear to be the same day's work twice.
 func TestTheCycleADayOpensNamesTheDayItWillClear(t *testing.T) {
 	h := newHarness(t)
 	report := h.day(t)
@@ -261,10 +217,6 @@ func TestTheCycleADayOpensNamesTheDayItWillClear(t *testing.T) {
 
 // Every member's routing directory is refreshed FIRST, before anything is
 // routed.
-//
-// It is what gives the refresh a cadence. A bank admitted since the last advance
-// can be addressed by its neighbours today, rather than after somebody remembers
-// to call the route — and the route survives as the operator asking out of turn.
 func TestADayRefreshesEveryMembersRoutingDirectoryBeforeItRoutesAnything(t *testing.T) {
 	h := newHarness(t)
 	ctx := t.Context()

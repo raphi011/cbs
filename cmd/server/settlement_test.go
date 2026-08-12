@@ -15,11 +15,8 @@ import (
 	"github.com/raphi011/cbs/payment/recon"
 )
 
-// The settlement flow end to end: a cut-off, an instruction, a discharge, and the
-// news travelling back to the bank that started the payment. Two assertions on the
-// answer, because they say different things: ACSC is the point of finality, and the
-// ABSENT reason is what says this is not a rejection — a pacs.002 carries StsRsnInf
-// only when something was refused.
+// The settlement flow end to end: a cut-off, an instruction, a discharge, and
+// the news travelling back to the bank that started the payment.
 func TestClosingACycleSettlesItThroughTheCentralBank(t *testing.T) {
 	h := newHarness(t)
 	p := h.submitCreditTransfer(t)
@@ -51,11 +48,8 @@ func TestANetPayerWhoCannotCoverIsRejectedOnTheInstruction(t *testing.T) {
 	h.assertLastStatusTo(t, h.cfg.ClearingHouseBIC, iso20022.StatusReasonInsufficientFunds)
 }
 
-// A cut-off the settlement agent refuses releases NOTHING, and that is what settling
-// before releasing is FOR. The payments are Cleared, no reserves have moved, and the
-// bank that would be paid has never heard of them — so no customer is credited
-// against money that is not there, and there is nothing to unwind when the operator
-// funds the short member and instructs again.
+// A cut-off the settlement agent refuses releases NOTHING, and that is what
+// settling before releasing is FOR.
 func TestARefusedCutOffReleasesNothing(t *testing.T) {
 	h := newHarnessWithAnUnfundedReserve(t)
 	p := h.submitCreditTransfer(t)
@@ -77,11 +71,8 @@ func TestARefusedCutOffReleasesNothing(t *testing.T) {
 	}
 }
 
-// A payment the operator rejects out of an open cycle is CUT OUT of the share its
-// neighbours travel in. The share is built when the file is taken in and released
-// when the cycle settles, and an operator can reject in between — the one window in
-// which a held file can go out of date. A bank handed a rejected transaction would
-// credit a payee out of a suspense the reserves never reached.
+// A payment the operator rejects out of an open cycle is CUT OUT of the share
+// its neighbours travel in.
 func TestARejectedPaymentIsCutOutOfTheShareItsNeighboursTravelIn(t *testing.T) {
 	h := newHarness(t)
 	kept := h.submit(t, h.smallTransfer(t, "invoice 1"))
@@ -116,16 +107,10 @@ func TestARejectedPaymentIsCutOutOfTheShareItsNeighboursTravelIn(t *testing.T) {
 	}
 }
 
-// TestARefusedSettlementCanBeInstructedAgain walks the whole way out of the one state
-// this system has no other exit from: a cycle Closed with no settlement, its payments
-// Cleared, the payer debited into their own bank's clearing suspense and the payee
-// unpaid. No object transitions out of it — CloseCycleTx wants an open cycle,
-// RejectAtCSMTx an Initiated or Accepted payment, PostReturnLegTx a settled one — so
-// without a way to re-instruct, every payer's money is stranded.
-//
-// It asserts the stuck state first, as state rather than as a status code, since the
-// AM04 is on the wire and in no store. The payee is paid at the end, which is the
-// only assertion that says the money arrived rather than that a status changed.
+// TestARefusedSettlementCanBeInstructedAgain walks the whole way out of the one
+// state this system has no other exit from: a cycle Closed with no settlement,
+// its payments Cleared, the payer debited into their own bank's clearing
+// suspense and the payee unpaid.
 func TestARefusedSettlementCanBeInstructedAgain(t *testing.T) {
 	h := newHarnessWithAnUnfundedReserve(t)
 	p := h.submitCreditTransfer(t)
@@ -133,10 +118,9 @@ func TestARefusedSettlementCanBeInstructedAgain(t *testing.T) {
 	h.closeCycle(t)
 	h.work(t)
 
-	// The stuck state, in the four places it shows. Whether a cut-off settled is read
-	// off the CYCLE's status and, at the agent, off whether it holds a settlement for
-	// that cycle. The cycle cannot name the settlement's id: that is the agent's own
-	// row number and nothing on the wire carries it back.
+	// The stuck state, in the four places it shows. Whether a cut-off settled is
+	// read off the CYCLE's status and, at the agent, off whether it holds a
+	// settlement for that cycle.
 	stuck := h.creditTransferCycle(t)
 	if stuck.Status != payment.CycleClosed {
 		t.Fatalf("cycle %s is %v, want Closed", stuck.ID, stuck.Status)
@@ -154,12 +138,7 @@ func TestARefusedSettlementCanBeInstructedAgain(t *testing.T) {
 		t.Fatalf("the payee holds %d, want 0 — nothing has settled", got)
 	}
 
-	// The operator's remedy: fund the short member, which is TWO acts. A deposit raises
-	// the customer's balance and leaves the bank holding vault cash, so on its own it
-	// would not unstick this cycle — the central bank's book is what settlement reads.
-	// The lodgement is what puts the reserve behind the bank, and it is a real
-	// camt.050/camt.025 round trip. A bank settles out of central bank money, and
-	// getting some is a conversation.
+	// The operator's remedy: fund the short member, which is TWO acts.
 	if err := h.bank(h.debtorBIC).Deposit(context.Background(), h.debtorPID, h.debtorAcct.ID, harnessAmount, "Reserve top-up"); err != nil {
 		t.Fatalf("Deposit: %v", err)
 	}
@@ -189,18 +168,12 @@ func TestARefusedSettlementCanBeInstructedAgain(t *testing.T) {
 		t.Fatalf("the payee holds %d, want %d", got, harnessAmount)
 	}
 	// And the bank that submitted was told, by the same fan-out a first-time
-	// settlement uses. A recovery that paid the payee and told nobody would
-	// leave the submitting bank waiting for ever on an instruction that had in
-	// fact completed.
+	// settlement uses.
 	h.assertLastTxStatusTo(t, h.debtorBIC, iso20022.TransactionStatusSettlementCompleted)
 }
 
 // TestReSettlingASettledCycleIsRefused is the first of the two guards that make
 // asking twice safe, and the one that stops a second message ever being built.
-// Verified rather than assumed: the count of instructions the central bank has been
-// handed says no second pacs.009 went out, and the settlement count says no second
-// discharge happened. A guard that only changed the error text would pass an
-// assertion on the error alone.
 func TestReSettlingASettledCycleIsRefused(t *testing.T) {
 	h := newHarness(t)
 	h.submitCreditTransfer(t)
@@ -231,16 +204,8 @@ func TestReSettlingASettledCycleIsRefused(t *testing.T) {
 	}
 }
 
-// TestASecondSettlementInstructionPostsNothing is the guard BEHIND that one: the
-// settlement agent's, on a message csm.settle would not have built. Two operators
-// racing past the CycleClosed check would each send a pacs.009, and this is what
-// happens to the second — the same thing that happens to a redelivered one, the two
-// being indistinguishable at the receiver. SettleCycleTx refuses with
-// ErrCycleNotClosed and receiveSettlement reports rather than answering RJCT, because
-// telling the clearing house a cycle was rejected when it settled would be a lie.
-//
-// The money assertion is the point: the reserves moved once, the posting carrying the
-// idempotency key "<cycle>:settle".
+// TestASecondSettlementInstructionPostsNothing is the guard BEHIND that one:
+// the settlement agent's, on a message csm.settle would not have built.
 func TestASecondSettlementInstructionPostsNothing(t *testing.T) {
 	h := newHarness(t)
 	h.submitCreditTransfer(t)
@@ -273,9 +238,6 @@ func TestASecondSettlementInstructionPostsNothing(t *testing.T) {
 		t.Fatalf("%d settlements after a replayed instruction, want 1", len(settlements))
 	}
 	// And the one settlement it holds is still the one it made for this cycle.
-	// The link is the settlement agent's own — Settlement.CycleID — because the
-	// clearing house's copy of the cycle cannot name a settlement it was never
-	// told the id of.
 	if settlements[0].CycleID != cyc.ID {
 		t.Fatalf("the surviving settlement names cycle %q, want %q", settlements[0].CycleID, cyc.ID)
 	}
@@ -295,20 +257,9 @@ func (h *harness) creditTransferCycle(t *testing.T) payment.ClearingCycle {
 	return payment.ClearingCycle{}
 }
 
-// TestEachMemberBooksTheStatementItWasSent is what the camt.053 is FOR, measured at
-// the far end: after a cut-off each member holds its own record of it, posted, with
-// the closing balance the settlement agent asserted. Three things per member, each
-// ruling out a different way of getting this wrong:
-//
-//   - Status is Posted and MirrorTx names a transaction. Asserting the row is NOT at
-//     Advised is what stops a row recording nothing passing for a booking. It is not
-//     the state a failure leaves: the row and the leg are one unit of work.
-//   - Movement is SIGNED and opposite at the two banks. It travels as a magnitude plus
-//     CdtDbtInd, so a member that lost the sign in transit would post its mirror leg
-//     backwards — and the two banks are the only pair that can show it.
-//   - ClosingBalance equals what the central bank's book says the reserve account
-//     stands at. camt.053 was chosen over camt.054 precisely because it carries a
-//     balance to check a posting against.
+// TestEachMemberBooksTheStatementItWasSent is what the camt.053 is FOR,
+// measured at the far end: after a cut-off each member holds its own record of
+// it, posted, with the closing balance the settlement agent asserted.
 func TestEachMemberBooksTheStatementItWasSent(t *testing.T) {
 	h := newHarness(t)
 	h.submitCreditTransfer(t)
@@ -348,11 +299,9 @@ func TestEachMemberBooksTheStatementItWasSent(t *testing.T) {
 	}
 }
 
-// advice is one bank's own record of a cut-off, read out of that bank's own DATABASE.
-// Through the store rather than a Network method, because there is no such method: an
-// advice is a member's own row. The store has to be that member's own for the same
-// reason — settlement_advices is in the bank shape and in no other. The unit of work
-// is opened on a bare context, so the recorder attributes the read to no actor.
+// advice is one bank's own record of a cut-off, read out of that bank's own
+// DATABASE. Through the store rather than a Network method, because there is no
+// such method: an advice is a member's own row.
 func (h *harness) advice(t *testing.T, id payment.ParticipantID, reference string) payment.SettlementAdvice {
 	t.Helper()
 	ctx := context.Background()
@@ -386,19 +335,8 @@ func TestOneSettlementInstructionPerAsset(t *testing.T) {
 	}
 }
 
-// TestASettledCollectionIsAnnouncedToThePayeesBank is the release's other direction,
-// and the one that says who is actually waiting. On a push the bank that submitted
-// and the bank owed an answer are the same, so an advice that simply addressed the
-// payer would look right. On a PULL they are opposite: the payee's bank sent the
-// collection and has been waiting since.
-//
-// Both banks hear from the clearing house at the cut-off and they hear different
-// things. The submitter gets a pacs.002 saying ACSC. The payer's bank gets the
-// pacs.003 itself, for the first time, because until the cycle settled there was
-// nothing safe to hand it: that file is both its instruction and its news.
-//
-// The counts catch a release that sent the same thing twice — both guards make a
-// second one a no-op, so the money would be right and only the conversation wrong.
+// TestASettledCollectionIsAnnouncedToThePayeesBank is the release's other
+// direction, and the one that says who is actually waiting.
 func TestASettledCollectionIsAnnouncedToThePayeesBank(t *testing.T) {
 	h := newHarness(t)
 	p := h.submitDirectDebit(t)
@@ -433,14 +371,9 @@ func TestASettledCollectionIsAnnouncedToThePayeesBank(t *testing.T) {
 	}
 }
 
-// TestEachSettlementInstructionCarriesOneAssetsLegs is what the count above cannot
-// see: two instructions is the right number for two assets AND for two cycles that
-// happened to share one. This reads the messages — each carries the legs of exactly
-// one asset, and between them they carry both.
-//
-// What that rules out is a single instruction whose legs are half in euro and half in
-// dollars, which a pacs.009 can express (ReadSettlement reads each leg's own
-// currency, deliberately) and which would net a euro position against a dollar one.
+// TestEachSettlementInstructionCarriesOneAssetsLegs is what the count above
+// cannot see: two instructions is the right number for two assets AND for two
+// cycles that happened to share one.
 func TestEachSettlementInstructionCarriesOneAssetsLegs(t *testing.T) {
 	h := newHarnessWithTwoAssets(t)
 	h.submitCreditTransfer(t)
@@ -468,11 +401,8 @@ func TestEachSettlementInstructionCarriesOneAssetsLegs(t *testing.T) {
 	}
 }
 
-// TestASettlementInstructionRunsBetweenBanksAndTheCentralBank is the shape of what
-// the clearing house asks for, read off the wire. A netted position has no
-// counterparty among the banks — that is what netting destroys — so every leg runs
-// between one member and the SETTLEMENT AGENT. Getting the direction backwards would
-// settle the cycle the wrong way round while every total still balanced.
+// TestASettlementInstructionRunsBetweenBanksAndTheCentralBank is the shape of
+// what the clearing house asks for, read off the wire.
 func TestASettlementInstructionRunsBetweenBanksAndTheCentralBank(t *testing.T) {
 	h := newHarness(t)
 	h.submitCreditTransfer(t)
@@ -509,12 +439,7 @@ func TestASettlementInstructionRunsBetweenBanksAndTheCentralBank(t *testing.T) {
 	}
 }
 
-// TestAnEmptyCycleInstructsNothing is the other half of the cut-off. Every
-// credit-transfer test closes an untouched direct-debit window alongside the one it
-// filled, so this path runs constantly and no other assertion looks at it: a clearing
-// house that sent an empty instruction would be caught only by the codec refusing to
-// build a pacs.009 with no transactions. Nothing to discharge is not a failure — the
-// cycle closes, records positions that are all zero, and stays Closed.
+// TestAnEmptyCycleInstructsNothing is the other half of the cut-off.
 func TestAnEmptyCycleInstructsNothing(t *testing.T) {
 	h := newHarness(t)
 	h.closeCycle(t) // both windows are open and neither has a payment in it
@@ -533,15 +458,8 @@ func TestAnEmptyCycleInstructsNothing(t *testing.T) {
 	}
 }
 
-// TestARefusedSettlementLeavesTheCycleClosedAndThePaymentsCleared measures what the
-// RJCT costs. The batch fails WHOLE, SettleCycleTx being one unit of work, so the
-// assertion is on the state everywhere: no settlement recorded, the cycle still
-// Closed, every payment still Cleared with the payer's money in its own bank's
-// clearing suspense. That is why the console can name the reason without one being
-// stored — the net position and the reserve are both right there.
-//
-// It also pins what receiveSettlementStatus does NOT do: no bank is told, and the
-// day's report would say so if one were.
+// TestARefusedSettlementLeavesTheCycleClosedAndThePaymentsCleared measures what
+// the RJCT costs.
 func TestARefusedSettlementLeavesTheCycleClosedAndThePaymentsCleared(t *testing.T) {
 	h := newHarnessWithAnUnfundedReserve(t)
 	p := h.submitCreditTransfer(t)
@@ -572,27 +490,6 @@ func TestARefusedSettlementLeavesTheCycleClosedAndThePaymentsCleared(t *testing.
 
 // TestTheMessagesACutOffPutsOnTheWire names the conversation, the way
 // TestTheCreditTransferChainIsFourMessages names the push.
-//
-// Six hops, of which two are the chain a reader might expect — the instruction and
-// its answer — and then two fan-outs addressed to two different sets of banks:
-//
-//   - one camt.053 per MEMBER whose position moved, from the CENTRAL BANK: a statement
-//     of that member's own reserve account, and what it books its mirror leg from.
-//   - one pacs.002 per PAYMENT per BANK THAT HAS SOMETHING TO DO ABOUT IT, from the
-//     CLEARING HOUSE: the bank that submitted, and the CREDITOR's bank, which has a
-//     leg to post. On this push those are two institutions; on a pull they are one.
-//     That fan-out could not be the central bank's — it is answering about a cycle
-//     and holds no method that could turn one into payments.
-//
-// It is a SET plus the orderings that are forced. The three files of the chain are
-// each built by the institution that collected the one before. The statements are
-// not: they go into other banks' queues, and a queue has no order against another.
-//
-// Three relations survive: the INSTRUCTION crosses first; the agent's pacs.002 crosses
-// before the clearing house's; and the PAYEE's BANK's camt.053 crosses before the ACSC
-// addressed to that same bank. The last is the load-bearing one and is not a chain
-// argument: it is what lets the payee's bank's creditor legs draw on a suspense the
-// camt.053 has already credited.
 func TestTheMessagesACutOffPutsOnTheWire(t *testing.T) {
 	h := newHarness(t)
 	h.submitCreditTransfer(t)
@@ -652,10 +549,9 @@ func TestTheMessagesACutOffPutsOnTheWire(t *testing.T) {
 			"the first is sent from the second's handler and cannot precede it",
 			h.debtorBIC, order[fanOut], order[answer])
 	}
-	// The load-bearing pair, and not a chain argument: both are handled by the PAYEE'S
-	// BANK, which collects from the settlement agent before the clearing house. The
-	// statement credits the clearing suspense; the released instruction is what makes
-	// the creditor leg draw on it.
+	// The load-bearing pair, and not a chain argument: both are handled by the
+	// PAYEE'S BANK, which collects from the settlement agent before the clearing
+	// house.
 	if order[payeeStatement] > order[payeeFile] {
 		t.Errorf("the payee's bank handled its released instruction at %d and its own camt.053 at %d; "+
 			"the statement credits the suspense the creditor leg draws on and must come first",
@@ -663,13 +559,8 @@ func TestTheMessagesACutOffPutsOnTheWire(t *testing.T) {
 	}
 }
 
-// TestASettlementInstructionNamingTwoCyclesIsRefused guards the one assumption the
-// central bank makes about the message it is handed. A pacs.009 can carry legs from
-// several cycles — SettlementLeg holds a reference apiece precisely so it can — and
-// this system's clearing house never sends one. So the receiver CHECKS it rather than
-// assuming: settling the first cycle and dropping the second would leave a closed
-// cycle nobody ever settles and nobody ever hears about. Injected, since no actor here
-// emits this message.
+// TestASettlementInstructionNamingTwoCyclesIsRefused guards the one assumption
+// the central bank makes about the message it is handed.
 func TestASettlementInstructionNamingTwoCyclesIsRefused(t *testing.T) {
 	h := newHarness(t)
 	env, err := payment.SettlementMessage([]payment.SettlementLeg{
@@ -703,20 +594,8 @@ func TestASettlementInstructionNamingTwoCyclesIsRefused(t *testing.T) {
 	}
 }
 
-// TestOnlyThePayeesBankPaysThePayee pins which of the two banks told about a settled
-// payment posts the CREDITOR's leg. On a push the clearing house tells both: the
-// payer's bank because it has been waiting for the answer, the payee's because it has
-// a leg. If the payer's bank posted it, the payee would be credited in the wrong
-// institution's book.
-//
-// Both banks have a row to advance and only one has a leg, so SettleAtBankTx makes
-// the status unconditional and the posting conditional; a bank with no creditor leg
-// is not turned away. The claim is therefore on the LEDGER: the payer's bank ends the
-// cut-off having posted nothing for this payment, however many times it is asked.
-//
-// A refusal is still made, by a bank party to NEITHER side, and it is the STORE that
-// makes it — an institution never sent this payment holds no row for it, which cannot
-// be got past by a bank that knows the id.
+// TestOnlyThePayeesBankPaysThePayee pins which of the two banks told about a
+// settled payment posts the CREDITOR's leg.
 func TestOnlyThePayeesBankPaysThePayee(t *testing.T) {
 	h := newHarness(t)
 	p := h.submitCreditTransfer(t)
@@ -763,15 +642,9 @@ func statusText(doc *iso20022.Pacs002) string {
 	return strings.Join(out, "; ")
 }
 
-// A cut-off in which every position cancels settles, and its files are released. Two
-// banks pay each other the same amount inside one cycle, so netting leaves both owing
-// nothing. There is no leg to send and therefore no pacs.009, and unless the clearing
-// house discharges such a cut-off itself the batch has nowhere to go: no settlement
-// agent answers for a file nobody uploaded.
-//
-// The measure is what a payee can spend, not what a status column says: each customer
-// ends the day with what they started with, which is only true if both instructions
-// were released AND applied. recon.Check is the other half.
+// A cut-off in which every position cancels settles, and its files are
+// released. Two banks pay each other the same amount inside one cycle, so
+// netting leaves both owing nothing.
 func TestACutOffThatNetsToNothingSettlesAndReleasesItsFiles(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()
@@ -803,11 +676,8 @@ func TestACutOffThatNetsToNothingSettlesAndReleasesItsFiles(t *testing.T) {
 	recon.Check(t, h.nets)
 }
 
-// And the settlement agent is never asked about it, which the balances above cannot
-// say. A cut-off with nothing to discharge is settled by the institution that netted
-// it: no instruction uploaded, no reserve moved, no settlement row anywhere. A
-// clearing house that sent a pacs.009 of zero-amount legs would move no money either,
-// and this is what tells the two apart.
+// And the settlement agent is never asked about it, which the balances above
+// cannot say.
 func TestACutOffThatNetsToNothingInstructsNobody(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()
@@ -833,22 +703,8 @@ func TestACutOffThatNetsToNothingInstructsNobody(t *testing.T) {
 	}
 }
 
-// A cut-off whose instructions this institution could not hand over is refused before
-// the reserves move. Settling one would be final at the settlement agent and reach no
-// receiving bank, leaving a payee unpaid with the money standing in their own bank's
-// clearing suspense and no act able to move it.
-//
-// The state is BUILT, and that is what it costs to reach. No deployment this
-// repository builds hands over a cut-off that cannot be released, and nor does a
-// restart, the shares being rows in the clearing house's own database. What is left is
-// a process that ends between accepting a file's transactions into a cycle and
-// recording the share behind them — two units of work, in that order — so that is what
-// is composed here.
-//
-// It goes through CloseCycle because that is the door an operator reaches first, and
-// it refuses at the seam that matters. Settle is asked afterwards, since
-// re-instructing is the one route out of a closed-and-undischarged cycle and must not
-// be a way around this. It asserts the WHOLE of what the refusal preserves.
+// A cut-off whose instructions this institution could not hand over is refused
+// before the reserves move.
 func TestACutOffThatCouldNotBeReleasedIsRefusedBeforeTheReservesMove(t *testing.T) {
 	ctx := context.Background()
 	s := newAPIHarness(t)
@@ -940,12 +796,7 @@ func TestACutOffThatCouldNotBeReleasedIsRefusedBeforeTheReservesMove(t *testing.
 	}
 }
 
-// And a cut-off in which every position cancels is refused on the same ground. Such a
-// batch instructs nothing, and the clearing house discharges it itself, which makes
-// the release the only thing standing between two payers' money and their payees. A
-// cut-off whose shares are gone would go Settled with no instruction reaching either
-// receiving bank. So the refusal is asked before the legs are counted: an empty
-// instruction is not the same thing as nothing owed. Both operator doors are tried.
+// And a cut-off in which every position cancels is refused on the same ground.
 func TestACutOffThatNetsToNothingAndCannotBeReleasedIsRefusedToo(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()
@@ -1008,15 +859,6 @@ func TestACutOffThatNetsToNothingAndCannotBeReleasedIsRefusedToo(t *testing.T) {
 
 // A share this institution could not hand over is still held after the cut-off
 // settles, and the ones it did hand over are gone.
-//
-// The hand-over and the discharge of the obligation behind it are two units of work —
-// a download queue is the transport's table — so what stands between them is the order
-// they run in. A share deleted whatever became of the queueing is an obligation
-// destroyed against reserves that have already moved.
-//
-// It is asserted per share: one bank's enrolment is taken away between the cut-off and
-// the release, and the other bank's share must NOT survive, because a share left
-// behind is released again by a redelivered answer.
 func TestAShareThatCouldNotBeHandedOverIsStillHeld(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()
@@ -1065,8 +907,7 @@ func TestAShareThatCouldNotBeHandedOverIsStillHeld(t *testing.T) {
 
 // dropEveryShare composes the state a process ending between accepting a file's
 // transactions into a cycle and recording the shares behind them would leave: a
-// cut-off holding payments no output file stands for. One share at a time, because
-// that is the only way to discharge one.
+// cut-off holding payments no output file stands for.
 func dropEveryShare(t *testing.T, c *ClearingHouse, id payment.CycleID) {
 	t.Helper()
 	ctx := context.Background()

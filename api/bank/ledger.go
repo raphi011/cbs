@@ -123,11 +123,9 @@ func (s *surface) handleGetAccount(r *http.Request, p *payment.Bank) (api.Accoun
 
 func (s *surface) handleBookBalance(r *http.Request, p *payment.Bank) (api.AccountBalanceDTO, error) {
 	aid := ledger.AccountID(r.PathValue("aid"))
-	// Parsed before anything is read: a malformed asOf is a 400 whatever the
-	// store says, so validating it first keeps a bad request from costing two
-	// store round trips before being refused. Omitted, it defaults to now, and
-	// the value-dated figure agrees with the book balance unless something is
-	// value-dated away from its booking date.
+	// Parsed before anything is read: a malformed asOf is a 400 whatever the store
+	// says, so validating it first keeps a bad request from costing two store
+	// round trips before being refused.
 	asOf := time.Now()
 	if raw := r.URL.Query().Get("asOf"); raw != "" {
 		parsed, err := time.Parse(time.RFC3339, raw)
@@ -136,11 +134,7 @@ func (s *surface) handleBookBalance(r *http.Request, p *payment.Bank) (api.Accou
 		}
 		asOf = parsed
 	}
-	// The asset comes back with the number. It is an integer in the account's
-	// minor units and cannot be rendered without the scale its code implies;
-	// leaving it out would make displaying one balance cost three requests,
-	// and would put the digits on screen before the thing that gives them a
-	// magnitude.
+	// The asset comes back with the number.
 	acct, err := p.Ledger.GetAccount(r.Context(), aid)
 	if err != nil {
 		return api.AccountBalanceDTO{}, err
@@ -166,12 +160,8 @@ func (s *surface) handleBookBalance(r *http.Request, p *payment.Bank) (api.Accou
 	}, nil
 }
 
-// handleAccountSubsidiaries is the drill-down: which subsidiaries a control account
-// is holding money for, and how much of the line is each one's.
-//
-// A plain account answers with an empty list rather than a 404 or an error. It
-// pools nobody, so there is no detail under it — and a client rendering an
-// account page should not have to know which kind it is before it asks.
+// handleAccountSubsidiaries is the drill-down: which subsidiaries a control
+// account is holding money for, and how much of the line is each one's.
 func (s *surface) handleAccountSubsidiaries(r *http.Request, p *payment.Bank) ([]api.SubsidiaryBalanceDTO, error) {
 	aid := ledger.AccountID(r.PathValue("aid"))
 	acct, err := p.Ledger.GetAccount(r.Context(), aid)
@@ -207,9 +197,7 @@ func (s *surface) handlePostTransaction(r *http.Request, p *payment.Bank, req ap
 
 func (s *surface) handleListTransactions(r *http.Request, p *payment.Bank) ([]api.TransactionDTO, error) {
 	// account alone is the WHOLE account, which on a control line is every
-	// subsidiary's postings; account plus subsidiary is one of them. That is the
-	// same rule ledger.Position states, and it is why there is no separate
-	// route for a customer's statement: a customer is a position.
+	// subsidiary's postings; account plus subsidiary is one of them.
 	var txs []ledger.Transaction
 	var err error
 	if acct := r.URL.Query().Get("account"); acct != "" {

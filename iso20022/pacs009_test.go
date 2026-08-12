@@ -48,10 +48,7 @@ func sample009() Envelope {
 // TestPacs009GoldenRoundTrip pins testdata/pacs009.xml the same way
 // TestPacs008RoundTrip and its siblings pin their own golden files: this is
 // what actually holds FinancialInstitutionCreditTransferTransaction's field
-// order and Pacs009's namespace to the committed sample. Without it, nothing
-// in this package's non-skipping test run ever reads pacs009.xml — the
-// schema check skips without vendored XSDs, and the fuzz corpus only checks
-// that Marshal succeeds on it, not that the bytes match.
+// order and Pacs009's namespace to the committed sample.
 func TestPacs009GoldenRoundTrip(t *testing.T) {
 	env := assertGoldenRoundTrip(t, "pacs009.xml")
 

@@ -14,33 +14,6 @@ import (
 
 // TestABankAdmittedAfterTheLastRefreshCannotBePaidUntilTheNextOne is the case
 // that says what the routing directory IS.
-//
-// A member routes from a COPY of the clearing house's roster, pulled by that
-// member and held in its own database. So admission does not make a bank
-// payable: it makes it publishable. Between the two lies a refresh that somebody
-// has to ask for, and until they do, a bank admitted this morning cannot be paid
-// by a bank that pulled yesterday.
-//
-// # Why this is the first test of the design and not a footnote on it
-//
-// Every other property here would hold just as well if a payer's bank asked the
-// clearing house per payment — and that system would be a different one, with no
-// staleness, no subscription and a cross-institution read on the happy path of
-// every submission. The refusal below is the only thing that tells the two apart
-// from the outside, which is why it is written as a case rather than left to a
-// comment on the table.
-//
-// # The refusal is safe, and one invariant is what makes it so
-//
-// A bank code is never reassigned. A copy that is behind is therefore INCOMPLETE
-// and never WRONG: the failure mode is "I cannot route this yet" and never "I
-// routed it to the wrong bank". Aurora is refused; Aurora is not made to pay a
-// stranger.
-//
-// And it cannot say WHICH of the two situations it is in — no such member, or a
-// copy behind the roster — because telling them apart would mean asking the
-// clearing house, which is the lookup the subscription replaces. See
-// payment.ErrBankCodeUnknown.
 func TestABankAdmittedAfterTheLastRefreshCannotBePaidUntilTheNextOne(t *testing.T) {
 	ctx := context.Background()
 	h := newHarness(t)
@@ -120,18 +93,6 @@ func TestABankAdmittedAfterTheLastRefreshCannotBePaidUntilTheNextOne(t *testing.
 
 // A refresh delivers ONLY the two things a member's copy carries, and each is
 // there for a reason the others are not.
-//
-// The BIC, because that is what a message is addressed to and what no arithmetic
-// derives from an address. The allocation, because that is what an address
-// carries. Nothing else: not the assets, so a copy that is behind cannot refuse a
-// payment the clearing house would have taken, and not the admission reference,
-// which decides between two institutions contending for an address and is the
-// clearing house's own business.
-//
-// The refresh is not a message, either — nothing is queued and nobody answers
-// later — which is why this asserts on the wire being silent. A directory that
-// had become a conversation would be a delivery system, and the clearing house
-// would be holding a subscriber list.
 func TestARefreshCarriesTheAllocationAndTheAddressAndNothingElse(t *testing.T) {
 	ctx := context.Background()
 	h := newHarness(t)
@@ -191,15 +152,6 @@ func TestARefreshCarriesTheAllocationAndTheAddressAndNothingElse(t *testing.T) {
 
 // A refresh is the SUBSCRIBER's own act and is recorded in the subscriber's own
 // log, keyed by the subscriber.
-//
-// It is the only event a member writes about institutions it does not act for,
-// and it records no decision about any of them: a directory says where to send a
-// message and never whether to. What makes the log worth having is the question a
-// stale copy raises — not "is this bank behind" but "what did it believe when it
-// refused that payment" — so the payload is the snapshot.
-//
-// Nothing lands in the clearing house's log, because the clearing house did not
-// act: it published, and somebody read.
 func TestARefreshIsRecordedInTheSubscribersOwnLog(t *testing.T) {
 	ctx := context.Background()
 	h := newHarness(t)
@@ -255,19 +207,6 @@ func (h *harness) directoryEvents(t *testing.T, bic iso20022.BIC) []ledger.Audit
 
 // An address with no directory here still takes a BIC beside it, and refuses
 // without one.
-//
-// This is the door decision 11 keeps open, and it is not hypothetical: a card
-// PAN is issued by a scheme elsewhere and quoted, a proxy alias is resolved by a
-// central service this system does not have, and a cross-border transfer's BIC
-// genuinely is the payer's to supply. The SCOPE of the sentinel is the narrow
-// one: it means "not for this address", and not "this system has nowhere to get
-// an agent from".
-//
-// The refusal is asserted and the success is not: nothing in this deployment routes a
-// PAN, so an instruction quoting one is refused a step later for a reason that
-// has nothing to do with directories. What is worth pinning is that the address's
-// kind, and not the presence of an agent, is what decides which refusal a payer
-// meets.
 func TestAnAddressWithNoDirectoryHereIsRefusedForWantOfABIC(t *testing.T) {
 	h := newHarness(t)
 

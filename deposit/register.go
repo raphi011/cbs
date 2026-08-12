@@ -17,31 +17,6 @@ import (
 // Register is the demand-deposit layer over a general ledger: customer deposit
 // accounts, their status lifecycle, authorization holds, the available balance
 // those holds reduce, and end-of-day snapshots.
-//
-// # Relationship to the ledger
-//
-// No deposit account is a row in the chart of accounts. One Liability CONTROL
-// account per asset holds every customer's money, and each posting names whose it
-// is; a customer's balance is that account's balance under their id, and the
-// bank's total customer deposits is the same sum with the id dropped. Opening an
-// account creates no GL account at all; capturing a hold posts a real GL
-// transaction. Holds and snapshots are operational state tracked only here, in a
-// Store shared with the ledger — deposit.Tx embeds ledger.Tx.
-//
-// # Units of work
-//
-// Every mutating method comes in two forms. The plain form (CaptureHold) wraps a
-// single Store.Update; the …Tx form (CaptureHoldTx) takes a caller-supplied Tx,
-// so the payment layer can drive a deposit operation and its own bookkeeping in
-// one atomic unit of work.
-//
-// A …Tx method must never call a plain method on the Register or on the Book:
-// that opens a second unit of work inside the first, which the store refuses
-// outright — see sqlite.ErrNestedTransaction. This is why CaptureHoldTx calls
-// Book.PostTransactionTx.
-//
-// All public methods on Register are safe for concurrent use; the Store provides
-// the isolation.
 type Register struct {
 	store Store
 
@@ -56,35 +31,15 @@ type Register struct {
 	clock func() time.Time
 
 	// issuer is what this register mints addresses under.
-	//
-	// It is CONSTRUCTOR state rather than a per-call argument, for the reason
-	// payment.Identity is: as an argument a caller that got it wrong opens an
-	// account at another bank's address, and as constructor state there is no
-	// call at which a different answer could be given. It is not an institution,
-	// and this layer still does not know what one is — two strings a register was
-	// told, exactly as a BookID is.
 	issuer iban.Issuer
 
 	// customers is the subledger this register files its control lines in,
-	// CONSTRUCTOR state for the reason issuer is. The cost of getting it wrong is
-	// larger: filing the second account of an asset in another folder creates a
-	// SECOND customer-deposit control account for the same pool, each holding part
-	// of the money and neither being the bank's deposits.
+	// CONSTRUCTOR state for the reason issuer is.
 	customers ledger.SubledgerID
 }
 
 // NewRegister creates a deposit register over the given store, layered on the
 // given general ledger.
-//
-// id must be book.ID(): the register's rows and the book's rows are scoped by the
-// same BookID, which is what lets one Tx read both. Share the clock with the book
-// so that audit timestamps and snapshot dates line up across layers.
-//
-// The zero issuer is legal to construct and refuses to open an account
-// (ErrNoIssuer), because a bank that has not been allocated a bank code has no
-// address to give anybody — a real state, between founding and admission.
-// customers is the subledger the control lines are filed in; the first account
-// opened in an asset creates them there.
 func NewRegister(store Store, book *ledger.Book, id ledger.BookID, clock func() time.Time, issuer iban.Issuer, customers ledger.SubledgerID) *Register {
 	return &Register{store: store, gl: book, bookID: id, clock: clock, issuer: issuer, customers: customers}
 }
@@ -94,10 +49,6 @@ func (r *Register) Issuer() iban.Issuer { return r.issuer }
 
 // Store returns the underlying store, so a caller holding a register can open a
 // unit of work and drive the …Tx methods with it directly.
-//
-// It does NOT span layers. A deposit.Tx reaches this layer and the ledger under
-// it and nothing else; an act needing the lending layer as well belongs to the
-// bank, whose unit of work already spans both — see payment.Bank.Repay.
 func (r *Register) Store() Store { return r.store }
 
 // BookID returns the book this register is scoped to.
@@ -105,11 +56,12 @@ func (r *Register) BookID() ledger.BookID { return r.bookID }
 
 func (r *Register) now() time.Time { return r.clock() }
 
-// appendAuditTx records an immutable deposit-scope event through the transaction,
-// so an audit event never outlives an operation that rolled back. payload is
-// marshalled now, not held by reference, so later mutation of the entity cannot
-// rewrite history; the event carries the register's BookID, so a deposit event is
-// attributable to the bank that made it rather than landing in the log unscoped.
+// appendAuditTx records an immutable deposit-scope event through the
+// transaction, so an audit event never outlives an operation that rolled back.
+// payload is marshalled now, not held by reference, so later mutation of the
+// entity cannot rewrite history; the event carries the register's BookID, so a
+// deposit event is attributable to the bank that made it rather than landing in
+// the log unscoped.
 func (r *Register) appendAuditTx(ctx context.Context, tx Tx, eventType, entityID string, payload any) error {
 	raw, err := json.Marshal(payload)
 	if err != nil {
@@ -135,37 +87,6 @@ func (r *Register) appendAuditTx(ctx context.Context, tx Tx, eventType, entityID
 // ---------------------------------------------------------------------------
 
 // OpenAccount opens a new customer deposit account in the Active state.
-//
-// It adds nothing to the chart of accounts: the money sits in the bank's
-// customer-deposit control account for its asset, which the first account opened
-// in that asset creates along with the two interest lines that go with it (see
-// ensureChartTx).
-//
-// asset must already be registered in the underlying book; a customer holding two
-// assets holds two accounts. productID is the catalogue entry the account is
-// priced by, and every account has one: it must exist, must not be Retired, must
-// be of Kind CurrentAccount, and must have a published version in force today —
-// an account opened from an unpriced product could not resolve a single day, and
-// refusing here is what stops that surfacing as an accrual failure weeks later.
-//
-// overdraftLimit is a positive amount the account may go below zero by, 0 meaning
-// none. It is NOT part of the product: a limit is an underwriting decision about
-// this customer, so it is passed per account and stays on the account's own
-// timeline for life. It follows asset so that the two ledger-typed arguments are
-// not adjacent and transposable.
-//
-// identifiers are the account's external addresses OTHER than its IBAN, which
-// this bank issues rather than accepts: an account always comes out of here with
-// one, minted under the register's Issuer, and a caller supplying one is refused
-// ErrIBANIsIssued. Zero others is legal and normal. Each must be unique within
-// THIS bank (ErrIdentifierTaken); across banks it is not checked, and need not be,
-// a bank-issued identifier carrying its own issuer — an IBAN its bank code, a PAN
-// its BIN.
-//
-// Returns product.ErrProductNotFound, product.ErrProductRetired,
-// product.ErrKindMismatch, product.ErrVersionNotFound, and any error from the
-// underlying ledger (for example ledger.ErrSubledgerNotFound or
-// ledger.ErrAssetNotFound).
 func (r *Register) OpenAccount(ctx context.Context, name string, asset ledger.AssetCode, productID product.ID, overdraftLimit ledger.Amount, identifiers ...Identifier) (Account, error) {
 	var out Account
 	err := r.store.Update(ctx, func(ctx context.Context, tx Tx) error {
@@ -176,10 +97,7 @@ func (r *Register) OpenAccount(ctx context.Context, name string, asset ledger.As
 	return out, err
 }
 
-// OpenAccountTx is OpenAccount within a caller-supplied unit of work. The
-// asset's control lines, the deposit account and the account's first terms row
-// are created through the same Tx, so an account can never exist in one layer
-// without the other — which is what deposit.Tx embedding product.Tx exists for.
+// OpenAccountTx is OpenAccount within a caller-supplied unit of work.
 func (r *Register) OpenAccountTx(ctx context.Context, tx Tx, name string, asset ledger.AssetCode, productID product.ID, overdraftLimit ledger.Amount, identifiers ...Identifier) (Account, error) {
 	if err := ledger.ValidateText("name", name); err != nil {
 		return Account{}, err
@@ -201,11 +119,7 @@ func (r *Register) OpenAccountTx(ctx context.Context, tx Tx, name string, asset 
 		// Siblings in THIS call, not only accounts already in the store:
 		// checkIdentifierFreeTx reads the register, which does not yet hold the
 		// account being opened, so `identifiers: [X, X]` — which the API accepts
-		// verbatim from a request body — would sail past it. Refusing beats
-		// collapsing silently, the store's rows carrying (scheme, value) in their
-		// primary key: the list means ONE address once written and two while it is
-		// a Go slice. Matches rather than ==, because "the same address" is one
-		// rule and Identifier.Matches is where it lives.
+		// verbatim from a request body — would sail past it.
 		if slices.ContainsFunc(identifiers[:i], ident.Matches) {
 			return Account{}, ErrIdentifierTaken
 		}
@@ -223,8 +137,7 @@ func (r *Register) OpenAccountTx(ctx context.Context, tx Tx, name string, asset 
 
 	// This is also where an unknown asset is refused: every ensure below falls
 	// through to a create when the line is not there, and a create validates the
-	// code. The tenth EUR account resolves three existing rows; the first DOGE
-	// account is turned away with nothing written.
+	// code.
 	if err := r.ensureChartTx(ctx, tx, asset); err != nil {
 		return Account{}, err
 	}
@@ -250,11 +163,7 @@ func (r *Register) OpenAccountTx(ctx context.Context, tx Tx, name string, asset 
 	}
 
 	// Every account gets a terms row from birth, carrying the limit it was opened
-	// with and NO overlay. That is cleaner than treating "no rows" as a state the
-	// resolver has to model: the recompute window starts uniform, and the timeline
-	// answers for every day the account has existed. The row is FLOATING — its
-	// pricing resolves from the product version in force on each day — which is
-	// what makes a later product-wide reprice reach this account without a write.
+	// with and NO overlay.
 	opening := OverdraftTerms{
 		AccountID:      acct.ID,
 		EffectiveFrom:  ledger.DayStart(acct.CreatedAt),
@@ -275,12 +184,9 @@ func (r *Register) OpenAccountTx(ctx context.Context, tx Tx, name string, asset 
 	return acct, nil
 }
 
-// checkOpenableProductTx is the product validation OpenAccount and ChangeProduct
-// share: it must exist, be on sale, be the right kind, and have a price today.
-//
-// Retired is checked HERE and never at resolution, which is the distinction that
-// lets a product go off sale without the accounts sold from it losing their price
-// — see product.ErrProductRetired.
+// checkOpenableProductTx is the product validation OpenAccount and
+// ChangeProduct share: it must exist, be on sale, be the right kind, and have a
+// price today.
 func (r *Register) checkOpenableProductTx(ctx context.Context, tx Tx, id product.ID) error {
 	p, err := tx.GetProduct(ctx, r.bookID, id)
 	if err != nil {
@@ -300,35 +206,21 @@ func (r *Register) checkOpenableProductTx(ctx context.Context, tx Tx, id product
 }
 
 // receivableSubledgerName is where accrued-interest receivables are filed. Not
-// receivableSubledgerName is where accrued-interest receivables are filed. Not in
-// the customer-deposit folder, which holds what the bank OWES its customers:
-// interest a customer owes the bank is an Asset, and a folder holding both sides
-// of the balance sheet is one nothing can be summed out of.
+// receivableSubledgerName is where accrued-interest receivables are filed.
 const receivableSubledgerName = "Accrued Interest"
 
 // incomeSubledgerName is where interest income is filed.
 const incomeSubledgerName = "Income"
 
-// The three slots this layer posts to: where a customer's money pools, where what
-// they owe in interest sits, and where the bank earns it. A slot is the ROLE, and
-// which account fills it is a row in the mapping rather than a name matched here
-// — see ledger.Slot.
-//
-// Only the income slot is ByProduct. A bank may earn a savings product's interest
-// into its own revenue line; it may NOT pool that product's deposits somewhere
-// else, because money already posted under a customer would stay where it was
-// while every later posting went elsewhere.
+// The three slots this layer posts to: where a customer's money pools, where
+// what they owe in interest sits, and where the bank earns it.
 var (
 	principalSlot  = ledger.Slot{Key: "deposit.principal", Type: ledger.Liability, Control: true}
 	receivableSlot = ledger.Slot{Key: "deposit.interest_receivable", Type: ledger.Asset, Control: true}
 	incomeSlot     = ledger.Slot{Key: "deposit.interest_income", Type: ledger.Revenue, ByProduct: true}
 )
 
-// The names the first account in an asset opens those three lines under. They are
-// the BOOTSTRAP and not the resolution: nothing reads an account by name
-// afterwards, and an operator who repoints a slot at another account changes where
-// the flow posts without renaming anything. The asset is in each name because a
-// chart of accounts holding several of each needs to tell them apart.
+// The names the first account in an asset opens those three lines under.
 func customerDepositsName(asset ledger.AssetCode) string {
 	return "Customer Deposits (" + string(asset) + ")"
 }
@@ -342,27 +234,6 @@ func interestIncomeName(asset ledger.AssetCode) string {
 }
 
 // SetOverdraftLimit changes what this customer may go overdrawn by, from a day.
-//
-// A limit is an underwriting decision about one customer and never comes from the
-// catalogue. The pricing and the product are carried forward from the row in force
-// on effectiveFrom, because each row is a complete statement of the account's own
-// terms from its day — dropping the overlay here would silently reprice a customer
-// who was promised a rate.
-//
-// effectiveFrom is the day the change takes economic effect, day-truncated here;
-// CreatedAt on the returned row is when it was entered. Zero means today on the
-// register's clock, exactly as a zero BookingDate does in
-// ledger.PostTransactionRequest. Both directions are allowed: a BACKDATED row
-// changes which part of a drawn balance was inside the limit on those days, and
-// the next end-of-day trues the difference up as ordinary delta interest; a
-// FUTURE-DATED row is inert until the end-of-day runs reach its day, which is
-// scheduled repricing for free. Nothing is rewritten either way.
-//
-// The value returned is the row that was WRITTEN, not necessarily the row in force
-// now. Use GetAccountWithTerms for what applies today.
-//
-// Returns ErrAccountNotFound, ErrAccountClosed, ErrInvalidAmount, and
-// ErrTermsNotFound for a day before the account existed.
 func (r *Register) SetOverdraftLimit(ctx context.Context, id AccountID, limit ledger.Amount, effectiveFrom time.Time) (OverdraftTerms, error) {
 	var out OverdraftTerms
 	err := r.store.Update(ctx, func(ctx context.Context, tx Tx) error {
@@ -382,21 +253,6 @@ func (r *Register) SetOverdraftLimitTx(ctx context.Context, tx Tx, id AccountID,
 // SetOverdraftPricingOverlay gives this customer a negotiated price instead of
 // the product's, from a day — or clears one, putting the account back on the
 // product.
-//
-// pricing nil means FLOAT, not free: a cleared account pays whatever the product
-// costs by then, not what it cost when the overlay was set, and a genuinely
-// interest-free account is a zero-rate overlay.
-//
-// This is where retroactivity lives. A backdated overlay MOVES INTEREST THAT HAS
-// ALREADY BEEN CHARGED TO ONE CUSTOMER, and the delta is posted rather than the
-// history rewritten; the audit log is the only control on it, every call appending
-// an EventOverdraftPricingOverlaid event carrying the row, effective date and
-// entry date alike. The catalogue refuses the same thing outright
-// (product.ErrRetroactivePublish) precisely because its blast radius is every
-// account on the product rather than one named customer.
-//
-// A zero effectiveFrom means today. Returns ErrAccountNotFound, ErrAccountClosed,
-// ErrInvalidRate, and ErrTermsNotFound.
 func (r *Register) SetOverdraftPricingOverlay(ctx context.Context, id AccountID, pricing *product.OverdraftPricing, effectiveFrom time.Time) (OverdraftTerms, error) {
 	var out OverdraftTerms
 	err := r.store.Update(ctx, func(ctx context.Context, tx Tx) error {
@@ -424,19 +280,6 @@ func (r *Register) SetOverdraftPricingOverlayTx(ctx context.Context, tx Tx, id A
 }
 
 // ChangeProduct migrates an account onto another product, from a day.
-//
-// It is a forward-dated row like any other, which is the point: the days before it
-// still resolve against the product that priced them, so "what did this account's
-// product say on 15 July 2027?" survives a migration. A migration is not a
-// rewrite.
-//
-// A negotiated overlay is carried forward untouched. Dropping a rate promised to a
-// customer as a side effect of a migration would reprice them without a decision;
-// clearing it is an explicit SetOverdraftPricingOverlay(nil, day) call, so each
-// method changes one thing.
-//
-// Returns ErrAccountNotFound, ErrAccountClosed, ErrTermsNotFound, and the product
-// refusals checkOpenableProductTx makes.
 func (r *Register) ChangeProduct(ctx context.Context, id AccountID, productID product.ID, effectiveFrom time.Time) (OverdraftTerms, error) {
 	var out OverdraftTerms
 	err := r.store.Update(ctx, func(ctx context.Context, tx Tx) error {
@@ -456,19 +299,9 @@ func (r *Register) ChangeProductTx(ctx context.Context, tx Tx, id AccountID, pro
 		func(row *OverdraftTerms) { row.ProductID = productID })
 }
 
-// appendTermsTx is the one write the three setters share: read the row in force on
-// the effective day, change the one thing this caller changes, and append the
-// result as a new row.
-//
-// Carrying the in-force row forward is what makes each row a complete statement of
-// the account's terms rather than a diff — which is what lets termsAt answer with
-// one row and no accumulation, and what makes an out-of-order sequence of
-// backdated changes mean something definite. It appends and never edits, so a past
-// day still re-derives at the terms that were in force on it.
-//
-// The receivable is created by the accrual, on the first day that actually
-// accrues: a floating account's rate lives in the catalogue, so no register call
-// knows it.
+// appendTermsTx is the one write the three setters share: read the row in force
+// on the effective day, change the one thing this caller changes, and append
+// the result as a new row.
 func (r *Register) appendTermsTx(ctx context.Context, tx Tx, id AccountID, effectiveFrom time.Time, event string, change func(*OverdraftTerms)) (OverdraftTerms, error) {
 	acct, err := tx.GetDepositAccount(ctx, r.bookID, id)
 	if err != nil {
@@ -513,17 +346,8 @@ func (r *Register) ledgerIDTx(ctx context.Context, tx Tx) (ledger.LedgerID, erro
 	return sub.LedgerID, nil
 }
 
-// ensureChartTx opens the three lines an asset's deposit accounts post to and maps
-// this layer's slots onto them, on the first account opened in that asset. It
-// returns once the principal slot answers, so the ten thousandth account in an
-// asset costs one lookup: the chart of accounts is configuration, and configuring
-// it repeatedly would write an audit event per account opened.
-//
-// All three at once, including the income account an account that never goes
-// overdrawn never posts to: a bank that takes deposits in an asset earns interest
-// in it, and the line is a statement about the bank rather than about any customer.
-// The receivable is shared rather than one per customer because it duplicates
-// nothing — the per-customer detail is the entries under the dimension.
+// ensureChartTx opens the three lines an asset's deposit accounts post to and
+// maps this layer's slots onto them, on the first account opened in that asset.
 func (r *Register) ensureChartTx(ctx context.Context, tx Tx, asset ledger.AssetCode) error {
 	switch _, err := r.gl.SlotAccountTx(ctx, tx, "", principalSlot, asset); {
 	case err == nil:
@@ -580,14 +404,6 @@ func (r *Register) positionTx(ctx context.Context, tx Tx, acct Account) (ledger.
 
 // Position is where a deposit account's money is in the general ledger, for a
 // layer above that has to post to it.
-//
-// It hands back both halves in one value because a caller carrying an account
-// and a customer apart would eventually pair one customer's account with
-// another's id — and on a control account that posting balances, passes every
-// check, and pays one customer out of another's money.
-//
-// Returns ErrAccountNotFound, and ledger.ErrAccountNotFound if the bank holds no
-// control line for the account's asset.
 func (r *Register) Position(ctx context.Context, id AccountID) (ledger.Position, error) {
 	var out ledger.Position
 	err := r.store.View(ctx, func(ctx context.Context, tx Tx) error {
@@ -598,12 +414,8 @@ func (r *Register) Position(ctx context.Context, id AccountID) (ledger.Position,
 	return out, err
 }
 
-// ControlAccount is the chart-of-accounts line an asset's customer money is pooled
-// in — the account half of every Position this register hands out.
-//
-// It exists for a caller rendering MANY accounts at once: the pair is per account
-// and the line is per asset, so resolving it once is what stops a listing asking
-// the chart the same question for every customer on it. One account's is Position.
+// ControlAccount is the chart-of-accounts line an asset's customer money is
+// pooled in — the account half of every Position this register hands out.
 func (r *Register) ControlAccount(ctx context.Context, asset ledger.AssetCode) (ledger.AccountID, error) {
 	var out ledger.AccountID
 	err := r.store.View(ctx, func(ctx context.Context, tx Tx) error {
@@ -625,12 +437,7 @@ func (r *Register) PositionTx(ctx context.Context, tx Tx, id AccountID) (ledger.
 
 // interestAccounts is where one account's overdraft interest moves between: the
 // customer's own position, and their share of the bank's accrued-interest
-// receivable. Both name the same customer, which is what makes one shared
-// receivable answer "what does THIS customer owe".
-//
-// The income line is not here. It is the bank's own, it pools nobody, and it
-// is the one of the three a product may have its own of — so it is resolved
-// where the product is known, which is inside the accrual.
+// receivable.
 type interestAccounts struct {
 	Customer   ledger.Position
 	Receivable ledger.Position
@@ -653,11 +460,6 @@ func (r *Register) interestAccountsTx(ctx context.Context, tx Tx, acct Account) 
 
 // interestIncomeTx resolves the revenue line an account's overdraft interest is
 // earned into, for the product pricing the day being accrued.
-//
-// The product is passed rather than read off the account because it is
-// effective-dated: an account migrated last month accrued under its old product
-// until it moved, and the line the interest was earned into is a fact about the
-// day. A product with no line of its own falls back to the bank's.
 func (r *Register) interestIncomeTx(ctx context.Context, tx Tx, productID product.ID, asset ledger.AssetCode) (ledger.AccountID, error) {
 	return r.gl.SlotAccountTx(ctx, tx, string(productID), incomeSlot, asset)
 }
@@ -673,13 +475,9 @@ func (r *Register) GetAccount(ctx context.Context, id AccountID) (Account, error
 	return out, err
 }
 
-// OverdraftTermsHistory returns an account's whole terms timeline, oldest first.
-// It is the point of making terms effective-dated: the history is inspectable
-// rather than merely recoverable by replaying the audit log.
-//
-// These are the RAW rows, not resolved terms: an overlay that was later cleared is
-// exactly what a reader of a history wants to see, and so is the day the account
-// changed product. What a day actually cost is GetAccountWithTerms.
+// OverdraftTermsHistory returns an account's whole terms timeline, oldest
+// first. It is the point of making terms effective-dated: the history is
+// inspectable rather than merely recoverable by replaying the audit log.
 func (r *Register) OverdraftTermsHistory(ctx context.Context, id AccountID) ([]OverdraftTerms, error) {
 	var out []OverdraftTerms
 	err := r.store.View(ctx, func(ctx context.Context, tx Tx) error {
@@ -693,14 +491,9 @@ func (r *Register) OverdraftTermsHistory(ctx context.Context, id AccountID) ([]O
 	return out, err
 }
 
-// GetAccountWithTerms returns an account alongside what its overdraft costs today:
-// the RESOLVED merge of its own row and its product's version, not the raw row. A
-// floating account's rate is in the catalogue, so the raw row would answer "nil" to
-// the question the caller is asking.
-//
-// Returns ErrTermsNotFound only for an account that somehow has no opening row,
-// product.ErrVersionNotFound for a floating account whose product has no published
-// price today, and product.ErrHashMismatch for a version edited in the database.
+// GetAccountWithTerms returns an account alongside what its overdraft costs
+// today: the RESOLVED merge of its own row and its product's version, not the
+// raw row.
 func (r *Register) GetAccountWithTerms(ctx context.Context, id AccountID) (AccountWithTerms, error) {
 	var out AccountWithTerms
 	err := r.store.View(ctx, func(ctx context.Context, tx Tx) error {
@@ -726,11 +519,9 @@ func (r *Register) GetAccountWithTerms(ctx context.Context, id AccountID) (Accou
 	return out, err
 }
 
-// ListAccountsWithTerms is GetAccountWithTerms over the whole book, in ONE unit of
-// work: resolving each account through its own View would make a listing N units of
-// work over a store that refuses to nest them at all. One version cache serves the
-// whole listing, so a book of ten thousand accounts on three products reads three
-// product timelines rather than ten thousand.
+// ListAccountsWithTerms is GetAccountWithTerms over the whole book, in ONE unit
+// of work: resolving each account through its own View would make a listing N
+// units of work over a store that refuses to nest them at all.
 func (r *Register) ListAccountsWithTerms(ctx context.Context) ([]AccountWithTerms, error) {
 	var out []AccountWithTerms
 	err := r.store.View(ctx, func(ctx context.Context, tx Tx) error {
@@ -760,25 +551,10 @@ func (r *Register) ListAccountsWithTerms(ctx context.Context) ([]AccountWithTerm
 	return out, err
 }
 
-// checkIdentifierFreeTx refuses an identifier another account at this bank already
-// holds. owner, when non-empty, is the account it is being added TO: that account
-// already holding it is a no-op rather than a collision, which is what makes a
-// retried AddIdentifier succeed twice.
-//
-// "Already holds" is Identifier.Matches, because the lookup this delegates to is.
-// No IBAN reaches here, so the two comparisons coincide on everything this sees; it
-// is written as the shared rule regardless, uniqueness and routing disagreeing
-// about what counts as one address being the defect this cluster of comparisons
-// exists to prevent.
-//
-// The check is a read followed by a write with no constraint behind it and no lock
-// above it, so two concurrent adds can both pass. That is deliberate: a UNIQUE
-// index would fire on the race as a constraint violation rather than as
-// ErrIdentifierTaken, and a rule enforced in two places that disagree about WHEN is
-// enforced in neither. The residual duplicate is caught at read time by
-// ResolveIdentifier, which refuses rather than guesses —
-// storetest/IdentifierUniquenessIsNotEnforcedAcrossSpellings pins that the store
-// accepts the pair of spellings this refuses.
+// checkIdentifierFreeTx refuses an identifier another account at this bank
+// already holds. owner, when non-empty, is the account it is being added TO:
+// that account already holding it is a no-op rather than a collision, which is
+// what makes a retried AddIdentifier succeed twice.
 func (r *Register) checkIdentifierFreeTx(ctx context.Context, tx Tx, owner AccountID, ident Identifier) error {
 	holders, err := tx.ListDepositAccountsByIdentifier(ctx, r.bookID, ident)
 	if err != nil {
@@ -794,12 +570,6 @@ func (r *Register) checkIdentifierFreeTx(ctx context.Context, tx Tx, owner Accou
 
 // AddIdentifier gives an existing account another external address, in a scheme
 // somebody else issues.
-//
-// Adding rather than replacing is the point of the plural: a customer keeps their
-// IBAN and gains a card PAN. It refuses an IBAN (ErrIBANIsIssued) — that address is
-// this bank's to allocate, not a caller's to assert, and the act that replaces one
-// is ReissueIdentifier, which mints and withdraws together because remove-then-add
-// does not compose when the add is refused.
 func (r *Register) AddIdentifier(ctx context.Context, id AccountID, ident Identifier) error {
 	return r.store.Update(ctx, func(ctx context.Context, tx Tx) error {
 		return r.AddIdentifierTx(ctx, tx, id, ident)
@@ -822,13 +592,7 @@ func (r *Register) AddIdentifierTx(ctx context.Context, tx Tx, id AccountID, ide
 		return err
 	}
 	// Matches and not ==: an account holds an ADDRESS, and a scheme with two
-	// spellings of one would leave it holding what looks like two. Nothing
-	// downstream would report that, both resolving to it, but a payment quoting
-	// neither becomes ErrAmbiguousAddress — the account loses the ability to be
-	// paid without an address being named. See addressFor in the payment package.
-	//
-	// The stored form is the one KEPT: rewriting it on a no-op re-add would edit
-	// what a statement shows and what every earlier payment recorded.
+	// spellings of one would leave it holding what looks like two.
 	for _, got := range acct.Identifiers {
 		if got.Matches(ident) {
 			return nil // already held by this account: a no-op, not an error
@@ -841,21 +605,8 @@ func (r *Register) AddIdentifierTx(ctx context.Context, tx Tx, id AccountID, ide
 	return r.appendAuditTx(ctx, tx, ledger.EventIdentifierAdded, string(id), ident)
 }
 
-// RemoveIdentifier withdraws an external address. Removing one that is not held is
-// a no-op, for the same reason adding one twice is.
-//
-// It withdraws the address in EITHER spelling: a caller quoting
-// DE20 9990 0001 0000 0000 01 withdraws the account's DE20999000010000000001,
-// because they are one address and the rest of the system already treats them as
-// one. A literal comparison would be worse than inconsistent — removal of an unheld
-// identifier is a no-op by design, so a bank that quoted the grouped form would
-// believe it had withdrawn an address that is still live and still payable, with no
-// error to say otherwise. See
-// TestRemoveIdentifierWithdrawsTheAddressInEitherSpelling.
-//
-// The audit event records the identifier as STORED, not as quoted: what happened is
-// that the account's own address was withdrawn. Historical payments are unaffected,
-// a payment storing the address it was sent to.
+// RemoveIdentifier withdraws an external address. Removing one that is not held
+// is a no-op, for the same reason adding one twice is.
 func (r *Register) RemoveIdentifier(ctx context.Context, id AccountID, ident Identifier) error {
 	return r.store.Update(ctx, func(ctx context.Context, tx Tx) error {
 		return r.RemoveIdentifierTx(ctx, tx, id, ident)
@@ -888,10 +639,6 @@ func (r *Register) RemoveIdentifierTx(ctx context.Context, tx Tx, id AccountID, 
 }
 
 // ResolveIdentifier returns the account this bank addresses by ident.
-//
-// Zero matches is ErrIdentifierNotFound; more than one is ErrIdentifierAmbiguous,
-// never the first hit. An address that resolves to two accounts is not an address,
-// and this is the layer that decides where money goes.
 func (r *Register) ResolveIdentifier(ctx context.Context, ident Identifier) (Account, error) {
 	var out Account
 	err := r.store.View(ctx, func(ctx context.Context, tx Tx) error {
@@ -972,10 +719,8 @@ func (r *Register) ReactivateTx(ctx context.Context, tx Tx, id AccountID) error 
 	return r.transitionTx(ctx, tx, id, Dormant, Active, ledger.EventAccountReactivated)
 }
 
-// transitionTx moves an account from one status to another if it is currently in
-// the expected one, and records the event. The four simple lifecycle edges differ
-// only in their from/to states and event type, and each returns ErrAccountNotFound
-// or ErrInvalidStatusTransition from any other status.
+// transitionTx moves an account from one status to another if it is currently
+// in the expected one, and records the event.
 func (r *Register) transitionTx(ctx context.Context, tx Tx, id AccountID, from, to AccountStatus, eventType string) error {
 	acct, err := tx.GetDepositAccount(ctx, r.bookID, id)
 	if err != nil {
@@ -993,29 +738,6 @@ func (r *Register) transitionTx(ctx context.Context, tx Tx, id AccountID, from, 
 
 // Close permanently closes an account. Closed is terminal, and closing is
 // permitted from any other state.
-//
-// An account can only be closed when it owes nothing in EITHER direction: its own
-// book balance must be zero, and so must its share of the receivable holding
-// accrued overdraft interest, or ErrAccountNotEmpty is returned. An account that
-// was overdrawn, accrued interest and then repaid to zero has a zero book balance
-// and a non-zero receivable — interest already recognized as income and sitting as
-// a debit in an Asset account. Closing there strands it forever, since accrual
-// afterwards skips a closed account and ChargeOverdraftInterest refuses one. The
-// flow is charge, then repay, then close; lending.CloseTx applies the same rule to
-// a facility's own receivable, for the same reason.
-//
-// The test is the receivable's own book balance, not Accrued.Minor(). A
-// capitalization residue is bounded by half a minor unit either way and is not
-// collectable: Minor() rounds it to zero except at an EXACT half, where it rounds
-// away from zero to ±1 even though the receivable itself is already fully cleared
-// (see ChargeOverdraftInterestTx). Testing the record there would lock such an
-// account shut forever — once the balance stops moving, further accrual adds
-// nothing and the residue never resolves. The record may legitimately disagree with
-// the ledger by a sub-minor-unit amount, which is the entire reason Accrued exists
-// at higher precision.
-//
-// Returns ErrAccountNotFound, ErrInvalidStatusTransition if the account is already
-// Closed, or ErrAccountNotEmpty.
 func (r *Register) Close(ctx context.Context, id AccountID) error {
 	return r.store.Update(ctx, func(ctx context.Context, tx Tx) error {
 		return r.CloseTx(ctx, tx, id)
@@ -1082,10 +804,6 @@ type CreateHoldRequest struct {
 
 // CreateHold places an authorization hold on a deposit account, reducing its
 // available balance without affecting the book balance.
-//
-// Returns ErrAccountNotFound, the status-specific refusal requireActive makes,
-// ErrInvalidAmount if the amount is not positive, or ErrInsufficientAvailable if
-// the hold would overdraw the available balance.
 func (r *Register) CreateHold(ctx context.Context, req CreateHoldRequest) (Hold, error) {
 	var out Hold
 	err := r.store.Update(ctx, func(ctx context.Context, tx Tx) error {
@@ -1175,16 +893,8 @@ func (r *Register) ReleaseHoldTx(ctx context.Context, tx Tx, id HoldID) error {
 }
 
 // CaptureHold converts an active hold into a posted general-ledger transaction.
-// Customer money is a Liability; capturing (money leaving the customer) DEBITS the
-// customer's position in the control account and CREDITs the counterparty.
-//
-// counterparty is a Position because it may be another customer of this bank, whose
-// money is a position and not an account; a plain account of the bank's own is
-// named with Total(). A zero or negative captureAmount means the hold amount, and
-// the hold is marked Captured regardless of the amount.
-//
-// Returns ErrHoldNotFound, ErrHoldNotActive, ErrAccountNotFound, or any error from
-// the underlying ledger posting.
+// Customer money is a Liability; capturing (money leaving the customer) DEBITS
+// the customer's position in the control account and CREDITs the counterparty.
 func (r *Register) CaptureHold(ctx context.Context, id HoldID, counterparty ledger.Position, captureAmount ledger.Amount, description string) (ledger.Transaction, error) {
 	var out ledger.Transaction
 	err := r.store.Update(ctx, func(ctx context.Context, tx Tx) error {
@@ -1199,11 +909,6 @@ func (r *Register) CaptureHold(ctx context.Context, id HoldID, counterparty ledg
 }
 
 // CaptureHoldTx is CaptureHold within a caller-supplied unit of work.
-//
-// This is the method the whole store split exists for: the hold write and the
-// GL posting go through one Tx, so a posting that fails leaves the hold Active
-// instead of half-capturing it, and a caller composing this with its own writes
-// gets all of them or none.
 func (r *Register) CaptureHoldTx(ctx context.Context, tx Tx, id HoldID, counterparty ledger.Position, captureAmount ledger.Amount, description string) (ledger.Transaction, error) {
 	h, err := tx.GetHold(ctx, r.bookID, id)
 	if err != nil {
@@ -1266,12 +971,10 @@ func (r *Register) GetHold(ctx context.Context, id HoldID) (Hold, error) {
 // Balance Queries
 // ---------------------------------------------------------------------------
 
-// GetBalance computes the current balance of a deposit account: the Book balance
-// of the backing Liability account, the sum of active non-expired Holds, and
-// Available = Book - Holds + the overdraft limit in force today, resolved from the
-// account's effective-dated terms timeline.
-//
-// Returns ErrAccountNotFound.
+// GetBalance computes the current balance of a deposit account: the Book
+// balance of the backing Liability account, the sum of active non-expired
+// Holds, and Available = Book - Holds + the overdraft limit in force today,
+// resolved from the account's effective-dated terms timeline.
 func (r *Register) GetBalance(ctx context.Context, id AccountID) (Balance, error) {
 	var out Balance
 	err := r.store.View(ctx, func(ctx context.Context, tx Tx) error {
@@ -1285,17 +988,9 @@ func (r *Register) GetBalance(ctx context.Context, id AccountID) (Balance, error
 	return out, err
 }
 
-// CheckCredit reports whether the account may currently RECEIVE money. It is the
-// counterpart of CheckWithdrawal and refuses only a Closed account, with
-// ErrAccountClosed; see requireCreditable for why Dormant and Frozen do not. There
-// is no amount and no funds test, a credit being unable to fail for want of money.
-//
-// It exists because this layer has no credit method of its own. Money reaches a
-// deposit account's GL account from the layers ABOVE — a bank funding a customer,
-// a settlement's creditor leg, a lending counterparty — each posting straight into
-// the general ledger, which knows nothing about account status by design. So the
-// check has to be callable rather than enforced from in here, exactly as
-// CheckWithdrawalTx is for the other direction.
+// CheckCredit reports whether the account may currently RECEIVE money. It is
+// the counterpart of CheckWithdrawal and refuses only a Closed account, with
+// ErrAccountClosed; see requireCreditable for why Dormant and Frozen do not.
 func (r *Register) CheckCredit(ctx context.Context, id AccountID) error {
 	return r.store.View(ctx, func(ctx context.Context, tx Tx) error {
 		return r.CheckCreditTx(ctx, tx, id)
@@ -1313,11 +1008,8 @@ func (r *Register) CheckCreditTx(ctx context.Context, tx Tx, id AccountID) error
 	return requireCreditable(acct)
 }
 
-// CheckWithdrawal reports whether the account may currently support a withdrawal
-// of amount. It is status-aware — ErrAccountDormant, ErrAccountFrozen,
-// ErrAccountClosed — and permits the withdrawal only if Available - amount >= 0,
-// where Available = Book - Holds + the limit in force today; otherwise
-// ErrInsufficientAvailable. ErrAccountNotFound if the account does not exist.
+// CheckWithdrawal reports whether the account may currently support a
+// withdrawal of amount.
 func (r *Register) CheckWithdrawal(ctx context.Context, id AccountID, amount ledger.Amount) error {
 	return r.store.View(ctx, func(ctx context.Context, tx Tx) error {
 		return r.CheckWithdrawalTx(ctx, tx, id, amount)
@@ -1345,11 +1037,9 @@ func (r *Register) CheckWithdrawalTx(ctx context.Context, tx Tx, id AccountID, a
 	return nil
 }
 
-// requireActive returns a status-specific error if the account is not Active. It
-// guards money going OUT — a withdrawal or a new hold — which is why every status
-// other than Active fails it, dormancy included. Dormant names itself rather than
-// falling through to ErrInvalidStatusTransition: that error is about changing a
-// status, and a refused withdrawal is not changing one.
+// requireActive returns a status-specific error if the account is not Active.
+// It guards money going OUT — a withdrawal or a new hold — which is why every
+// status other than Active fails it, dormancy included.
 func requireActive(acct Account) error {
 	switch acct.Status {
 	case Active:
@@ -1365,21 +1055,9 @@ func requireActive(acct Account) error {
 	}
 }
 
-// requireCreditable returns an error if the account may not RECEIVE money. It is
-// requireActive's counterpart and deliberately far more permissive, because the two
-// questions are not symmetric.
-//
-//   - Dormant accepts credits. An incoming payment is precisely what revives a
-//     dormant account; refusing it would strand a salary run for want of a login.
-//   - Frozen accepts credits. A freeze here is a DEBIT block — the garnishment and
-//     fraud-investigation case, where money owed to the customer keeps arriving
-//     while they cannot take any out. A sanctions freeze does block credits too,
-//     and this single status cannot express both; see the Account States table in
-//     README.md, which says as much.
-//   - Closed accepts nothing. Close requires a zero balance, so a credit afterwards
-//     leaves a Closed account holding money that no withdrawal can reach, that
-//     closing again cannot clear, and that contradicts the very invariant CloseTx
-//     enforced. That is stranded money, and the one case this function exists for.
+// requireCreditable returns an error if the account may not RECEIVE money. It
+// is requireActive's counterpart and deliberately far more permissive, because
+// the two questions are not symmetric.
 func requireCreditable(acct Account) error {
 	if acct.Status == Closed {
 		return ErrAccountClosed
@@ -1388,22 +1066,6 @@ func requireCreditable(acct Account) error {
 }
 
 // balanceTx computes an account's three balances within a unit of work.
-//
-// The overdraft limit is RESOLVED from the account's terms timeline rather than
-// read off the row, because it is effective-dated like the rate beside it: what a
-// customer could spend last March is as much a fact about that March as what they
-// were charged for it. It is the bounded as-of lookup rather than the whole
-// timeline, because this runs on every withdrawal check and should not pay for
-// history — ActiveHoldTotal is a bounded aggregate for the same reason — and it
-// needs NO catalogue lookup at all, the limit being on the account's own row for
-// every day of its life. A limit that floated with the product would put a product
-// read on every withdrawal check in the system.
-//
-// ErrTermsNotFound is propagated rather than treated as a zero limit. Every account
-// gets an opening row at OpenAccount, so the only way to miss is to ask about a day
-// before the account existed, and silently reporting a spendable balance of
-// Book - Holds for an account that has a facility is the kind of wrong answer that
-// reads as a working system.
 func (r *Register) balanceTx(ctx context.Context, tx Tx, acct Account) (Balance, error) {
 	pos, err := r.positionTx(ctx, tx, acct)
 	if err != nil {
@@ -1455,16 +1117,8 @@ func (r *Register) TakeEndOfDaySnapshot(ctx context.Context, id AccountID, date 
 	return out, err
 }
 
-// TakeEndOfDaySnapshotTx is TakeEndOfDaySnapshot within a caller-supplied unit of
-// work, so an end-of-day run can snapshot every account atomically.
-//
-// The whole Balance is resolved as of NOW rather than as of date, including the
-// overdraft limit inside Available, which balanceTx reads from the terms row in
-// force TODAY. A reader may reasonably expect Snapshot.Date to govern it; it does
-// not. Resolving only the limit as of date would be a third answer rather than a
-// fix, so the inconsistency is recorded here rather than half-closed:
-// reconstructing a past day's balance belongs with checkpointing, the named
-// successor for snapshots nothing reads back yet.
+// TakeEndOfDaySnapshotTx is TakeEndOfDaySnapshot within a caller-supplied unit
+// of work, so an end-of-day run can snapshot every account atomically.
 func (r *Register) TakeEndOfDaySnapshotTx(ctx context.Context, tx Tx, id AccountID, date time.Time) (Snapshot, error) {
 	acct, err := tx.GetDepositAccount(ctx, r.bookID, id)
 	if err != nil {
@@ -1510,48 +1164,8 @@ func (r *Register) GetSnapshot(ctx context.Context, id AccountID, date time.Time
 // Overdraft Accrual
 // ---------------------------------------------------------------------------
 
-// AccrueOverdraft accrues interest on an overdrawn account up to a business date,
-// and posts the day's income to the general ledger.
-//
-// # What is posted
-//
-// The record holds exact interest in micro-minor-units; the ledger holds
-// Accrued.Minor() of it in the account's receivable, so the posting is the CHANGE
-// in the rounded value rather than the period's exact interest:
-//
-//	day 1   exact 2.0548   rounded 2   post 2
-//	day 2   exact 4.1096   rounded 4   post 2
-//	day 3   exact 6.1644   rounded 6   post 2
-//
-// A day on which the rounding does not tick posts nothing, which is why this
-// returns no transaction. Income is recognized daily rather than at capitalization
-// because accrued interest is a real asset, and one existing only on this record
-// between charge dates would understate assets and income on every date between.
-//
-// # The accrual base
-//
-// The overdrawn magnitude of each day's own VALUE-DATED book balance — not the
-// available balance, and not today's balance applied backwards. A hold is not
-// borrowed money. The base is tiered: the arranged rate up to the limit in force on
-// that day, the unarranged rate beyond it, both of them and the limit taken from
-// the terms row in force on the day being accrued, so a gap of several days is
-// exact rather than approximate.
-//
-// # Idempotency, and how a backdated posting is corrected
-//
-// LastAccrualDate never moves backwards, so re-running a date already covered is a
-// no-op — by arithmetic too, the same history producing the same gross and a zero
-// delta. A backdated posting is trued up by the NEXT run rather than by rewinding
-// this one: each run recomputes the account's whole LIFE from the value-dated
-// balance, so the days the posting takes effect over are re-derived with it in
-// place and the difference is what gets posted. Interest that turns out never to
-// have been owed comes back as a correction — a new event, not a reversal, the
-// original accrual having been a correct statement of what the ledger knew then.
-// The window opens at inception rather than at the last repricing, so that holds
-// WHEREVER the posting lands: each day is re-derived at the terms actually in force
-// on it.
-//
-// Returns ErrAccountNotFound.
+// AccrueOverdraft accrues interest on an overdrawn account up to a business
+// date, and posts the day's income to the general ledger.
 func (r *Register) AccrueOverdraft(ctx context.Context, id AccountID, date time.Time) error {
 	return r.store.Update(ctx, func(ctx context.Context, tx Tx) error {
 		return r.AccrueOverdraftTx(ctx, tx, id, date)
@@ -1569,33 +1183,15 @@ func (r *Register) AccrueOverdraftTx(ctx context.Context, tx Tx, id AccountID, d
 	return r.accrueOverdraftAccountTx(ctx, tx, acct, date, versionCache{})
 }
 
-// accrueOverdraftAccountTx is AccrueOverdraftTx against an account the caller has
-// already loaded. RunEndOfDay lists every account and would otherwise read each one
-// a second time.
-//
-// The accrual is a recomputation rather than an increment: every run re-derives the
-// whole of the account's life from its value-dated balance and posts the change in
-// the rounded value. That is what makes a backdated posting come out right — the
-// days it takes effect over are recomputed with it in place, gross moves, and the
-// delta trues up the interest that was charged on the old figure. No accrual is
-// ever reversed and no date is ever rewound.
-//
-// The terms are resolved PER DAY from the account's timeline rather than read off
-// the account, which is what lets the window reach back past a repricing without
-// re-deriving an earlier day at a rate that was never in force on it.
+// accrueOverdraftAccountTx is AccrueOverdraftTx against an account the caller
+// has already loaded. RunEndOfDay lists every account and would otherwise read
+// each one a second time.
 func (r *Register) accrueOverdraftAccountTx(ctx context.Context, tx Tx, acct Account, date time.Time, cache versionCache) error {
 	if acct.Status == Closed {
 		return nil
 	}
 
-	// The whole timeline, in one read, resolved per day in Go below. The guards
-	// stay separate because lumping them together is how this acquires a bug: a
-	// zero rate is a property of a DAY rather than of the account, so it cannot be
-	// an early return — an account unpriced for its first year and priced
-	// thereafter accrues nothing then and interest later. The closure returns zero
-	// for a day whose resolved rate is zero, and the run is skipped entirely only
-	// when NO row carries a non-zero rate: a scan over rows already in memory,
-	// which is what keeps a never-priced account from reading a series every night.
+	// The whole timeline, in one read, resolved per day in Go below.
 	rows, err := tx.ListOverdraftTermsForAccount(ctx, r.bookID, acct.ID)
 	if err != nil {
 		return err
@@ -1608,23 +1204,13 @@ func (r *Register) accrueOverdraftAccountTx(ctx context.Context, tx Tx, acct Acc
 	}
 
 	// The window opens at the earliest row, which is the opening row, which is
-	// inception. Every nightly run therefore re-derives every day the account
-	// has had: O(days) per account per night, accepted deliberately at this
-	// scale. The cost is arithmetic rather than I/O — the series is still one
-	// query over the window — and checkpointing is the named successor.
+	// inception. Every nightly run therefore re-derives every day the account has
+	// had: O(days) per account per night, accepted deliberately at this scale.
 	window := rows[0].EffectiveFrom
 
-	// The advancement guard resolves its day count on `date`, there being no single
-	// DayCount to ask: it is a terms field, and the conventions genuinely disagree
-	// about whether a window advanced. Under Thirty360 the 31st collapses onto the
-	// 30th, so Days(30th, 31st) is zero while ACT365 says one — a run on the 31st is
-	// a no-op under one convention and a real day under the other.
-	//
-	// `date` is the right day, for a sharper reason than "the day being accrued": a
-	// span is named by its END (see the closure below), so the last span this run
-	// adds is [date-1, date), the span NAMED date. termsAt(rows, date) is therefore
-	// the very row that will price it — the guard asks its question of the same row
-	// the walk will answer it with, rather than of a neighbouring day's.
+	// The advancement guard resolves its day count on `date`, there being no
+	// single DayCount to ask: it is a terms field, and the conventions genuinely
+	// disagree about whether a window advanced.
 	current, err := Resolve(rows, cache, date)
 	if errors.Is(err, ErrTermsNotFound) {
 		return nil
@@ -1647,25 +1233,16 @@ func (r *Register) accrueOverdraftAccountTx(ctx context.Context, tx Tx, acct Acc
 	if err != nil {
 		return err
 	}
-	// A Period cannot return an error, so a resolution failure inside the walk
-	// is captured and checked before anything is applied. It must abort the run
-	// rather than accrue zero for the day: a tampered version and a free day are
-	// not the same event, and posting the second for the first would hide it.
+	// A Period cannot return an error, so a resolution failure inside the walk is
+	// captured and checked before anything is applied.
 	var resolveErr error
 	next, delta := interest.Recompute(series, window, date,
 		interest.State{Accrued: acct.Accrued, Gross: acct.AccruedGross},
 		func(balance ledger.Amount, from, to time.Time) interest.Accrued {
-			// perDay has already cut the window to single days before any
-			// perDay has already cut the window to single days before any Period
-			// runs, so this closure is a function of the DAY as well as the balance,
-			// which is what a Period is for. The day is `to`, not `from`:
-			// interest.AccrueSeries names a span by its END date, because a movement
-			// value-dated V ends the preceding run at V-1 and so first bites on
-			// [V-1, V) — which is why TestOverdraftAccrualCorrectsABackdatedDebit
-			// calls that span "day 3" for a debit value-dated day 3. Resolving terms
-			// on `to` puts the rate on the same day axis as the balance it is charged
-			// against; on `from` they would be a day apart, and a repricing effective
-			// day 30 would not bite until day 31.
+			// perDay has already cut the window to single days before any perDay has
+			// already cut the window to single days before any Period runs, so this
+			// closure is a function of the DAY as well as the balance, which is what a
+			// Period is for.
 			day, err := Resolve(rows, cache, to)
 			if err != nil {
 				// A day before the account existed is not a failure: the window
@@ -1724,29 +1301,8 @@ func (r *Register) accrueOverdraftAccountTx(ctx context.Context, tx Tx, acct Acc
 	return r.appendAuditTx(ctx, tx, ledger.EventOverdraftAccrued, string(acct.ID), acct)
 }
 
-// correctOverdraftAccrualTx gives back interest that a backdated posting has shown
-// was never owed. amount is positive.
-//
-// It is not a reversal. The original accrual was a correct statement of what the
-// ledger knew at the time, and reversing it would say otherwise; this is a new,
-// linked event that posts what actually changed.
-//
-// The credit goes to the receivable as far as the receivable can absorb it. If
-// interest has already been capitalised out of it, the rest is money the customer
-// has actually paid, so it is refunded to their account rather than driving an
-// Asset balance negative — which the ledger would refuse, inside an end-of-day
-// batch, taking the whole book's run down with it.
-//
-// The refunded part comes back OFF the record, because it is settled: it has left
-// in cash and the receivable never held it. Leaving it in Accrued would break the
-// invariant every caller here maintains — that the receivable's balance is Minor()
-// of the record — and the account would carry a permanent negative the customer
-// gets the benefit of twice, the next interest genuinely owed being swallowed
-// paying it off before a cent reaches the receivable. The absorbed part stays on
-// the record, the receivable it came out of tracking it.
-//
-// It takes acct by pointer for that reason and writes the account itself, the same
-// shape as ChargeOverdraftInterestTx. Only this function knows the split.
+// correctOverdraftAccrualTx gives back interest that a backdated posting has
+// shown was never owed. amount is positive.
 func (r *Register) correctOverdraftAccrualTx(ctx context.Context, tx Tx, acct *Account, at interestAccounts, income ledger.AccountID, amount ledger.Amount, date time.Time) error {
 	// What THIS customer's interest can be credited back out of. The pool holds
 	// every other customer's accrual too, and absorbing against that would give
@@ -1796,28 +1352,8 @@ func (r *Register) correctOverdraftAccrualTx(ctx context.Context, tx Tx, acct *A
 	})
 }
 
-// overdraftAccrual is the interest earned on an account's overdrawn balance over
-// one accrual period, tiered at the arranged limit.
-//
-// An account can be drawn beyond its limit despite CheckWithdrawal: a direct GL
-// posting does not pass through this layer, and capitalizing interest on a
-// fully-drawn overdraft pushes it over by itself.
-//
-// An unarranged rate is an optional SURCHARGE, so an account without one accrues
-// the excess at the arranged rate rather than at zero. Skipping the excess — which
-// is what a plain `UnarrangedRate > 0` guard does — would make the money drawn
-// beyond the limit interest-FREE, and so literally cheaper than the money drawn
-// inside it. That is the exact opposite of what a limit is for, and it is the
-// configuration most accounts here are opened with.
-//
-// It takes from and to explicitly rather than reading LastAccrualDate, so it can be
-// called once per day across the account's life: it is the interest.Period this
-// product accrues by, and interest.Recompute applies it a day at a time across each
-// run of constant balance. It takes the TERMS IN FORCE ON THE DAY rather than the
-// account, the limit and both rates being effective-dated. EffectiveTerms is that
-// merge — the limit from the account always, the pricing from its overlay or from
-// the product version in force — so this never has to know which of the two priced
-// the day.
+// overdraftAccrual is the interest earned on an account's overdrawn balance
+// over one accrual period, tiered at the arranged limit.
 func overdraftAccrual(book ledger.Amount, t EffectiveTerms, from, to time.Time) interest.Accrued {
 	drawn := -book
 	if drawn <= 0 {
@@ -1840,9 +1376,7 @@ func overdraftAccrual(book ledger.Amount, t EffectiveTerms, from, to time.Time) 
 
 // versionCache is one accrual run's product timelines, loaded on first use and
 // reused for every account after it: a book of ten thousand accounts on three
-// products does three reads for the whole run rather than ten thousand. It is
-// passed in rather than held on the Register because a Register owns no state —
-// the same reason its clock is a function and not a time.
+// products does three reads for the whole run rather than ten thousand.
 type versionCache map[product.ID][]product.Version
 
 // loadForTerms fills the cache with every product the given rows name.
@@ -1860,36 +1394,8 @@ func (r *Register) loadForTerms(ctx context.Context, tx Tx, rows []OverdraftTerm
 	return nil
 }
 
-// ChargeOverdraftInterest capitalizes accrued interest into the account, clearing
-// the receivable.
-//
-// This is the monthly event a customer actually sees. Charging the interest to the
-// account is also what makes an overdraft compound: the balance the next period
-// accrues on now includes this period's interest.
-//
-//	Dr  customer account (Liability)   62
-//	  Cr accrued interest receivable    62
-//
-// The amount charged is Accrued.Minor() — the receivable's balance — rather than
-// the exact accrual, because the ledger holds whole minor units. Charging a
-// rounded-up figure leaves the record NEGATIVE by up to half a minor unit: 30 days
-// accrue 61.64382 cents and 62 are charged, leaving −0.35618. That is correct, not
-// a leak. The residue is bounded by half a minor unit and Minor() of it rounds to
-// zero — except at an EXACT half, where it rounds away from zero to ±1 even though
-// the receivable itself is already back to zero, which is why CloseTx tests the
-// receivable's own ledger balance rather than the record. Ordinarily the next day's
-// accrual absorbs the residue as the balance moves again, but a residue frozen at
-// exactly half a minor unit never would. Truncating instead would give away a
-// fraction on every cycle.
-//
-// Nothing accrued means nothing posted, and a zero-value Transaction is returned
-// rather than an error: an end-of-month over a portfolio in credit is an ordinary
-// outcome, not a failure. A closed account is refused rather than skipped as
-// RunEndOfDay skips it, this being an explicitly-invoked single-account operation:
-// posting a debit would reopen a balance on an account CloseTx only let through at
-// zero.
-//
-// Returns ErrAccountNotFound, ErrAccountClosed.
+// ChargeOverdraftInterest capitalizes accrued interest into the account,
+// clearing the receivable.
 func (r *Register) ChargeOverdraftInterest(ctx context.Context, id AccountID, date time.Time) (ledger.Transaction, error) {
 	var out ledger.Transaction
 	err := r.store.Update(ctx, func(ctx context.Context, tx Tx) error {
@@ -1922,10 +1428,7 @@ func (r *Register) ChargeOverdraftInterestTx(ctx context.Context, tx Tx, id Acco
 	// Value-dated at date, which means the day ENDING on it is re-priced at the
 	// capitalised balance: the recompute walks the value-dated series, and this
 	// debit is in the series from date onwards, so the span [date-1, date] is
-	// derived over a balance that already includes the charge. That is interest
-	// on interest earned the same day. lending does the same at its own
-	// capitalisation, and it is sub-minor per cycle, so it is recorded here
-	// rather than corrected: value-dating to the NEXT day would be the fix.
+	// derived over a balance that already includes the charge.
 	glTx, err := r.gl.PostTransactionTx(ctx, tx, ledger.PostTransactionRequest{
 		Description: "Overdraft interest charged: " + acct.Name,
 		BookingDate: date,
@@ -1956,16 +1459,6 @@ func (r *Register) ChargeOverdraftInterestTx(ctx context.Context, tx Tx, id Acco
 
 // RunEndOfDay accrues overdraft interest on every account in the book for one
 // business date.
-//
-// It does not capitalize. Charging is a monthly event on its own cycle, and which
-// day of the month is a product decision this layer has no opinion about; a caller
-// runs ChargeOverdraftInterest when its calendar says to.
-//
-// Accounts never priced at all, accounts in credit and closed accounts are skipped
-// rather than errored — over a real portfolio most accounts are all three. "Never
-// priced" is a property of the whole timeline, not of a column: an account priced
-// only from next month still has a run tonight, and accrues nothing because the day
-// it is accruing carries a zero rate.
 func (r *Register) RunEndOfDay(ctx context.Context, date time.Time) error {
 	return r.store.Update(ctx, func(ctx context.Context, tx Tx) error {
 		return r.RunEndOfDayTx(ctx, tx, date)
@@ -2014,9 +1507,7 @@ func (r *Register) TotalsTx(ctx context.Context, tx Tx) (Totals, error) {
 		Overdrafts: make(map[ledger.AssetCode]ledger.Amount),
 	}
 	// One balance per account and not one per control line, because the split is
-	// by the SIGN of each customer's own balance and the pool has one sign. Its
-	// balance is what the two figures net to, which is the number this type
-	// exists to take apart.
+	// by the SIGN of each customer's own balance and the pool has one sign.
 	for _, acct := range accounts {
 		pos, err := r.positionTx(ctx, tx, acct)
 		if err != nil {
@@ -2040,10 +1531,8 @@ func (r *Register) TotalsTx(ctx context.Context, tx Tx) (Totals, error) {
 // Audit Trail
 // ---------------------------------------------------------------------------
 
-// GetAuditLog returns this register's deposit-scope audit events, ordered by Seq.
-// The ledger below writes into the same log under ScopeLedger; this method narrows
-// to ScopeDeposit and to the register's own book, so it reports only the mutations
-// this layer made.
+// GetAuditLog returns this register's deposit-scope audit events, ordered by
+// Seq.
 func (r *Register) GetAuditLog(ctx context.Context) ([]ledger.AuditEvent, error) {
 	var out []ledger.AuditEvent
 	err := r.store.View(ctx, func(ctx context.Context, tx Tx) error {

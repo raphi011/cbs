@@ -3,22 +3,7 @@ package calendar
 import "time"
 
 // Easter is Easter Sunday of year, in the Gregorian reckoning the Western
-// churches keep and the Eurosystem's calendar follows. The Orthodox date, which
-// is the same feast computed on the Julian calendar, is usually a different day
-// and closes nothing here.
-//
-// Two of TARGET's six holidays hang off it — Good Friday two days before, Easter
-// Monday the day after — so a settlement calendar cannot be a list of fixed
-// dates. The date itself is a lunar rule: the Sunday after the first
-// ecclesiastical full moon on or after 21 March, where "ecclesiastical" means a
-// tabulated moon rather than the astronomical one. It is bounded by 22 March and
-// 25 April.
-//
-// The algorithm is the anonymous Gregorian computus (Meeus, Jones, Butcher). Its
-// intermediate values are deliberately left with the published one-letter names:
-// they stand for nothing a better name could say, and inventing names for them
-// would make the arithmetic look like it had a meaning to follow. It is exact
-// for any year from 1583, the first full year of the Gregorian calendar.
+// churches keep and the Eurosystem's calendar follows.
 func Easter(year int) time.Time {
 	a := year % 19
 	b := year / 100

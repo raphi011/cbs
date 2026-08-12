@@ -9,33 +9,17 @@ import (
 	"github.com/raphi011/cbs/ledger"
 )
 
-// Scheme is the generic abstraction over a payment scheme. Concrete schemes
-// (SEPA Credit Transfer, SEPA Direct Debit, and later instant or card
-// schemes) implement this interface, so the Network orchestrator can drive
-// any of them without knowing their specifics.
-//
-// Adding a new scheme means writing one type that implements this interface
-// and registering it with the Network — no changes to the orchestrator.
+// Scheme is the generic abstraction over a payment scheme.
 type Scheme interface {
 	// ID is the scheme's unique identifier, e.g. "sepa.ct".
 	ID() SchemeID
 
 	// Asset is the unit the scheme settles in. Both legs of a payment must be
 	// denominated in it.
-	//
-	// This is a property of the scheme, not a limitation of the ledger: SEPA
-	// is a euro scheme. A cross-currency payment is not one payment at all —
-	// it is a payment plus an FX trade.
 	Asset() ledger.AssetCode
 
-	// AddressedBy is the kind of external address this scheme routes on. Both
-	// legs of a payment must carry an identifier in it.
-	//
-	// It is a property of the scheme, exactly as Asset is: SEPA routes on
-	// IBANs, a card scheme routes on a PAN. Putting it here rather than on the
-	// account is what keeps a euro-area retail standard out of the deposit
-	// layer — an account has addresses, and the scheme decides which kind it
-	// reads.
+	// AddressedBy is the kind of external address this scheme routes on. Both legs
+	// of a payment must carry an identifier in it.
 	AddressedBy() deposit.IdentifierScheme
 
 	// Direction reports whether the debtor pushes funds or the creditor
@@ -57,67 +41,27 @@ type Scheme interface {
 	// effect; it determines the value date of the postings.
 	SettlementDelay() time.Duration
 
-	// Validate checks the preconditions the DEBTOR's bank owns — the funds,
-	// and anything else that can only be read in the payer's own book.
-	//
-	// It is one half of a pair, and which actor runs it depends on the
-	// direction: the submitting bank for a push, the receiving bank for a
-	// pull. The other half is ValidateMandate.
+	// Validate checks the preconditions the DEBTOR's bank owns — the funds, and
+	// anything else that can only be read in the payer's own book.
 	Validate(ctx context.Context, p *Payment, sc SchemeContext) error
 
-	// ValidateMandate checks the preconditions the CREDITOR's bank owns. In
-	// SEPA that is the mandate, because the mandate is a document the creditor
-	// holds; a scheme with no mandate has nothing to check here and says so by
-	// returning nil.
-	//
-	// It is on the interface rather than reached by a type assertion because
-	// the two halves are one decision — who may check what — and a scheme that
-	// implemented only one of them would be silently half-validated.
+	// ValidateMandate checks the preconditions the CREDITOR's bank owns.
 	ValidateMandate(ctx context.Context, p *Payment, sc SchemeContext) error
 }
 
 // SchemeContext gives a scheme read access to the rest of the network during
 // validation.
-//
-// It carries the Tx of the unit of work the payment is being accepted in, so a
-// scheme reads the same snapshot the postings will be made against — a funds
-// check that ran in its own transaction could be stale by the time the debit
-// posts. For the same reason schemes must drive Tx and the …Tx methods only,
-// never a plain Network or Register method: those open a second unit of work
-// inside this one.
 type SchemeContext struct {
 	// Network is a MEMBER BANK's, because both halves that validate a payment run
 	// at one — a push at the submitting bank, a pull at the receiving bank, and
-	// both of those are the payer's. A scheme therefore reads the payer's own
-	// deposit register without asking which institution it is running as.
+	// both of those are the payer's.
 	Network *BankNetwork
 	Tx      BankTx
 	Now     time.Time
 }
 
-// validateFunds is shared by the SEPA schemes: it confirms the debtor's
-// deposit account exists at its bank and is permitted to withdraw the payment
-// amount. The deposit layer is the authority for the funds/status check; a
-// shortfall surfaces as deposit.ErrInsufficientAvailable.
-//
-// The asset check (each leg must be denominated in the scheme's asset) does
-// not live here: it runs unconditionally in Network.debtorSideTx and
-// Network.creditorSideTx, before any scheme's Validate is reached, so it
-// applies to every scheme rather than only the ones whose Validate happens to
-// call this helper.
-//
-// The bank it reads is THIS one, on every path this can succeed on: a push runs
-// it at the submitting bank, which is the payer's, and a pull runs it at the
-// receiving bank, which is also the payer's. A network that is not a member
-// bank's is a refusal.
-//
-// A failure to read that row is returned unchanged rather than flattened into
-// ErrParticipantNotFound, which is what this did. The store's own not-found
-// already IS that sentinel, so nothing is lost on the case the flattening was
-// for, and what it cost was the discipline checkPartyTx spells out: this runs on
-// the money path, a receiving bank's answer becomes a pacs.002 through ReasonFor,
-// and a dropped connection returned as RC01 tells the sending bank its
-// counterparty's bank identifier is wrong.
+// validateFunds is shared by the SEPA schemes: it confirms the debtor's deposit
+// account exists at its bank and is permitted to withdraw the payment amount.
 func validateFunds(ctx context.Context, p *Payment, sc SchemeContext) error {
 	part, err := sc.Network.selfBankTx(ctx, sc.Tx)
 	if err != nil {
@@ -130,35 +74,6 @@ func validateFunds(ctx context.Context, p *Payment, sc SchemeContext) error {
 }
 
 // ReturnerOf is the party whose bank sends a settled payment back.
-//
-// A return is sent by the bank that RECEIVED the instruction — the payee's bank
-// on a push, the payer's bank on a pull — which is the SEPA rule book's own
-// division. The beneficiary bank returns a credit transfer it cannot apply; the
-// debtor bank returns a collection its customer disputes.
-//
-// Written as its own rule rather than as "not the submitter", because the two
-// are answers to different questions and the reason each is what it is has
-// nothing to do with the other: a submitter is chosen by who is instructing, and
-// a returner by who is holding a payment they cannot keep. That they come out
-// opposite in both directions is a fact about these two flows, not a derivation.
-// And a party who is both — a payment from a bank to itself — would make a
-// negation ambiguous, while these two rules stay total.
-//
-// It takes the two AGENTS rather than a Payment, which is how cmd/server's submitterOf —
-// its counterpart in both senses, the other party and the other role — is
-// written, and that one has to be: a deployment chooses a submitter from a
-// request, and a request is not yet a payment.
-//
-// It hands back the ADDRESS rather than a party ref, because what all four
-// callers want is a bank to address.
-//
-// # Why it lives here and not in cmd/server
-//
-// Two callers: the deployment picks which bank composes and uploads the
-// pacs.004, and PostReturnLegTx decides whether the bank posting a leg may
-// REFUSE it. Two copies of that rule would be free to drift, and a deployment
-// that sent a return from one bank while the domain let the other refuse is a
-// payment nobody can finish. cmd/server's returnerOf is a one-line delegation.
 func ReturnerOf(scheme Scheme, debtorAgent, creditorAgent iso20022.BIC) iso20022.BIC {
 	if scheme.Direction() == Pull {
 		return debtorAgent
@@ -216,14 +131,7 @@ func (SDD) AllowsReturn() bool                    { return true }
 func (SDD) SettlementDelay() time.Duration        { return 48 * time.Hour } // T+2
 
 // ValidateMandate is the half the CREDITOR's bank runs, because in SEPA the
-// creditor holds the mandate. It is synchronous, at submission, and its
-// failures are 422s rather than pacs.002 rejections — your own bank refusing
-// your collection is not a message from a counterparty.
-//
-// A real debtor's bank keeps mandate records of its own and can reject a
-// collection with MD01 on the wire. This system's mandates live once, in the
-// network's own store, so that rejection has nowhere to come from; the limit
-// is worth naming rather than discovering.
+// creditor holds the mandate.
 func (SDD) ValidateMandate(ctx context.Context, p *Payment, sc SchemeContext) error {
 	if p.MandateID == "" {
 		return ErrMandateRequired
@@ -235,12 +143,9 @@ func (SDD) ValidateMandate(ctx context.Context, p *Payment, sc SchemeContext) er
 	if m.Status == MandateRevoked {
 		return ErrMandateRevoked
 	}
-	// SameParty and not ==: a mandate authorises debits from an ACCOUNT, and
-	// the address quoted to reach that account is a record on each payment, not
-	// part of the authorisation's identity. Comparing whole structs would mean
-	// that withdrawing the debtor's IBAN and issuing a new one — which the
-	// register allows precisely because it is not supposed to disturb anything
-	// — killed every mandate on the account, permanently. See PartyRef.SameParty.
+	// SameParty and not ==: a mandate authorises debits from an ACCOUNT, and the
+	// address quoted to reach that account is a record on each payment, not part
+	// of the authorisation's identity.
 	if !m.Debtor.SameParty(p.Debtor) || !m.Creditor.SameParty(p.Creditor) {
 		return ErrMandateMismatch
 	}
@@ -253,12 +158,6 @@ func (SDD) ValidateMandate(ctx context.Context, p *Payment, sc SchemeContext) er
 // Validate is now only the funds check, which the DEBTOR's bank runs on
 // receipt. It is the one fact about a direct debit that only the debtor's own
 // bank holds.
-//
-// It is identical to SCT.Validate, which is correct and not a smell: both say
-// "the PAYER's bank checks the payer's funds", and only the moment differs —
-// at submission for a push, on receipt of the collection for a pull. It runs in
-// debtorSideTx either way (system.go), which is the one function both paths
-// reach and the reason the two bodies are the same line.
 func (SDD) Validate(ctx context.Context, p *Payment, sc SchemeContext) error {
 	return validateFunds(ctx, p, sc)
 }

@@ -108,12 +108,6 @@ func (t *tx) ListProducts(ctx context.Context, book ledger.BookID) ([]product.Pr
 // PutProductVersion upserts under (product, effective day). The day key is
 // derived with product.VersionDayKey — the same function GetProductVersionAsOf
 // compares against.
-//
-// It does not refuse a write to a published row, and could not: what makes such
-// a write illegal is the row's PREVIOUS state, which neither this statement nor
-// a CHECK can see. product.Catalogue refuses it, and the version hash is the one
-// control that survives a direct UPDATE — see the schema, on
-// product_versions.published_at.
 func (t *tx) PutProductVersion(ctx context.Context, book ledger.BookID, v product.Version) error {
 	if err := t.own(book); err != nil {
 		return err
@@ -204,10 +198,7 @@ func (t *tx) ListProductVersions(ctx context.Context, book ledger.BookID, id pro
 	return out, rows.Err()
 }
 
-// GetProductVersionAsOf is the published version in force on a day. It compares
-// day_key rather than effective_from so that the bound is a DAY on both sides,
-// and filters on published_at so a draft is invisible — the row before it stays
-// in force through it.
+// GetProductVersionAsOf is the published version in force on a day.
 func (t *tx) GetProductVersionAsOf(ctx context.Context, book ledger.BookID, id product.ID, day time.Time) (product.Version, error) {
 	if err := t.own(book); err != nil {
 		return product.Version{}, err

@@ -13,15 +13,6 @@ import (
 
 // The measurement the roadmap's "Move the derived balances off the store seam"
 // asks for: what SQLite's aggregate buys over the same sum written in Go.
-//
-// Both read the SAME rows through the SAME index — (book_id, account_id) is a
-// full prefix of entries_account_idx either way — so what separates them is only
-// where the addition happens and what crosses the driver. The Go side is the
-// shape a derived balance would take if the computation moved into the domain:
-// one row per entry, scanned and added.
-//
-// It opens a FILE and not an ephemeral database, because an in-memory store
-// measures no page cache and no I/O and would answer a question nobody has.
 
 const benchBook ledger.BookID = "book_bench"
 

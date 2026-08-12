@@ -12,16 +12,6 @@ import (
 
 // overpaidLoan is the fixture the whole file needs: a facility the bank owes
 // 4932 of interest back on.
-//
-// Producing it takes the full round trip, because there is no other way in — the
-// payable is only ever credited by a backdated correction. Thirty days accrue,
-// the borrower pays that interest in cash, and only then does a posting
-// backdated to the drawdown reveal the loan was repaid on day one and no
-// interest was ever owed. The receivable has nothing left to give back (the cash
-// settled it) and neither has principal (the backdated posting cleared it), so
-// the whole 4932 lands in the payable. It is
-// TestAccrue_CorrectionClampsToWhatTheFacilityOwes' setup, kept here so this
-// file's tests start from the state they are about.
 func overpaidLoan(t *testing.T) (*lending.Portfolio, *ledger.Book, ledger.SubledgerID, lending.Facility, ledger.Position) {
 	t.Helper()
 	ctx := context.Background()
@@ -57,11 +47,7 @@ func overpaidLoan(t *testing.T) (*lending.Portfolio, *ledger.Book, ledger.Subled
 var refundDate = drawdown.AddDate(0, 0, 40)
 
 // TestRefundPayableFor_IsZeroForAFacilityNothingWasPostedUnder pins what a
-// pooled line has to answer for a borrower who is owed nothing. The line exists
-// from the first facility in the asset and holds whatever every other borrower
-// is owed, so a read that answered with the ACCOUNT's balance would tell this
-// borrower they are owed the whole book's refunds. The subsidiary is what makes the
-// answer zero.
+// pooled line has to answer for a borrower who is owed nothing.
 func TestRefundPayableFor_IsZeroForAFacilityNothingWasPostedUnder(t *testing.T) {
 	ctx := context.Background()
 	p, book, loan, _ := disbursedLoan(t)
@@ -120,8 +106,6 @@ func TestRefundInterest_DischargesThePayable(t *testing.T) {
 	// It settles a debt that has no components and no schedule, so it must not
 	// touch the loan: the correction already credited principal as far as
 	// principal could absorb, and only the overflow reached the payable.
-	// Allocating any of this back onto the loan would hand the borrower money
-	// the correction had already used to reduce what they owed.
 	after := facility(t, p, loan.ID)
 	if got := bookBalance(t, book, positions(t, p, loan.ID).Principal); got != 0 {
 		t.Errorf("principal = %d after a refund, want 0 — a refund is not a repayment", got)
@@ -205,10 +189,7 @@ func TestRefundInterest_PaysPartially(t *testing.T) {
 }
 
 // TestRefundInterest_RefusesMoreThanIsOwed is the guard the ledger cannot
-// supply. Its sufficiency check covers Asset and Expense accounts only, so an
-// over-refund out of a Liability posts cleanly and leaves the payable NEGATIVE:
-// an account asserting the borrower owes the bank a refund, which is not a
-// thing.
+// supply.
 func TestRefundInterest_RefusesMoreThanIsOwed(t *testing.T) {
 	ctx := context.Background()
 	p, book, _, loan, customer := overpaidLoan(t)
@@ -244,13 +225,6 @@ func TestRefundInterest_RefusesAFacilityOwedNothing(t *testing.T) {
 
 // TestRefundInterest_SurvivesTheFacilityClosing is the asymmetry with Repay,
 // which refuses ErrFacilityClosed.
-//
-// Closed means the BORROWER owes nothing and no more will be lent. It says
-// nothing about what the bank owes: a bank that discovers it overcharged
-// interest on a loan settled last year still owes that money. Refusing to pay it
-// because the contract is over would strand the obligation in a Liability
-// account with nothing left that could ever discharge it — the facility accrues
-// no more, is never billed again, and takes no more repayments.
 func TestRefundInterest_SurvivesTheFacilityClosing(t *testing.T) {
 	ctx := context.Background()
 	p, book, _, loan, customer := overpaidLoan(t)

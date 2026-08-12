@@ -18,14 +18,8 @@ import (
 // euroOnly is the asset set a SEPA bank joins with.
 var euroOnly = []ledger.AssetCode{"EUR"}
 
-// rosterNetwork is a payment network holding exactly the banks it is given, each
-// already admitted, and the clock they were written on.
-//
-// It builds them WITHOUT a deployment, through storetest.Admit, which is the
-// point of the fixture: what these two tests are about is a deployment reading a
-// roster that was there before it existed, so the banks have to exist first.
-// Deployment.AddBank is the other door and gives one bank its place without
-// reading anything.
+// rosterNetwork is a payment network holding exactly the banks it is given,
+// each already admitted, and the clock they were written on.
 func rosterNetwork(t *testing.T, bics map[string]iso20022.BIC) (*payment.Networks, *sqlite.Set, *calendar.Clock) {
 	t.Helper()
 	clock := calendar.NewClock(testTime)
@@ -40,11 +34,6 @@ func rosterNetwork(t *testing.T, bics map[string]iso20022.BIC) (*payment.Network
 }
 
 // unreachableConfig is testConfig with two URLs nothing listens on.
-//
-// It is what the tests below want: they are about ENROLMENT, which is a fact
-// about the queues a host holds, and no file is uploaded in either of them. A
-// configuration with no URLs at all is refused, because an institution with
-// nowhere to dial can neither send nor collect.
 func unreachableConfig() Config {
 	cfg := testConfig
 	cfg.CentralBankURL = "http://127.0.0.1:1/ebics"
@@ -64,11 +53,6 @@ func newRosterDeployment(t *testing.T, nets *payment.Networks, hosts Hosts, cloc
 // A deployment is N+2, and it is TWO facts rather than one: every bank with a
 // database gets a view of its own, and every bank the ROSTER names gets a
 // download queue at each host.
-//
-// The roster is what says who is a member, and enrolment is what membership
-// means operationally: a queue is the whole of the routing table, so a bank
-// without one cannot be addressed at all.
-// TestABankTheRosterDoesNotNameGetsAViewAndNoQueue is the other half.
 func TestNewDeploymentEnrolsEveryMemberOfTheRoster(t *testing.T) {
 	nets, set, clock := rosterNetwork(t, map[string]iso20022.BIC{
 		"Aurora Bank": "AURODEFFXXX",
@@ -102,27 +86,16 @@ func TestNewDeploymentEnrolsEveryMemberOfTheRoster(t *testing.T) {
 	}
 }
 
-// A bank whose provisioning stopped halfway gets a view of its own and no queue.
-//
-// The ROSTER is what says who is a member, and this bank is in none: it has a
-// licence, a book, a product and customers, and neither the settlement agent nor
-// the clearing house has heard of it. So it cannot be paid, which is the truth
-// about it rather than a limitation — and it can still run its own end of day,
-// which is why it gets a view.
-//
-// It is the state a crash between the acts leaves — provisioning is four units
-// of work at three institutions and no transaction spans them — and it is a
-// provisioning failure to retry rather than a state the domain names. What this
-// pins is that the deployment does not paper over it: a queue for a bank with no
-// settlement account would let a payment reach a bank that cannot settle.
+// A bank whose provisioning stopped halfway gets a view of its own and no
+// queue.
 func TestABankTheRosterDoesNotNameGetsAViewAndNoQueue(t *testing.T) {
 	nets, set, clock := rosterNetwork(t, map[string]iso20022.BIC{"Aurora Bank": "AURODEFFXXX"})
 	ctx := context.Background()
 
 	// Founded and no further, through its OWN network, over its own database,
-	// because founding is a member bank's own act — payment.ErrNotThisInstitutionsAct
-	// is what a clearing house asking for it gets. Asking nets.Bank for the
-	// address is what creates that database; see payment.Stores.
+	// because founding is a member bank's own act —
+	// payment.ErrNotThisInstitutionsAct is what a clearing house asking for it
+	// gets.
 	nordhavenNet, err := nets.Bank(ctx, "NORDSESSXXX")
 	if err != nil {
 		t.Fatalf("Nordhaven's own network: %v", err)

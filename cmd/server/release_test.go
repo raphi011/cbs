@@ -11,35 +11,8 @@ import (
 
 // TestSeededInFlightPaymentsAreAppliedWhenTheirCycleSettles advances one real
 // business day over the sample dataset and asks the only question that matters
-// about a settlement: did the bank that has to move a customer's money get told?
-//
-// # What it is for
-//
-// A cut-off settles a whole cycle at the settlement agent and then releases each
-// receiving bank's file, in that order (ADR-0002). Release works from the share
-// the clearing house BUILT when it took the uploaded file in, so anything that
-// reaches a cycle without a file behind it settles with nothing to release —
-// reserves move, and the receiving bank is never handed the instruction. The
-// state is silent and permanent: the payee is never credited, the amount stops
-// in that bank's clearing suspense, and its copy reads Initiated for ever.
-//
-// The seed is what could reach it. What it composes it settles itself, so a
-// payment it left in an OPEN cycle with no file behind it would be settled by
-// the first advance and delivered to nobody — which is why its in-flight
-// payments go through a real cut-off instead. seed's own
-// TestEveryPaymentInAnOpenCycleWasUploaded is the constraint that keeps the
-// other kind out; this is the same claim proved through the transport, over a
-// real day, which is the only place the release path actually runs.
-//
-// # Why it advances the day rather than driving the phases
-//
-// Because the fault is in the ORDER — settle, then release — and a test that
-// drove the phases itself would be asserting against its own arrangement of
-// them. AdvanceDay is what an operator's button runs.
-//
-// The problems are logged and not asserted on: ClearingHouse.unhanded reports
-// exactly this fault, so a regression prints its own diagnosis beside the
-// failure rather than leaving a reader to find it.
+// about a settlement: did the bank that has to move a customer's money get
+// told?
 func TestSeededInFlightPaymentsAreAppliedWhenTheirCycleSettles(t *testing.T) {
 	ctx := context.Background()
 	srv := newAPIHarness(t)
@@ -91,9 +64,6 @@ func TestSeededInFlightPaymentsAreAppliedWhenTheirCycleSettles(t *testing.T) {
 	}
 
 	// And the same state read out of the books rather than off the statuses.
-	// Check fails on any break of its own — the arm for this fault is recon's
-	// partiesHoldTheirCopy — so what is left to log is the positions, which are
-	// the seed's Cleared payments waiting in cycles nothing settles.
 	books := recon.Check(t, srv.nets)
 	for _, u := range books.Unreconciled {
 		t.Logf("unreconciled: %s (%s) suspense %d, %d in flight, unbooked %v",

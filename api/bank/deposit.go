@@ -40,26 +40,9 @@ func (s *surface) registerDepositRoutes(mux *api.Router) {
 }
 
 // handleTransfer moves money between two of this bank's own deposit accounts.
-//
-// # 200, because the act is finished when it returns
-//
-// POST /deposits is the precedent and the argument carries over unchanged: one
-// institution, one posting, and nobody else to ask. 202 is for the routes where
-// another institution has still to decide — see handleLodgeReserves — and
-// nobody has to agree to a book transfer.
-//
-// # An address this bank does not hold is a 404, and that is the boundary
-//
-// An address that resolves anywhere else is not a transfer at all; it is a
-// payment, and POST /payments is where it goes. The two routes state one rule
-// from opposite sides: this one refuses an address that is not here, and
-// submission refuses one that is (payment.ErrOnUsPayment).
 func (s *surface) handleTransfer(r *http.Request, p *payment.Bank, req api.TransferRequest) (api.TransferDTO, error) {
-	// The address is resolved BEFORE the transfer's unit of work, and it cannot
-	// go stale in between: an IBAN at this bank never moves between accounts.
-	// Reissuing gives one account a fresh address rather than handing an old one
-	// to another account, and AddIdentifier refuses the scheme outright. So the
-	// account this answers is the account that address means, then and later.
+	// The address is resolved BEFORE the transfer's unit of work, and it cannot go
+	// stale in between: an IBAN at this bank never moves between accounts.
 	payee, err := p.Deposit.ResolveIdentifier(r.Context(), deposit.Identifier{
 		Scheme: deposit.IdentifierIBAN,
 		Value:  req.To,
@@ -105,9 +88,9 @@ func (s *surface) handleOpenDepositAccount(r *http.Request, p *payment.Bank, req
 		return api.DepositAccountDTO{}, err
 	}
 	// The limit reaches the response through the account's opening terms row
-	// rather than through the value returned above: it is a terms field now,
-	// and reading it back is what keeps the created body and a later GET the
-	// same shape.
+	// rather than through the value returned above: it is a terms field now, and
+	// reading it back is what keeps the created body and a later GET the same
+	// shape.
 	return accountWithTermsDTO(r, p, acct.ID)
 }
 
@@ -116,10 +99,10 @@ func (s *surface) handleListDepositAccounts(r *http.Request, p *payment.Bank) ([
 	if err != nil {
 		return nil, err
 	}
-	// One resolution per ASSET rather than per account: the line is the same
-	// for every customer holding that currency, and a listing that asked the
-	// chart of accounts once per row would put the customer base back into a
-	// question that is about the institution.
+	// One resolution per ASSET rather than per account: the line is the same for
+	// every customer holding that currency, and a listing that asked the chart of
+	// accounts once per row would put the customer base back into a question that
+	// is about the institution.
 	controls := map[ledger.AssetCode]ledger.AccountID{}
 	out := make([]api.DepositAccountDTO, len(accts))
 	for i, a := range accts {
@@ -182,11 +165,6 @@ func (s *surface) handleCloseDepositAccount(r *http.Request, p *payment.Bank) (a
 }
 
 // The three handlers that replaced handleSetOverdraftTerms.
-//
-// Each 200 body is the account re-read WITH its resolved terms rather than the
-// row that was just written, so the response shape is the same one every other
-// deposit endpoint returns — and so a future-dated change does not come back as
-// though it were already in force.
 
 func (s *surface) handleSetOverdraftLimit(r *http.Request, p *payment.Bank, req api.SetOverdraftLimitRequest) (api.DepositAccountDTO, error) {
 	did := deposit.AccountID(r.PathValue("did"))
@@ -278,13 +256,6 @@ func (s *surface) handleListOverdraftTerms(r *http.Request, p *payment.Bank) ([]
 // handleChargeOverdraftInterest capitalizes an account's accrued overdraft
 // interest, clearing the receivable — the monthly event a customer actually
 // sees.
-//
-// Nothing accrued means nothing posted, and nothing else happens either: unlike
-// a revolving line's cycle, this appends no instalment. So the empty case is
-// 204 No Content — the answer the rest of this API gives for "the request was
-// fine and there is nothing to say" — rather than a 200 whose empty body a
-// client has to guess at, or a Transaction with an empty ID rendered as though
-// it were a real posting.
 func (s *surface) handleChargeOverdraftInterest(r *http.Request, p *payment.Bank, req api.ChargeOverdraftInterestRequest) (any, error) {
 	date, err := api.ParseDay("date", req.Date)
 	if err != nil {

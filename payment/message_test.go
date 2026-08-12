@@ -1,13 +1,5 @@
-// Package payment_test's half of the translator's tests: the ones that need a whole
-// network.
-//
-// They are separated from translate_test.go, which tests the same file, for a
-// mechanical reason. These build a Network, which means a store, which means
-// store/testenv and store/storetest, and both of those reach payment — so an
-// in-package test file importing either back is an import cycle. translate_test.go's
-// reason-table tests need reasonTable, which is unexported and stays that way.
-// Neither half can move to the other's package, and Go allows both packages in one
-// directory.
+// Package payment_test's half of the translator's tests: the ones that need a
+// whole network.
 package payment_test
 
 import (
@@ -47,18 +39,14 @@ func readOneTx(txs []InboundTransaction, err error) (InboundTransaction, error) 
 	return txs[0], nil
 }
 
-// messageNow is the instant the message tests build their headers at, deliberately
-// NOT the network's clock: a message is created when it is sent, not when the payment
-// it carries was booked, and one instant for both could not tell a translator that
-// confused the two apart from one that did not.
+// messageNow is the instant the message tests build their headers at,
+// deliberately NOT the network's clock: a message is created when it is sent,
+// not when the payment it carries was booked, and one instant for both could
+// not tell a translator that confused the two apart from one that did not.
 var messageNow = time.Date(2026, 8, 1, 9, 0, 0, 0, time.UTC)
 
 // addressedBanks builds the two banks these tests address each other by: real,
-// distinct BICs, and one customer account at each carrying a real IBAN. It does not
-// reuse setupTwoBanks, whose banks sit at placeholder BICs — a test asserting which
-// bank reached the wire wants two a reader can tell apart at sight, and their
-// countries agreeing with the addresses their registers mint is what makes the
-// documents below readable as real ones.
+// distinct BICs, and one customer account at each carrying a real IBAN.
 func addressedBanks(t *testing.T) (sys *testSystem, aurora, verde *Bank, alice, bruno deposit.Account) {
 	t.Helper()
 	ctx := context.Background()
@@ -184,9 +172,7 @@ func TestCreditTransferMessageRefusesAPaymentWithNoAddress(t *testing.T) {
 }
 
 // An address that is present but not a legal IBAN is refused HERE, by the
-// translator, and not later by Marshal. ErrUnaddressableAccount names an account this
-// system could not address, a fact about the payment, where an iso20022 error names
-// an element in a document. FuzzTranslate found this one.
+// translator, and not later by Marshal.
 func TestCreditTransferMessageRefusesAMalformedIBAN(t *testing.T) {
 	n, p := networkWithOnePayment(t)
 	p.Creditor.Identifier = deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "not an iban"}
@@ -197,9 +183,7 @@ func TestCreditTransferMessageRefusesAMalformedIBAN(t *testing.T) {
 }
 
 // EndToEndId is 1..1 in the schema and this system's own end-to-end id is
-// optional, so the gap has to be filled with something. NOTPROVIDED is what the
-// EPC guidelines say to fill it with, and it is a value a receiver recognises
-// as "the sender had none" rather than one it mistakes for a reference.
+// optional, so the gap has to be filled with something.
 func TestCreditTransferMessageWithNoEndToEndIDSaysNOTPROVIDED(t *testing.T) {
 	n, p := networkWithOnePayment(t)
 	p.EndToEndID = ""
@@ -218,8 +202,6 @@ func TestCreditTransferMessageWithNoEndToEndIDSaysNOTPROVIDED(t *testing.T) {
 
 // The interbank settlement date is the payment's VALUE date — the date the
 // money takes economic effect — and not the date the message was written.
-// SEPA CT is T+1, so under the test clock the two are more than a year apart
-// and a translator that used Now would fail here rather than in production.
 func TestCreditTransferMessageSettlesOnTheValueDate(t *testing.T) {
 	n, p := networkWithOnePayment(t)
 	env, err := n.CreditTransferMessage([]Payment{p}, MessageContext{From: "AURODEFFXXX", To: "CSMXFRPPXXX", MsgID: "x", Now: messageNow})
@@ -233,9 +215,7 @@ func TestCreditTransferMessageSettlesOnTheValueDate(t *testing.T) {
 }
 
 // A payment carrying no value date at all gets the message's own creation date
-// and not the zero time. The zero time marshals as 0001-01-01, a schema-valid
-// date asserting settlement in the first century — the same fabrication
-// AppHdr.CreDt's validation exists to stop, arriving by a different door.
+// and not the zero time.
 func TestCreditTransferMessageNeverAssertsTheZeroSettlementDate(t *testing.T) {
 	n, p := networkWithOnePayment(t)
 	p.ValueDate = time.Time{}
@@ -249,11 +229,9 @@ func TestCreditTransferMessageNeverAssertsTheZeroSettlementDate(t *testing.T) {
 	}
 }
 
-// DtOfSgntr is the mandate's CreatedAt, which is the elision translate.go documents:
-// this system creates a mandate at the moment it is authorised, so the two are one
-// fact. The network's clock is a year and a half behind the message's, so a
-// translator that reached for mc.Now — the obvious wrong answer, and a date that
-// would always look plausible — fails here.
+// DtOfSgntr is the mandate's CreatedAt, which is the elision translate.go
+// documents: this system creates a mandate at the moment it is authorised, so
+// the two are one fact.
 func TestDirectDebitMessageDatesTheSignatureFromTheMandate(t *testing.T) {
 	n, p, m := networkWithOneCollection(t)
 
@@ -299,10 +277,8 @@ func TestDirectDebitMessageStandsTheCreditorsIBANInForTheCreditorIdentifier(t *t
 	if err != nil {
 		t.Fatalf("DirectDebitMessage: %v", err)
 	}
-	// This is the test that is ABOUT the substitution, and CdtrSchmeId is the deepest
-	// subtree it invents a value for. The test making the claim should be the one
-	// asserting the document is valid, rather than leaning on another that happens to
-	// marshal a pacs.003.
+	// This is the test that is ABOUT the substitution, and CdtrSchmeId is the
+	// deepest subtree it invents a value for.
 	if _, err := iso20022.Marshal(env); err != nil {
 		t.Fatalf("the collection carrying the substituted creditor identifier is not valid: %v", err)
 	}
@@ -470,11 +446,9 @@ func TestSettlementMessageIsOneLegPerBank(t *testing.T) {
 	}
 }
 
-// NbOfTxs is what the SENDER asserts, not a derivation a receiver would recompute.
-// Truncate the transaction list after the message is built, exactly as a lost packet
-// or a half-written file would, and the count still says two. A receiver that
-// recomputed it would read this as a complete one-transaction settlement and never
-// notice the missing leg.
+// NbOfTxs is what the SENDER asserts, not a derivation a receiver would
+// recompute. Truncate the transaction list after the message is built, exactly
+// as a lost packet or a half-written file would, and the count still says two.
 func TestSettlementMessageNbOfTxsSurvivesATruncatedFile(t *testing.T) {
 	env, err := SettlementMessage([]SettlementLeg{
 		{From: "AURODEFFXXX", To: "VERDITMMXXX", Amount: 250000, Asset: "EUR", Reference: "cyc_1:bank_1"},
@@ -494,10 +468,7 @@ func TestSettlementMessageNbOfTxsSurvivesATruncatedFile(t *testing.T) {
 		t.Fatalf("Marshal refused the truncated document: %v", err)
 	}
 
-	// Read it back off the wire rather than off the struct just truncated. Asserting
-	// NbOfTxs on the in-memory document would be a tautology, and the claim is about
-	// what a RECEIVER sees — which is where an encoder that "helpfully" recomputed the
-	// count on the way out would be caught.
+	// Read it back off the wire rather than off the struct just truncated.
 	back, err := iso20022.Unmarshal(raw)
 	if err != nil {
 		t.Fatalf("Unmarshal refused the truncated document: %v", err)
@@ -515,11 +486,7 @@ func TestSettlementMessageNbOfTxsSurvivesATruncatedFile(t *testing.T) {
 }
 
 // The amount's scale comes from the asset definition, never from a two-decimal
-// constant — and the proof is that BITCOIN IS REFUSED. A translator carrying a
-// hardcoded 2 would render 250000 minor units of BTC as "2500.00": a message a
-// counterparty accepts, describing a sum six orders of magnitude off. The asset's own
-// scale gives "0.00250000", which ActiveCurrencyAndAmount cannot carry, so the
-// translator refuses. Refusal is the correct behaviour AND the evidence.
+// constant — and the proof is that BITCOIN IS REFUSED.
 func TestSettlementMessageTakesItsScaleFromTheAsset(t *testing.T) {
 	settle := func(asset ledger.AssetCode) (iso20022.ActiveCurrencyAndAmount, error) {
 		env, err := SettlementMessage([]SettlementLeg{
@@ -547,13 +514,6 @@ func TestSettlementMessageTakesItsScaleFromTheAsset(t *testing.T) {
 }
 
 // The magnitude bound, pinned at the exact minor unit where it flips.
-//
-// A test at math.MaxInt64 proves nothing: it is orders of magnitude past every
-// candidate threshold, so it passes whatever the real bound is. A number in prose
-// needs a test that would fail if the number were wrong, which means testing the pair
-// astride it. 9,223,372,036,854,775 is math.MaxInt64 / 1000, which is where the
-// validator's padding into minor units overflows int64. The seventeen-digit case is a
-// separate limit and the codec's own, not the standard's.
 func TestSettlementMessageAmountBound(t *testing.T) {
 	settle := func(minor ledger.Amount) error {
 		_, err := SettlementMessage([]SettlementLeg{
@@ -597,19 +557,9 @@ func TestSettlementMessageRefusesAnUnknownAsset(t *testing.T) {
 // ---------------------------------------------------------------------------
 // Refusals
 // ---------------------------------------------------------------------------
-//
-// The one error that must NOT become a wire reason code — a store failure or a
-// cancelled context mistranslated into a fact about the counterparty's message — has
-// no outbound test here, because building an outbound message reads no store. Its one
-// pin is inbound, under "Inbound: a received message becomes a request".
 
 // failingTx is a Tx whose directory lookups fail with an error of the caller's
-// choosing. Everything else is the real transaction, promoted by embedding, so a
-// participant still resolves and the failure lands on exactly the call under test.
-//
-// ListDepositAccountsByIdentifier is the one override: it is what the inbound
-// resolution in ResolveIdentifierTx calls, reached through a View. There is no
-// outbound counterpart, partiesOf reading nothing to build an outbound message.
+// choosing.
 type failingTx struct {
 	BankTx
 	err error
@@ -619,10 +569,7 @@ func (t failingTx) ListDepositAccountsByIdentifier(ctx context.Context, book led
 	return nil, t.err
 }
 
-// failingStore wraps a real Store and hands every view a failingTx. There is no other
-// way to reach an inbound resolution failure on demand: the store checks ctx.Err()
-// before it opens a transaction, so a cancelled context never gets as far as the
-// closure, and a real database failure cannot be provoked from a test.
+// failingStore wraps a real Store and hands every view a failingTx.
 type failingStore struct {
 	BankStore
 	err error
@@ -634,15 +581,11 @@ func (s failingStore) View(ctx context.Context, fn func(context.Context, BankTx)
 	})
 }
 
-// There is no OUTBOUND equivalent of the refusal tests below. partiesOf reads no
-// participant and no account building an outbound message — both sides are already on
-// the Payment, resolved once at submission — so there is no store call left to fail,
-// no context left to cancel, and no directory lookup that could come back not-found.
-//
-// The property — a store failure or a cancellation must not be misreported as a fact
-// about the counterparty's message — holds on the INBOUND side, where
-// addressedPartyTx and ResolveIdentifierTx read the store, and
-// TestCreditTransferRequestDoesNotBlameTheCounterpartyForAStoreFailure pins it there.
+// There is no OUTBOUND equivalent of the refusal tests below. partiesOf reads
+// no participant and no account building an outbound message — both sides are
+// already on the Payment, resolved once at submission — so there is no store
+// call left to fail, no context left to cancel, and no directory lookup that
+// could come back not-found.
 
 // A payment whose scheme is not registered has no asset, and therefore no scale
 // to render its amount at. Guessing euro is the multi-asset mistake amountOf
@@ -657,10 +600,7 @@ func TestCreditTransferMessageRefusesAnUnregisteredScheme(t *testing.T) {
 	}
 }
 
-// A collection with no mandate is refused before the message is built. MndtId is
-// EPC-mandatory and a pacs.003 without it is invalid, but the reason to catch it
-// here is stronger than validity: a direct debit with no mandate is not a
-// badly-formed message, it is an unauthorised claim on someone's account.
+// A collection with no mandate is refused before the message is built.
 func TestDirectDebitMessageRefusesACollectionWithNoMandate(t *testing.T) {
 	n, p, _ := networkWithOneCollection(t)
 
@@ -670,10 +610,7 @@ func TestDirectDebitMessageRefusesACollectionWithNoMandate(t *testing.T) {
 	}
 }
 
-// A return with no reason is refused. RtrRsnInf is EPC-mandatory and
-// ReturnReasonChoice needs exactly one arm, so there is nothing to put in the
-// element — and a return that does not say why it came back is the one thing the
-// creditor's bank cannot act on.
+// A return with no reason is refused.
 func TestReturnMessageRefusesAReturnWithNoReason(t *testing.T) {
 	n, p := networkWithOnePayment(t)
 
@@ -685,9 +622,6 @@ func TestReturnMessageRefusesAReturnWithNoReason(t *testing.T) {
 }
 
 // A settlement instruction with no legs is refused rather than emitted empty.
-// CdtTrfTxInf is 1..n, so the document would be invalid — but the reason to
-// refuse is that an instruction to settle nothing is not a thing anyone means to
-// send.
 func TestSettlementMessageRefusesAnEmptyInstruction(t *testing.T) {
 	_, err := SettlementMessage(nil, MessageContext{From: "CSMXFRPPXXX", To: "CBSEDEFFXXX", MsgID: "CSM-1", Now: messageNow})
 	if !errors.Is(err, iso20022.ErrMissingElement) {
@@ -737,25 +671,15 @@ func TestCreditTransferRoundTripsThroughTheWire(t *testing.T) {
 		t.Errorf("description = %q, want %q", got.Description, p.Description)
 	}
 	// The CREDITOR is this bank's own customer on a push, so it is resolved by
-	// ADDRESS and not by an id the message never carried. This would catch a
-	// translator quietly threading internal account ids through a message with no
-	// element for them.
+	// ADDRESS and not by an id the message never carried.
 	if !got.Creditor.SameParty(p.Creditor) {
 		t.Errorf("creditor resolved to %+v, want %+v", got.Creditor, p.Creditor)
 	}
-	// The address comes back too, and it is the one the message quoted. It is what
-	// submission checks against the account it resolves to, so losing it here turns
-	// "the payment records the address it was sent to" into "the payment records
-	// whatever address the account happens to hold".
+	// The address comes back too, and it is the one the message quoted.
 	if got.Creditor.Identifier != p.Creditor.Identifier {
 		t.Errorf("creditor address = %+v, want the quoted %+v", got.Creditor.Identifier, p.Creditor.Identifier)
 	}
-	// The DEBTOR is the SENDING bank's customer. CreditTransferRequest resolves this
-	// bank's own side only, so the debtor comes back with the address the message
-	// quoted and NO ACCOUNT: an account id is this bank's own key for its own register.
-	//
-	// The AGENT is not part of that claim and is not empty. It is DbtrAgt, read
-	// straight off the message and asserted rather than derived.
+	// The DEBTOR is the SENDING bank's customer.
 	if got.Debtor.Account != "" {
 		t.Errorf("debtor resolved to %+v, want it recorded rather than resolved", got.Debtor)
 	}
@@ -807,11 +731,9 @@ func TestDirectDebitRoundTripsThroughTheWire(t *testing.T) {
 	if got.MandateID != m.ID {
 		t.Errorf("mandate = %q, want %q", got.MandateID, m.ID)
 	}
-	// A pull message travels against the money, so the party that SENT it is the one
-	// being paid, and it is routed here by DbtrAgt: this bank is the DEBTOR's, and the
-	// DEBTOR is the side it has standing to resolve. A translator reading the two
-	// account elements in pacs.008 order would point the collection the wrong way and
-	// still resolve successfully.
+	// A pull message travels against the money, so the party that SENT it is the
+	// one being paid, and it is routed here by DbtrAgt: this bank is the DEBTOR's,
+	// and the DEBTOR is the side it has standing to resolve.
 	if !got.Debtor.SameParty(p.Debtor) {
 		t.Errorf("debtor resolved to %+v, want %+v", got.Debtor, p.Debtor)
 	}
@@ -820,8 +742,7 @@ func TestDirectDebitRoundTripsThroughTheWire(t *testing.T) {
 	}
 	// The CREDITOR is the SENDING bank's customer here — the mirror of
 	// receiveCreditTransfer's debtor — and comes back recorded rather than
-	// resolved: no account, only the address the message quoted. The AGENT is
-	// CdtrAgt and is on the message; see the push's mirror of this note.
+	// resolved: no account, only the address the message quoted.
 	if got.Creditor.Account != "" {
 		t.Errorf("creditor resolved to %+v, want it recorded rather than resolved", got.Creditor)
 	}
@@ -836,10 +757,8 @@ func TestDirectDebitRoundTripsThroughTheWire(t *testing.T) {
 	}
 }
 
-// TestAReceivingBankDoesNotResolveTheSendersCustomer: a pacs.008 quoting a debtor
-// IBAN this bank does not hold is NOT refused AC01. The debtor is the SENDING bank's
-// customer, and a receiving bank resolves only its own side of the message — a
-// message whose creditor it can find is accepted whatever the debtor's address says.
+// TestAReceivingBankDoesNotResolveTheSendersCustomer: a pacs.008 quoting a
+// debtor IBAN this bank does not hold is NOT refused AC01.
 func TestAReceivingBankDoesNotResolveTheSendersCustomer(t *testing.T) {
 	n, p := networkWithOnePayment(t)
 	ctx := context.Background()
@@ -863,9 +782,8 @@ func TestAReceivingBankDoesNotResolveTheSendersCustomer(t *testing.T) {
 }
 
 // TestAReceivingBankDoesNotResolveTheSendersCustomerOnAPull is the direct-debit
-// mirror: on a pacs.003 this bank is the DEBTOR's, and the party it must not check
-// is the CREDITOR. Getting the direction backwards would resolve successfully and be
-// wrong, which is why both directions are pinned.
+// mirror: on a pacs.003 this bank is the DEBTOR's, and the party it must not
+// check is the CREDITOR.
 func TestAReceivingBankDoesNotResolveTheSendersCustomerOnAPull(t *testing.T) {
 	n, p, m := networkWithOneCollection(t)
 	ctx := context.Background()
@@ -912,20 +830,15 @@ func TestCreditTransferRequestRefusesAnUnknownIBAN(t *testing.T) {
 	if tx.Refusal == nil {
 		t.Fatal("resolved an IBAN no account holds")
 	}
-	// ErrAccountNotInParticipant is what becomes AC01 "incorrect account number" on
-	// the wire. The mapping is pinned by TestReasonForKnownErrors in the other package
-	// in this directory — that test drives the unexported reasonTable, this one needs
-	// testenv, and no one package can reach both.
+	// ErrAccountNotInParticipant is what becomes AC01 "incorrect account number"
+	// on the wire.
 	if !errors.Is(tx.Refusal, ErrAccountNotInParticipant) {
 		t.Errorf("CreditTransferRequest on an unknown IBAN = %v, want ErrAccountNotInParticipant", tx.Refusal)
 	}
 }
 
-// An account element that carries no IBAN at all is refused as unaddressable, not
-// dereferenced. AccountIdentification4Choice's arms are pointers because encoding/xml
-// cannot express an xsd:choice, and INBOUND is where a nil one arrives: the Othr arm
-// is legal in the schema, so a counterparty is free to send it. Outbound never
-// produces one, so a missing check here is a panic in the actor that reads them.
+// An account element that carries no IBAN at all is refused as unaddressable,
+// not dereferenced.
 func TestCreditTransferRequestRefusesAnAccountThatIsNotAnIBAN(t *testing.T) {
 	n, p := networkWithOnePayment(t)
 	ctx := context.Background()
@@ -944,17 +857,8 @@ func TestCreditTransferRequestRefusesAnAccountThatIsNotAnIBAN(t *testing.T) {
 	}
 }
 
-// An address two accounts both claim is refused, and — the part that matters — NOT
-// as an incorrect account number.
-//
-// ResolveIdentifierTx returns deposit.ErrIdentifierAmbiguous rather than the first
-// hit, and this translator passes that through unchanged. AC01 would tell the sending
-// bank its customer quoted a bad IBAN, which is a false statement about someone
-// else's data: the IBAN is fine, and it is this bank's own register that cannot say
-// which of its accounts is meant. An error with no code falls to MS03, which is true.
-//
-// A THIRD BANK claiming the address is not provokable: resolution is narrowed to the
-// receiving bank's own register. What survives is the collision a register CAN see.
+// An address two accounts both claim is refused, and — the part that matters —
+// NOT as an incorrect account number.
 func TestCreditTransferRequestRefusesAnAddressTwoOfItsOwnAccountsClaim(t *testing.T) {
 	n, p := networkWithOnePayment(t)
 	ctx := context.Background()
@@ -964,9 +868,8 @@ func TestCreditTransferRequestRefusesAnAddressTwoOfItsOwnAccountsClaim(t *testin
 	}
 
 	// A second account AT THE RECEIVING BANK holding the creditor's IBAN, written
-	// straight through the store past the register's write-time check, because that is
-	// the only way it arises. Through that bank's OWN network: a bank row is in the
-	// bank shape and the clearing house's has no such table.
+	// straight through the store past the register's write-time check, because
+	// that is the only way it arises.
 	verde, err := n.bank(p.CreditorDetails.Agent).GetBank(ctx, ParticipantID(p.CreditorDetails.Agent))
 	assertNoError(t, err)
 	impostor := openCustomer(t, ctx, verde, "Impostor")
@@ -992,11 +895,7 @@ func TestCreditTransferRequestRefusesAnAddressTwoOfItsOwnAccountsClaim(t *testin
 }
 
 // A store failure is not a defect in the counterparty's message and must not be
-// reported as one. It is a live hazard here because the obvious way to write the
-// resolver is `if err != nil { return ErrAccountNotInParticipant }`, a not-found being
-// the expected failure of a directory lookup — a shape that turns this system's
-// outage into AC01 and sends another bank hunting a fault in an address that was
-// never wrong. Injected at the seam, for the reason failingStore documents.
+// reported as one.
 func TestCreditTransferRequestDoesNotBlameTheCounterpartyForAStoreFailure(t *testing.T) {
 	n, p := networkWithOnePayment(t)
 	ctx := context.Background()
@@ -1024,14 +923,8 @@ func TestCreditTransferRequestDoesNotBlameTheCounterpartyForAStoreFailure(t *tes
 	}
 }
 
-// The scale an inbound amount is read at comes from the ASSET the message names,
-// never from a two-decimal constant.
-//
-// A pacs.008 quoting BTC is refused as an asset mismatch, because SEPA credit
-// transfer settles in euro. The evidence that the scale was looked up is WHICH
-// refusal arrives: at the asset's own scale of 8, "0.00250000" is a well-formed
-// 250000 satoshi and the only thing wrong is the currency. A hardcoded 2 would refuse
-// it as ErrAmountScale and never reach the question that decides the message.
+// The scale an inbound amount is read at comes from the ASSET the message
+// names, never from a two-decimal constant.
 func TestCreditTransferRequestRefusesAMessageInAnotherAsset(t *testing.T) {
 	n, p := networkWithOnePayment(t)
 	ctx := context.Background()
@@ -1062,11 +955,10 @@ type secondEuroPush struct{ SCT }
 
 func (secondEuroPush) ID() SchemeID { return "sepa.ct.instant" }
 
-// TestCreditTransferRequestReadsTheSchemeFromTheCurrency is the positive half of the
-// rule schemeSettling states: a pacs.008 says PUSH and nothing more, and which push
-// scheme it travelled under is decided by the currency, this network registering one
-// scheme per direction and asset. With a single push scheme the two answers are the
-// same one and the distinction cannot be observed at all.
+// TestCreditTransferRequestReadsTheSchemeFromTheCurrency is the positive half
+// of the rule schemeSettling states: a pacs.008 says PUSH and nothing more, and
+// which push scheme it travelled under is decided by the currency, this network
+// registering one scheme per direction and asset.
 func TestCreditTransferRequestReadsTheSchemeFromTheCurrency(t *testing.T) {
 	n, p := networkWithOnePayment(t)
 	n.RegisterScheme(dollarPush{})
@@ -1091,11 +983,8 @@ func TestCreditTransferRequestReadsTheSchemeFromTheCurrency(t *testing.T) {
 	assertEqual(t, "amount in minor units", req.Amount, ledger.Amount(250000))
 }
 
-// TestCreditTransferRequestRefusesAnAmbiguousScheme is the other half, a refusal
-// because there is nothing in the message to break the tie. Two push schemes settling
-// in the same asset is a network whose rulebook a pacs.008 cannot name; picking one
-// would resolve every euro message under a scheme chosen by alphabet, and the two
-// could differ in settlement model, value date and whether returns are allowed.
+// TestCreditTransferRequestRefusesAnAmbiguousScheme is the other half, a
+// refusal because there is nothing in the message to break the tie.
 func TestCreditTransferRequestRefusesAnAmbiguousScheme(t *testing.T) {
 	n, p := networkWithOnePayment(t)
 	n.RegisterScheme(secondEuroPush{})
@@ -1134,13 +1023,8 @@ func TestCreditTransferRequestRefusesAnUnknownCurrency(t *testing.T) {
 	}
 }
 
-// NOTPROVIDED comes back as NO reference, the inverse of what endToEndOf writes on
-// the way out, and getting it wrong is not cosmetic.
-//
-// EndToEndID is deduplicated: submission refuses a second payment carrying a
-// reference it has seen, and an empty one is never an identity. Storing the literal
-// string would give every reference-less payment the same reference, and the SECOND
-// to arrive would be rejected as a duplicate of the first.
+// NOTPROVIDED comes back as NO reference, the inverse of what endToEndOf writes
+// on the way out, and getting it wrong is not cosmetic.
 func TestCreditTransferRequestReadsNOTPROVIDEDBackAsNoReference(t *testing.T) {
 	n, p := networkWithOnePayment(t)
 	ctx := context.Background()
@@ -1163,15 +1047,13 @@ func TestCreditTransferRequestReadsNOTPROVIDEDBackAsNoReference(t *testing.T) {
 	}
 	// CreditorDetails now comes off the message itself — agentIn/nameIn reading
 	// Cdtr/CdtrAgt — rather than being carried forward from the payment this
-	// fixture already knows about. Asserted, not assigned: this is the real
-	// translator's own output.
+	// fixture already knows about.
 	if req.CreditorDetails != p.CreditorDetails {
 		t.Errorf("creditor details = %+v, want %+v", req.CreditorDetails, p.CreditorDetails)
 	}
-	// The debtor's participant and account are filled in directly rather than left as
-	// CreditTransferRequest returned them: the debtor is not resolved at all, so
-	// req.Debtor holds only the address the message quoted. What is under test is
-	// EndToEndID deduplication, which needs a resolvable debtor to reach.
+	// The debtor's participant and account are filled in directly rather than left
+	// as CreditTransferRequest returned them: the debtor is not resolved at all,
+	// so req.Debtor holds only the address the message quoted.
 	req.DebtorDetails.Agent = p.DebtorDetails.Agent
 	req.Debtor.Account = p.Debtor.Account
 	if _, err := initiate(ctx, n, req); err != nil {
@@ -1182,11 +1064,8 @@ func TestCreditTransferRequestReadsNOTPROVIDEDBackAsNoReference(t *testing.T) {
 	}
 }
 
-// NbOfTxs is the sender's own assertion of what it sent, and THIS is the receiver
-// that checks it. TestSettlementMessageNbOfTxsSurvivesATruncatedFile pins the other
-// half — neither the encoder nor the decoder recomputes it, so the discrepancy
-// survives the wire intact. A message that says two and carries one is a truncated
-// file.
+// NbOfTxs is the sender's own assertion of what it sent, and THIS is the
+// receiver that checks it.
 func TestCreditTransferRequestRefusesATruncatedFile(t *testing.T) {
 	n, p := networkWithOnePayment(t)
 	ctx := context.Background()
@@ -1206,11 +1085,8 @@ func TestCreditTransferRequestRefusesATruncatedFile(t *testing.T) {
 	}
 }
 
-// A file carrying two transactions is read as two instructions, in the file's own
-// order. A bank accumulates behind a cut-off and sends one message carrying
-// everything it has, so a reader that took CdtTrfTxInf[0] and stopped would drop
-// every payment after the first — arrived, acknowledged at the message level, and
-// never happened.
+// A file carrying two transactions is read as two instructions, in the file's
+// own order.
 func TestCreditTransferRequestReadsEveryTransactionInAFile(t *testing.T) {
 	n, p := networkWithOnePayment(t)
 	ctx := context.Background()
@@ -1328,10 +1204,7 @@ func TestEachCollectionInAFileCarriesItsOwnMandate(t *testing.T) {
 	}
 }
 
-// A collection with no mandate is refused before it becomes a request. The
-// outbound direction refuses the same thing for the same reason, and the reason
-// is stronger inbound: this is another bank's claim on this bank's customer's
-// account, and the mandate is the only thing that makes it authorised.
+// A collection with no mandate is refused before it becomes a request.
 func TestDirectDebitRequestRefusesACollectionWithNoMandate(t *testing.T) {
 	n, p, m := networkWithOneCollection(t)
 	ctx := context.Background()
@@ -1348,18 +1221,6 @@ func TestDirectDebitRequestRefusesACollectionWithNoMandate(t *testing.T) {
 }
 
 // An address a PERSON typed reaches the account a bank stored.
-//
-// A register that stored a readable form while its messages carried a compact one
-// would let a bank emit an address it could not then resolve — compaction does not
-// run backwards. There is ONE stored form, minted canonical, so the assertion is that
-// the message carries the stored string VERBATIM.
-//
-// A statement prints an IBAN grouped in fours and a keyboard produces whatever case
-// the typist was in. Both are the same address, and deposit.Identifier.MatchValue is
-// what makes them so — reached by two different comparisons, which is why one test
-// drives both: resolution, which finds an account FROM an address, and addressFor's
-// Matches, which checks an address QUOTED against an account already named. A fix
-// that taught only one would resolve a typed address and still refuse it as a quote.
 func TestATypedAddressReachesTheStoredOne(t *testing.T) {
 	ctx := context.Background()
 	n := testNetwork(t)
@@ -1403,8 +1264,8 @@ func TestATypedAddressReachesTheStoredOne(t *testing.T) {
 		Debtor: PartyRef{Account: alice.ID, Identifier: lowered},
 		// The payee's address as the payer typed it, which is the only thing the
 		// payer has: Aurora cannot reach Verde's register to normalise it, so the
-		// grouped form is what its copy records and what the codec compacts on
-		// the way out.
+		// grouped form is what its copy records and what the codec compacts on the
+		// way out.
 		Creditor:        PartyRef{Account: bruno.ID, Identifier: grouped},
 		Amount:          250000,
 		CreditorDetails: PartyDetails{Agent: verde.BIC, Name: bruno.Name},
@@ -1447,11 +1308,8 @@ func TestATypedAddressReachesTheStoredOne(t *testing.T) {
 	assertEqual(t, "the debtor address the message carried", got.Debtor.Identifier, alicesStored)
 }
 
-// A status report about no transactions leaves GrpSts empty and the document is still
-// valid, which is the claim groupStatusOf's comment makes. The element is optional in
-// the standard precisely so a report can decline to characterise a group it says
-// nothing about, and a future GrpSts check in OriginalGroupHeader.validate would
-// break this silently.
+// A status report about no transactions leaves GrpSts empty and the document is
+// still valid, which is the claim groupStatusOf's comment makes.
 func TestStatusMessageWithNoTransactionsCharacterisesNoGroup(t *testing.T) {
 	env, err := StatusMessage(
 		OriginalMessage{MsgID: "AURO-1", MsgDefIdr: "pacs.008.001.08", CreDtTm: messageNow},
@@ -1474,10 +1332,8 @@ func TestStatusMessageWithNoTransactionsCharacterisesNoGroup(t *testing.T) {
 }
 
 // TestStatementMessageRoundTripsThroughTheWire pins that what the central bank
-// captured inside its unit of work is what the member bank can act on: the movement,
-// the closing balance, the asset and the cycle. Both directions in one test, because
-// a builder and a reader that agree with each other and not with the wire is the
-// failure this catches.
+// captured inside its unit of work is what the member bank can act on: the
+// movement, the closing balance, the asset and the cycle.
 func TestStatementMessageRoundTripsThroughTheWire(t *testing.T) {
 	st := SettlementStatement{
 		Agent:          "BRVODEFFXXX",
@@ -1526,12 +1382,6 @@ func TestStatementMessageRoundTripsThroughTheWire(t *testing.T) {
 
 // TestStatementMessageCarriesTheDirectionInWordsAndTheAmountAsAMagnitude pins
 // the one place a sign could be lost.
-//
-// ActiveCurrencyAndAmount cannot be negative — NewAmount refuses one — so a net
-// PAYER's movement travels as a positive amount with CdtDbtInd = DBIT, and the
-// sign is reconstructed on the way in. A builder that emitted the magnitude and
-// dropped the indicator would produce a statement that reads as a credit, which
-// would make a bank post its mirror leg BACKWARDS: reserve up when it went down.
 func TestStatementMessageCarriesTheDirectionInWordsAndTheAmountAsAMagnitude(t *testing.T) {
 	st := SettlementStatement{
 		Agent: "BRVODEFFXXX", Account: "acc_1", Asset: "EUR",

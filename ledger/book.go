@@ -12,56 +12,6 @@ import (
 // Book is the central component of the general ledger. It manages the full
 // lifecycle of ledgers, subledgers, accounts, transactions, and the audit
 // trail.
-//
-// # Where the state lives
-//
-// A Book owns no state of its own. Every entity, every counter and the audit
-// log live in a Store (store/sqlite); the Book keeps only the store handle, its
-// BookID and its clock. All it contributes is validation and orchestration —
-// which is the part that is stated against the Store interface and names no
-// table, so that what a bank will accept is decided here and not by whatever is
-// underneath.
-//
-// # Units of work
-//
-// Every mutating method comes in two forms. The plain form (PostTransaction)
-// wraps a single Store.Update, so the whole operation — the entity writes, the
-// counters it burned and the audit event it emitted — commits or rolls back
-// together. The exported …Tx form (PostTransactionTx) takes a caller-supplied
-// Tx instead, so the deposit and payment layers can compose several operations
-// across layers into one atomic unit of work.
-//
-// The derived reads — BookBalanceTx, ValueDateBalanceTx, SeriesTx — come in the
-// same two forms, and for the same reason: a layer that has just posted inside a
-// unit of work must be able to read the result of that posting without opening a
-// second one. Each of them resolves the account's normal direction itself, so
-// that the sign convention lives only in AccountType.NormalBalance() and a
-// caller never has to name Debit or Credit to read a balance.
-//
-// Because Update is exclusive, a …Tx method must never be handed a Tx and then
-// call a plain method: that would open a second unit of work inside the first,
-// which the store refuses outright rather than allowing — see
-// sqlite.ErrNestedTransaction for what it would otherwise cost.
-//
-// # Thread Safety
-//
-// All public methods on Book are safe for concurrent use; the Store provides
-// the isolation.
-//
-// # Double-Entry Bookkeeping
-//
-// Every transaction posted through this book enforces the fundamental
-// accounting equation: debits must equal credits *within each asset*. A book
-// may hold accounts in several assets, and a total taken across all of them
-// would be satisfied by legs that merely share an integer — so the sum is
-// taken per asset. This guarantee is checked before any entries are applied to
-// account balances.
-//
-// # ID Generation
-//
-// The book uses simple monotonic counters, allocated by the store and scoped to
-// the BookID, for ID generation. In a production system, you would replace this
-// with UUIDs or another globally unique ID scheme.
 type Book struct {
 	// store owns all persistent state.
 	store Store
@@ -75,20 +25,6 @@ type Book struct {
 }
 
 // NewBook creates a general ledger over the given store, identified by id.
-//
-// The clock is injected rather than read from time.Now so that several Books
-// can share a single deterministic time source — for example, the payment
-// package runs one ledger per bank plus a central-bank ledger and drives them
-// all from one clock so that booking dates, value dates, and audit timestamps
-// line up across ledgers.
-//
-// Example:
-//
-//	store, _ := sqlite.OpenBank(ctx, "bank", "", time.Now)
-//	book := ledger.NewBook(store.Ledger(), "bank", time.Now)
-//	l, _ := book.CreateLedger(ctx, "General Ledger")
-//	sl, _ := book.CreateSubledger(ctx, l.ID, "Accounts Receivable")
-//	acct, _ := book.CreateAccount(ctx, sl.ID, "Customer A", ledger.Asset, "EUR")
 func NewBook(store Store, id BookID, clock func() time.Time) *Book {
 	return &Book{store: store, id: id, clock: clock}
 }
@@ -106,9 +42,6 @@ func (s *Book) now() time.Time { return s.clock() }
 
 // appendAuditTx records an immutable event through the transaction, so an audit
 // event never outlives an operation that rolled back.
-//
-// payload is marshalled now, not held by reference, so later mutation of the
-// entity cannot rewrite history. The event's Seq is assigned by the store.
 func (s *Book) appendAuditTx(ctx context.Context, tx CommonTx, scope Scope, eventType, entityID string, payload any) error {
 	raw, err := json.Marshal(payload)
 	if err != nil {
@@ -133,11 +66,9 @@ func (s *Book) appendAuditTx(ctx context.Context, tx CommonTx, scope Scope, even
 // Ledger & Subledger Management
 // ---------------------------------------------------------------------------
 
-// CreateLedger creates a new top-level ledger. A ledger is the highest
-// level of organization in the chart of accounts, typically representing
-// a book of accounts (e.g., "General Ledger", "Trading Book").
-//
-// Returns the created ledger.
+// CreateLedger creates a new top-level ledger. A ledger is the highest level of
+// organization in the chart of accounts, typically representing a book of
+// accounts (e.g., "General Ledger", "Trading Book").
 func (s *Book) CreateLedger(ctx context.Context, name string) (Ledger, error) {
 	var out Ledger
 	err := s.store.Update(ctx, func(ctx context.Context, tx Tx) error {
@@ -185,11 +116,9 @@ func (s *Book) GetLedger(ctx context.Context, id LedgerID) (Ledger, error) {
 	return out, err
 }
 
-// CreateSubledger creates a new subledger under an existing ledger.
-// Subledgers provide a second level of grouping for accounts
-// (e.g., "Accounts Receivable", "Checking Accounts", "Loan Portfolio").
-//
-// Returns ErrLedgerNotFound if the parent ledger does not exist.
+// CreateSubledger creates a new subledger under an existing ledger. Subledgers
+// provide a second level of grouping for accounts (e.g., "Accounts Receivable",
+// "Checking Accounts", "Loan Portfolio").
 func (s *Book) CreateSubledger(ctx context.Context, ledgerID LedgerID, name string) (Subledger, error) {
 	var out Subledger
 	err := s.store.Update(ctx, func(ctx context.Context, tx Tx) error {
@@ -251,17 +180,6 @@ func (s *Book) GetSubledger(ctx context.Context, id SubledgerID) (Subledger, err
 // ---------------------------------------------------------------------------
 
 // CreateAccount creates a new financial account within a subledger.
-//
-// In the chart of accounts, every account has a type that determines its
-// normal balance direction:
-//   - Asset and Expense accounts have a normal debit balance (debits increase them)
-//   - Liability, Equity, and Revenue accounts have a normal credit balance (credits increase them)
-//
-// The account is denominated in asset, which must be a known asset (see
-// LookupAsset), and starts with a zero balance.
-//
-// Returns ErrSubledgerNotFound if the parent subledger does not exist, or
-// ErrAssetNotFound if the asset code is not one the system knows.
 func (s *Book) CreateAccount(ctx context.Context, subledgerID SubledgerID, name string, accountType AccountType, asset AssetCode) (Account, error) {
 	var out Account
 	err := s.store.Update(ctx, func(ctx context.Context, tx Tx) error {
@@ -281,12 +199,6 @@ func (s *Book) CreateAccountTx(ctx context.Context, tx Tx, subledgerID Subledger
 
 // CreateControlAccountTx creates an account that pools subsidiaries: one chart-
 // accounts line standing for many, with each entry against it naming which.
-//
-// It is a separate method rather than a flag on CreateAccountTx because control
-// is a property of the account that cannot be changed afterwards and that two
-// posting refusals turn on. A bare boolean at every one of the plain call sites
-// would say nothing at the sites that do not care and would be easy to pass the
-// wrong way round at the few that do.
 func (s *Book) CreateControlAccountTx(ctx context.Context, tx Tx, subledgerID SubledgerID, name string, accountType AccountType, asset AssetCode) (Account, error) {
 	return s.createAccountTx(ctx, tx, subledgerID, name, accountType, asset, true)
 }
@@ -339,16 +251,6 @@ func (s *Book) createAccountTx(ctx context.Context, tx Tx, subledgerID Subledger
 
 // EnsureSubledgerTx returns the subledger with this name under this ledger,
 // creating it if it is not there.
-//
-// It resolves by name on every call rather than caching an ID, which is the
-// same choice payment.centralBankChartTx documents: a cached ID is wrong after
-// a store reset, wrong for a process that did not create the row, and wrong the
-// moment there are two processes. Resolving is a listing of a chart of accounts
-// that has tens of rows, not millions.
-//
-// The name is the identity here, so two subledgers under one ledger may not
-// share one. Nothing enforces that for subledgers created directly; Ensure
-// simply takes the first match, in listing order.
 func (s *Book) EnsureSubledgerTx(ctx context.Context, tx Tx, ledgerID LedgerID, name string) (Subledger, error) {
 	found, err := s.findSubledgerTx(ctx, tx, ledgerID, name)
 	if err == nil {
@@ -380,18 +282,6 @@ func (s *Book) findSubledgerTx(ctx context.Context, tx Tx, ledgerID LedgerID, na
 
 // EnsureAccountTx returns the plain account with this name, type and asset in
 // this subledger, creating it if it is not there.
-//
-// The match is on all three, not on the name alone. An account and its asset
-// are inseparable, so "Interest Income" in euro and in dollars are two
-// accounts; and matching a name across types would hand a caller asking for an
-// Expense account a Revenue one, whose normal balance runs the other way — a
-// mismatch that would surface only as a balance with the wrong sign.
-//
-// Whether the account pools subsidiaries is matched for the same reason and is the
-// sharper case of it: handing a caller posting unqualified entries a control
-// account, or the reverse, is refused at the posting rather than silently
-// mis-booked — but it is refused every time from then on, and the account it
-// would have created is never made.
 func (s *Book) EnsureAccountTx(ctx context.Context, tx Tx, subledgerID SubledgerID, name string, accountType AccountType, asset AssetCode) (Account, error) {
 	return s.ensureAccountTx(ctx, tx, subledgerID, name, accountType, asset, false)
 }
@@ -442,21 +332,6 @@ func (s *Book) GetAccount(ctx context.Context, id AccountID) (Account, error) {
 }
 
 // GetAccounts retrieves several accounts in one unit of work.
-//
-// It exists for callers that need to resolve accounts referenced across a
-// whole batch of results — rendering the entries of a transaction listing,
-// for instance — rather than one at a time. GetAccount's single store.View
-// per call is a full BEGIN…COMMIT; calling it once per entry across a listing
-// of N transactions costs on the order of N of them, serialized, for what is
-// fundamentally N cheap reads. GetAccounts
-// opens exactly one store.View and issues one tx.GetAccount per distinct ID
-// inside it, so the round-trip count stops depending on how many results are
-// being rendered.
-//
-// Duplicate IDs are resolved once. Returns ErrAccountNotFound (via the same
-// error GetAccount returns) at the first ID that does not exist, rather than
-// resolving the rest and reporting a partial map — a caller-visible error
-// should not depend on where in the batch the bad ID happened to fall.
 func (s *Book) GetAccounts(ctx context.Context, ids []AccountID) (map[AccountID]Account, error) {
 	out := make(map[AccountID]Account, len(ids))
 	err := s.store.View(ctx, func(ctx context.Context, tx Tx) error {
@@ -485,21 +360,13 @@ func (s *Book) GetAccounts(ctx context.Context, ids []AccountID) (map[AccountID]
 // PostTransactionRequest contains all the parameters needed to post a
 // new multi-legged transaction.
 type PostTransactionRequest struct {
-	// IdempotencyKey is an optional client-supplied key that prevents
-	// duplicate postings. If a transaction with the same key has already
-	// been posted, ErrDuplicateIdempotencyKey is returned. Idempotency
-	// keys are useful when clients might retry requests — the system
-	// guarantees that a given key produces at most one transaction.
+	// IdempotencyKey is an optional client-supplied key that prevents duplicate
+	// postings. If a transaction with the same key has already been posted,
+	// ErrDuplicateIdempotencyKey is returned.
 	IdempotencyKey string
 
-	// Entries is the set of debit and credit legs that make up this
-	// transaction. The total debit amounts must equal the total credit
-	// amounts.
-	//
-	// Each entry specifies:
-	//   - AccountID: which account to debit or credit
-	//   - Amount: the positive amount in minor currency units
-	//   - Direction: Debit or Credit
+	// Entries is the set of debit and credit legs that make up this transaction.
+	// The total debit amounts must equal the total credit amounts.
 	Entries []Entry
 
 	// BookingDate is the date/time when the transaction is recorded in
@@ -507,12 +374,9 @@ type PostTransactionRequest struct {
 	// that appears in system reports and audit trails.
 	BookingDate time.Time
 
-	// ValueDate is the date when the transaction takes economic effect.
-	// This determines which business day the transaction "belongs to"
-	// for interest calculations and settlement. End-of-day snapshots use
-	// BookingDate instead, not this field — see
-	// deposit.Register.TakeEndOfDaySnapshotTx. If zero, the BookingDate
-	// is used.
+	// ValueDate is the date when the transaction takes economic effect. This
+	// determines which business day the transaction "belongs to" for interest
+	// calculations and settlement.
 	ValueDate time.Time
 
 	// Description is a human-readable description of the transaction.
@@ -524,38 +388,6 @@ type PostTransactionRequest struct {
 }
 
 // PostTransaction records a new multi-legged accounting transaction.
-//
-// The transaction goes through the following validation steps:
-//  1. At least one entry is required.
-//  2. All entry amounts must be positive (direction determines sign).
-//  3. All referenced accounts must exist.
-//  4. Every entry against a control account must name a subsidiary, and no
-//     entry against any other account may name one.
-//  5. If an idempotency key is provided, it must not already be used.
-//  6. Debits must equal credits *within each asset*. A global total is not
-//     enough: an Amount is an integer in its asset's minor units, so a global
-//     sum is satisfied whenever the integers match. 10_000_000_000 debited
-//     from a EUR account (€100M) against 10_000_000_000 credited to a BTC one
-//     (100 BTC) nets to zero overall while inventing most of a hundred
-//     million euro. See validateBalance.
-//  7. Asset and Expense positions must have sufficient book balance — the
-//     subsidiary's, on a control account, and not the pool's.
-//
-// If all validations pass, the entries are atomically applied to the
-// account balances and the transaction is recorded.
-//
-// # Balance Impact
-//
-// The effect of an entry on an account's book balance depends on the
-// account's type and the entry direction:
-//
-//   - A debit to an Asset/Expense account increases its balance.
-//   - A credit to an Asset/Expense account decreases its balance.
-//   - A credit to a Liability/Equity/Revenue account increases its balance.
-//   - A debit to a Liability/Equity/Revenue account decreases its balance.
-//
-// Internally, balances are stored as signed values where positive means
-// a balance in the account's normal direction.
 func (s *Book) PostTransaction(ctx context.Context, req PostTransactionRequest) (Transaction, error) {
 	var out Transaction
 	err := s.store.Update(ctx, func(ctx context.Context, tx Tx) error {
@@ -567,9 +399,6 @@ func (s *Book) PostTransaction(ctx context.Context, req PostTransactionRequest) 
 }
 
 // PostTransactionTx is PostTransaction within a caller-supplied unit of work.
-// It is the composition point for the layers above: a deposit capture or a
-// payment leg posts through this method with the same Tx it uses for its own
-// state, so the GL posting and the layer's own bookkeeping commit together.
 func (s *Book) PostTransactionTx(ctx context.Context, tx Tx, req PostTransactionRequest) (Transaction, error) {
 	// Validate: non-empty entries.
 	if len(req.Entries) == 0 {
@@ -622,15 +451,6 @@ func (s *Book) PostTransactionTx(ctx context.Context, tx Tx, req PostTransaction
 	}
 
 	// Validate: the dimension matches the account, both ways round.
-	//
-	// A control account pools subsidiaries, so an entry against one that names
-	// none is money in the pool belonging to nobody: the control figure would
-	// still be right, every detail under it wrong, and nothing afterwards could
-	// say whose it was. An entry against a plain account that names a subsidiary
-	// is the mirror: nothing aggregates a plain account by subsidiary, so the
-	// dimension is written and never read while the caller believes it recorded
-	// whose money this is. Neither is recoverable once posted, and neither
-	// breaks the double-entry invariant, so neither would be noticed.
 	for _, e := range req.Entries {
 		switch {
 		case accounts[e.AccountID].Control && e.Subsidiary == "":
@@ -721,30 +541,8 @@ func (s *Book) PostTransactionTx(ctx context.Context, tx Tx, req PostTransaction
 }
 
 // validateBalance checks that total debits equal total credits within each
-// asset. This is the core invariant of double-entry bookkeeping, restated for
-// a ledger that holds more than one asset.
-//
-// Checking globally would not do. An entry carries an Amount in its asset's
-// minor units and nothing else, so a global sum is satisfied whenever the
-// integers match, whatever they are worth: 10_000_000_000 debited from a EUR
-// account (€100M) against 10_000_000_000 credited to a BTC one (100 BTC) nets
-// to zero by the old rule and invents most of a hundred million euro. What
-// breaks it is not that the legs differ in value — the check has no rate with
-// which to notice that — but that equal integers in assets whose scales differ
-// by a factor of a million are not equal amounts. Per asset, there is no rate
-// to get wrong, which is why the ledger never has to know what anything is
-// worth.
-//
-// An FX trade therefore cannot be one naive two-asset posting. Each asset
-// balances through its own position account, and the bank's open exposure is
-// the balance of those accounts.
-//
-// accounts must hold every account referenced by entries; the caller has
-// already loaded them all. A missing key would read as the zero AssetCode
-// rather than as an error, quietly bucketing unrelated entries into one asset
-// and admitting a transaction that does not balance in any real one. Not
-// reachable from the only caller today, which loads every referenced account
-// before it calls.
+// asset. This is the core invariant of double-entry bookkeeping, restated for a
+// ledger that holds more than one asset.
 func validateBalance(entries []Entry, accounts map[AccountID]Account) error {
 	// net[asset] is debits minus credits in that asset.
 	net := make(map[AssetCode]Amount, 2)
@@ -772,20 +570,9 @@ func validateBalance(entries []Entry, accounts map[AccountID]Account) error {
 	return nil
 }
 
-// checkSufficientBalance verifies that the entries would not cause any
-// Asset or Expense POSITION's book balance to go below zero.
-// Liability, Equity, and Revenue accounts are not checked.
-//
-// The unit is the position and not the account, and on a control account those
-// differ in the one direction that matters: a pool is never negative while a
-// subsidiary under it is, so a check that kept reading the account would still
-// pass, still report nothing, and have stopped guarding. Every Asset-side
-// facility would be unbounded and the double-entry invariant would hold
-// throughout. It is the one defect in the dimension that produces no error and
-// no imbalance, which is why the key here is a Position.
-//
-// accounts must hold every account referenced by entries; the caller has
-// already loaded and locked them.
+// checkSufficientBalance verifies that the entries would not cause any Asset or
+// Expense POSITION's book balance to go below zero. Liability, Equity, and
+// Revenue accounts are not checked.
 func (s *Book) checkSufficientBalance(ctx context.Context, tx Tx, accounts map[AccountID]Account, entries []Entry) error {
 	// Compute the net balance impact per position.
 	impact := make(map[Position]Amount)
@@ -847,24 +634,9 @@ func (s *Book) GetTransactionByIdempotencyKey(ctx context.Context, key string) (
 // Transaction Reversal
 // ---------------------------------------------------------------------------
 
-// ReverseTransaction creates a new counter-transaction that exactly offsets
-// the original transaction. Every debit entry becomes a credit and every
-// credit entry becomes a debit, with the same amounts and currencies.
-//
-// The original transaction is marked as Reversed and cannot be reversed
-// again. The reversal transaction references the original via its
-// ReversalOf field.
-//
-// # When to Use Reversal
-//
-// In banking, transactions are never deleted — the audit trail must be
-// preserved. Instead, a correction is made by posting a reversal that
-// cancels out the effect of the original. This maintains the integrity
-// of the ledger while allowing errors to be corrected.
-//
-// Returns:
-//   - ErrTransactionNotFound if the original does not exist.
-//   - ErrTransactionAlreadyReversed if the original was already reversed.
+// ReverseTransaction creates a new counter-transaction that exactly offsets the
+// original transaction. Every debit entry becomes a credit and every credit
+// entry becomes a debit, with the same amounts and currencies.
 func (s *Book) ReverseTransaction(ctx context.Context, txID TransactionID, description string) (Transaction, error) {
 	var out Transaction
 	err := s.store.Update(ctx, func(ctx context.Context, tx Tx) error {
@@ -957,26 +729,6 @@ func (s *Book) ReverseTransactionTx(ctx context.Context, tx Tx, txID Transaction
 // ---------------------------------------------------------------------------
 
 // BookBalance computes the current book balance of a position.
-//
-// A position is an account, or one subsidiary within a control account —
-// acct.Total() and acct.For(id) respectively. There is one balance API and not
-// two, because a caller holding an account id and a caller holding a subsidiary
-// are asking the same question of the same entries with one predicate between
-// them.
-//
-// The book balance is the net effect of all posted transactions on this
-// position, aggregated by the store from its entries:
-//
-//   - For Asset/Expense accounts, debits increase and credits decrease.
-//   - For Liability/Equity/Revenue accounts, credits increase and debits decrease.
-//
-// Note: ALL transactions are included, including those marked as Reversed.
-// The Reversed status is informational — the corresponding reversal
-// transaction's entries are what actually cancel out the original's balance
-// impact. This preserves the full audit trail, and every Store implementation
-// must aggregate the same way.
-//
-// Returns ErrAccountNotFound if the account does not exist.
 func (s *Book) BookBalance(ctx context.Context, pos Position) (Amount, error) {
 	var out Amount
 	err := s.store.View(ctx, func(ctx context.Context, tx Tx) error {
@@ -988,15 +740,6 @@ func (s *Book) BookBalance(ctx context.Context, pos Position) (Amount, error) {
 }
 
 // BookBalanceTx is BookBalance within a caller-supplied unit of work.
-//
-// It reads the account for its type, then asks the store to aggregate against
-// that type's normal direction. A caller must not pass the direction in: which
-// way an account's balance runs is a property of the account, and a caller that
-// supplies it is asserting something it cannot check.
-//
-// A subsidiary with no entries reads as zero, like an account with none.
-// Nothing here can tell a subsidiary that never had a posting from one that
-// never existed, and this package holds no list against which to try.
 func (s *Book) BookBalanceTx(ctx context.Context, tx Tx, pos Position) (Amount, error) {
 	acct, err := tx.GetAccount(ctx, s.id, pos.Account)
 	if err != nil {
@@ -1006,18 +749,6 @@ func (s *Book) BookBalanceTx(ctx context.Context, tx Tx, pos Position) (Amount, 
 }
 
 // ValueDateBalance computes an account's balance as of the end of asOf's day.
-//
-// The book balance answers "what has been recorded"; this answers "what has
-// taken economic effect". They differ whenever a posting is value-dated away
-// from its booking date, which an outbound payment's clearing leg always is.
-//
-// Entries value-dated on asOf itself count: a day's interest accrues on that
-// day's closing balance.
-//
-// The interest engines consume SeriesTx rather than this, because they recompute
-// a whole window day by day rather than asking about one day.
-//
-// Returns ErrAccountNotFound if the account does not exist.
 func (s *Book) ValueDateBalance(ctx context.Context, pos Position, asOf time.Time) (Amount, error) {
 	var out Amount
 	err := s.store.View(ctx, func(ctx context.Context, tx Tx) error {
@@ -1029,9 +760,6 @@ func (s *Book) ValueDateBalance(ctx context.Context, pos Position, asOf time.Tim
 }
 
 // ValueDateBalanceTx is ValueDateBalance within a caller-supplied unit of work.
-//
-// The exclusive upper bound the store wants is derived here, from asOf, so that
-// no caller has to remember to snap it.
 func (s *Book) ValueDateBalanceTx(ctx context.Context, tx Tx, pos Position, asOf time.Time) (Amount, error) {
 	acct, err := tx.GetAccount(ctx, s.id, pos.Account)
 	if err != nil {
@@ -1042,19 +770,6 @@ func (s *Book) ValueDateBalanceTx(ctx context.Context, tx Tx, pos Position, asOf
 
 // SeriesTx is an account's value-dated movement history over [from, to], signed
 // by the account's normal direction, within a caller-supplied unit of work.
-//
-// Where ValueDateBalanceTx answers "what had taken effect by this day", this
-// returns each day's own figure, which is what lets an accrual re-derive a past
-// day whose posting only reached the ledger afterwards.
-//
-// The bounds are snapped here: from is inclusive and to is exclusive of the day
-// after to, so a window that is to accrue THROUGH to reads the day to falls in.
-// Snapping in one place is the point — the store compares raw timestamps and
-// truncates nothing itself, so a caller that snapped differently would get a
-// silently different answer.
-//
-// There is no plain form. Every consumer is an interest engine already inside a
-// unit of work, and an unused wrapper is surface with no caller to justify it.
 func (s *Book) SeriesTx(ctx context.Context, tx Tx, pos Position, from, to time.Time) (Series, error) {
 	acct, err := tx.GetAccount(ctx, s.id, pos.Account)
 	if err != nil {
@@ -1069,18 +784,6 @@ func (s *Book) SeriesTx(ctx context.Context, tx Tx, pos Position, from, to time.
 // ---------------------------------------------------------------------------
 
 // GetAuditLog returns this book's ledger-scope audit events, ordered by Seq.
-//
-// The audit log is an append-only, immutable record of every mutation
-// that has occurred in the system. It provides:
-//
-//   - Compliance: Full traceability of who did what and when.
-//   - Debugging: Ability to replay the exact sequence of operations.
-//   - Reconciliation: Independent verification of account balances
-//     by replaying events.
-//
-// The deposit and payment layers write into the same log under their own
-// Scope; this method deliberately narrows to ScopeLedger so a Book reports
-// only the mutations it made.
 func (s *Book) GetAuditLog(ctx context.Context) ([]AuditEvent, error) {
 	return s.listAudit(ctx, AuditFilter{BookID: s.id, Scope: ScopeLedger})
 }

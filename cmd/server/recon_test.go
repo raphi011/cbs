@@ -16,32 +16,10 @@ import (
 // ---------------------------------------------------------------------------
 // Calibrating the reconciliation harness
 // ---------------------------------------------------------------------------
-//
-// payment/recon is an instrument, and an instrument that has never been shown a
-// break is an instrument nobody has any reason to believe. Every test in this
-// file therefore takes a network that reconciles, puts ONE thing wrong in it
-// behind every institution's back, and checks that the harness says so — and
-// says which books, because a break that named no institution would send its
-// reader to five databases.
-//
-// This is this package because this is where a real network can be built
-// and driven to finality. The harness itself names no fixture and could be run
-// over any deployment; seed/seed_test.go runs it over the widest one.
-//
-// # Why the damage is done through the store and not through the domain
-//
-// Because none of these states is reachable through the domain, which is the
-// whole reason the harness exists. A bank cannot post into another bank's
-// ledger, a clearing house cannot write a settlement, and nothing in this system
-// can make two institutions' books disagree on purpose. What CAN produce every
-// one of these states is a message that was lost, a handler that failed halfway,
-// or a defect in an act one institution performs alone — and what those have in
-// common is that they leave rows, not conversations. So the fixtures write rows.
 
 // reconciled is a two-bank network that has carried one credit transfer to
-// finality and drained: both banks booked their halves of the cut-off, both hold
-// a Settled copy, and every suspense is back to zero. It is the state each test
-// below damages exactly once.
+// finality and drained: both banks booked their halves of the cut-off, both
+// hold a Settled copy, and every suspense is back to zero.
 func reconciled(t *testing.T) *harness {
 	t.Helper()
 	h := newHarness(t)
@@ -53,13 +31,6 @@ func reconciled(t *testing.T) *harness {
 // TestASettledNetworkReconciles is the control, and without it every other test
 // in this file proves nothing: a harness that reported a break on a healthy
 // network would "catch" all five damaged ones too.
-//
-// It asserts the absence of unreconciled positions as well as of breaks, which
-// is a claim about the FLOW rather than about the harness. Everything this
-// fixture started is finished — the payment is Settled at both banks, both
-// booked the reserve mirror from the camt.053 they were sent — so there is
-// nothing left for a clearing suspense to be holding. A position appearing here
-// means a message in the settlement conversation stopped being answered.
 func TestASettledNetworkReconciles(t *testing.T) {
 	h := reconciled(t)
 
@@ -73,13 +44,6 @@ func TestASettledNetworkReconciles(t *testing.T) {
 
 // TestAReturnedNetworkReconciles carries the control through the one flow that
 // moves reserves BACKWARDS.
-//
-// A return is the same shape as a cut-off, one payment wide: the agent reverses
-// the reserves in its own book and is final there, states both members'
-// accounts in a camt.053 apiece, and each bank books its own mirror leg
-// afterwards. Everything the harness checks therefore has a second form on this
-// path, and a flow that reconciles after a cut-off can still leave a bank short
-// after a return.
 func TestAReturnedNetworkReconciles(t *testing.T) {
 	h := newHarness(t)
 	p := h.settledPayment(t)
@@ -95,14 +59,6 @@ func TestAReturnedNetworkReconciles(t *testing.T) {
 }
 
 // TestATwoAssetNetworkReconciles is the control again with two of everything.
-//
-// Every account this harness reads exists once per asset the bank operates in,
-// and the whole reason for that is that a euro reserve says nothing about a
-// dollar one and the two must never be added up. A harness that summed across
-// assets would pass every test above and report a healthy network in which one
-// currency was short exactly as much as the other was over, so the claim needs a
-// fixture in which the two figures differ — which is what this one is: both
-// banks clear in both, and only the euro side carries a payment.
 func TestATwoAssetNetworkReconciles(t *testing.T) {
 	h := newHarnessWithTwoAssets(t)
 	h.settledPayment(t)
@@ -113,18 +69,6 @@ func TestATwoAssetNetworkReconciles(t *testing.T) {
 
 // TestABookTransferReconcilesAndMovesNothingBetweenInstitutions is the control
 // for the one act that stays inside a member bank.
-//
-// It is worth its own control because a book transfer is exactly what the
-// refused on-us payment produced three wrong answers doing: a cycle that settled
-// nothing, a reserve mirror moved by an amount the central bank never posted,
-// and a bank on both sides of one return. Two of those three are findings this
-// harness makes, so a transfer that reached the clearing route would show up
-// here — and the check is that it does not.
-//
-// The three claims are separate. The books agree (recon.Check), the settlement
-// agent posted nothing (its transaction count), and the payer's bank's claim on
-// it is where it was (the reserve balance). A transfer that quietly netted
-// against reserves would pass the first two.
 func TestABookTransferReconcilesAndMovesNothingBetweenInstitutions(t *testing.T) {
 	ctx := context.Background()
 	h := reconciled(t)
@@ -161,24 +105,12 @@ func TestABookTransferReconcilesAndMovesNothingBetweenInstitutions(t *testing.T)
 // TestTheHarnessCatchesAReserveMirrorThatDiverged is the nostro/vostro check:
 // one account, two books, two institutions, and no act in this system able to
 // compare them.
-//
-// The damage is the shape a defect in PostSettlementAdviceTx would leave — a
-// bank's own reserve moved by something the central bank never posted. It is
-// done as a posting rather than a row write because a reserve balance is derived
-// from entries and there is no column to corrupt.
 func TestTheHarnessCatchesAReserveMirrorThatDiverged(t *testing.T) {
 	h := reconciled(t)
 	accts := h.accounts(t, h.debtorBIC, "EUR")
 
 	// Debit Reserve, Credit Unclaimed Balances: this bank's claim on the central
-	// bank rises by a thousand it was never credited. The contra is Unclaimed
-	// rather than vault cash because vault cash is an Asset the ledger will not
-	// let go negative, and this fixture's payer lodged all of its.
-	//
-	// Unclaimed pools holders, so the leg names one. It names an account that
-	// does not exist, which the ledger neither checks nor could: the break this
-	// fixture builds is about the reserve, and a subsidiary that resolves to
-	// nothing is as postable as one that resolves.
+	// bank rises by a thousand it was never credited.
 	h.postBehindTheBanksBack(t, h.debtorBIC, "a reserve nobody credited",
 		ledger.Entry{AccountID: accts.Reserve, Amount: 1000, Direction: ledger.Debit},
 		ledger.Entry{AccountID: accts.Unclaimed, Subsidiary: "dep_nobody", Amount: 1000, Direction: ledger.Credit})
@@ -191,18 +123,12 @@ func TestTheHarnessCatchesAReserveMirrorThatDiverged(t *testing.T) {
 // this harness can make and the one no institution is placed to make at all: a
 // clearing suspense holding money that has left a customer, with no payment in
 // flight to deliver it and no reserve movement outstanding to discharge it.
-//
-// The payer's own bank sees a balance and cannot tell that nothing is coming;
-// the clearing house holds no ledger; the central bank holds no suspense. It
-// takes all three books at once, which is the definition of this package.
 func TestTheHarnessCatchesASuspenseNothingWillSettle(t *testing.T) {
 	h := reconciled(t)
 	accts := h.accounts(t, h.debtorBIC, "EUR")
 
 	// Credit Suspense, Debit Returns Receivable: money in transit that no payment
-	// is behind. Returns Receivable is the contra because it is an Asset rising,
-	// which the ledger's sufficiency guard has nothing to say about, and because
-	// nothing else in this harness reads it.
+	// is behind.
 	h.postBehindTheBanksBack(t, h.debtorBIC, "in transit to nowhere",
 		ledger.Entry{AccountID: accts.ReturnsReceivable, Amount: 1000, Direction: ledger.Debit},
 		ledger.Entry{AccountID: accts.Suspense, Amount: 1000, Direction: ledger.Credit})
@@ -213,13 +139,6 @@ func TestTheHarnessCatchesASuspenseNothingWillSettle(t *testing.T) {
 
 // TestTheHarnessCatchesACutOffOnlyTheClearingHouseThinksSettled holds the two
 // rows one cut-off leaves in two databases against each other.
-//
-// It is the check that has no join behind it. A cycle carries no settlement id —
-// the agent allocates that in its own unit of work and no message carries it
-// back — so "was this cut-off discharged" is a question the clearing house
-// cannot ask of anybody, and it believes what the pacs.002 told it. A cycle
-// marked Settled with no settlement against it is what a lost or forged answer
-// leaves, and the money it claims to have moved has not moved.
 func TestTheHarnessCatchesACutOffOnlyTheClearingHouseThinksSettled(t *testing.T) {
 	h := reconciled(t)
 
@@ -239,13 +158,6 @@ func TestTheHarnessCatchesACutOffOnlyTheClearingHouseThinksSettled(t *testing.T)
 
 // TestTheHarnessCatchesAnAdmissionThatHalfHappened is the walk
 // payment.BankAccounts.Settlement asks for by name.
-//
-// That doc records why no column says how far through provisioning a bank got:
-// the settlement references say it already, and what a STUCK provisioning needs
-// is both ends held against each other rather than a second field on one of
-// them. One admission writes three rows in three databases and each institution
-// can see exactly one of them, so a bank routed to that no scheme ever admitted
-// is invisible to all three.
 func TestTheHarnessCatchesAnAdmissionThatHalfHappened(t *testing.T) {
 	h := reconciled(t)
 
@@ -260,23 +172,6 @@ func TestTheHarnessCatchesAnAdmissionThatHalfHappened(t *testing.T) {
 
 // TestTheHarnessCatchesABankProvisionedInEveryBookButItsOwn is the gap
 // provisioning cannot close, measured.
-//
-// The bank's second act needs the account numbers the settlement agent
-// allocated, so it cannot commit until the agent has: two commits in the bank's
-// own book with two other institutions' commits between them. A crash in that
-// interval leaves a bank the agent holds an account for and the clearing house
-// routes to, whose own row records nothing — and that is not a domain state with
-// a name. It is a provisioning failure to retry, and this is what finds it.
-//
-// From inside, every book is consistent. The agent holds an account it opened,
-// the clearing house routes to an address it admitted, and the bank's own row is
-// a founded bank's, which is a perfectly ordinary thing to be. It takes all
-// three at once for any of it to be wrong.
-//
-// The allocation is left alone rather than rolled back with the rest. This
-// fixture's customers hold addresses minted under it, so a bank without it could
-// not have them; what the damage is about is the settlement references, which
-// are what the gap leaves empty.
 func TestTheHarnessCatchesABankProvisionedInEveryBookButItsOwn(t *testing.T) {
 	h := reconciled(t)
 
@@ -297,23 +192,6 @@ func TestTheHarnessCatchesABankProvisionedInEveryBookButItsOwn(t *testing.T) {
 
 // TestTheHarnessCatchesABankQuotingAnAccountTheAgentDidNotOpen is the third row
 // read rather than counted.
-//
-// Both institutions hold a number for one account and neither can see the
-// other's. The bank quotes its own when it lodges cash and when it checks an
-// arriving statement; the agent quotes its own when it settles a cut-off. Two
-// different numbers is a reserve credited in one account and moved in another,
-// with every balance on both sides looking exactly as it should.
-//
-// It is the defect payment.Bank.AdmissionRef was added after measuring: an
-// acknowledgement naming a member's own address, quoting an admission it had
-// never heard of, moved that member's settlement reference onto an account the
-// agent had not opened for it. The guard refuses the message; nothing looks at
-// the state a message that got through would leave.
-//
-// The damage is the OTHER member's real reserve account, not an invented one. A
-// nonsense value would be caught by the arm above it — an asset the agent opened
-// nothing in — and would say nothing about the case that matters, which is a
-// real account in the agent's book belonging to somebody else.
 func TestTheHarnessCatchesABankQuotingAnAccountTheAgentDidNotOpen(t *testing.T) {
 	h := reconciled(t)
 
@@ -330,25 +208,6 @@ func TestTheHarnessCatchesABankQuotingAnAccountTheAgentDidNotOpen(t *testing.T) 
 // TestTheHarnessCatchesAPaymentTakenForABankTheRosterDoesNotCarry is
 // payment.ErrBankNotAdmitted's counterpart, and it exists because that refusal
 // is now unreachable by construction.
-//
-// Which banks a deployment has is decided before the process starts and every
-// one of them is provisioned in full, so nothing can submit for a bank the
-// clearing house does not route to. That is a claim about today's callers rather
-// than an invariant, and the cost of it being wrong is on record: one non-member
-// in a cut-off took the whole settlement down, because the instruction turns net
-// positions into addresses through the roster and could not build one. Every
-// other member's payments stuck at Cleared, their payees unpaid, their payers'
-// money in suspense.
-//
-// The party is a real bank the settlement agent answered and the clearing house
-// never admitted — the one state in which a bank has customers with money and no
-// route to anybody — rather than an address this deployment has no bank at. An
-// address with nothing behind it is a different defect and has its own arm.
-//
-// The payment is left at Accepted, which is where the refusal sits: the clearing
-// house has taken it and no cut-off has been built from it yet. So the harness
-// reports the two things that are wrong and neither is a bank missing a copy of
-// a payment it was never told about.
 func TestTheHarnessCatchesAPaymentTakenForABankTheRosterDoesNotCarry(t *testing.T) {
 	h := reconciled(t)
 	outsider := h.admitWithoutTheRoster(t, "Nordhaven Bank", "NORDSESSXXX")
@@ -371,12 +230,6 @@ func TestTheHarnessCatchesAPaymentTakenForABankTheRosterDoesNotCarry(t *testing.
 // TestTheHarnessCatchesTwoBanksDisagreeingAboutOnePayment is the check that a
 // payment being three rows does not license the three from saying different
 // things.
-//
-// The three copies legitimately differ — the clearing house's has no legs, a
-// bank's has no cycle, and their statuses run ahead of each other — and this is
-// the line under that: the amount and the scheme are what was instructed, and a
-// bank whose copy says a different figure is a bank that will settle the wrong
-// number and reconcile against its counterparty for ever.
 func TestTheHarnessCatchesTwoBanksDisagreeingAboutOnePayment(t *testing.T) {
 	h := reconciled(t)
 	p := h.onlySettledPayment(t)
@@ -392,19 +245,6 @@ func TestTheHarnessCatchesTwoBanksDisagreeingAboutOnePayment(t *testing.T) {
 // TestTheHarnessCatchesAnAccountAddressedUnderAnotherBanksCode is the routing
 // invariant the whole IBAN-only design rests on, measured from outside every
 // institution.
-//
-// The bank code inside an IBAN IDENTIFIES THE BANK HOLDING THE ACCOUNT. Break
-// that and a payer's bank derives the wrong agent and sends there — a payment
-// routable to an institution that does not hold the payee, refused with AC01 for
-// an address that exists somewhere. Nothing in the system can see it: the
-// register that issued the code is the settlement agent's, the account is a
-// member's, and neither may read the other.
-//
-// The damage is a plausible one rather than a nonsense value. The address is
-// well-formed, its check digits verify, and it carries the OTHER member's
-// allocation — which is exactly what a virtual IBAN is, and is why the design
-// names them as out of scope. A fixture using a malformed value would be caught
-// by iban.Parse and would prove nothing about the invariant.
 func TestTheHarnessCatchesAnAccountAddressedUnderAnotherBanksCode(t *testing.T) {
 	h := reconciled(t)
 
@@ -420,15 +260,8 @@ func TestTheHarnessCatchesAnAccountAddressedUnderAnotherBanksCode(t *testing.T) 
 	assertBreakAbout(t, report, string(h.creditorBIC), "which is allocated to "+string(h.debtorBIC))
 }
 
-// TestTheHarnessCatchesARosterPublishingAnAllocationTheRegistryDidNotMake is the
-// second half of the same invariant, one register along.
-//
-// The roster is what every member COPIES, so a roster that disagrees with the
-// registry puts the wrong pairing into every subscriber's directory at once. The
-// clearing house learns the allocation from the acknowledgement that writes its
-// row and cannot see the register it came from; the settlement agent has never heard of
-// the roster. So the two parting company is a state neither can notice, which is
-// what makes it this harness's.
+// TestTheHarnessCatchesARosterPublishingAnAllocationTheRegistryDidNotMake is
+// the second half of the same invariant, one register along.
 func TestTheHarnessCatchesARosterPublishingAnAllocationTheRegistryDidNotMake(t *testing.T) {
 	h := reconciled(t)
 
@@ -440,22 +273,8 @@ func TestTheHarnessCatchesARosterPublishingAnAllocationTheRegistryDidNotMake(t *
 	assertBreakAbout(t, report, "the clearing house and the bank-code registry", "the registry allocated to "+string(h.debtorBIC))
 }
 
-// TestAStaleDirectoryIsReportedAndIsNotABreak is the case that must PASS, and it
-// is the one this file exists to hold the line on.
-//
-// A member's routing directory is a copy of the roster, pulled by that member.
-// Between two pulls it is behind whatever has been published since — which is the
-// behaviour the subscription model was chosen for, and is why a bank admitted
-// this morning cannot be paid by a bank that pulled yesterday. So the harness
-// REPORTS the difference and passes.
-//
-// The opposite is an easy thing to write by accident: the roster and the copy are
-// two tables holding one pairing, which is the shape of every break above. What
-// separates them is that this pair has a path back to agreement and the path is a
-// request somebody makes. A harness that failed here would assert the opposite of
-// the design, and every fixture in the repository would then have to refresh
-// every member after every admission to stay green — which is how the local-copy
-// model would quietly become a live lookup.
+// TestAStaleDirectoryIsReportedAndIsNotABreak is the case that must PASS, and
+// it is the one this file exists to hold the line on.
 func TestAStaleDirectoryIsReportedAndIsNotABreak(t *testing.T) {
 	h := reconciled(t)
 
@@ -506,22 +325,6 @@ func TestAStaleDirectoryIsReportedAndIsNotABreak(t *testing.T) {
 // TestAnUnbookedSettlementExplainsAReserveDivergence is what makes the mirror
 // check more than a comparison of two numbers, and it is the pair to the test
 // above it.
-//
-// The two books are ALLOWED to disagree, by exactly the movements the settlement
-// agent has made and a member has not yet booked and by nothing else. That
-// interval is the unreconciled position: settlement is final at the central bank
-// the moment it commits, and what each member does afterwards is that member's
-// own act in its own unit of work, which can fail on its own. A harness that
-// called it a break would be one nobody could run against a real network, and a
-// harness that ignored it would miss the movement that never gets booked at all.
-//
-// So this test does the same damage twice. First it moves reserves at the agent
-// and records the cut-off at both institutions, which is the state a lost
-// camt.053 leaves: neither bank booked, both mirrors diverge, and the harness
-// stays silent because the settlement register accounts for every penny of it.
-// Then it writes ONE bank's advice row without the mirror leg that must commit
-// with it — a bank claiming to have booked what it has not — and the same
-// divergence becomes a break, naming that bank and not the other.
 func TestAnUnbookedSettlementExplainsAReserveDivergence(t *testing.T) {
 	h := reconciled(t)
 	const cycle payment.CycleID = "cyc_camt053_lost"
@@ -558,10 +361,7 @@ func TestAnUnbookedSettlementExplainsAReserveDivergence(t *testing.T) {
 		t.Errorf("a cut-off neither member has booked is an unreconciled position, not a break: %s", b)
 	}
 
-	// One bank now says it booked. Its mirror leg is absent — the row and the
-	// posting commit together or neither does (payment.PostSettlementAdviceTx),
-	// so a row standing alone is precisely the lie that doc exists to prevent —
-	// and the divergence it was excusing is left with nothing behind it.
+	// One bank now says it booked.
 	h.putSettlementAdvice(t, h.debtorBIC, payment.SettlementAdvice{
 		Book:      ledger.BookID(h.debtorBIC),
 		Reference: string(cycle),
@@ -579,26 +379,9 @@ func TestAnUnbookedSettlementExplainsAReserveDivergence(t *testing.T) {
 	}
 }
 
-// TestAnUnbookedReturnExplainsBothBanksReserves is the return path's half of the
-// test above, and it is what holds the harness's one piece of domain knowledge
-// to being right.
-//
-// A cut-off leaves the settlement agent a settlements row with a signed position
-// per member, so what each bank still has to book is READ. A return leaves the
-// agent nothing at all — see settlements in
-// store/sqlite/schema/centralbank/0001_init.sql, which says so in as many words:
-// the only durable trace a return needs is the idempotency key on the reversal.
-// So the movement is DERIVED, from the clearing house's copy of the returned
-// payment, by the rule that a return sends the money back to the payer: the
-// debtor's bank gains and the creditor's bank loses, on a pull exactly as on a
-// push, because the debtor is the payer under both schemes.
-//
-// This is the fixture in which that derivation is load-bearing. Both banks'
-// mirrors diverge from the agent's and neither has booked, so the harness has to
-// account for both from the payment alone — and it has to get the SIGNS right in
-// opposite directions at once. Swap them and each bank breaks by twice the
-// amount, which is what the control above cannot show: there both banks book,
-// the divergence is zero, and a sign nobody uses is a sign nobody has checked.
+// TestAnUnbookedReturnExplainsBothBanksReserves is the return path's half of
+// the test above, and it is what holds the harness's one piece of domain
+// knowledge to being right.
 func TestAnUnbookedReturnExplainsBothBanksReserves(t *testing.T) {
 	h := reconciled(t)
 	p := h.onlySettledPayment(t)
@@ -613,8 +396,7 @@ func TestAnUnbookedReturnExplainsBothBanksReserves(t *testing.T) {
 
 	// And the clearing house's copy, which is the only record of the return that
 	// outlives the conversation and therefore the only thing the harness has to
-	// derive from. Neither bank is told: no camt.053 arrives, so no advice row is
-	// written and no mirror leg is posted.
+	// derive from.
 	returned := p
 	returned.Status = payment.Returned
 	h.putClearingHousePayment(t, returned)
@@ -650,13 +432,6 @@ func member(bic iso20022.BIC, asset ledger.AssetCode) string {
 
 // assertBreakAbout checks that the harness reported a break about the right
 // books, saying the right thing.
-//
-// Both halves, because either alone passes on the wrong evidence: a match on the
-// wording alone would accept a break naming the wrong institution, and a match
-// on the institution alone would accept any of the five checks firing for any
-// reason. It prints every break it did find, because "the harness said nothing"
-// and "the harness said something else" are different failures and a bare count
-// tells them apart too late.
 func assertBreakAbout(t *testing.T, report *recon.Report, where, contains string) {
 	t.Helper()
 	for _, b := range report.Breaks {

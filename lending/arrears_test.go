@@ -39,11 +39,8 @@ func TestArrearsFor(t *testing.T) {
 		{"the day before the 90 boundary", unpaid, day(2025, time.May, 15), 89, lending.D60_89, false},
 		{"exactly 90 days is non-performing", unpaid, day(2025, time.May, 16), 90, lending.D90Plus, true},
 
-		// Arrears are measured from the OLDEST unpaid instalment. Paying the
-		// first one moves the clock to the second, it does not reset it.
-		//
-		// The oldest unpaid instalment (Seq 2) is due 15 March (one month after
-		// the first). Five days after that is 20 March.
+		// Arrears are measured from the OLDEST unpaid instalment. Paying the first
+		// one moves the clock to the second, it does not reset it.
 		{"the oldest unpaid one sets the clock", paid, day(2025, time.March, 20), 5, lending.D1_29, false},
 	}
 	for _, tt := range tests {
@@ -74,11 +71,7 @@ func TestArrearsFor(t *testing.T) {
 }
 
 // TestArrearsFor_RevolvingLineOutOfOrderCycles refuses a scan that assumes Seq
-// order tracks DueDate order. A revolving line's
-// cycles are appended by Seq, but ChargeInterestTx takes each cycle's due date
-// from the caller's billing date — a backdated charge produces a later-Seq
-// cycle with an EARLIER due date than the one before it. The oldest UNPAID due
-// date must win regardless of where it sits in the slice.
+// order tracks DueDate order.
 func TestArrearsFor_RevolvingLineOutOfOrderCycles(t *testing.T) {
 	ctx := context.Background()
 	p, _, _, customer := newTestPortfolio(t)
@@ -116,10 +109,9 @@ func TestArrearsFor_RevolvingLineOutOfOrderCycles(t *testing.T) {
 		t.Fatalf("cycle 2 (Seq %d) due date = %v, want 1 March", schedule[1].Seq, schedule[1].DueDate)
 	}
 
-	// asOf 1 April: cycle 1 (Seq 1, due 1 July) is not yet due. Cycle 2
-	// (Seq 2, due 1 March, LATER in the slice than cycle 1) is overdue. March
-	// has 31 days, so 1 March to 1 April is 31 calendar days — the 30-59
-	// bucket, not Current.
+	// asOf 1 April: cycle 1 (Seq 1, due 1 July) is not yet due. Cycle 2 (Seq 2,
+	// due 1 March, LATER in the slice than cycle 1) is overdue. March has 31 days,
+	// so 1 March to 1 April is 31 calendar days — the 30-59 bucket, not Current.
 	got := lending.ArrearsFor(schedule, day(2025, time.April, 1))
 	if got.DaysPastDue != 31 {
 		t.Errorf("days past due = %d, want 31", got.DaysPastDue)
@@ -257,13 +249,6 @@ func TestRunEndOfDay_IsIdempotentAndSkipsClosedFacilities(t *testing.T) {
 
 // A facility that is current must write no arrears events at all, however many
 // days the batch runs.
-//
-// Once past a due date DaysPastDue climbs every day, so an event a day is
-// correct there — a bank does track the count daily. The stable case is the
-// current one, and it is where a broken comparison shows: Arrears carries a
-// time.Time, and == on a time.Time compares the monotonic reading and location
-// as well as the instant, so a stored value that round-trips through the store
-// with a different location would look changed every day and rewrite the row.
 func TestRunEndOfDay_ACurrentFacilityWritesNoArrearsEvents(t *testing.T) {
 	ctx := context.Background()
 	p, _, _, _ := disbursedLoan(t)

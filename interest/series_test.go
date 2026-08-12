@@ -56,9 +56,9 @@ func TestAccrueSeriesSplitsAtAMovement(t *testing.T) {
 	p := flat(50_000, interest.ACT365)
 	got := interest.AccrueSeries(s, from, to, p)
 	// Each run is charged at its own literal endpoints — the coordinate
-	// AccrueSeries actually calls Period with — not at NextDay-shifted ones:
-	// the first run is [from, Jan5] (the day before the movement) and the
-	// second is [Jan5, to].
+	// AccrueSeries actually calls Period with — not at NextDay-shifted ones: the
+	// first run is [from, Jan5] (the day before the movement) and the second is
+	// [Jan5, to].
 	want := p(100_000, from, day(2026, time.January, 5)) +
 		p(150_000, day(2026, time.January, 5), to)
 	if got != want {
@@ -118,10 +118,10 @@ func TestAccrueSeriesEmptyWindowAccruesNothing(t *testing.T) {
 }
 
 func TestAccrueSeriesMovementTimeOfDayIsIgnoredAtTo(t *testing.T) {
-	// DayMovement.Day is documented as UTC midnight, but the comparisons here
-	// must not depend on that: a movement timestamped later in the day than
-	// `to` must still be treated as landing on `to`'s slot, not dropped by a
-	// raw (non-truncated) instant comparison.
+	// DayMovement.Day is documented as UTC midnight, but the comparisons here must
+	// not depend on that: a movement timestamped later in the day than `to` must
+	// still be treated as landing on `to`'s slot, not dropped by a raw
+	// (non-truncated) instant comparison.
 	from, to := day(2026, time.January, 10), day(2026, time.January, 11)
 	s := ledger.Series{
 		Opening:   100_000,
@@ -173,8 +173,6 @@ func TestAccrueSeriesMultipleMovementsAdvanceThroughEachRun(t *testing.T) {
 func TestAccrueSeriesBalanceCrossingZeroStopsAccruingOnTheZeroSide(t *testing.T) {
 	// TestAccrueSeriesHandlesNegativeBalances above holds a constant negative
 	// opening, so the Period's balance>=0 guard never actually fires there.
-	// Here the balance clears to zero mid-window, which is the only way that
-	// branch runs.
 	from, to := day(2026, time.January, 1), day(2026, time.January, 11)
 	s := ledger.Series{
 		Opening:   -100_000,
@@ -196,11 +194,9 @@ func TestAccrueSeriesBalanceCrossingZeroStopsAccruingOnTheZeroSide(t *testing.T)
 }
 
 func TestAccrueSeriesThirty360NearlyTotalsAcrossAMonthEnd(t *testing.T) {
-	// 30/360 collapses the 31st. Splitting a month into runs must not change
-	// the month's total beyond the per-call truncation AccrueSeries documents:
-	// one Accrued unit — 1e-6 of a minor unit — per split point, never more.
-	// This test has exactly one split point, hence the bound of 1; a second
-	// movement would need the bound widened to 2.
+	// 30/360 collapses the 31st. Splitting a month into runs must not change the
+	// month's total beyond the per-call truncation AccrueSeries documents: one
+	// Accrued unit — 1e-6 of a minor unit — per split point, never more.
 	from, to := day(2026, time.January, 1), day(2026, time.February, 1)
 	p := flat(60_000, interest.Thirty360)
 
@@ -211,17 +207,9 @@ func TestAccrueSeriesThirty360NearlyTotalsAcrossAMonthEnd(t *testing.T) {
 	}, from, to, p)
 
 	// Splitting can only lose to truncation, never gain, so the bound is
-	// directional: diff < 0 would mean a split over-accrued, which is a real
-	// bug, not a rounding artifact, and must fail loudly rather than being
-	// hidden behind an absolute-value check.
-	//
-	// That directional, one-unit bound holds *because* this split point (the
-	// 15th) is mid-month, not adjacent to a 31st. A run boundary landing on
-	// the 31st itself, or on the 1st of the month after a 31-day one, is a
-	// different case: 30/360-US day counts are not additive there, and a
-	// split at such a boundary can gain or lose a whole day's interest
-	// rather than a truncation unit (see AccrueSeries's doc comment). This
-	// test does not exercise that case.
+	// directional: diff < 0 would mean a split over-accrued, which is a real bug,
+	// not a rounding artifact, and must fail loudly rather than being hidden
+	// behind an absolute-value check.
 	if diff := whole - split; diff < 0 || diff > 1 {
 		t.Errorf("split series = %d, whole = %d; a zero movement may cost at most "+
 			"one unit of truncation, not %d", split, whole, diff)
@@ -230,10 +218,7 @@ func TestAccrueSeriesThirty360NearlyTotalsAcrossAMonthEnd(t *testing.T) {
 
 func TestAccrueSeriesThirty360ConstantBalanceMatchesAccrue(t *testing.T) {
 	// The no-movement case must be exactly Accrue's own answer under every
-	// convention, Thirty360 included. Thirty360's day count depends on which
-	// day of the month a date falls on, not just the gap between two dates,
-	// so this is the test that would catch a run expressed in the wrong
-	// coordinate (e.g. one shifted by NextDay/PrevDay against `from`/`to`).
+	// convention, Thirty360 included.
 	from, to := day(2026, time.January, 1), day(2026, time.January, 31)
 	s := ledger.Series{Opening: 100_000}
 

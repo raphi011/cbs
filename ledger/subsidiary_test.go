@@ -25,12 +25,6 @@ func createControlAccount(t *testing.T, book *Book, subledger SubledgerID, name 
 
 // pooledChart is a control account and a plain contra: the smallest chart on
 // which the dimension is visible at all.
-//
-//	General Ledger
-//	  ├── Customer Deposits (subledger)
-//	  │     └── Customer Deposits (Liability, CONTROL)
-//	  └── Bank Assets (subledger)
-//	        └── Vault Cash (Asset, plain)
 func pooledChart(t *testing.T, book *Book) (deposits, vault Account) {
 	t.Helper()
 	ctx := context.Background()
@@ -88,11 +82,6 @@ func TestAControlAccountRefusesAnUnqualifiedEntry(t *testing.T) {
 
 // TestAPlainAccountRefusesAQualifiedEntry is the other half, and the one that
 // is not the obvious way round.
-//
-// Nothing aggregates a plain account by subsidiary, so the dimension would be
-// written and never read: the posting would balance, the account's own balance
-// would stay right, and the caller's belief that it had recorded whose money
-// this is would be false with nothing to contradict it.
 func TestAPlainAccountRefusesAQualifiedEntry(t *testing.T) {
 	ctx := context.Background()
 	book := testBook(t)
@@ -110,12 +99,6 @@ func TestAPlainAccountRefusesAQualifiedEntry(t *testing.T) {
 
 // TestTheSufficiencyCheckReadsTheSubsidiaryAndNotThePool is the test that would
 // have caught the silent version of this design.
-//
-// The guard keeps Asset and Expense accounts off the wrong side of zero. Under
-// pooling the pool is comfortably positive while a subsidiary under it is
-// overdrawn, so a check that kept reading the account would pass, report
-// nothing, and have stopped guarding — every Asset-side facility unbounded,
-// with debits still equal to credits throughout.
 func TestTheSufficiencyCheckReadsTheSubsidiaryAndNotThePool(t *testing.T) {
 	ctx := context.Background()
 	book := testBook(t)
@@ -175,12 +158,6 @@ func TestTheSufficiencyCheckReadsTheSubsidiaryAndNotThePool(t *testing.T) {
 
 // TestTheSubsidiaryBalancesSumToTheControlBalance cannot fail arithmetically,
 // which is exactly why it is worth computing.
-//
-// It is the same argument a trial balance is built on: the two figures come
-// from one aggregate with one predicate between them, so the sum is a control
-// on the PIPELINE rather than on the arithmetic. What it would catch is a
-// direct store write, a fixture that bypassed the posting refusals, or a
-// balance query that grew a predicate it should not have.
 func TestTheSubsidiaryBalancesSumToTheControlBalance(t *testing.T) {
 	ctx := context.Background()
 	book := testBook(t)
@@ -207,12 +184,9 @@ func TestTheSubsidiaryBalancesSumToTheControlBalance(t *testing.T) {
 	assertEqual(t, "the detail against the control", detail, control)
 }
 
-// TestAStatementOverOneSubsidiaryCarriesNoOtherSubsidiariesPostings is what a customer
-// recognises: their own account, over a chart of accounts line they share with
-// everyone else at the bank.
-//
-// The transactions are returned WHOLE — a statement row still carries the other
-// leg of its own event — and it is the position that selects among the legs.
+// TestAStatementOverOneSubsidiaryCarriesNoOtherSubsidiariesPostings is what a
+// customer recognises: their own account, over a chart of accounts line they
+// share with everyone else at the bank.
 func TestAStatementOverOneSubsidiaryCarriesNoOtherSubsidiariesPostings(t *testing.T) {
 	ctx := context.Background()
 	book := testBook(t)
@@ -241,8 +215,8 @@ func TestAStatementOverOneSubsidiaryCarriesNoOtherSubsidiariesPostings(t *testin
 // TestAReversalCarriesTheSubsidiaryItReverses pins the one place the dimension
 // could be dropped without any refusal firing: a reversal builds its own
 // entries, and a mirrored leg that credited the pool unqualified would be
-// refused — but one that named the WRONG subsidiary would post cleanly, leave the
-// pool square, and leave one customer permanently short.
+// refused — but one that named the WRONG subsidiary would post cleanly, leave
+// the pool square, and leave one customer permanently short.
 func TestAReversalCarriesTheSubsidiaryItReverses(t *testing.T) {
 	ctx := context.Background()
 	book := testBook(t)

@@ -19,17 +19,11 @@ var (
 
 	// ErrCheckDigits is a failed mod-97-10. It is what catches a typo, and it
 	// catches every single-character substitution and every transposition of two
-	// adjacent characters; see TestWhatModNinetySevenCatches for what it does
-	// not.
+	// adjacent characters; see TestWhatModNinetySevenCatches for what it does not.
 	ErrCheckDigits = errors.New("iban: check digits do not verify")
 
 	// ErrNationalCheck is a failed CIN or clé RIB: the international digits
 	// verified and the country's own did not.
-	//
-	// A separate sentinel because it means something the other does not — the
-	// address is the right shape and passes the check the whole of Europe runs,
-	// and fails the one only its own country runs. A caller reporting this to a
-	// human should say which country objected.
 	ErrNationalCheck = errors.New("iban: the country's own check character does not verify")
 
 	// ErrBankCodeWidth is a bank code that is not the width its country
@@ -38,8 +32,6 @@ var (
 	ErrBankCodeWidth = errors.New("iban: bank code is not the width this country allocates")
 
 	// ErrSerialTooLarge is an account serial that will not fit the country's
-	// account field. Germany's is ten digits, so a bank's ten-billionth account
-	// has no address; the refusal is here rather than a silent truncation
-	// because a truncated serial is a second account at the first one's address.
+	// account field.
 	ErrSerialTooLarge = errors.New("iban: account serial does not fit the country's account field")
 )

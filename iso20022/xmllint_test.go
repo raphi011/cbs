@@ -11,21 +11,10 @@ import (
 
 // requireSchemasEnv, when set to any non-empty value, turns every skip in the
 // schema check into a failure.
-//
-// It is what makes "a skip is not a pass" a thing somebody can enforce rather
-// than a sentence in a comment. Without it the check had exactly one outcome
-// available to it on a machine without the schemas — skip — and the parent
-// test still printed PASS, so nothing would ever have noticed the schemas
-// going missing from a machine or a CI job that HAD them. `make test-schemas`
-// is the command that sets it.
 const requireSchemasEnv = "ISO20022_REQUIRE_SCHEMAS"
 
 // schemaCheckRequired reports whether an absent xmllint or an absent schema is
 // a failure rather than a reason to skip.
-//
-// Any non-empty value counts, including "0": this is a switch, and a developer
-// who set it to anything at all meant to turn it on. See
-// TestSchemaCheckIsRequiredOnlyWhenAsked, which pins that.
 func schemaCheckRequired() bool {
 	return os.Getenv(requireSchemasEnv) != ""
 }
@@ -60,22 +49,6 @@ func TestSchemaCheckIsRequiredOnlyWhenAsked(t *testing.T) {
 
 // TestGoldenFilesValidateAgainstTheSchema is the only check that this package's
 // output is really schema-valid rather than merely round-trip-stable.
-//
-// It cannot be a required test by default. There is no usable pure-Go XSD
-// validator, and taking a cgo dependency on libxml2 would cost this repository
-// its "no external dependencies" property — the one the swap to store/sqlite was
-// for — for a check that runs on five files. So it shells out to xmllint and skips when the tool or the schemas are
-// absent — see testdata/README.md for how to obtain them.
-//
-// A skip is not a pass. When this test is skipped, the golden files rest
-// entirely on having been written carefully — so set ISO20022_REQUIRE_SCHEMAS
-// (or run `make test-schemas`) and every skip below becomes a failure. That is
-// the difference between a check nobody can be held to and one a CI job can.
-//
-// Both halves of each envelope are checked, not just the message. The header is
-// a standard element with a schema of its own, and validating only the Document
-// would leave testdata/README.md telling a reader to download
-// head.001.001.02.xsd for a check that never opened it.
 func TestGoldenFilesValidateAgainstTheSchema(t *testing.T) {
 	bin, err := exec.LookPath("xmllint")
 	if err != nil {
@@ -93,11 +66,7 @@ func TestGoldenFilesValidateAgainstTheSchema(t *testing.T) {
 		"camt025.xml": "camt.025.001.05.xsd",
 	}
 
-	// validate writes one fragment to a temporary file and runs xmllint over
-	// it. It skips rather than fails when the schema is absent, because an
-	// absent schema means the check was never enabled, not that the fragment
-	// is wrong — unless ISO20022_REQUIRE_SCHEMAS says the caller expected it
-	// to be enabled, in which case an absent schema is the failure.
+	// validate writes one fragment to a temporary file and runs xmllint over it.
 	validate := func(t *testing.T, name, schema string, body []byte) {
 		t.Helper()
 		schemaPath := filepath.Join("testdata", "xsd", schema)
@@ -144,10 +113,6 @@ func TestGoldenFilesValidateAgainstTheSchema(t *testing.T) {
 }
 
 // marshalDocumentOnly renders just the message, without the Envelope wrapper.
-//
-// It exists for the schema check: the wrapper is this repository's own
-// invention and appears in no XSD, so validating the whole envelope would fail
-// on the one element the standard has nothing to say about.
 func marshalDocumentOnly(env Envelope) ([]byte, error) {
 	if env.Document == nil {
 		return nil, fmt.Errorf("%w: Document", ErrMissingElement)

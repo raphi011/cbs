@@ -1,8 +1,7 @@
 // This file's tests live in package deposit_test, dot-importing deposit, for
 // the same reason register_test.go does: newTestRegister builds a Register over
 // a store from store/testenv, which reaches store/sqlite, which imports
-// deposit, so an in-package test file using it would be an import cycle. See
-// register_test.go's package comment.
+// deposit, so an in-package test file using it would be an import cycle.
 package deposit_test
 
 import (
@@ -17,10 +16,7 @@ import (
 )
 
 // pan is a scheme somebody else issues, which is what makes it the right
-// counterparty for every rule about identifiers-in-general. This package has a
-// constant for IBAN alone, because an IBAN is the only kind it MINTS; a card
-// number is quoted to a bank by the scheme that issued it, so it arrives from a
-// caller and always will.
+// counterparty for every rule about identifiers-in-general.
 const pan IdentifierScheme = "PAN"
 
 func card(v string) Identifier { return Identifier{Scheme: pan, Value: v} }
@@ -108,10 +104,7 @@ func TestMintedAddressesAreDenseAndDistinct(t *testing.T) {
 	}
 }
 
-// A caller does not get to say what an account's address is. This is the whole
-// of what makes the bank code inside one a true statement about who holds the
-// account: a register can only mint under the allocation it was given, so it
-// cannot issue an address that routes somewhere else.
+// A caller does not get to say what an account's address is.
 func TestOpenAccountRefusesACallerSuppliedIBAN(t *testing.T) {
 	ctx := context.Background()
 	reg, _, _, prd := newTestRegister(t)
@@ -320,15 +313,6 @@ func TestResolveIdentifierIsAmbiguousWhenTwoAccountsHoldIt(t *testing.T) {
 // ---------------------------------------------------------------------------
 // One address, two spellings
 // ---------------------------------------------------------------------------
-//
-// An address is STORED compact and READ OFF A STATEMENT in groups of four. The
-// two are one address (Identifier.MatchValue), and these pin that it is ONE
-// rule: what resolution treats as the same address, withdrawal treats as the
-// same address too.
-//
-// There is no third site. Uniqueness and addition cannot be reached by an IBAN
-// at all — a bank issues them, so a caller has no spelling of anything to
-// offer.
 
 func TestResolveFindsAnAddressInTheSpellingAPersonTypes(t *testing.T) {
 	ctx := context.Background()
@@ -353,11 +337,6 @@ func TestResolveFindsAnAddressInTheSpellingAPersonTypes(t *testing.T) {
 }
 
 // Withdrawal takes the address, whichever spelling names it.
-//
-// Removing an identifier that is not held is a no-op by design, so a literal
-// comparison here fails SILENTLY: a bank quoting the grouped form would believe
-// it had withdrawn an address that is still live and still payable, with no
-// error anywhere to say otherwise.
 func TestRemoveIdentifierWithdrawsTheAddressInEitherSpelling(t *testing.T) {
 	ctx := context.Background()
 	reg, _, _, prd := newTestRegister(t)

@@ -8,21 +8,8 @@ import (
 
 // The wire shapes of a bank checking its own books: the reconciliation run, the
 // statements it was sent, and the two in-transit accounts decomposed by age.
-//
-// Every one of these is a REPORT and none of them is a row. There is no findings
-// table behind the run — a finding is a pure function of the books at a moment,
-// so a stored one is a cache that can disagree with them — so these types
-// describe an answer computed for this request and nothing a client can come back
-// and fetch by id. What survives a run is the audit event it appended, on GET
-// /audit, and the books it read.
 
 // ReconciliationDTO is what POST /reconciliation answers.
-//
-// Breaks and positions are separate fields because they are different findings
-// and only one is a defect: a break is something this bank's own books say
-// cannot be true, and a position is money legitimately in flight with how long it
-// has been. A client rendering them in one list would be telling an operator to
-// investigate every payment that has not settled yet.
 type ReconciliationDTO struct {
 	Bank  string    `json:"bank"`
 	Asset string    `json:"asset"`
@@ -34,8 +21,7 @@ type ReconciliationDTO struct {
 
 	// Reserve is what this bank's own book says its claim on the central bank
 	// stands at; Advised and Reference are the closing balance on the newest
-	// statement it has booked and what that statement quoted. LodgedSince is the
-	// whole of the difference between the two, and it is never negative.
+	// statement it has booked and what that statement quoted.
 	Reserve     int64  `json:"reserve"`
 	Advised     int64  `json:"advised"`
 	Reference   string `json:"reference,omitempty"`
@@ -65,19 +51,6 @@ type AgeingReportDTO struct {
 
 // AgedLotDTO is one part of a balance, with what put it there and what may now
 // be done about it.
-//
-// # Payment is absent on a clearing suspense and present on an unclaimed balance
-//
-// That is a fact about the postings rather than a gap here. Every credit into
-// Unclaimed is one payment's diverted leg and carries its id; a clearing
-// suspense is discharged by a NETTED mirror leg that names no payment at all, so
-// what a lot there survives with is an age and an order. See
-// payment.AgeClearingSuspense.
-//
-// It carries no metadata map beside these fields. The two keys a reader wants
-// off it — the payment and the scheme — are lifted onto the lot by the domain,
-// and putting the raw map on the wire as well would publish an internal posting
-// convention as an interface.
 type AgedLotDTO struct {
 	Transaction string    `json:"transaction"`
 	Since       time.Time `json:"since"`
@@ -91,10 +64,10 @@ type AgedLotDTO struct {
 	Payment string `json:"payment,omitempty"`
 	Scheme  string `json:"scheme,omitempty"`
 
-	// Deadline is the rulebook window in whole banking business days and is
-	// ABSENT where no rulebook puts a clock on this money — a clearing suspense
-	// is discharged by a conversation, and a lot this bank has no instrument to
-	// clear carries no deadline either.
+	// Deadline is the rulebook window in whole banking business days and is ABSENT
+	// where no rulebook puts a clock on this money — a clearing suspense is
+	// discharged by a conversation, and a lot this bank has no instrument to clear
+	// carries no deadline either.
 	Deadline int `json:"deadline,omitempty"`
 	// Due is the day the window runs out, on the settlement calendar. Absent
 	// with deadline.
@@ -110,11 +83,6 @@ type AgedLotDTO struct {
 }
 
 // SettlementAdviceDTO is one statement this bank was sent, read back.
-//
-// Reference is opaque and stays opaque on the wire: it is the AcctSvcrRef the
-// statement carried — a cycle id at a cut-off, a payment id at a return — and a
-// member bank holds neither, so it cannot tell the two apart and has no reason
-// to. See payment.SettlementAdvice.
 type SettlementAdviceDTO struct {
 	Reference string `json:"reference"`
 	Asset     string `json:"asset"`

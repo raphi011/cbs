@@ -2,11 +2,7 @@ package iban
 
 import "fmt"
 
-// Country is the ISO 3166 code an IBAN opens with. It is the ACCOUNT's country,
-// which is not necessarily the account-holding institution's: a bank passported
-// into another market issues addresses in the country the account lives in, and
-// its BIC still says where the bank is. Nothing here should be read as saying
-// the two agree.
+// Country is the ISO 3166 code an IBAN opens with.
 type Country string
 
 const (
@@ -19,26 +15,10 @@ const (
 // BankCode is the national institution identifier carried inside an IBAN —
 // Germany's Bankleitzahl, Italy's ABI, Sweden's clearing number, France's code
 // banque.
-//
-// It is NOT a BIC and no arithmetic turns it into one. It is also only unique
-// within its country, which is why every table keyed by one is keyed by
-// (country, code) and never by the code alone.
 type BankCode string
 
 // Issuer is one allocation from one country's registry: the authority under
 // which a bank mints its customers' addresses.
-//
-// The two halves are inseparable and that is why they are a type. A bank code is
-// only unique within its country, so a code without one names nothing, and every
-// table keyed by an allocation is keyed by the pair.
-//
-// The halves nevertheless arrive at different moments, and that is the state
-// worth knowing about. A bank chooses the market it will operate in when it is
-// licensed; the code is a registry's to give and arrives when the registry gives
-// it. So a country with no code is a bank that has applied and not been
-// answered — a real state, and one in which it can hold a book and address no
-// account at all — and the layers that mint refuse it rather than defaulting,
-// because every default would be some other bank's code.
 type Issuer struct {
 	Country  Country
 	BankCode BankCode
@@ -50,11 +30,6 @@ func (i Issuer) Allocated() bool { return i.Country != "" && i.BankCode != "" }
 
 // Validate checks that the country is one this package issues in and that the
 // code is the width and character class that country allocates.
-//
-// It does NOT check that the code was ever really allocated. Nothing in this
-// package could: an allocation is a row in a registry somebody else keeps, and
-// the whole reason a routing directory has to be published is that a well-formed
-// code is not a issued one.
 func (i Issuer) Validate() error {
 	_, err := New(i.Country, i.BankCode, 1)
 	return err
@@ -84,10 +59,6 @@ func (c class) admits(r rune) bool {
 
 // segment is one named run of the BBAN — the part after the country code and
 // the check digits.
-//
-// The BBAN is modelled as a list rather than as offsets because the offsets are
-// then DERIVED, and a country whose bank code moves cannot be half-updated. It
-// also keeps the table readable against the ISO notation it is transcribed from.
 type segment struct {
 	name  string
 	width int
@@ -96,10 +67,6 @@ type segment struct {
 
 // structure is one country's IBAN, and the fields below are the whole of what
 // this package knows about a country.
-//
-// bankCode, account and national are indices into segments. national is -1 for
-// a country that carries no check character of its own, and compute is nil in
-// exactly the same cases.
 type structure struct {
 	segments []segment
 
@@ -107,20 +74,12 @@ type structure struct {
 	account  int
 	national int
 
-	// compute returns the country's own check characters, given a getter for
-	// the other segments by name. It is handed a getter rather than the raw
-	// BBAN so that a national algorithm names what it reads — cin over abi, cab
-	// and account — instead of slicing at offsets stated twice.
+	// compute returns the country's own check characters, given a getter for the
+	// other segments by name.
 	compute func(get func(string) string) string
 }
 
 // structures is the table. Adding a country is an entry here and nothing else.
-//
-// Two things are deliberately absent. There is no CHECK on which countries a
-// bank may be admitted in — that is the settlement agent's question, not this
-// package's — and there is no branch-level routing: Italy's CAB and France's
-// guichet are carried faithfully and are not part of any key, because a BIC
-// identifies an institution and the directory answers at that granularity.
 var structures = map[Country]structure{
 	// Bankleitzahl and Kontonummer, and no national check character: Germany
 	// retired its own when the IBAN arrived.

@@ -26,16 +26,6 @@ import (
 )
 
 // The harness every flow test in this package is written against.
-//
-// One harness, not one per test. The flows differ in what they assert, not in what
-// they need: two banks that can address each other, a clearing house between them,
-// both hosts really listening, a store that records which book each institution
-// reached, and the phases of a business day to run.
-//
-// Nothing here waits. Every phase is synchronous and there is no goroutine to join,
-// so no test in this package sleeps, polls or takes a deadline. It does not stand
-// in for the API: Deployment.Submit is what a bank's customer-facing layer calls,
-// and the harness calls it directly.
 
 // harnessAmount is what every transfer in this package moves, and harnessFunding
 // is what the payer starts with. Funding is larger, so the payer is good for the
@@ -45,22 +35,13 @@ const (
 	harnessFunding ledger.Amount = 500_000
 )
 
-// The addresses this fixture's customers hold are not written down: a bank mints
-// them out of the bank code it was allocated, so the only place one exists is on
-// the account. They are read off the accounts as they are opened — see
-// harness.debtorIBAN and the fields beside it.
-//
-// They are real, distinct, and in different countries, which now follows from the
-// ALLOCATIONS the two banks are admitted under: a test asserting which bank
-// answered cannot use a fixture in which both banks look the same.
+// The addresses this fixture's customers hold are not written down: a bank
+// mints them out of the bank code it was allocated, so the only place one
+// exists is on the account.
 
-// unknownIBANAt is an address in one bank's own range that the bank does not hold:
-// a serial far above anything a fixture opens, under that bank's allocated code.
-// It has to be well-formed twice over — an IBAN failing the schema's pattern is
-// refused by the codec, one failing mod-97 by the payer's own bank — and it has to
-// carry the RECIPIENT's bank code, because that is what routes it there. Under some
-// other code the payer's own directory refuses it and the recipient never gets the
-// chance to answer AC01.
+// unknownIBANAt is an address in one bank's own range that the bank does not
+// hold: a serial far above anything a fixture opens, under that bank's
+// allocated code.
 func unknownIBANAt(p *payment.Bank) string {
 	return mustMint(p.Issuer.Country, p.Issuer.BankCode, 999_999)
 }
@@ -87,9 +68,7 @@ type harness struct {
 	rec *recordingStores
 
 	// nets mints one payment.Network per institution, and net is the CLEARING
-	// HOUSE's. A fixture cannot hold one Network and play every institution: a
-	// member's own act needs that member's network and the central bank's book is on
-	// the settlement agent's alone.
+	// HOUSE's.
 	nets *payment.Networks
 	net  *payment.ClearingHouseNetwork
 
@@ -127,10 +106,7 @@ type harness struct {
 	debtorUSDAcct   deposit.Account
 	creditorUSDAcct deposit.Account
 
-	// mandate is the creditor's authority to collect from the debtor's account. Every
-	// fixture has one, including those whose collections are refused, because a
-	// collection quoting none is refused inside Submit before the condition under
-	// test is reached.
+	// mandate is the creditor's authority to collect from the debtor's account.
 	mandate payment.Mandate
 
 	mu   sync.Mutex
@@ -162,10 +138,8 @@ type harnessOptions struct {
 	// paying an opening deposit in, which is what leaves the payer's BANK without
 	// reserves while the payer can still pay.
 	lendToTheDebtor bool
-	// fundTheDebtorsBank gives the payer's bank reserves without giving the payer a
-	// balance, by depositing and lodging a SECOND customer's money. It is what a
-	// collection the payer cannot fund needs: the cut-off has to settle before the
-	// payer's bank ever sees the account.
+	// fundTheDebtorsBank gives the payer's bank reserves without giving the payer
+	// a balance, by depositing and lodging a SECOND customer's money.
 	fundTheDebtorsBank bool
 	// twoAssets gives both banks and both customers a dollar side beside the
 	// euro one, and registers a dollar push scheme with a cut-off window of its
@@ -180,79 +154,50 @@ func newHarness(t *testing.T) *harness {
 }
 
 // newHarnessWithNoOpenCycle is the same network with no cut-off window open.
-//
-// Each variation gets a NAMED constructor rather than callers assembling their own
-// harnessOptions: "there is no open cycle" is not a knob, it is the condition the
-// tests using it exist to provoke.
 func newHarnessWithNoOpenCycle(t *testing.T) *harness {
 	t.Helper()
 	return build(t, harnessOptions{fundTheDebtor: true})
 }
 
-// newHarnessWithAnUnfundedDebtor is the same network with the payer's own account
-// left empty and the payer's BANK able to settle anyway.
-//
-// It is the pull flow's counterpart to the unknown IBAN: the condition only the
-// DEBTOR's bank can see. A creditor's bank cannot know what is in the account it is
-// collecting from, so an empty account is a refusal that can only have come from
-// the far side of the network.
-//
-// The collection has to SETTLE before the payer's bank is handed it, so the
-// reserves come from a SECOND customer at the same bank — somebody else's money,
-// lodged, which is what a bank's reserve is.
+// newHarnessWithAnUnfundedDebtor is the same network with the payer's own
+// account left empty and the payer's BANK able to settle anyway.
 func newHarnessWithAnUnfundedDebtor(t *testing.T) *harness {
 	t.Helper()
 	return build(t, harnessOptions{openCycles: true, fundTheDebtorsBank: true})
 }
 
-// newHarnessWithASecondDepositor is the same network with another customer's money
-// on the payer's bank's reserve beside its payer's. It is the fixture for a BATCH
-// one of whose transactions the payer cannot fund: a bank whose reserve is exactly
-// its payer's balance cannot settle such a batch at all, so the interesting outcome
-// — one collection applied and one sent back — sits behind a settlement refusal
-// that is about the bank rather than the customer.
+// newHarnessWithASecondDepositor is the same network with another customer's
+// money on the payer's bank's reserve beside its payer's.
 func newHarnessWithASecondDepositor(t *testing.T) *harness {
 	t.Helper()
 	return build(t, harnessOptions{openCycles: true, fundTheDebtor: true, fundTheDebtorsBank: true})
 }
 
 // newHarnessWithARevokedMandate is the same network with the debtor's authority
-// withdrawn. The creditor's bank holds the mandate in SEPA, so this is the one
-// refusal in the pull flow that never reaches the wire: it happens inside Submit's
-// own unit of work, at the bank the collection was handed to.
+// withdrawn.
 func newHarnessWithARevokedMandate(t *testing.T) *harness {
 	t.Helper()
 	return build(t, harnessOptions{openCycles: true, fundTheDebtor: true, revokeMandate: true})
 }
 
-// newHarnessWithAnUnfundedReserve is the same network with the payer's bank holding
-// no central-bank reserves.
-//
-// It is the one fixture whose condition belongs to a BANK's balance sheet rather
-// than a customer's account, and the two have to be prised apart: Network.Deposit
-// raises the customer's balance and the bank's reserve in one step. So the payer's
-// account is opened with an OVERDRAFT and never funded — the bank has lent its
-// customer money it has no reserves behind, and at the cut-off is a net payer of
-// 250,000 against a reserve of nothing.
+// newHarnessWithAnUnfundedReserve is the same network with the payer's bank
+// holding no central-bank reserves.
 func newHarnessWithAnUnfundedReserve(t *testing.T) *harness {
 	t.Helper()
 	return build(t, harnessOptions{openCycles: true, lendToTheDebtor: true})
 }
 
-// newHarnessWithTwoAssets is the same network operating in dollars as well as euro:
-// both banks hold both, both customers have an account in each, and there is a
-// dollar push scheme with a cut-off window of its own. It exists for the one claim
-// a single-asset fixture cannot make: "one settlement instruction per asset" is not
-// observable until two cycles in two assets close together.
+// newHarnessWithTwoAssets is the same network operating in dollars as well as
+// euro: both banks hold both, both customers have an account in each, and there
+// is a dollar push scheme with a cut-off window of its own.
 func newHarnessWithTwoAssets(t *testing.T) *harness {
 	t.Helper()
 	return build(t, harnessOptions{openCycles: true, fundTheDebtor: true, twoAssets: true})
 }
 
-// schemeUSDCT and usdCT are a second push scheme, identical to SEPA credit transfer
-// except in the unit it settles in. A scheme rather than a flag on the payment,
-// because that is where this system puts the asset. It embeds payment.SCT so a
-// method added to Scheme tomorrow reaches this fixture.
+// schemeUSDCT and usdCT are a second push scheme, identical to SEPA credit
+// transfer except in the unit it settles in. A scheme rather than a flag on the
+// payment, because that is where this system puts the asset.
 const schemeUSDCT payment.SchemeID = "usd.ct"
 
 type usdCT struct{ payment.SCT }
@@ -266,9 +211,7 @@ func (usdCT) Asset() ledger.AssetCode { return "USD" }
 var euroAndDollar = []ledger.AssetCode{"EUR", "USD"}
 
 // bank is one member's own network, keyed by its ADDRESS. cb is the settlement
-// agent's. It panics on a failure to open: a bank's network is minted over that
-// bank's own DATABASE and opening one is I/O, every caller is one expression inside
-// an assertion, and every address they pass is a bank this harness founded.
+// agent's.
 func (h *harness) bank(bic iso20022.BIC) *payment.BankNetwork {
 	net, err := h.nets.Bank(context.Background(), payment.ParticipantID(bic))
 	if err != nil {
@@ -290,17 +233,9 @@ func (h *harness) cbBook(t *testing.T) *ledger.Book {
 	return book
 }
 
-// build assembles the fixture: two hosts really listening, a deployment over them,
-// two provisioned banks, and the customers, funding and mandate every flow needs.
-//
-// The institutions talk over HTTP, on the listeners a deployment gives them.
-// Anything cheaper would make "the counterparty is unreachable" inexpressible. The
-// handler is looked up per REQUEST because the deployment does not exist yet: its
-// config names these two URLs.
-//
-// The fixture never advances a day. A day cuts every open cycle off and opens a
-// fresh one, so a fixture that advanced could not offer a network with NO open
-// cycle.
+// build assembles the fixture: two hosts really listening, a deployment over
+// them, two provisioned banks, and the customers, funding and mandate every
+// flow needs.
 func build(t *testing.T, opts harnessOptions) *harness {
 	t.Helper()
 	ctx := context.Background()
@@ -343,9 +278,8 @@ func build(t *testing.T, opts harnessOptions) *harness {
 	h.debtor = h.provision(t, "Aurora Bank", "AURODEFFXXX", assets)
 	h.creditor = h.provision(t, "Banca Verde", "VERDITMMXXX", assets)
 	// And a separate act no provisioning performs: each pulls the scheme's routing
-	// directory. Being in the roster makes a bank reachable; holding a copy makes it
-	// able to reach anybody, and nothing publishes one. Skipping it leaves two members
-	// neither of which can address the other.
+	// directory. Being in the roster makes a bank reachable; holding a copy makes
+	// it able to reach anybody, and nothing publishes one.
 	h.subscribeAll(t)
 	for _, p := range []*payment.Bank{h.debtor, h.creditor} {
 		for asset, accts := range p.Assets {
@@ -355,10 +289,10 @@ func build(t *testing.T, opts harnessOptions) *harness {
 		}
 	}
 
-	// The payer's account is opened with an overdraft limit exactly when the fixture
-	// is withholding its bank's reserves, and never otherwise: an overdraft is a fact
-	// about this account, and giving every payer one would make "the payer can pay"
-	// mean something different everywhere.
+	// The payer's account is opened with an overdraft limit exactly when the
+	// fixture is withholding its bank's reserves, and never otherwise: an
+	// overdraft is a fact about this account, and giving every payer one would
+	// make "the payer can pay" mean something different everywhere.
 	var limit ledger.Amount
 	if opts.lendToTheDebtor {
 		limit = harnessFunding
@@ -367,13 +301,9 @@ func build(t *testing.T, opts harnessOptions) *harness {
 	h.debtorIBAN = addressOf(t, h.debtorAcct)
 	h.creditorAcct = h.openCustomer(t, h.creditor, "Bruno", "EUR", 0)
 	h.creditorIBAN = addressOf(t, h.creditorAcct)
-	// Funding is TWO acts and the fixture runs both. A deposit gives the customer a
-	// balance and leaves the bank holding vault cash; it does not raise the bank's
-	// reserve, because a bank cannot write in the central bank's book.
-	//
-	// Both are behind the SAME option deliberately: splitting it would let a fixture
-	// ask for a bank with a funded customer and no reserve, which would fail at
-	// settlement in a way that named neither option.
+	// Funding is TWO acts and the fixture runs both. A deposit gives the customer
+	// a balance and leaves the bank holding vault cash; it does not raise the
+	// bank's reserve, because a bank cannot write in the central bank's book.
 	if opts.fundTheDebtor {
 		if err := h.bank(h.debtor.BIC).Deposit(ctx, h.debtor.ID, h.debtorAcct.ID, harnessFunding, "Opening deposit"); err != nil {
 			t.Fatalf("Deposit: %v", err)
@@ -437,14 +367,8 @@ func build(t *testing.T, opts harnessOptions) *harness {
 }
 
 // tap is the wire, and everything on it is recorded here. It sits in front of a
-// host's EBICS endpoint and reads both directions out of the envelope, so a message
-// is tapped exactly ONCE, at the moment it crosses.
-//
-// The two ends are the CONNECTION's rather than the header's: a file's sender is
-// the subscriber that dialled in and its recipient is the host it dialled. That is
-// what the receiving institution goes by, so a test reading the tap sees what the
-// institution saw. A file queued and never collected is never tapped, which is
-// correct — nothing is pushed at a member bank.
+// host's EBICS endpoint and reads both directions out of the envelope, so a
+// message is tapped exactly ONCE, at the moment it crosses.
 func (h *harness) tap(host iso20022.BIC, of func() http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(r.Body)
@@ -477,11 +401,7 @@ func (h *harness) tap(host iso20022.BIC, of func() http.Handler) http.Handler {
 	})
 }
 
-// provision writes one bank's three rows and gives it its place in the network. The
-// two steps are separate because they are different kinds of thing: the rows are
-// what the three institutions hold, and the place is a download queue at each host.
-// It does NOT subscribe, so what comes back is a bank the roster carries and no
-// other member's copy has yet.
+// provision writes one bank's three rows and gives it its place in the network.
 func (h *harness) provision(t *testing.T, name string, bic iso20022.BIC, assets []ledger.AssetCode) *payment.Bank {
 	t.Helper()
 	ctx := context.Background()
@@ -515,16 +435,9 @@ func (h *harness) subscribeAll(t *testing.T) {
 }
 
 // admitWithoutTheRoster builds a bank the SETTLEMENT AGENT has answered and the
-// CLEARING HOUSE has never admitted: it holds a bank code, so it can address its
-// customers' accounts, and no member can be told where to send anything for it.
-//
-// Three of admission's four acts driven directly, with AdmitMember left out, which
-// provision.Bank cannot produce. It is the only state in which a bank has customers
-// with money and no route to anybody. A merely FOUNDED bank is not this: one no
-// registry has answered has no address range and can open no customer account.
-//
-// The bank is given its PLACE, because these tests are about what the network
-// refuses rather than who it can reach.
+// CLEARING HOUSE has never admitted: it holds a bank code, so it can address
+// its customers' accounts, and no member can be told where to send anything for
+// it.
 func (h *harness) admitWithoutTheRoster(t *testing.T, name string, bic iso20022.BIC) *payment.Bank {
 	t.Helper()
 	ctx := context.Background()
@@ -580,11 +493,9 @@ func (h *harness) centralBankTransactionCount(t *testing.T) int {
 }
 
 // getSettlementMember is the CENTRAL BANK's own record of a member: the row a
-// settlement agent would post from, read by BIC because that is the only identifier
-// it has, through that institution's own store — no other schema has a
-// settlement_members table. It reads the store directly rather than going through
-// payment.Network.GetSettlementMember, so a fixture asserting what the agent WROTE
-// does not go through the method it is asserting about.
+// settlement agent would post from, read by BIC because that is the only
+// identifier it has, through that institution's own store — no other schema has
+// a settlement_members table.
 func (h *harness) getSettlementMember(t *testing.T, bic iso20022.BIC) payment.SettlementMember {
 	t.Helper()
 	var out payment.SettlementMember
@@ -646,11 +557,7 @@ func (h *harness) creditTransferRequest(t *testing.T) payment.InitiatePaymentReq
 	return h.creditTransferRequestTo(t, h.creditorIBAN)
 }
 
-// creditTransferRequestTo is the same instruction addressed somewhere else. The
-// creditor's participant and account are real and only the ADDRESS varies, which is
-// what makes an unresolvable address a message the debtor's bank can build and
-// send: a payer quotes an IBAN, submission does not resolve it, and the bank at the
-// other end decides whether it is payable.
+// creditTransferRequestTo is the same instruction addressed somewhere else.
 func (h *harness) creditTransferRequestTo(t *testing.T, iban string) payment.InitiatePaymentRequest {
 	t.Helper()
 	return payment.InitiatePaymentRequest{
@@ -664,17 +571,13 @@ func (h *harness) creditTransferRequestTo(t *testing.T, iban string) payment.Ini
 		// from the address above through its own copy of the routing directory.
 		CreditorDetails: payment.PartyDetails{Name: h.creditorAcct.Name},
 		// And the payer's own bank, which this fixture has to name and a customer's
-		// instruction does not. Deployment.Submit picks the SUBMITTING bank out of the
-		// two agents before any bank's half runs, so a request leaving this empty is
-		// refused with "holds no bank at".
+		// instruction does not.
 		DebtorDetails: payment.PartyDetails{Agent: h.debtorBIC, Name: h.debtorAcct.Name},
 	}
 }
 
-// reverseCreditTransfer is the same push the other way: the payee's customer paying
-// the payer's, out of the payee's own bank. It is what a cut-off that nets to
-// nothing needs, and the amount is the harness's one, because a position cancels
-// exactly or it does not cancel at all.
+// reverseCreditTransfer is the same push the other way: the payee's customer
+// paying the payer's, out of the payee's own bank.
 func (h *harness) reverseCreditTransfer(t *testing.T) payment.InitiatePaymentRequest {
 	t.Helper()
 	return payment.InitiatePaymentRequest{
@@ -696,9 +599,7 @@ func (h *harness) reverseCreditTransfer(t *testing.T) payment.InitiatePaymentReq
 
 // debtorRef and creditorRef are the harness's two customers as a payment names
 // them: which bank holds the account, which account, and the address quoted to
-// reach it. Shared by the two flows and by the mandate, because SDD.ValidateMandate
-// compares the refs party by party and separately-built parties could drift into a
-// mismatch that looked like a revoked mandate.
+// reach it.
 func (h *harness) debtorRef() payment.PartyRef {
 	return payment.PartyRef{Account: h.debtorAcct.ID, Identifier: h.debtorAcct.Identifiers[0]}
 }
@@ -711,10 +612,7 @@ func (h *harness) creditorRef(iban string) payment.PartyRef {
 }
 
 // directDebitRequest is the instruction the harness's PAYEE gives its own bank:
-// collect from Alice, under the mandate she signed. The mirror of
-// creditTransferRequest, and the difference is who hands it in — which is why
-// Deployment.Submit routes it to the creditor's actor and nothing is posted when it
-// is accepted.
+// collect from Alice, under the mandate she signed.
 func (h *harness) directDebitRequest(t *testing.T) payment.InitiatePaymentRequest {
 	t.Helper()
 	return payment.InitiatePaymentRequest{
@@ -735,10 +633,8 @@ func (h *harness) directDebitRequest(t *testing.T) payment.InitiatePaymentReques
 	}
 }
 
-// submitDirectDebit runs the payee's collection through their own bank and returns
-// what that bank answered. Like submitCreditTransfer it does NOT wait, and unlike
-// it, what comes back has moved no money at all: the debtor's bank has not seen the
-// collection yet.
+// submitDirectDebit runs the payee's collection through their own bank and
+// returns what that bank answered.
 func (h *harness) submitDirectDebit(t *testing.T) payment.Payment {
 	t.Helper()
 	p, err := h.dep.Submit(context.Background(), h.directDebitRequest(t))
@@ -766,10 +662,7 @@ func (h *harness) submitCreditTransferTo(t *testing.T, iban string) payment.Paym
 }
 
 // submitCreditTransferInUSD is the same push between the same two banks, in the
-// other asset and therefore under the other scheme. Both parties are the two
-// customers' DOLLAR accounts: a payment's legs must both be denominated in its
-// scheme's asset, so quoting the euro account would be refused by the payer's own
-// bank before any message was built.
+// other asset and therefore under the other scheme.
 func (h *harness) submitCreditTransferInUSD(t *testing.T) payment.Payment {
 	t.Helper()
 	p, err := h.dep.Submit(context.Background(), payment.InitiatePaymentRequest{
@@ -795,12 +688,8 @@ func (h *harness) submitCreditTransferInUSD(t *testing.T) payment.Payment {
 	return p
 }
 
-// dollarsTo is a dollar credit transfer to a payee at any bank, addressed by the
-// account the register holds. The payee's account is a EURO one, and that is the
-// point: the assets a member clears in are the roster's fact and no submitting bank
-// can check them, so this is what a file addressed to a member outside its own
-// scheme looks like on the wire. Only the payer's own leg is held to the scheme's
-// asset.
+// dollarsTo is a dollar credit transfer to a payee at any bank, addressed by
+// the account the register holds.
 func (h *harness) dollarsTo(t *testing.T, acct deposit.Account) payment.InitiatePaymentRequest {
 	t.Helper()
 	return payment.InitiatePaymentRequest{
@@ -817,14 +706,8 @@ func (h *harness) dollarsTo(t *testing.T, acct deposit.Account) payment.Initiate
 	}
 }
 
-// aThirdBank admits one more member with a euro customer, and has every member pull
-// the directory again so the new bank can be addressed.
-//
-// It exists for the FAN-OUT, the one claim a two-bank fixture cannot make: with two
-// banks every uploaded file has one destination, so "the clearing house sorts by
-// creditor agent" and "the clearing house forwards the file" are
-// indistinguishable. It returns the account too, the address being minted by the
-// register and unwritable in advance.
+// aThirdBank admits one more member with a euro customer, and has every member
+// pull the directory again so the new bank can be addressed.
 func (h *harness) aThirdBank(t *testing.T) (*payment.Bank, deposit.Account) {
 	t.Helper()
 	p := h.provision(t, "Banco Tercero", "TERCESMMXXX", euroOnly)
@@ -914,25 +797,10 @@ func (h *harness) filesOfTypeTo(t *testing.T, to iso20022.BIC, msgDef string) []
 // ---------------------------------------------------------------------------
 // The business day, and the piece of it a test can stand inside
 // ---------------------------------------------------------------------------
-//
-// "Submit, advance a day, assert" is what every flow here reads, and a day is
-// synchronous: nothing is in flight when one returns.
 
-// workThrough runs every institution through everything queued for it, in the day's
-// own order, WITHOUT reaching the clearing house's cut-off and without moving the
-// clock. It is every phase of AdvanceDay that carries a file, leaving out the three
-// that are the day's own acts: the directory refresh, the CYCLE cut-off, and the
-// advance.
-//
-// Leaving the cycle cut-off out is what stops anything being RELEASED — the clearing
-// house holds each receiving bank's share until the cycle carrying it has settled —
-// and it is what lets a test see a payment sitting in an open cycle. Leaving the
-// refresh out is load-bearing too: a fixture asserting what a stale routing
-// directory costs needs it not to run.
-//
-// The BANKS' cut-off is in, because it is where a file comes from. The two cut-offs
-// share a word and are different acts. This NAMES phases and the day orders them,
-// so a fixture cannot carry a sequence the deployment would not run.
+// workThrough runs every institution through everything queued for it, in the
+// day's own order, WITHOUT reaching the clearing house's cut-off and without
+// moving the clock.
 var workThroughPhases = only(beforeClock,
 	phaseBankCutoff,
 	phaseClearing,
@@ -987,15 +855,6 @@ func (h *harness) day(t *testing.T) DayReport {
 }
 
 // closeCycle reaches the cut-off on every window this fixture has open.
-//
-// Through the CLEARING HOUSE and not through the network: closing a cycle is that
-// institution's act and ends in a pacs.009 uploaded to the settlement agent. Driving
-// h.net directly would close it on a bare context, attributed to no institution.
-//
-// EVERY open cycle, including empty ones — exactly the path that must instruct
-// nothing, walked constantly rather than reasoned about. It settles nothing: a
-// cut-off is the START of a conversation, and the instruction is uploaded and not
-// yet looked at.
 func (h *harness) closeCycle(t *testing.T) {
 	t.Helper()
 	ctx := context.Background()
@@ -1018,13 +877,9 @@ func (h *harness) closeCycle(t *testing.T) {
 	}
 }
 
-// settledPayment is a credit transfer carried the whole way: submitted, accepted,
-// cleared at the cut-off and discharged by the central bank. It is what a RETURN
-// needs, finality being its precondition. Built by driving the real flow rather than
-// writing a Settled payment into the store, so the payer's money really is in the
-// payee's account and the reserves really have moved. It asserts the status itself,
-// since a fixture quietly handing back an unsettled payment would make every test
-// built on it fail somewhere else, saying something else.
+// settledPayment is a credit transfer carried the whole way: submitted,
+// accepted, cleared at the cut-off and discharged by the central bank. It is
+// what a RETURN needs, finality being its precondition.
 func (h *harness) settledPayment(t *testing.T) payment.Payment {
 	t.Helper()
 	return h.settle(t, h.submitCreditTransfer(t))
@@ -1053,18 +908,8 @@ func (h *harness) settle(t *testing.T, p payment.Payment) payment.Payment {
 	return got
 }
 
-// spendTheCredit is the payee sending the money straight back to the payer, carried
-// to finality too. It is the fixture for the two conditions a return can only meet
-// after the money has MOVED AGAIN, both about a bank unable to fund a leg:
-//
-//   - the payee's own account is empty, so the clawback cannot be posted — on a push
-//     that is the returning bank refusing before it sends;
-//   - the payee's BANK's settlement account is empty, so the central bank cannot
-//     reverse the reserves, which comes back RJCT.
-//
-// One helper for both, because they are the same movement seen from two books. It
-// opens a cycle of its own: the fixture's cut-off has already been reached, and a
-// payment with no open window is refused TM01.
+// spendTheCredit is the payee sending the money straight back to the payer,
+// carried to finality too.
 func (h *harness) spendTheCredit(t *testing.T) {
 	t.Helper()
 	ctx := context.Background()
@@ -1116,11 +961,10 @@ func (h *harness) balance(t *testing.T, id payment.ParticipantID, acct deposit.A
 	return bal.Book
 }
 
-// postingByKey is one transaction out of one bank's book, found by the idempotency
-// key the domain gave it: PostReturnLegTx posts "<payment>:return-refund" in the
-// payer's bank's book and "<payment>:return-claw" in the payee's. A test that
-// searched the description for what it is about to assert about the description
-// would be asserting nothing.
+// postingByKey is one transaction out of one bank's book, found by the
+// idempotency key the domain gave it: PostReturnLegTx posts
+// "<payment>:return-refund" in the payer's bank's book and
+// "<payment>:return-claw" in the payee's.
 func (h *harness) postingByKey(t *testing.T, id payment.ParticipantID, key string) ledger.Transaction {
 	t.Helper()
 	ctx := context.Background()
@@ -1135,10 +979,10 @@ func (h *harness) postingByKey(t *testing.T, id payment.ParticipantID, key strin
 	return txn
 }
 
-// posting is one transaction out of one bank's book, found by the id the payment
-// itself names. postingByKey's counterpart, for reads whose subject is an id a
-// payment carries: a retried return leg is posted under a key derived from the
-// attempt it replaces, so its key is not something a test can spell.
+// posting is one transaction out of one bank's book, found by the id the
+// payment itself names. postingByKey's counterpart, for reads whose subject is
+// an id a payment carries: a retried return leg is posted under a key derived
+// from the attempt it replaces, so its key is not something a test can spell.
 func (h *harness) posting(t *testing.T, id payment.ParticipantID, txID ledger.TransactionID) ledger.Transaction {
 	t.Helper()
 	ctx := context.Background()
@@ -1168,11 +1012,6 @@ func (h *harness) returnSentTo(t *testing.T, to iso20022.BIC) *iso20022.Pacs004 
 // payment reads the CLEARING HOUSE's copy, which is the only way to learn what
 // became of one: Submit answers with the payment as its own bank left it, and
 // everything after happened at another actor.
-//
-// Three institutions hold three rows and no institution can read another's, so "the
-// payment" is not a thing a test can ask for. This asks the clearing house because
-// its copy runs the whole state machine. A test about what a BANK did needs
-// bankPayment: the clearing house's row has no leg columns at all.
 func (h *harness) payment(t *testing.T, id payment.PaymentID) payment.Payment {
 	t.Helper()
 	p, err := h.net.GetPayment(context.Background(), id)
@@ -1182,14 +1021,7 @@ func (h *harness) payment(t *testing.T, id payment.PaymentID) payment.Payment {
 	return p
 }
 
-// bankPayment reads ONE BANK's own copy, which is where a leg is. A payment's legs
-// are postings in a member's ledger and its copy is the only row that names them, so
-// a leg read off h.payment fails saying the leg is missing rather than saying it
-// asked the wrong institution.
-//
-// The bank also holds the status IT was told, which is not always the clearing
-// house's: a bank that answered an instruction is never sent the ACCP, so its copy
-// says Initiated while the network's says Accepted. Both are right.
+// bankPayment reads ONE BANK's own copy, which is where a leg is.
 func (h *harness) bankPayment(t *testing.T, bic iso20022.BIC, id payment.PaymentID) payment.Payment {
 	t.Helper()
 	p, err := h.bank(bic).GetPayment(context.Background(), id)
@@ -1199,10 +1031,9 @@ func (h *harness) bankPayment(t *testing.T, bic iso20022.BIC, id payment.Payment
 	return p
 }
 
-// cycles is every clearing cycle this network holds, in listing order. It is how a
-// test reads what a cut-off left behind, which is the STATUS and not an id: a
-// settled cycle is CycleSettled and a refused one is still CycleClosed. It cannot
-// carry a SettlementID — that is allocated inside the agent's own unit of work.
+// cycles is every clearing cycle this network holds, in listing order. It is
+// how a test reads what a cut-off left behind, which is the STATUS and not an
+// id: a settled cycle is CycleSettled and a refused one is still CycleClosed.
 func (h *harness) cycles(t *testing.T) []payment.ClearingCycle {
 	t.Helper()
 	cycles, err := h.net.ListCycles(context.Background())
@@ -1258,14 +1089,7 @@ func (h *harness) suspense(t *testing.T, id payment.ParticipantID) ledger.Amount
 	return bal
 }
 
-// lodge puts one bank's vault cash on reserve, composing both halves. A member
-// cannot credit its own reserve account; it asks, in a camt.050, and the answer
-// arrives on a later download — so Deployment.Lodge would leave the file queued
-// until a day ran, and a day cuts every open cycle off.
-//
-// The instruction the member's half renders is what the agent's half is handed,
-// rather than one the fixture assembles: the two must agree about the account number
-// and the reference. The ROUND TRIP is what lodgement_test.go is about.
+// lodge puts one bank's vault cash on reserve, composing both halves.
 func (h *harness) lodge(t *testing.T, id iso20022.BIC, asset ledger.AssetCode, amount ledger.Amount) {
 	t.Helper()
 	ctx := context.Background()
@@ -1284,10 +1108,8 @@ func (h *harness) lodge(t *testing.T, id iso20022.BIC, asset ledger.AssetCode, a
 	}
 }
 
-// vaultCash is one bank's euro vault balance: the cash it is holding and has not
-// placed on reserve. It exists for the deposit and lodgement measurements, the two
-// acts that move it in opposite directions, and both need a balance rather than a
-// book set, because a book set cannot tell a posting from a read.
+// vaultCash is one bank's euro vault balance: the cash it is holding and has
+// not placed on reserve.
 func (h *harness) vaultCash(t *testing.T, id payment.ParticipantID) ledger.Amount {
 	t.Helper()
 	ctx := context.Background()
@@ -1306,10 +1128,8 @@ func (h *harness) vaultCash(t *testing.T, id payment.ParticipantID) ledger.Amoun
 	return bal
 }
 
-// reserveMirror is one bank's own Reserve at Central Bank balance: what its own book
-// says its claim on the central bank is. It is NOT the central bank's record of the
-// same account — that is ReserveBalance, read from the agent's book — and the point
-// of having both is that they can disagree.
+// reserveMirror is one bank's own Reserve at Central Bank balance: what its own
+// book says its claim on the central bank is.
 func (h *harness) reserveMirror(t *testing.T, id payment.ParticipantID) ledger.Amount {
 	t.Helper()
 	ctx := context.Background()
@@ -1333,13 +1153,8 @@ func (h *harness) booksTouchedBy(who iso20022.BIC) []ledger.BookID {
 	return h.rec.touchedBy(who)
 }
 
-// injectRaw puts bytes where an institution will collect them, without building a
-// message. It is the only way to test what a receiver does with something it cannot
-// parse: everything else here goes through an upload or an enqueue that marshals.
-//
-// Which door it uses follows from WHO the recipient is, which is the topology: a
-// member bank is dialled by nobody, so bytes reach one through its download queue;
-// a host is dialled by its subscribers, so bytes reach one by being uploaded.
+// injectRaw puts bytes where an institution will collect them, without building
+// a message.
 func (h *harness) injectRaw(t *testing.T, from, to iso20022.BIC, raw []byte) {
 	t.Helper()
 	switch to {
@@ -1356,9 +1171,8 @@ func (h *harness) injectRaw(t *testing.T, from, to iso20022.BIC, raw []byte) {
 }
 
 // upload puts one built message on the wire, exactly as the sending institution
-// would. It is what a test needs to make an institution answer a message no fixture
-// flow produces. The bytes go up a real connection when the recipient is a HOST, and
-// into a download queue when it is a member bank.
+// would. It is what a test needs to make an institution answer a message no
+// fixture flow produces.
 func (h *harness) upload(t *testing.T, from, to iso20022.BIC, env iso20022.Envelope) {
 	t.Helper()
 	raw, err := iso20022.Marshal(env)
@@ -1418,20 +1232,17 @@ func (h *harness) urlOf(bic iso20022.BIC) string {
 	return h.cfg.ClearingHouseURL
 }
 
-// messagesFrom is every message handed over since a mark taken with messagesSeen,
-// in arrival order. It is how a test asserts on ONE conversation in a fixture that
-// has already carried others. Copied under the lock, because listener goroutines are
-// still appending.
+// messagesFrom is every message handed over since a mark taken with
+// messagesSeen, in arrival order. It is how a test asserts on ONE conversation
+// in a fixture that has already carried others.
 func (h *harness) messagesFrom(mark int) []tappedMessage {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return append([]tappedMessage(nil), h.seen[mark:]...)
 }
 
-// lastMessageOfTypeTo is the raw bytes of the most recent message of one definition
-// handed to one actor. Raw, and not parsed, because what it is for is REDELIVERY —
-// putting the very bytes an institution already handled back into its download
-// queue, the only way to provoke what a queue does on its own.
+// lastMessageOfTypeTo is the raw bytes of the most recent message of one
+// definition handed to one actor.
 func (h *harness) lastMessageOfTypeTo(t *testing.T, to iso20022.BIC, msgDef string) []byte {
 	t.Helper()
 	h.mu.Lock()
@@ -1465,16 +1276,9 @@ func (h *harness) messagesSeen() int {
 	return len(h.seen)
 }
 
-// assertLastStatusTo checks that the last message an actor received was a pacs.002
-// carrying a given reason code — the LAST one, because a bank in a finished flow has
-// received several.
-//
-// The EMPTY code means "no reason at all" and is a real assertion.
-// payment.statusReasonOf omits StsRsnInf entirely unless the transaction was
-// rejected, since StatusReasonChoice requires exactly one of a code and a
-// proprietary text and an acceptance has neither. So "the reason element is absent"
-// is the observable form of "this was not a rejection", which is why matching an
-// empty string against a present code is kept a separate case.
+// assertLastStatusTo checks that the last message an actor received was a
+// pacs.002 carrying a given reason code — the LAST one, because a bank in a
+// finished flow has received several.
 func (h *harness) assertLastStatusTo(t *testing.T, to iso20022.BIC, want iso20022.StatusReason) {
 	t.Helper()
 	doc := h.lastStatusTo(t, to)
@@ -1496,11 +1300,6 @@ func (h *harness) assertLastStatusTo(t *testing.T, to iso20022.BIC, want iso2002
 
 // assertLastTxStatusTo checks the TRANSACTION status of the last pacs.002 an
 // actor received: ACCP, ACSC, RJCT.
-//
-// It is a separate assertion from the reason code and not a second argument to
-// one, because the two answer different questions and a test usually wants one
-// of them. The status is what happened; the code is why, and only a rejection
-// has one.
 func (h *harness) assertLastTxStatusTo(t *testing.T, to iso20022.BIC, want iso20022.TransactionStatus) {
 	t.Helper()
 	doc := h.lastStatusTo(t, to)
@@ -1539,10 +1338,6 @@ func (h *harness) lastStatusTo(t *testing.T, to iso20022.BIC) *iso20022.Pacs002 
 }
 
 // instructionsSentTo is how many settlement instructions an actor was handed.
-//
-// pacs.009 and nothing else: it is the one message definition in this system
-// whose parties are both banks, so counting the type IS counting settlement
-// instructions.
 func (h *harness) instructionsSentTo(to iso20022.BIC) int {
 	return h.messagesSentTo(to, "pacs.009.001.08")
 }

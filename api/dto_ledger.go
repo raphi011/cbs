@@ -37,10 +37,7 @@ type AccountDTO struct {
 	Type        string `json:"type"`
 	Asset       string `json:"asset"`
 	// Control says this line pools subsidiaries: it stands for many, and every
-	// entry against it names which. A client needs it for two things it cannot
-	// get right otherwise — a posting form must ask for the subsidiary, and an
-	// account page must offer the detail under the line rather than only the
-	// total.
+	// entry against it names which.
 	Control   bool      `json:"control"`
 	CreatedAt time.Time `json:"createdAt"`
 }
@@ -58,33 +55,21 @@ func ToAccountDTO(a ledger.Account) AccountDTO {
 }
 
 // AccountBalanceDTO is the response of GET .../accounts/{aid}/balance.
-//
-// Balance is an integer in the account's minor units, so the asset it is
-// denominated in travels with it — the same rule BalanceDTO follows on the
-// deposit layer. A number with no asset is not an amount.
 type AccountBalanceDTO struct {
 	AccountID string `json:"accountId"`
-	// Subsidiary is which one the figures are for, absent when they are the
-	// whole account's. It is echoed back because a client asking for one
-	// customer's balance and a client asking for the pool's send the same route
-	// two different questions.
+	// Subsidiary is which one the figures are for, absent when they are the whole
+	// account's.
 	Subsidiary string `json:"subsidiary,omitempty"`
 	Asset      string `json:"asset"`
 	Balance    int64  `json:"balance"`
-	// ValueDateBalance is the balance as of the end of the requested day,
-	// counting only entries that have taken economic effect. It is what
-	// interest is computed from, and it differs from Balance whenever a
-	// posting is value-dated away from its booking date.
+	// ValueDateBalance is the balance as of the end of the requested day, counting
+	// only entries that have taken economic effect.
 	ValueDateBalance int64 `json:"valueDateBalance"`
 }
 
-// SubsidiaryBalanceDTO is one subsidiary's share of a control account. The asset
-// travels with the number for AccountBalanceDTO's reason: an integer in minor
-// units is not an amount without it.
-//
-// What a subsidiary IS — a deposit account, a facility — is not said here and
-// cannot be: the ledger holds an opaque string, and the layer that knows what it
-// names is the one rendering the link.
+// SubsidiaryBalanceDTO is one subsidiary's share of a control account. The
+// asset travels with the number for AccountBalanceDTO's reason: an integer in
+// minor units is not an amount without it.
 type SubsidiaryBalanceDTO struct {
 	Subsidiary string `json:"subsidiary"`
 	Asset      string `json:"asset"`
@@ -94,39 +79,17 @@ type SubsidiaryBalanceDTO struct {
 type EntryDTO struct {
 	ID        string `json:"id,omitempty"`
 	AccountID string `json:"accountId"`
-	// Subsidiary is what this leg belongs to within a control account — a
-	// deposit account's id, a facility's. Absent means the whole account,
-	// which is what a leg against one of the bank's own positions carries.
-	//
-	// It travels in both directions and it is not optional in the domain sense:
-	// a control account named without one is refused, and a plain account named
-	// with one is too, so a client that drops it on the way in cannot post a
-	// customer's money and a client that ignores it on the way out cannot tell
-	// whose a leg was.
+	// Subsidiary is what this leg belongs to within a control account — a deposit
+	// account's id, a facility's. Absent means the whole account, which is what a
+	// leg against one of the bank's own positions carries.
 	Subsidiary string `json:"subsidiary,omitempty"`
 	Amount     int64  `json:"amount"`
 	Direction  string `json:"direction"`
-	// Asset is the entry's account's asset. It is never sent by a client — a
-	// transaction request names accounts, not assets, and the asset a leg
-	// posts in is decided by the account it debits or credits — so this is
-	// populated only when rendering a response.
+	// Asset is the entry's account's asset.
 	Asset string `json:"asset,omitempty"`
 	// ValueDate is when THIS LEG takes economic effect, which is not always the
 	// transaction's: the SEPA debtor posting value-dates the payer's leg to the
-	// debit date and the suspense leg to settlement, days apart. See
-	// ledger.Entry.ValueDate.
-	//
-	// It travels in both directions, and the pointer is what makes that work.
-	// Absent on a request means "the transaction's", which is the domain's own
-	// rule for a zero value date — sending the transaction's date on every leg
-	// instead would be indistinguishable from deliberately pinning them
-	// together, and a client that simply does not care about per-leg dates
-	// should not have to compute one. On a response it is always populated:
-	// PostTransaction resolves every leg's date before storing it, so no reader
-	// has to fall back to the parent.
-	//
-	// Per LEG, because a posting's two legs can take economic effect on different
-	// days: the transaction-level date alone would hide that.
+	// debit date and the suspense leg to settlement, days apart.
 	ValueDate *time.Time `json:"valueDate,omitempty"`
 }
 
@@ -143,14 +106,7 @@ type TransactionDTO struct {
 	CreatedAt      time.Time         `json:"createdAt"`
 }
 
-// ToTransactionDTO renders a transaction, including each entry's asset. An
-// entry carries no asset of its own — Amount balances per asset precisely
-// because the asset is a property of the account it posts to — so rendering
-// it means resolving each entry's account. assets is the pre-resolved
-// account-to-asset map; ToTransactionDTO does no I/O of its own, so a caller
-// rendering several transactions can resolve the whole batch's accounts once
-// and reuse the map across every call. The resolving is in transaction.go,
-// which is where every file in this package that reads a store lives.
+// ToTransactionDTO renders a transaction, including each entry's asset.
 func ToTransactionDTO(tx ledger.Transaction, assets map[ledger.AccountID]ledger.AssetCode) TransactionDTO {
 	entries := make([]EntryDTO, len(tx.Entries))
 	for i, e := range tx.Entries {
@@ -161,11 +117,9 @@ func ToTransactionDTO(tx ledger.Transaction, assets map[ledger.AccountID]ledger.
 			Amount:     int64(e.Amount),
 			Direction:  e.Direction.String(),
 			Asset:      string(assets[e.AccountID]),
-			// Taken per leg, not from tx.ValueDate: on a payment's debtor
-			// posting the two differ by the settlement delay, and collapsing
-			// them here is exactly the bug this field fixes. A stored entry
-			// always carries a concrete date, so the address is never of a
-			// zero time.
+			// Taken per leg, not from tx.ValueDate: on a payment's debtor posting the
+			// two differ by the settlement delay, and collapsing them here is exactly
+			// the bug this field fixes.
 			ValueDate: valueDatePtr(e.ValueDate),
 		}
 	}
@@ -184,9 +138,6 @@ func ToTransactionDTO(tx ledger.Transaction, assets map[ledger.AccountID]ledger.
 }
 
 // valueDatePtr renders an entry's value date, or nothing at all for a zero one.
-// A zero time.Time marshals as "0001-01-01T00:00:00Z", which reads as a real
-// date a client would render and compare against; absent says what is actually
-// true, that this leg has no date of its own to report.
 func valueDatePtr(t time.Time) *time.Time {
 	if t.IsZero() {
 		return nil
@@ -194,10 +145,7 @@ func valueDatePtr(t time.Time) *time.Time {
 	return &t
 }
 
-// CreateAccountRequest carries a required asset. There is no default: an
-// account and its asset are inseparable, and quietly booking a new account in
-// euro because the caller forgot to say is the bug the asset dimension exists
-// to prevent. A missing asset is a 400, not an assumption.
+// CreateAccountRequest carries a required asset.
 type CreateAccountRequest struct {
 	Name  string `json:"name"`
 	Type  string `json:"type"`
@@ -216,12 +164,6 @@ type PostTransactionRequest struct {
 // ToDomain converts the request to a ledger.PostTransactionRequest, parsing
 // each entry's direction. A bad direction string yields an error that the
 // handler maps to 400.
-//
-// An entry's value date is passed through as given, INCLUDING absent: a zero
-// ValueDate is what the domain reads as "inherit the transaction's", and
-// PostTransaction resolves it there. Substituting req.ValueDate here would
-// duplicate that rule in a second place, and would keep working right up until
-// the two disagreed.
 func (req PostTransactionRequest) ToDomain() (ledger.PostTransactionRequest, error) {
 	entries := make([]ledger.Entry, len(req.Entries))
 	for i, e := range req.Entries {

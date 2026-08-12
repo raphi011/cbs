@@ -17,11 +17,6 @@ import (
 // The suite drives the provisioner over a whole deployment's databases, because
 // that is the only thing it can be driven over: its subject is three
 // institutions and there is no smaller set that has all three.
-//
-// What it does NOT re-test is what each act does. Those are payment's, asserted
-// one act at a time in payment's own suite, and a second copy here would be two
-// answers to one question. What is left is the COMPOSITION — the order, the
-// per-asset loop, and the act that is deliberately not in it.
 
 const (
 	joinerBIC   iso20022.BIC     = "NORDSESSXXX"
@@ -50,11 +45,6 @@ func provisionOne(t *testing.T, nets *payment.Networks, bic iso20022.BIC, name s
 }
 
 // One bank is three rows, and each of the three is a different institution's.
-//
-// The assertion is made at each institution's own network rather than off the
-// value the provisioner returned, because a return value proves only what one
-// act said. What is worth pinning is that the OTHER two committed something a
-// reader at that institution can find.
 func TestProvisioningWritesOneRowAtEachOfThreeInstitutions(t *testing.T) {
 	ctx := context.Background()
 	nets := newNetworks(t)
@@ -93,9 +83,6 @@ func TestProvisioningWritesOneRowAtEachOfThreeInstitutions(t *testing.T) {
 }
 
 // One settlement account is one asset's, so a bank in two assets applies twice.
-//
-// The agent answers about its own book and knows nothing about schemes, so it
-// opens an account per asset asked for whether or not this scheme clears in it.
 func TestABankInTwoAssetsGetsASettlementAccountInEach(t *testing.T) {
 	ctx := context.Background()
 	nets := newNetworks(t)
@@ -119,12 +106,6 @@ func TestABankInTwoAssetsGetsASettlementAccountInEach(t *testing.T) {
 }
 
 // Provisioning fills NOBODY's routing directory, and this is the guard on that.
-//
-// A directory is a copy each member pulls for itself. A deployment that
-// provisions a bank and stops has a scheme where the roster names the new bank
-// and no incumbent can address it — which is the real behaviour of a published
-// routing table, and the thing that stops being observable the moment
-// provisioning refreshes anybody. See provision.Subscribe.
 func TestProvisioningFillsNobodysDirectory(t *testing.T) {
 	ctx := context.Background()
 	nets := newNetworks(t)
@@ -158,11 +139,6 @@ func TestProvisioningFillsNobodysDirectory(t *testing.T) {
 }
 
 // Two banks listed on one address is refused, and no domain act refuses it.
-//
-// A bank's id is its BIC, so the second spec is a second FOUNDING of the bank
-// already there: same book, same row, same roster entry — and a new name on all
-// of them. That is the silent failure this guards, and the assertion that
-// matters is the one after the refusal, that the incumbent is untouched.
 func TestTwoBanksOnOneAddressAreRefused(t *testing.T) {
 	ctx := context.Background()
 	nets := newNetworks(t)
@@ -188,12 +164,6 @@ func TestTwoBanksOnOneAddressAreRefused(t *testing.T) {
 }
 
 // Running the same deployment twice writes nothing new.
-//
-// A provisioner is a thing a deployment re-runs — after a crash between the
-// acts, or simply on the next boot — so the same list twice must leave the same
-// system rather than a second copy or a refusal. The reference is derived from
-// the address for exactly this: the second pass quotes what the clearing house
-// already holds, and is read as the admission it already has.
 func TestProvisioningTheSameDeploymentTwiceIsANoOp(t *testing.T) {
 	ctx := context.Background()
 	nets := newNetworks(t)

@@ -7,9 +7,7 @@ import (
 )
 
 // DayCount is the convention for turning a pair of dates into a fraction of a
-// year. It is a real product parameter, not an implementation detail: the same
-// loan at the same rate accrues different amounts under different conventions,
-// and which one applies is written into the contract.
+// year.
 type DayCount int
 
 const (
@@ -20,13 +18,8 @@ const (
 	// daily accrual comes to 365/360 of the nominal rate. Euro money markets
 	// and US commercial lending.
 	ACT360
-	// Thirty360 treats every month as 30 days and every year as 360. US
-	// mortgages and most bonds.
-	//
-	// Its purpose is that every month is exactly a twelfth of a year, so a
-	// scheduled monthly instalment and the interest actually accrued over that
-	// month agree. Under ACT365 they do not, and the difference is what a
-	// repayment's principal portion absorbs.
+	// Thirty360 treats every month as 30 days and every year as 360. US mortgages
+	// and most bonds.
 	Thirty360
 )
 
@@ -54,9 +47,6 @@ func (d DayCount) YearDays() int {
 // Days counts the days between two dates under this convention. It is negative
 // when to precedes from, which is what lets a caller detect an accrual that
 // would run backwards rather than silently accruing nothing.
-//
-// The time of day is discarded on both ends: a business date is a date, so an
-// end-of-day run at 23:00 must cover the same day as one at 09:00.
 func (d DayCount) Days(from, to time.Time) int {
 	if d == Thirty360 {
 		return thirty360Days(from, to)

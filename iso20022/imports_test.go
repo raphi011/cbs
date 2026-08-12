@@ -15,16 +15,6 @@ import (
 const goModPath = "../go.mod"
 
 // modulePath reads this repository's module path out of go.mod.
-//
-// Read from go.mod rather than spelled out as a const, which would decouple the
-// guard below from the only place the module path is actually declared: rename
-// the module and a hand-written test keeps passing while checking a string that
-// appears nowhere. Demonstrated — the package copied verbatim into a module
-// named "scratch" passed unchanged.
-//
-// It fails rather than skips when it cannot find the declaration. A guard that
-// cannot locate its own input has stopped guarding, and saying so is the whole
-// point.
 func modulePath(t *testing.T) string {
 	t.Helper()
 
@@ -50,22 +40,6 @@ func modulePath(t *testing.T) string {
 // of ledger.Amount or payment.PaymentID would quietly make that false, because
 // the next reader could no longer tell which fields came from ISO 20022 and
 // which came from here.
-//
-// It was a line in a plan's verification block before it was a test — a command
-// someone had to remember to run, guarding a claim the package doc states as
-// fact. That is the arrangement this project has been burned by repeatedly, so
-// it is a test now.
-//
-// It asserts the stronger property too: every import is STDLIB. "No repository
-// imports" was the narrower half of the constraint — a third-party library
-// would have sailed through it — and the project's actual rule is that nothing
-// outside the store package acquires a dependency of its own. The stdlib test is
-// a cheap one: an import path whose first element
-// carries a dot names a host, and no standard-library path does.
-//
-// Non-test files only. A test may legitimately need something from the
-// repository, and nothing a test imports ends up in the package's own
-// dependency graph.
 func TestPackageImportsNothingFromThisRepository(t *testing.T) {
 	module := modulePath(t)
 

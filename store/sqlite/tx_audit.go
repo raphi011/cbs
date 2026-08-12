@@ -19,11 +19,8 @@ import (
 // set is overwritten: the sequence is a total order over the whole store, and
 // only the store can issue it.
 func (t *tx) AppendAudit(ctx context.Context, e ledger.AuditEvent) error {
-	// The book arrives on the event rather than as a parameter, so this is the
-	// one place the guard has to reach into an argument to find it. It is still
-	// first, and for the reason tx.own gives: an event appended under another
-	// institution's book is that institution's history being written by somebody
-	// who is not it, and there is no reader downstream that would notice.
+	// The book arrives on the event rather than as a parameter, so this is the one
+	// place the guard has to reach into an argument to find it.
 	if err := t.own(e.BookID); err != nil {
 		return err
 	}
@@ -46,20 +43,9 @@ func (t *tx) AppendAudit(ctx context.Context, e ledger.AuditEvent) error {
 }
 
 // ListAudit returns the events matching f in ascending Seq order.
-//
-// Limit is applied LAST, after every other predicate, and it keeps the NEWEST
-// matches below the cursor: ORDER BY seq DESC LIMIT n, reversed on the way out.
-// That is what makes ?before= mean "the next page of THIS filter". Seq is a
-// store-global order, so a filtered log's events are separated by gaps belonging
-// to other books and scopes; a LIMIT applied before the filter — or one that
-// took the oldest matches — would return short or empty pages that look like
-// end-of-data.
 func (t *tx) ListAudit(ctx context.Context, f ledger.AuditFilter) ([]ledger.AuditEvent, error) {
 	// An EMPTY BookID is "no filter", which means "this institution's whole log" —
-	// there is nothing else in the database. A NON-EMPTY one naming somebody else's
-	// book is refused rather than answered with the empty page it would otherwise
-	// produce, which is precisely the silent not-found this guard exists for: a
-	// caller asking the wrong store gets a page that looks like end-of-data.
+	// there is nothing else in the database.
 	if f.BookID != "" {
 		if err := t.own(f.BookID); err != nil {
 			return nil, err
@@ -145,19 +131,6 @@ func (t *tx) ListAudit(ctx context.Context, f ledger.AuditFilter) ([]ledger.Audi
 
 // nullTime carries an instant in and out of a TEXT timestamp column, rendering
 // Go's zero time as SQL NULL.
-//
-// The column is text, so the conversion is this store's in both directions, and
-// one type that is both a Valuer and a Scanner is what keeps the two from
-// drifting: a format used for writing and not for reading is a bug that only
-// shows up in a listing's order.
-//
-// Absence is stored as absence. Several fields use the zero time as "unset" — a
-// hold that never expires, a cycle that has not closed — and IsZero() must still
-// hold after a round trip. See timeLayout for why the layout is what it is.
-//
-// A nullTime is never the right thing to pass as a COMPARAND: a zero one is
-// NULL, and every comparison against NULL is unknown, so a query bounded by the
-// zero time would match nothing rather than everything. Bounds use formatTime.
 type nullTime struct{ time.Time }
 
 // Value renders the instant for storage, or NULL.
@@ -194,10 +167,6 @@ func (n *nullTime) Scan(src any) error {
 // jsonParam passes raw JSON through to a json_valid column, mapping a nil
 // document to SQL NULL so that "no payload" round-trips as nil rather than as
 // null-the-JSON.
-//
-// A string and not a []byte: a []byte is a BLOB, and a STRICT TEXT column
-// refuses one outright — "cannot store BLOB value in TEXT column", every row
-// carrying a payload.
 func jsonParam(raw json.RawMessage) any {
 	if raw == nil {
 		return nil
@@ -206,9 +175,8 @@ func jsonParam(raw json.RawMessage) any {
 }
 
 // marshalStringMap encodes a string map for a json_valid column. A nil map is
-// NULL and an empty one is {}, because the API renders the two differently and a
-// round trip that collapsed them would change what a caller sees. A string, for
-// jsonParam's reason.
+// NULL and an empty one is {}, because the API renders the two differently and
+// a round trip that collapsed them would change what a caller sees.
 func marshalStringMap(m map[string]string) (any, error) {
 	if m == nil {
 		return nil, nil

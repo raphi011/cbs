@@ -7,10 +7,6 @@ import (
 )
 
 // SubscriberHeader carries who is calling.
-//
-// It is a claim and not a credential: anybody who can reach the listener can
-// write any value into it. See the package doc for what a real subscriber holds
-// instead — three key pairs and an enrolment that goes partly through the post.
 const SubscriberHeader = "X-EBICS-Subscriber"
 
 // Request is the envelope a subscriber sends. One order type, one payload, and
@@ -32,23 +28,13 @@ type Response struct {
 	// Files is what a C53 or BTD download collected.
 	Files []File `json:"files,omitempty"`
 
-	// Acknowledgements is the HAC answer. It is structured where every other
-	// download is opaque bytes, because HAC is about the transport rather than
-	// about payments — a real one is a camt.086 file, and inventing a file
-	// format for it here would be a format with one reader.
+	// Acknowledgements is the HAC answer.
 	Acknowledgements []Acknowledgement `json:"acknowledgements,omitempty"`
 }
 
 // ServeHTTP is the host's single endpoint, and single is the protocol's own
 // shape: EBICS is one URL that everything POSTs to, with the order type in the
-// envelope rather than in a path. It answers wherever it is mounted and reads no
-// route out of the URL.
-//
-// A refusal is HTTP 200 carrying a return code, which is what real EBICS does
-// and is worth keeping. The status says whether the host was REACHED; the return
-// code says what it decided. Collapsing the two would make "the clearing house
-// is down" and "the clearing house does not know you" the same answer to a
-// caller, and they call for opposite things.
+// envelope rather than in a path.
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		w.Header().Set("Allow", http.MethodPost)
@@ -73,9 +59,6 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 // answerRequest is ServeHTTP without the HTTP, which is what makes the dispatch
 // testable and what a second transport would call.
-//
-// The context is the REQUEST's, so a subscriber that hangs up takes its own
-// store transaction down with it and no other.
 func (s *Server) answerRequest(ctx context.Context, sub SubscriberID, req Request) *Response {
 	switch {
 	case req.OrderType == HAC:

@@ -20,10 +20,6 @@ import (
 
 // twoCustomers opens two accounts in one bank's register, funds the first, and
 // returns the register, the payer and the payee.
-//
-// ONE register, because that is the whole of the arrangement a book transfer
-// needs: a register spans one book, so both accounts are its own by
-// construction and there is no cross-bank case for these tests to describe.
 func twoCustomers(t *testing.T, limit ledger.Amount) (*Register, Account, Account) {
 	t.Helper()
 	ctx := context.Background()
@@ -168,10 +164,8 @@ func TestADormantPayerCannotSendAndADormantPayeeStillReceives(t *testing.T) {
 	_, err := reg.Transfer(ctx, payer.ID, payee.ID, 100, "rent")
 	assertError(t, err, ErrAccountDormant)
 
-	// A credit is precisely what revives a dormant account, so refusing this
-	// one would strand a payment for want of a customer login. The status is
-	// not changed BY the credit — reactivation is its own act — which is what
-	// this second half pins.
+	// A credit is precisely what revives a dormant account, so refusing this one
+	// would strand a payment for want of a customer login.
 	reg, payer, payee = twoCustomers(t, 0)
 	assertNoError(t, reg.MarkDormant(ctx, payee.ID))
 	_, err = reg.Transfer(ctx, payer.ID, payee.ID, 100, "rent")
@@ -269,8 +263,7 @@ func TestATransferNamingAnAccountThisBankDoesNotHoldIsRefused(t *testing.T) {
 // TestTwoTransfersOutOfOneAccountCannotBothSpendTheSameMoney opens a FILE, for
 // the reason CLAUDE.md gives: on the ephemeral store a second reader blocks
 // until the winner commits, so a loser reaches the guard however the code
-// underneath behaves. Only a file under WAL lets a reader past an uncommitted
-// writer, which is where a check-then-post would spend the balance twice.
+// underneath behaves.
 func TestTwoTransfersOutOfOneAccountCannotBothSpendTheSameMoney(t *testing.T) {
 	ctx := context.Background()
 	reg, book, deposits, prd := newTestRegisterOnFile(t)
@@ -314,10 +307,7 @@ func TestTwoTransfersOutOfOneAccountCannotBothSpendTheSameMoney(t *testing.T) {
 }
 
 // newTestRegisterOnFile is newTestRegister over a real file rather than the
-// ephemeral store, so a second reader is not serialised behind the first. It
-// names store/sqlite directly, as store/sqlite's own lock tests do, because
-// testenv opens ephemeral databases and that is the right default for every
-// other suite here.
+// ephemeral store, so a second reader is not serialised behind the first.
 func newTestRegisterOnFile(t *testing.T) (*Register, *ledger.Book, ledger.SubledgerID, product.ID) {
 	t.Helper()
 	ctx := context.Background()

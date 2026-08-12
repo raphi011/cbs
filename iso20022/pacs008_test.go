@@ -105,9 +105,6 @@ func TestPacs008Validate(t *testing.T) {
 	})
 	t.Run("a service level present but empty is a missing element", func(t *testing.T) {
 		// Distinct from the case above: SvcLvl is PRESENT and its Cd is blank.
-		// Setting SvcLvl = nil exercises the nil branch and leaves the empty-Cd
-		// branch unpinned — that branch could be deleted with the whole suite
-		// still green, which is what this subtest exists to prevent.
 		d := valid()
 		d.FIToFICstmrCdtTrf.CdtTrfTxInf[0].PmtTpInf.SvcLvl = &ServiceLevelChoice{}
 		if err := d.validate(); !errors.Is(err, ErrMissingElement) {
@@ -115,11 +112,8 @@ func TestPacs008Validate(t *testing.T) {
 		}
 	})
 	t.Run("a sequence type is not an allowed element", func(t *testing.T) {
-		// SeqTp exists in pacs.003's PaymentTypeInformation27 but has no
-		// element at all in pacs.008's own PaymentTypeInformation28. The
-		// struct is shared between the two messages, so nothing in the Go
-		// type system stops a caller from setting it on a credit transfer;
-		// validate() is what must refuse it.
+		// SeqTp exists in pacs.003's PaymentTypeInformation27 but has no element at
+		// all in pacs.008's own PaymentTypeInformation28.
 		d := valid()
 		seqTp := SequenceTypeFirst
 		d.FIToFICstmrCdtTrf.CdtTrfTxInf[0].PmtTpInf.SeqTp = &seqTp

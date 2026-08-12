@@ -17,10 +17,6 @@ import (
 
 // TestReasonTableCoversEverySentinel is what keeps the table complete: a new
 // error added to errors.go must be classified here, or this fails.
-//
-// It parses errors.go rather than holding a hand-written list, because a
-// hand-written list is a second copy that drifts in exactly the way the table
-// itself would. The AST is the only source that cannot be forgotten.
 func TestReasonTableCoversEverySentinel(t *testing.T) {
 	declared := sentinelNames(t)
 	if len(declared) == 0 {
@@ -51,9 +47,6 @@ func TestReasonTableCoversEverySentinel(t *testing.T) {
 
 // TestReasonTableNamesMatchTheirValues closes the drift the name-based check
 // alone would leave open: an entry could pair ErrFoo with the string "ErrBar".
-// Distinct error values plus a count that matches the declaration count makes
-// that impossible — a mislabelled entry either duplicates a value or leaves a
-// name uncovered.
 func TestReasonTableNamesMatchTheirValues(t *testing.T) {
 	seen := make(map[error]string, len(reasonTable))
 	for _, m := range reasonTable {
@@ -73,11 +66,6 @@ func TestReasonTableNamesMatchTheirValues(t *testing.T) {
 }
 
 // TestABorrowedReasonIsClassifiedAndDistinct is borrowedReasons' guard.
-//
-// Two things it must not become. It must not shadow a sentinel this package
-// declares — that decision belongs in reasonTable and nowhere else — and it must
-// not hold an entry that says nothing, because an empty code here would silently
-// mean "fall through to MS03", which is what having the table avoids.
 func TestABorrowedReasonIsClassifiedAndDistinct(t *testing.T) {
 	if len(borrowedReasons) == 0 {
 		t.Fatal("borrowedReasons is empty; delete it and ReasonFor's second loop, or say what it is for")
@@ -91,10 +79,7 @@ func TestABorrowedReasonIsClassifiedAndDistinct(t *testing.T) {
 		if m.Code == "" {
 			t.Errorf("%s is borrowed with no code, which is the MS03 fallback it exists to avoid", m.Name)
 		}
-		// The name without its package qualifier, whichever package it came
-		// from. Trimming one known prefix would stop catching the shadow the
-		// moment a third layer's error was borrowed, which is the sort of guard
-		// that quietly turns into a comment.
+		// The name without its package qualifier, whichever package it came from.
 		if _, bare, ok := strings.Cut(m.Name, "."); ok && contains(declared, bare) {
 			t.Errorf("%s names a sentinel errors.go declares; classify it in reasonTable instead", m.Name)
 		}
@@ -107,12 +92,6 @@ func TestABorrowedReasonIsClassifiedAndDistinct(t *testing.T) {
 }
 
 // TestReasonForAnEmptyAccountIsAM04 is the pin on the one borrowed entry.
-//
-// A direct debit against an account with nothing in it is refused by the DEBTOR
-// bank's funds check, which is the deposit layer's to make, so the error that
-// has to become a code is deposit's. AM04 is the code SEPA has for exactly this
-// and MS03 is what it fell to before, which told a creditor's collection system
-// nothing it could act on.
 func TestReasonForAnEmptyAccountIsAM04(t *testing.T) {
 	err := fmt.Errorf("checking withdrawal: %w", deposit.ErrInsufficientAvailable)
 	if got := ReasonFor(err); got != iso20022.StatusReasonInsufficientFunds {
@@ -121,22 +100,6 @@ func TestReasonForAnEmptyAccountIsAM04(t *testing.T) {
 }
 
 // TestReasonForAnEmptyReserveIsAM04 is the pin on the second borrowed entry.
-//
-// A net payer whose reserve cannot cover its position is refused inside
-// SettleCycleTx, and ledger.ErrInsufficientBalance is what that refusal carries
-// — one layer below the deposit error that classifies the same condition for a
-// customer's account.
-//
-// The mirror leg is the member's own posting, so SettleCycleTx checks each net
-// payer's reserve at the central bank itself and returns ledger's own sentinel
-// deliberately — a member's settlement account there is a Liability, which the
-// ledger does not guard, and a new sentinel would have changed the code on the
-// wire for a refusal that did not change at all.
-//
-// The same code for both is right rather than convenient: AM04 says "the account
-// cannot cover this", and the settlement agent answering a clearing house is
-// saying exactly what a debtor's bank says to a creditor's. MS03 is what it fell
-// to before, which told the clearing house nothing it could act on.
 func TestReasonForAnEmptyReserveIsAM04(t *testing.T) {
 	err := fmt.Errorf("bank_1 is short 250000 in EUR: %w", ledger.ErrInsufficientBalance)
 	if got := ReasonFor(err); got != iso20022.StatusReasonInsufficientFunds {
@@ -165,12 +128,6 @@ func TestReasonForKnownErrors(t *testing.T) {
 // TestReasonTableExplicitlyClassifiesAmbiguousMS03Cases pins that certain
 // sentinels are DELIBERATELY mapped to MS03 in reasonTable, as opposed to
 // merely falling through to it.
-//
-// A case in TestReasonForKnownErrors asserting ReasonFor's output cannot
-// tell those two situations apart, because MS03 is also ReasonFor's fallback
-// for an error the table has never heard of: mutating one of these entries'
-// Code to "" leaves such a case green. This test asserts against reasonTable
-// directly instead, so it fails on exactly that mutation.
 func TestReasonTableExplicitlyClassifiesAmbiguousMS03Cases(t *testing.T) {
 	for _, name := range []string{
 		// A valid mandate exists but this collection falls outside it — see
@@ -200,8 +157,7 @@ func TestReasonTableExplicitlyClassifiesAmbiguousMS03Cases(t *testing.T) {
 
 // TestReasonForEmptyCodeEntriesFallToMS03 pins the claim in reasonTable's
 // "never reaching a counterparty" section: ReasonFor cannot tell one of these
-// sentinels apart from an error it has never heard of at all. Both return MS03
-// by exactly the same fallback path.
+// sentinels apart from an error it has never heard of at all.
 func TestReasonForEmptyCodeEntriesFallToMS03(t *testing.T) {
 	var checked int
 	for _, m := range reasonTable {
@@ -242,10 +198,6 @@ func TestReasonForUnwraps(t *testing.T) {
 // ---------------------------------------------------------------------------
 // Inbound: reading a status report and a settlement instruction
 // ---------------------------------------------------------------------------
-//
-// These two readers need no Network, so they are tested in this package rather
-// than in message_test.go — the split between the two files is mechanical, and
-// described at the top of that one.
 
 // readNow is the instant these tests write their messages at. It is not the
 // network's clock, for the reason message_test.go's messageNow is not: a message
@@ -254,10 +206,6 @@ var readNow = time.Date(2026, 8, 1, 9, 0, 0, 0, time.UTC)
 
 // ReadStatus separates what the report says about the GROUP from what it says
 // about each transaction, because a bulk message's fate is two different facts.
-//
-// The report is built, marshalled and read back off the wire rather than
-// inspected as a struct: a reader that read its own input would be a tautology,
-// and the claim is about what a receiver sees.
 func TestReadStatusSeparatesGroupFromTransaction(t *testing.T) {
 	orig := OriginalMessage{MsgID: "AURO-1", MsgDefIdr: "pacs.008.001.08", CreDtTm: readNow.Add(-time.Hour)}
 	sent := []TransactionStatusReport{
@@ -288,9 +236,7 @@ func TestReadStatusSeparatesGroupFromTransaction(t *testing.T) {
 	got, reports := ReadStatus(back.Document.(*iso20022.Pacs002))
 
 	// The GROUP half. All three fields point BACKWARDS at the message being
-	// reported on — never at this report, whose own MsgId is VERDE-1. A reader
-	// that took the status report's own header here would hand the collecting bank
-	// an identifier that matches nothing it ever sent.
+	// reported on — never at this report, whose own MsgId is VERDE-1.
 	if got.MsgID != orig.MsgID {
 		t.Errorf("original message id = %q, want %q", got.MsgID, orig.MsgID)
 	}
@@ -329,9 +275,7 @@ func TestReadStatusSeparatesGroupFromTransaction(t *testing.T) {
 }
 
 // A report whose original creation time was omitted comes back as the zero
-// time, not as a fabricated instant. The element is optional precisely because
-// a sender may not know it; see originalCreationOf, which omits it on the way
-// out for the same reason.
+// time, not as a fabricated instant.
 func TestReadStatusLeavesAnAbsentCreationTimeZero(t *testing.T) {
 	env, err := StatusMessage(
 		OriginalMessage{MsgID: "AURO-1", MsgDefIdr: "pacs.008.001.08"},
@@ -389,14 +333,6 @@ func TestReadSettlementIsOneLegPerTransaction(t *testing.T) {
 // The scale comes from ledger.LookupAsset on the message's own currency, never
 // from a constant — and an eight-decimal asset is what makes the difference
 // visible.
-//
-// The document is built by hand rather than by SettlementMessage, and that is
-// the finding rather than a shortcut: ActiveCurrencyAndAmount caps any currency
-// at five fraction digits, so a BTC leg cannot be marshalled and this message
-// cannot arrive over the wire. What it can do is reach ReadSettlement, which is
-// enough to distinguish the two implementations — at the asset's scale of 8,
-// 0.00250000 is 250000 satoshi; at a hardcoded 2 it is ErrAmountScale, an error
-// where an amount should be.
 func TestReadSettlementTakesItsScaleFromTheAsset(t *testing.T) {
 	doc := &iso20022.Pacs009{FICdtTrf: iso20022.FIToFIFinancialInstitutionCreditTransfer{
 		GrpHdr: iso20022.CreditTransferGroupHeader{MsgId: "CSM-1", NbOfTxs: "1"},
@@ -440,13 +376,6 @@ func TestReadSettlementRefusesAnUnknownCurrency(t *testing.T) {
 
 // The receiver that TestSettlementMessageNbOfTxsSurvivesATruncatedFile was
 // waiting for.
-//
-// That test truncates a settlement instruction after it is built, marshals it,
-// reads it back and asserts the sender's count of 2 is still there beside the
-// one leg that survived — and then stops, because nothing existed to act on the
-// discrepancy. This is the act: a settlement instruction that declares two legs
-// and carries one is refused, rather than settling the one and leaving a bank
-// unpaid with no record of why.
 func TestReadSettlementRefusesATruncatedFile(t *testing.T) {
 	env, err := SettlementMessage([]SettlementLeg{
 		{From: "AURODEFFXXX", To: "VERDITMMXXX", Amount: 250000, Asset: "EUR", Reference: "cyc_1:bank_1"},
@@ -475,11 +404,7 @@ func TestReadSettlementRefusesATruncatedFile(t *testing.T) {
 	}
 }
 
-// A count that is not a number is refused rather than ignored. Atoi's zero value
-// on failure is 0, so a reader that dropped the error would compare every
-// transaction list against zero and refuse every well-formed message — or, worse,
-// treat the check as satisfied. NbOfTxs is a string in this package because it
-// is what the sender asserted, and an assertion that is not a count is not one.
+// A count that is not a number is refused rather than ignored.
 func TestReadSettlementRefusesACountThatIsNotANumber(t *testing.T) {
 	doc := &iso20022.Pacs009{FICdtTrf: iso20022.FIToFIFinancialInstitutionCreditTransfer{
 		GrpHdr: iso20022.CreditTransferGroupHeader{MsgId: "CSM-1", NbOfTxs: "many"},
@@ -535,9 +460,7 @@ func returnFixture() *iso20022.Pacs004 {
 
 // TestReadReturnRefusesAnAbsentOrgnlTxRef is ReadSettlement's argument, one
 // message over: a return whose agents cannot be read must not be half-acted-
-// on. OrgnlTxRef is optional on the wire — a return built before this task,
-// or by a counterparty that has not adopted it, carries none — and ReadReturn
-// is where that absence stops rather than reaching a caller as two empty BICs.
+// on.
 func TestReadReturnRefusesAnAbsentOrgnlTxRef(t *testing.T) {
 	doc := returnFixture()
 	doc.PmtRtr.TxInf[0].OrgnlTxRef = nil
@@ -549,17 +472,6 @@ func TestReadReturnRefusesAnAbsentOrgnlTxRef(t *testing.T) {
 // TestReadReturnRefusesATransactionThatNamesNoPayment is the same argument
 // about a different element, and it is a MONEY guard rather than a resolution
 // one.
-//
-// OrgnlTxId is optional in the schema: iso20022.ReturnTransaction.validate
-// accepts a transaction that refers back by OrgnlEndToEndId alone, and this
-// system has no way to resolve a payment from that. What made it worth
-// refusing here rather than shrugging at is what SettleReturnTx does with an
-// empty id — it posts the reserve reversal under the idempotency key
-// "<payment>:return-settle", so an empty one keys every such return to
-// ":return-settle". The FIRST would move reserves between two banks for a
-// payment nobody can name, and every one after it would come back
-// ErrReturnAlreadySettled. Refused where the message is read, because that is
-// the last point at which nothing has happened yet.
 func TestReadReturnRefusesATransactionThatNamesNoPayment(t *testing.T) {
 	doc := returnFixture()
 	doc.PmtRtr.TxInf[0].OrgnlTxId = ""
@@ -628,9 +540,7 @@ func TestReadReturnRefusesACountThatIsNotANumber(t *testing.T) {
 }
 
 // camt053Fixture builds a minimally valid statement: one entry, one CLBD
-// balance, an Othr-identified account. Each ReadStatement refusal test below
-// starts from this and breaks exactly the one thing it means to test, so a
-// failure can only be about that one thing.
+// balance, an Othr-identified account.
 func camt053Fixture() *iso20022.Camt053 {
 	return &iso20022.Camt053{BkToCstmrStmt: iso20022.BankToCustomerStatement{
 		Stmt: []iso20022.AccountStatement{{
@@ -651,11 +561,7 @@ func camt053Fixture() *iso20022.Camt053 {
 }
 
 // A statement carrying two entries is refused whole, not read as one movement
-// with the second silently dropped. This system's central bank posts exactly
-// one netting movement per member per cycle, so a second entry is a shape this
-// reader has no rule for — and posting the first while ignoring the second
-// would move a bank's reserve mirror by the wrong amount with nothing anywhere
-// recording it.
+// with the second silently dropped.
 func TestReadStatementRefusesMoreThanOneEntry(t *testing.T) {
 	doc := camt053Fixture()
 	doc.BkToCstmrStmt.Stmt[0].Ntry = append(doc.BkToCstmrStmt.Stmt[0].Ntry, iso20022.StatementEntry{
@@ -705,9 +611,7 @@ func TestReadStatementRefusesAnAccountWithNoOthr(t *testing.T) {
 
 // closingBalanceIn searches for the CLBD balance rather than taking Bal[0],
 // because the standard permits several balances in one Bal and does not fix
-// their order. A decoy balance ahead of the real one — deliberately a type
-// (OPBD, opening booked) this codec never builds and has no constant for —
-// pins that the search does not stop at the first entry.
+// their order.
 func TestReadStatementFindsTheClosingBalanceEvenWhenItIsNotFirst(t *testing.T) {
 	doc := camt053Fixture()
 	doc.BkToCstmrStmt.Stmt[0].Bal = []iso20022.CashBalance{

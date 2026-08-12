@@ -7,25 +7,11 @@ import (
 	"github.com/raphi011/cbs/ledger"
 )
 
-// This file is the other half of correctFacilityAccrualTx. That function records
-// what the bank owes a borrower when a backdated posting shows it charged
-// interest that was never earned and the borrower had already paid it in cash;
-// this one lists those obligations and pays them back.
-//
-// They are deliberately separate operations. The correction runs inside an
-// end-of-day batch, over every facility in the book, with no borrower account in
-// hand and no business picking one. Paying money out is a decision someone makes
-// about one facility, with a destination — so it is its own call, made when
-// there is somebody to make it.
+// This file is the other half of correctFacilityAccrualTx.
 
-// RefundPayable is what the bank still owes one borrower in interest it took and
-// never earned: the facility it arose on, and the balance the refunds-payable
-// line holds under it.
-//
-// Amount is DERIVED — the balance of that position — rather than a figure kept
-// on the facility, for the same reason Drawn is: a second copy of a number is a
-// second thing that can be wrong. The facility stores neither the figure nor
-// where it sits.
+// RefundPayable is what the bank still owes one borrower in interest it took
+// and never earned: the facility it arose on, and the balance the
+// refunds-payable line holds under it.
 type RefundPayable struct {
 	FacilityID FacilityID
 	// Name and Asset are the facility's, copied so a caller listing every
@@ -47,8 +33,6 @@ type RefundPayable struct {
 // RefundPayableFor is what the bank owes one borrower back. It is 0 for a
 // facility no correction has ever overshot on, which is the overwhelming
 // majority: nothing has been posted under it.
-//
-// Returns ErrFacilityNotFound.
 func (p *Portfolio) RefundPayableFor(ctx context.Context, id FacilityID) (ledger.Amount, error) {
 	var out ledger.Amount
 	err := p.store.View(ctx, func(ctx context.Context, tx Tx) error {
@@ -63,13 +47,7 @@ func (p *Portfolio) RefundPayableFor(ctx context.Context, id FacilityID) (ledger
 }
 
 // refundPayableTx is RefundPayableFor against a facility the caller has already
-// loaded. The refunds-payable line is a Liability, so its balance runs the
-// opposite way to the facility's other two positions — which is the ledger's
-// business, not this layer's, and is why the direction is not named here.
-//
-// It reads the position and not the account: the pool holds what the bank owes
-// every other borrower too, and answering with that would tell one borrower they
-// are owed the whole book's refunds.
+// loaded.
 func (p *Portfolio) refundPayableTx(ctx context.Context, tx Tx, f Facility) (ledger.Amount, error) {
 	at, err := p.accountsTx(ctx, tx, f)
 	if err != nil {
@@ -79,19 +57,8 @@ func (p *Portfolio) refundPayableTx(ctx context.Context, tx Tx, f Facility) (led
 }
 
 // ListRefundsPayable returns every outstanding interest refund in the book,
-// oldest facility first. A facility owing nothing is omitted, so an empty result
-// means the bank owes no borrower anything — which is the ordinary case.
-//
-// CLOSED facilities are included, and that is the point of listing rather than
-// deriving this from the active portfolio. Close refuses a facility that still
-// owes the BANK money; it says nothing about a facility the bank owes, because
-// the lending contract ending does not cancel a debt running the other way. A
-// listing that skipped closed facilities would make exactly those obligations
-// invisible — the ones with no further accrual, statement or repayment to
-// surface them.
-//
-// It reads one balance per facility, which is one per subsidiary under a single
-// chart-of-accounts line.
+// oldest facility first. A facility owing nothing is omitted, so an empty
+// result means the bank owes no borrower anything — which is the ordinary case.
 func (p *Portfolio) ListRefundsPayable(ctx context.Context) ([]RefundPayable, error) {
 	var out []RefundPayable
 	err := p.store.View(ctx, func(ctx context.Context, tx Tx) error {
@@ -137,55 +104,6 @@ func (p *Portfolio) ListRefundsPayableTx(ctx context.Context, tx Tx) ([]RefundPa
 // RefundInterest pays a borrower back interest the bank charged and never
 // earned, discharging what a backdated correction left in the facility's
 // refunds-payable account.
-//
-//	Dr  Interest Refunds Payable (Liability), this borrower   4_932
-//	  Cr counterparty                                          4_932
-//
-// It is the mirror of Repay, and every difference between the two follows from
-// the money running the other way.
-//
-// counterparty is any position in the facility's asset — the borrower's
-// current account, or the vault for a cash refund. This layer does not know what
-// a deposit account is, so a refund that must also respect one's status is
-// orchestrated a layer up, the same way Disburse's payout is.
-//
-// # It does not touch principal, the receivable, or the schedule
-//
-// A repayment allocates across two accounts and then across instalments, because
-// it settles a debt the schedule is a plan for. This settles a debt that has no
-// schedule and no components: the correction already decided what the borrower
-// owes — it credited principal as far as principal could absorb, and only the
-// overflow reached the payable. Allocating any of this refund back onto the loan
-// would undo that split and hand the borrower money the correction had already
-// used to reduce what they owe.
-//
-// Arrears are untouched for the same reason, and unlike Repay there is nothing to
-// recompute: arrears are a pure function of the schedule, which this does not
-// change.
-//
-// # A closed facility may still be refunded
-//
-// Repay refuses ErrFacilityClosed; this deliberately does not. Closed means the
-// borrower owes nothing and no more will be lent — a statement about their
-// obligations, not the bank's. A bank that discovers it overcharged interest on a
-// loan settled last year still owes that money, and refusing to pay it because
-// the contract is over would strand the obligation in a Liability account with
-// nothing that could ever discharge it.
-//
-// # Why the amount is bounded
-//
-// A Liability is never caught by the ledger's sufficiency check — that guards
-// Asset and Expense positions only — so an over-refund would post cleanly and
-// leave this borrower's share of the payable NEGATIVE: a balance saying the
-// borrower owes the bank a refund, which is not a thing. The pool would stay
-// comfortably positive on other borrowers' money throughout, which is exactly
-// the reading a control account must not be given. Partial refunds are allowed, because
-// paying an obligation down in instalments is ordinary; paying out more than was
-// ever owed is not.
-//
-// Returns ErrFacilityNotFound, ErrNoRefundOutstanding when the bank owes this
-// facility nothing, and ErrInvalidAmount for an amount that is not positive or
-// that exceeds what is owed.
 func (p *Portfolio) RefundInterest(ctx context.Context, id FacilityID, counterparty ledger.Position, amount ledger.Amount, date time.Time, description string) (ledger.Transaction, error) {
 	var out ledger.Transaction
 	err := p.store.Update(ctx, func(ctx context.Context, tx Tx) error {
@@ -217,10 +135,8 @@ func (p *Portfolio) RefundInterestTx(ctx context.Context, tx Tx, id FacilityID, 
 		return ledger.Transaction{}, ErrNoRefundOutstanding
 	}
 	// Bounded rather than clamped: a caller asking to pay out more than the bank
-	// owes has the figure wrong, and silently paying less would report success
-	// for an amount that was never posted. Nothing here runs inside an
-	// end-of-day batch, so there is no batch to take down by refusing — which is
-	// exactly why the correction clamps and this does not.
+	// owes has the figure wrong, and silently paying less would report success for
+	// an amount that was never posted.
 	if amount > owed {
 		return ledger.Transaction{}, ErrInvalidAmount
 	}
@@ -241,10 +157,7 @@ func (p *Portfolio) RefundInterestTx(ctx context.Context, tx Tx, id FacilityID, 
 		return ledger.Transaction{}, err
 	}
 
-	// The facility itself is not written: nothing on the record changed. Accrued
-	// mirrors the RECEIVABLE, and the correction already took this money off it
-	// when it pushed the overflow into the payable — adding it back here would
-	// restate a receivable that was settled in cash.
+	// The facility itself is not written: nothing on the record changed.
 	if err := p.appendAuditTx(ctx, tx, ledger.EventFacilityInterestRefunded, string(f.ID), map[string]any{
 		"facility_id":    string(f.ID),
 		"amount":         amount,

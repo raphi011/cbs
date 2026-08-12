@@ -8,10 +8,6 @@ import (
 
 // Holiday is one of the six days the Eurosystem closes TARGET on, beyond the
 // weekends it closes every week.
-//
-// A weekend is not a holiday. Both are days money cannot move on, and only one
-// of them has a name; keeping them apart is what lets an operator console say
-// "shut for Easter Monday" where it would otherwise say "shut".
 type Holiday string
 
 const (
@@ -57,13 +53,9 @@ func HolidayOn(t time.Time) (Holiday, bool) {
 	return "", false
 }
 
-// IsSettlementDay reports whether the settlement agent is open on t's day, which
-// is whether money can move at all: no cycle nets, no net position settles and
-// no output file is released on a day this answers false for.
-//
-// It does not gate a customer instruction. A bank accepts one on a Sunday and
-// holds it for the next file, which is what a store-and-forward scheme against a
-// cut-off clock does.
+// IsSettlementDay reports whether the settlement agent is open on t's day,
+// which is whether money can move at all: no cycle nets, no net position
+// settles and no output file is released on a day this answers false for.
 func IsSettlementDay(t time.Time) bool {
 	d := ledger.DayStart(t)
 	if wd := d.Weekday(); wd == time.Saturday || wd == time.Sunday {
@@ -75,10 +67,6 @@ func IsSettlementDay(t time.Time) bool {
 
 // NextSettlementDay is the first settlement day strictly after t, so calling it
 // on a settlement day still moves.
-//
-// The loop needs no bound. The longest closure TARGET has is four days — Good
-// Friday through Easter Monday, and 25 and 26 December against a weekend — so
-// no year exists without a settlement day in it.
 func NextSettlementDay(t time.Time) time.Time {
 	d := ledger.DayStart(t).AddDate(0, 0, 1)
 	for !IsSettlementDay(d) {
@@ -87,14 +75,9 @@ func NextSettlementDay(t time.Time) time.Time {
 	return d
 }
 
-// AddSettlementDays is the day n settlement days after t, counting backwards for
-// a negative n. Zero is t's own day whether or not the agent is open on it: D+0
-// is not a business-day question.
-//
-// This is what a rulebook deadline is counted in. EPC SCT's return window is
-// three BANKING BUSINESS DAYS, and a credit that arrives on a Thursday is due
-// back the following Tuesday rather than on the Sunday three calendar days
-// later. See payment.ReturnWindowDays, which counts in this.
+// AddSettlementDays is the day n settlement days after t, counting backwards
+// for a negative n. Zero is t's own day whether or not the agent is open on it:
+// D+0 is not a business-day question.
 func AddSettlementDays(t time.Time, n int) time.Time {
 	d := ledger.DayStart(t)
 	step := 1

@@ -8,27 +8,11 @@ import (
 )
 
 // The file transport's two tables: the download queues and the order log.
-//
-// They are in the clearing house's schema and the settlement agent's and in no
-// other, because those are the two institutions that are DIALLED. A member bank
-// cannot ask for any of this: EBICS is a method on those two store types and on
-// no third, which is the topology made into a type. EBICS has no push, so a bank
-// only ever dials out and hosts nothing.
-//
-// This file is the one place in the store that names ebics, and the dependency
-// runs the only way it can: that package declares the port and imports nothing
-// from this repository, so the transport stays unable to name a payment. See
-// ebics.Store.
 
-// One more adapter for the reason the others exist — Go allows one Update method
-// per type and each Store interface declares a different callback — and the
-// callback is handed the very same *tx, so nothing about the mechanism differs.
-// What differs is that no unit of work ever spans this and the institution's
-// own: a file is put on a connection outside the transaction that decided to
-// send it, so the transport's writes are always their own.
-//
-// It is reached through ClearingHouseStore.EBICS and CentralBankStore.EBICS and
-// through nothing else: a member bank hosts no queue.
+// One more adapter for the reason the others exist — Go allows one Update
+// method per type and each Store interface declares a different callback — and
+// the callback is handed the very same *tx, so nothing about the mechanism
+// differs.
 type ebicsStore struct{ *store }
 
 var _ ebics.Store = ebicsStore{}
@@ -42,15 +26,6 @@ func (e ebicsStore) View(ctx context.Context, fn func(context.Context, ebics.Tx)
 }
 
 // NextOrderSeq allocates the next order ordinal at this host.
-//
-// It draws from id_sequences under a counter of its own, which is what makes it
-// gap-free and monotonic across a restart: an order id must be unique at the host
-// that minted it for the life of its database, and a queue row is deleted when
-// it is collected, so MAX(seq)+1 over the rows would hand the same id out twice.
-//
-// The counter is one-based, as every counter in that table is, and an order
-// ordinal is zero-based, because A000 is the first id the protocol's format
-// mints. The subtraction is the whole of the difference between the two.
 func (t *tx) NextOrderSeq(ctx context.Context) (int, error) {
 	n, err := t.nextSeq(ctx, t.store.book, "ebics_order")
 	if err != nil {
@@ -75,10 +50,6 @@ func (t *tx) AddOrder(ctx context.Context, seq int, o ebics.Order) error {
 
 // ListPendingOrders is every order that has arrived and not been answered,
 // oldest first.
-//
-// A scan of the whole table ordered by seq, which is what a work list is: the
-// answered rows are never deleted, so the index that serves HAC does not serve
-// this and there is nothing for one to select on but the status.
 func (t *tx) ListPendingOrders(ctx context.Context) ([]ebics.Order, error) {
 	rows, err := t.tx.QueryContext(ctx, `
 		SELECT order_id, subscriber, order_type, payload FROM ebics_orders
@@ -100,11 +71,6 @@ func (t *tx) ListPendingOrders(ctx context.Context) ([]ebics.Order, error) {
 }
 
 // AnswerOrder records what the institution made of an order.
-//
-// The rows affected are what tells an unknown id from a known one. UPDATE is
-// silent about a row that is not there, and an order this host never minted is
-// ebics.ErrUnknownOrder rather than a write that reports success and changes
-// nothing.
 func (t *tx) AnswerOrder(ctx context.Context, id ebics.OrderID, status ebics.OrderStatus, detail string) error {
 	if err := t.write(); err != nil {
 		return err
@@ -186,10 +152,6 @@ func (t *tx) ListQueuedFiles(ctx context.Context, sub ebics.SubscriberID) ([]ebi
 }
 
 // DeleteQueuedFiles takes the collected files out of the queue.
-//
-// By id and not by subscriber, because a C53 download collects the statements
-// and leaves everything else where it was. The ids come from a slice this store
-// handed the caller a moment earlier in the same transaction.
 func (t *tx) DeleteQueuedFiles(ctx context.Context, ids []ebics.OrderID) error {
 	if err := t.write(); err != nil {
 		return err

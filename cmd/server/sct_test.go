@@ -34,22 +34,6 @@ func TestCreditTransferReachesAcceptedThroughTheCSM(t *testing.T) {
 
 // The chain is eight files over one business day, and naming them in order is
 // the point of the package. Nothing here is a function call across a boundary.
-//
-// The order is the whole point. Read the middle four: the clearing house instructs
-// settlement, the settlement agent discharges it and advises both members — and only
-// THEN does the payee's bank receive the instruction it is to act on. The money is
-// final before the instruction to apply it exists at the bank that will apply it,
-// which is what makes a receiving
-// bank unable to credit a customer against a cut-off that might still fail.
-//
-// It is asserted as a count and a route rather than as an exact byte sequence,
-// because the identifiers each hop assigns are the sender's own and pinning them
-// would be pinning the id scheme, not the flow.
-//
-// Two pacs.002 reach the payer's bank and they say different things: the first
-// is the clearing house taking the payment into a cycle, the second is that
-// cycle settling. Both are collected in the same download, which is what a
-// deployment running one cut-off a day looks like from the bank's end.
 func TestTheCreditTransferChainIsEightFiles(t *testing.T) {
 	h := newHarness(t)
 	h.submitCreditTransfer(t)
@@ -87,13 +71,8 @@ func TestTheCreditTransferChainIsEightFiles(t *testing.T) {
 	}
 }
 
-// The payee's bank is handed nothing at all until the cycle carrying the payment
-// has settled, and this is the assertion that says so on its own.
-//
-// It is the negative half of the chain above and worth its own test, because the
-// chain measures an ORDER and this measures an ABSENCE: run every phase that
-// carries a file, stop short of the cut-off, and the bank that is to be paid has
-// still never heard of the payment.
+// The payee's bank is handed nothing at all until the cycle carrying the
+// payment has settled, and this is the assertion that says so on its own.
 func TestNothingReachesThePayeesBankBeforeTheCycleSettles(t *testing.T) {
 	h := newHarness(t)
 	p := h.submitCreditTransfer(t)
@@ -114,18 +93,6 @@ func TestNothingReachesThePayeesBankBeforeTheCycleSettles(t *testing.T) {
 
 // A payee's bank that cannot find the payee RETURNS the payment, and this is
 // the single largest consequence of settling before releasing.
-//
-// The same instruction was a REJECT while the clearing house relayed before the
-// cut-off: the payee's bank looked at it first, said AC01, and no money had
-// moved. Now it is handed the file only after finality, so the money is already
-// in its clearing suspense and the only honest answer is a pacs.004 that sends
-// it back. That is what a real SEPA bank does, and it is why AC01 is a member of
-// the return code set as well as of the rejection one.
-//
-// Three days' worth of phases, because a return is a conversation: the first
-// carries and settles the payment, the second is where the payee's bank finds
-// out and asks for it back, and the third is where the settlement agent reverses
-// the reserves and the payer's bank pays its customer.
 func TestCreditTransferToAnUnknownAccountComesBackAsAnAC01Return(t *testing.T) {
 	h := newHarness(t)
 	p := h.submitCreditTransferTo(t, unknownIBANAt(h.creditor))
@@ -186,12 +153,6 @@ func TestTheReturnOfAnUnpayableTransferCarriesAC01(t *testing.T) {
 // The rejection reaches the payer's bank as a message, not as a return value.
 // It is the pacs.002 that makes the money come back, so the payer's bank has to
 // receive one carrying the code.
-//
-// The refusal under test is the CLEARING HOUSE's, because that is the only
-// institution that rejects anything: a bank's own refusal comes too late to be one
-// and is a return instead. TM01 is the cheapest of them to build
-// — a scheme with no cut-off window open — and what it measures is the message,
-// not the code.
 func TestARejectedCreditTransferIsAnsweredToThePayersBank(t *testing.T) {
 	h := newHarnessWithNoOpenCycle(t)
 	h.submitCreditTransfer(t)
@@ -247,23 +208,8 @@ func TestARolledBackSubmitSendsNothing(t *testing.T) {
 	}
 }
 
-// A message type an institution has no handler for is REPORTED and not shrugged off.
-//
-// A pacs.004 is not usable as the example: it travels to a bank after finality
-// and that bank posts its own leg from it, so it is a message every bank in this
-// system has a handler for.
-//
-// A pacs.009 takes its place, and it is the same kind of thing rather than a
-// substitute chosen for convenience. A settlement instruction is addressed to
-// the SETTLEMENT AGENT and to nobody else: it names net positions between
-// members and the central bank, and a member bank has nothing it could do with
-// one. So one arriving at a bank is a bug in whoever sent it, and swallowing it
-// would make a half this system does not have look like one it does.
-//
-// Every message definition this system's actors emit now has an arm at a member
-// bank except this one, which is why it is the last example available. A future
-// task that gives banks a pacs.009 arm has to find another — or conclude that
-// this assertion has run out of subject and say so.
+// A message type an institution has no handler for is REPORTED and not shrugged
+// off.
 func TestAFileAnInstitutionHasNoHandlerForIsReported(t *testing.T) {
 	h := newHarness(t)
 	env, err := payment.SettlementMessage(
@@ -287,17 +233,6 @@ func TestAFileAnInstitutionHasNoHandlerForIsReported(t *testing.T) {
 }
 
 // A status report about a payment whose payer banks elsewhere is refused.
-//
-// ReverseDebtorLegTx posts in the book of the payment's OWN debtor bank, whoever
-// runs it — so a bank that acted on a misrouted rejection would reverse a debit
-// in another bank's ledger. Nothing in the flow produces one, because the
-// clearing house addresses a status to the payment's debtor bank and no other;
-// this is the guard that makes that a property of the receiver too, rather than
-// only of the router.
-//
-// The payment it names really is Rejected, so the other guard in that handler —
-// a bank reverses only what this network's record calls rejected — cannot be
-// what refuses it. See TestABankRefusesToReverseAPaymentThatIsNotRejected.
 func TestABankRefusesAStatusAboutAnotherBanksPayment(t *testing.T) {
 	h := newHarnessWithNoOpenCycle(t)
 	p := h.submitCreditTransfer(t)
@@ -327,10 +262,7 @@ func TestABankRefusesAStatusAboutAnotherBanksPayment(t *testing.T) {
 	if err == nil {
 		t.Fatal("the day was clean; the payee's bank acted on a rejection of somebody else's customer's debit")
 	}
-	// Named, and not merely non-nil. Without the guard the reversal is attempted
-	// and fails on the ledger's own refusal to reverse a transaction twice, so a
-	// test that asked only whether the day reported anything would pass on a handler
-	// that had already reached into the payer's book to find out.
+	// Named, and not merely non-nil.
 	if !strings.Contains(err.Error(), string(h.creditorBIC)) || !strings.Contains(err.Error(), string(h.debtorBIC)) {
 		t.Errorf("the reported problem %q does not say which bank refused it, and whose payment it was about", err)
 	}
@@ -341,35 +273,6 @@ func TestABankRefusesAStatusAboutAnotherBanksPayment(t *testing.T) {
 
 // A bank reverses a debit once, and never after the money has moved between
 // banks. Those are the two refusals it still has, and this measures the second.
-//
-// ReverseDebtorLegTx does not load the payment and does not look at its status —
-// its own doc says so, and says the caller establishes the decision. The caller
-// is payment.RejectAtBankTx now, and what it establishes the decision against is
-// THIS BANK's own copy: a rejection of a payment already recorded as Settled or
-// Rejected is refused, because the first would take back a debit that has
-// already funded a reserve movement and the second would reverse a leg that is
-// already reversed.
-//
-// # A forged rejection cannot be told from a real one
-//
-// Each institution holds a copy nobody else can write, so "does this network
-// call it rejected" is not a question a bank can ask — the decider's own record
-// is in another database. A genuine post-acceptance rejection and a forged one
-// are the same bytes from the same address about a payment in the same state.
-//
-// Refusing on Accepted was tried and is wrong on the domain as well as on the
-// data. A rejection is a pre-SETTLEMENT act, not a pre-acceptance one: a cut-off
-// that finds a participant short of its position rejects payments that have been
-// in a cycle for hours, and a bank that answered "I was already told ACCP" would
-// be refusing the ordinary case. See payment.Network.transition.
-//
-// What replaces it is not here, because it cannot be: a real network answers
-// forgery with the CHANNEL — an authenticated message, non-repudiable, on a
-// closed network — and with reconciliation against the cycle reports afterwards.
-// What this system CAN do it does one hop earlier, at the institution that would
-// have to be lying: the clearing house never sends an RJCT about a payment it has
-// not rejected. See ClearingHouse.refuse, which rejects its own copy in the same
-// breath as the code it answers with.
 func TestABankRefusesToReverseAPaymentThatIsNotRejected(t *testing.T) {
 	h := newHarness(t)
 	p := h.settledPayment(t)
@@ -409,18 +312,6 @@ func TestABankRefusesToReverseAPaymentThatIsNotRejected(t *testing.T) {
 
 // A member bank's pacs.002 is REPORTED at the clearing house and acted on by
 // nothing, and what it costs is money nobody can move.
-//
-// It is the only status a member uploads now: a receiving bank makes no
-// judgement about an instruction, because the instruction reaches it after the
-// cycle carrying it is final. So the one thing left for it to say is that a file
-// would not parse — and by then the payments inside that file have settled, the
-// money is in that bank's clearing suspense, and it can neither apply them nor
-// name them to return them.
-//
-// There is nothing for the clearing house to do about it, which is exactly why
-// it is a line in the day's report: the failure is real, it is unrecoverable
-// from inside the flow, and payment/recon is what makes the stranded suspense
-// visible afterwards.
 func TestAFileAPayeesBankCannotReadIsReportedAtTheClearingHouse(t *testing.T) {
 	h := newHarness(t)
 	h.injectRaw(t, h.cfg.ClearingHouseBIC, h.creditorBIC, []byte("<Envelope><nonsense/>"))
@@ -437,32 +328,9 @@ func TestAFileAPayeesBankCannotReadIsReportedAtTheClearingHouse(t *testing.T) {
 	}
 }
 
-// A payment addressed to a bank the clearing house cannot route to is RC01, and it is the
-// clearing house that says so — the only party that holds the routing table.
-//
-// # The message names a payment nobody has seen, and it has to
-//
-// A doctored copy of a status the payer's bank really sent, id and all, would
-// make the RC01 an answer about a payment already ACCEPTED and sitting in an open
-// cycle — the shape of defect the clearing house refuses to produce, because a
-// bank acting on such a status reverses a debit that is funding a settlement and
-// no state its own copy could be in would let it tell that message from a
-// rejection this network really made (payment.RejectAtBankTx). The replay is
-// refused as a DUPLICATE before anything goes on the wire — see
-// the clearing house's own record — so keeping the original id would measure that refusal
-// instead of the routing table.
-//
-// So the transaction id is doctored too, and the file is then what a forged
-// instruction is: a well-formed pacs.008 for a payment no institution holds. The
-// clearing house records it, cannot route it, answers RC01, and marks ITS OWN
-// copy rejected — which is the property this test gained, because a clearing
-// house whose row said Initiated while its message said RJCT is the same
-// inconsistency one layer up.
-//
-// The payer's bank then REPORTS the answer, and that is correct rather than
-// incidental: it is being told about a payment it never submitted and holds no
-// row for. It is asserted rather than discarded so that a failure anywhere else
-// in the chain cannot hide underneath the assertions below.
+// A payment addressed to a bank the clearing house cannot route to is RC01, and
+// it is the clearing house that says so — the only party that holds the routing
+// table.
 func TestACreditTransferForABankTheClearingHouseCannotRouteToIsRC01(t *testing.T) {
 	h := newHarness(t)
 	p := h.submitCreditTransfer(t)
@@ -504,14 +372,6 @@ func TestACreditTransferForABankTheClearingHouseCannotRouteToIsRC01(t *testing.T
 
 // A second copy of a released output file is REPORTED at the payee's bank, not
 // acted on again.
-//
-// The redelivery arrives after the payment has settled and been applied, so
-// AcceptInboundTx refuses it with ErrInvalidStateTransition — a sentinel
-// payment's reasonTable classifies with the EMPTY code precisely because it
-// describes a defect in this system rather than a judgement about the sender's
-// instruction. payment.Answerable is what keeps it out of a pacs.004: a bank
-// that RETURNED a redelivery would send back, across the network, a payment it
-// had in fact applied.
 func TestARedeliveredCreditTransferIsReportedAtThePayeesBank(t *testing.T) {
 	h := newHarness(t)
 	p := h.settledPayment(t)
@@ -547,46 +407,12 @@ func TestARedeliveredCreditTransferIsReportedAtThePayeesBank(t *testing.T) {
 }
 
 // TestAnOnUsPaymentIsRefusedBeforeItReachesAClearingHouse is the boundary this
-// this transport does not have, and the thing it refuses is not an error in the message.
-//
-// # Why an on-us payment is not a clearing payment
-//
-// Both customers bank at the same institution, so paying one from the other is
-// that bank moving money between two of its own deposit accounts. Nothing leaves
-// it. No reserves move, because a reserve is what one bank owes another through
-// the central bank and this bank owes itself nothing; there is nothing for a
-// clearing house to net, nothing for a settlement agent to settle, and no
-// camt.053 that could tell a bank about its own book. A real scheme never sees
-// one: the payer's bank recognises the beneficiary as its own and books the
-// transfer internally.
-//
-// Each of the three institutions does something incoherent with an on-us
-// payment. The clearing house nets a position of zero and drops the payment out
-// of the settlement instruction, so a cycle holding nothing but an on-us payment
-// strands at Cleared for ever. The settlement agent's return path sends the SAME
-// bank two camt.053s about the SAME account under the same reference, differing
-// only in sign, and the second is swallowed by the advice row the first wrote —
-// so that bank's reserve mirror moves by the full amount while the central
-// bank's record of it does not, and its clearing suspense goes permanently
-// negative. The returning bank is both parties, so it holds both legs and
-// refuses its own customer's unconditional refund.
-//
-// Every one of those is a symptom of a payment that should never have been
-// submitted to clearing, which is why the refusal is here — at the one door
-// every submission comes through — and not three patches further in.
-//
-// # What it does NOT refuse
-//
-// A book transfer between two customers of one bank is a real product and this
-// system offers it — deposit.Register.TransferTx, which is the register's own
-// act and reaches no transport at all. The refusal is a statement about the wrong
-// ROUTE and not about the payment being illegitimate, so a caller reading it
-// knows which of the two to ask for instead.
+// this transport does not have, and the thing it refuses is not an error in the
+// message.
 func TestAnOnUsPaymentIsRefusedBeforeItReachesAClearingHouse(t *testing.T) {
 	// Both directions, because the submitting bank differs — a push is submitted
 	// by the payer's bank and a collection by the payee's — and on-us is the one
-	// arrangement in which those are the same institution. A guard that read the
-	// submitter rather than the two parties would pass one of these.
+	// arrangement in which those are the same institution.
 	for _, tc := range []struct {
 		name   string
 		scheme payment.SchemeID
@@ -601,11 +427,9 @@ func TestAnOnUsPaymentIsRefusedBeforeItReachesAClearingHouse(t *testing.T) {
 			// bank's.
 			other := h.openCustomer(t, h.debtor, "Carla", "EUR", 0)
 			otherRef := payment.PartyRef{Account: other.ID, Identifier: other.Identifiers[0]}
-			// A mandate, so that a collection is refused for being on-us and not
-			// for being unauthorised. Without it SDD.ValidateMandate would refuse
-			// first and this test would pass on a network with no boundary at all.
-			// Both parties are the payer's bank's, so it is also the creditor's
-			// bank and the one that records the mandate.
+			// A mandate, so that a collection is refused for being on-us and not for
+			// being unauthorised. Without it SDD.ValidateMandate would refuse first and
+			// this test would pass on a network with no boundary at all.
 			mandate, err := h.bank(h.debtorBIC).CreateMandate(ctx, h.debtorBIC, h.debtorRef(), otherRef, 0)
 			if err != nil {
 				t.Fatalf("CreateMandate: %v", err)
@@ -631,10 +455,9 @@ func TestAnOnUsPaymentIsRefusedBeforeItReachesAClearingHouse(t *testing.T) {
 				t.Errorf("the refusal reads %q and does not name the bank that is both parties", err)
 			}
 
-			// Refused BEFORE anything happened, not unwound afterwards: no
-			// payment row, no debit, no message. The submitting bank's half runs
-			// synchronously inside Submit, so a guard placed after it would have
-			// left a row behind.
+			// Refused BEFORE anything happened, not unwound afterwards: no payment row,
+			// no debit, no message. The submitting bank's half runs synchronously inside
+			// Submit, so a guard placed after it would have left a row behind.
 			payments, err := h.net.ListPayments(ctx)
 			if err != nil {
 				t.Fatalf("ListPayments: %v", err)

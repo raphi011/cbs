@@ -14,9 +14,7 @@ import (
 )
 
 // dial stands a host up on a real listener and returns a subscriber's
-// connection to it. Real HTTP, because "the counterparty is down" is one of the
-// things this transport exists to make expressible, and an in-process call
-// cannot be down.
+// connection to it.
 func dial(t *testing.T) (*ebics.Server, *ebics.Client) {
 	t.Helper()
 

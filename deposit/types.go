@@ -25,18 +25,11 @@ const (
 	// Dormant indicates no customer-initiated activity for an extended
 	// period. A credit (or explicit reactivation) returns it to Active.
 	Dormant
-	// Frozen indicates the account is temporarily restricted (e.g. a court
-	// order or fraud investigation). Withdrawals and new holds are blocked
-	// until unfrozen; CREDITS still land, because the freeze modelled here is a
-	// debit block — the garnishment case, where money owed to the customer
-	// keeps arriving while they cannot take any out. A sanctions freeze blocks
-	// credits too and this single status cannot express both; see
-	// requireCreditable.
+	// Frozen indicates the account is temporarily restricted (e.g. a court order
+	// or fraud investigation).
 	Frozen
 	// Closed is the terminal state: the account is permanently shut down and
-	// accepts no further activity, in either direction. It is the only status
-	// that refuses a credit, and it must: Close requires a zero balance, so a
-	// credit landing afterwards would strand money no withdrawal can reach.
+	// accepts no further activity, in either direction.
 	Closed
 )
 
@@ -55,16 +48,7 @@ func (s AccountStatus) String() string {
 	}
 }
 
-// Account is a customer demand-deposit account. It is not a row in the chart of
-// accounts: the customer's money sits in the bank's customer-deposit control
-// account for its asset, under this account's own id, and the balance is that
-// account's balance with the id in the WHERE clause. Register.Position is where
-// that pair is resolved, and nothing here stores it.
-//
-// Asset is what selects the control account, so it is fixed for life exactly as
-// a GL account's own asset is. A customer holding several assets holds several
-// accounts, each with its own IBAN, which is how most European retail banks
-// work.
+// Account is a customer demand-deposit account.
 type Account struct {
 	ID     AccountID
 	Name   string
@@ -74,42 +58,14 @@ type Account struct {
 	// Identifiers are this account's external addresses — what a counterparty
 	// quotes to pay it. Zero is normal: an account nobody pays from outside the
 	// bank needs no address at all.
-	//
-	// They are part of the account aggregate rather than a sibling entity, and
-	// that is load-bearing in the schema: PutDepositAccount writes both sides
-	// itself, which is the one condition under which a real FOREIGN KEY is
-	// allowed (see store/sqlite/schema/bank/0001_init.sql, on subledgers).
 	Identifiers []Identifier
 
-	// Accrued is interest earned and not yet charged, at sub-minor-unit
-	// precision. The general ledger holds Accrued.Minor() in the bank's
-	// accrued-interest receivable under this account's id; this field holds the
-	// residue the ledger cannot represent.
+	// Accrued is interest earned and not yet charged, at sub-minor-unit precision.
 	Accrued interest.Accrued
-	// AccruedGross is the interest this account has produced over its WHOLE
-	// LIFE, recomputed from its value-dated balance on every run. Accrued moves
-	// by the change in it, which is what makes a backdated posting correct
-	// itself: the days it takes effect over are re-derived with it in place,
-	// gross moves, and the next run posts the difference.
-	//
-	// Unlike Accrued it is never decremented by capitalisation, and — unlike
-	// before terms were effective-dated — it is never reset. There is no window
-	// to start any more: the recompute opens at the account's opening terms row
-	// and every day is re-derived at the terms that were actually in force on
-	// it, so a repricing needs no fresh baseline. That is what widened the
-	// retroactive-accrual window from the last repricing to account inception.
-	//
-	// Overflow is not a concern worth engineering around: this is int64
-	// micro-minor-units, a EUR 10,000 overdraft at 10% produces on the order of
-	// 1e11 a year, and int64 holds 9.2e18.
+	// AccruedGross is the interest this account has produced over its WHOLE LIFE,
+	// recomputed from its value-dated balance on every run.
 	AccruedGross interest.Accrued
 	// LastAccrualDate is the business date accrual has been recomputed through.
-	//
-	// It enforces interest.Recompute's documented precondition: [from, to] must
-	// cover at least one day, and a caller that recomputes an empty window over a
-	// non-zero prior state is told to give the whole record back. That is the only
-	// job it has: a whole-life recompute makes the same date produce the same gross
-	// and therefore a zero delta, so it is not what prevents a second charge.
 	LastAccrualDate time.Time
 
 	CreatedAt time.Time
@@ -150,17 +106,13 @@ type Hold struct {
 }
 
 // Balance represents the balances of a deposit account.
-//
-// The customer's spendable funds are the book balance of the customer-deposit
-// control account under this account's id: a positive Book balance means the
-// bank owes the customer that much.
 type Balance struct {
 	Book  ledger.Amount // book balance of this account's position
 	Holds ledger.Amount // sum of active, non-expired holds
 	// Available is Book - Holds + the overdraft limit in force TODAY, resolved
-	// from the account's effective-dated terms timeline rather than read off
-	// the account row: what a customer could spend last March is as much a fact
-	// about that March as what they were charged for it.
+	// from the account's effective-dated terms timeline rather than read off the
+	// account row: what a customer could spend last March is as much a fact about
+	// that March as what they were charged for it.
 	Available ledger.Amount
 }
 
@@ -175,23 +127,6 @@ type Snapshot struct {
 
 // Totals is a bank's customer-deposit position, split by the sign of each
 // account's balance and keyed by asset.
-//
-// This split is the whole Asset-side classification of an overdraft, and it is
-// derived rather than stored. A debit balance on a current account is a loan
-// and advance to a customer, and a bank may not net it against the credit
-// balances — but the drawn amount has no independent existence. It IS the
-// negative balance, viewed by sign.
-//
-// In a real bank the same split falls out of subledger-to-GL summarization: the
-// nightly feed buckets accounts by the sign of their balance into two control
-// accounts. Here it is a query over ONE control account's dimension, exactly as
-// "total customer deposits" is that account's balance with the dimension
-// dropped, and no journal posts it. What is absent is the reclassification, not
-// the control account: nothing ever posts the drawn amount to an Asset account,
-// so the Asset-side figure exists only as this sum.
-//
-// Keyed by asset because a total across assets is not a number. Euro and
-// bitcoin do not add up.
 type Totals struct {
 	// Deposits is the sum of positive balances: what the bank owes customers.
 	Deposits map[ledger.AssetCode]ledger.Amount
@@ -202,15 +137,6 @@ type Totals struct {
 
 // AccountWithTerms is an account alongside the overdraft terms in force on a
 // day — today, for every caller here.
-//
-// It exists because terms are resolved rather than cached on the row, and the
-// API renders both together. Resolving one account at a time would make a
-// listing N units of work; this pair is what lets Register do it in one.
-//
-// The alternative — keeping a copy of the current terms on the account — is the
-// obvious shortcut and is the one this repo already argues against, in the
-// schema, about a different field: a second copy of a fact creates the one
-// thing a second copy always creates, the possibility that the two disagree.
 type AccountWithTerms struct {
 	Account Account
 	// Terms is RESOLVED rather than the account's raw row: a floating account's
