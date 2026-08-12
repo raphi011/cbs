@@ -49,11 +49,25 @@ type entity struct {
 	pid  payment.ParticipantID // empty for the two institutions
 }
 
-// plan builds the listener table: the two institutions, then one listener per
-// BANK from base+2 upward — every bank that HAS A DATABASE, and not only the
-// ones the scheme has admitted. The paragraph below is why: a listener is
-// provisioning, and a bank whose admission has not finished still has a book and
-// customers to serve.
+// hostPlan is the two institutions' listeners, on the base port and the next.
+//
+// It is separate from bankPlan and comes before it because of what has to be
+// RUNNING before what. These two addresses are fixed by the configuration and
+// depend on no row, while a bank's listener needs that bank to have been
+// founded — and founding the banks is the sample dataset's own act, which
+// uploads files to the two hosts below. So the order is: bind these, seed,
+// then bind the banks. See main.
+func hostPlan(base int) []entity {
+	return []entity{
+		{key: centralBankKey, name: "Central bank", addr: addrFor(base)},
+		{key: clearingHouseKey, name: "Clearing house", addr: addrFor(base + 1)},
+	}
+}
+
+// bankPlan is one listener per BANK from base+2 upward — every bank that HAS A
+// DATABASE, and not only the ones the scheme has admitted. The paragraph below
+// is why: a listener is provisioning, and a bank whose admission has not
+// finished still has a book and customers to serve.
 //
 // The bank list comes from the store set rather than from a ListBanks at the
 // clearing house, which is where it came from until the store split and which
@@ -81,15 +95,12 @@ type entity struct {
 // to apologise for: it is an operational act — a scheme agreement, an account
 // another institution has to open, an operator provisioning a connection — and a
 // deployment that instantly yielded a running bank would teach the wrong thing.
-func plan(ctx context.Context, stores payment.Stores, nets *payment.Networks, base int) ([]entity, error) {
+func bankPlan(ctx context.Context, stores payment.Stores, nets *payment.Networks, base int) ([]entity, error) {
 	bics, err := stores.Banks(ctx)
 	if err != nil {
 		return nil, err
 	}
-	out := []entity{
-		{key: centralBankKey, name: "Central bank", addr: addrFor(base)},
-		{key: clearingHouseKey, name: "Clearing house", addr: addrFor(base + 1)},
-	}
+	var out []entity
 	for i, bic := range bics {
 		pid := payment.ParticipantID(bic)
 		net, err := nets.Bank(ctx, pid)

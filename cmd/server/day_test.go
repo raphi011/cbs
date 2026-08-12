@@ -235,6 +235,30 @@ func TestADayLeavesOneOpenCyclePerScheme(t *testing.T) {
 	}
 }
 
+// A cycle the day opens is stamped with the day it will accept payments on, not
+// the one that just ran.
+//
+// The two are one line apart in AdvanceDay — the cycles are opened after the
+// clock moves — and getting them the other way round is invisible to every
+// assertion above: the right number of cycles in the right states, all naming a
+// day that is over. What sees it is a console listing cycles by the day they
+// were opened on, where a settled cut-off and the window that replaced it share
+// a date and appear to be the same day's work twice.
+func TestTheCycleADayOpensNamesTheDayItWillClear(t *testing.T) {
+	h := newHarness(t)
+	report := h.day(t)
+
+	for _, c := range h.cycles(t) {
+		if c.Status != payment.CycleOpen {
+			continue
+		}
+		if got := c.OpenedAt.Format(time.DateOnly); got != report.Next.Date.Format(time.DateOnly) {
+			t.Errorf("%s stands open having been opened on %s; the day it accepts payments on is %s",
+				c.ID, got, report.Next.Date.Format(time.DateOnly))
+		}
+	}
+}
+
 // Every member's routing directory is refreshed FIRST, before anything is
 // routed.
 //

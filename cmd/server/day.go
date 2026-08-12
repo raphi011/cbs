@@ -97,8 +97,8 @@ type Problem struct {
 	Detail      string
 }
 
-// joinProblemDetails renders a set of problems as one error, for the two doors
-// that reach a phase of the day out of turn and have a caller to tell.
+// joinProblemDetails renders a set of problems as one error, for the doors that
+// reach a phase of the day out of turn and have a caller to tell.
 //
 // A day PUTS problems in its report because there is nobody to return them to; a
 // request has somebody, so the same values become the answer to it. The
@@ -299,17 +299,21 @@ func (d *Deployment) AdvanceDay(ctx context.Context) (DayReport, error) {
 			d.journal.problem(Problem{Institution: b.bic, Detail: err.Error()})
 		}
 	}
-	// And the cycles the next clearing day will accumulate into. On a day that
-	// cleared, the cut-off above left none open; on a day that did not, the ones
-	// standing are still open and this is a no-op.
-	d.journal.problem(d.csm.openCycles(ctx)...)
-
 	next, err := d.clock.Advance()
 	if err != nil {
 		err = fmt.Errorf("server: the business day ran on %s and the clock could not be moved past it: %w",
 			ran.Date.Format(time.DateOnly), err)
 		next = d.clock.Now()
 	}
+
+	// And the cycles the next clearing day will accumulate into, opened AFTER the
+	// clock has moved: a cycle is stamped with the instant it is opened, and the
+	// day it accepts payments on is the one it should name. On a day that cleared,
+	// the cut-off above left none open; on a day that did not, the ones standing
+	// are still open and this is a no-op. A clock that could not be moved leaves
+	// them on the day that just ran, which is still the day they will accumulate
+	// on.
+	d.journal.problem(d.csm.openCycles(ctx)...)
 
 	files, outcomes, problems := d.journal.take()
 	return DayReport{
@@ -410,4 +414,59 @@ func (d *Deployment) clear(ctx context.Context) {
 		d.journal.problem(b.collect(ctx, cb, b.cb, ebics.BTD)...)
 		d.journal.problem(b.collect(ctx, csm, b.csm, ebics.BTD)...)
 	}
+}
+
+// CarryToClearing moves the morning's files and stops before anything settles:
+// every member's cut-off, the clearing house's work over what they uploaded, and
+// each member collecting the answers.
+//
+// # Who asks for it, and why a row would not do
+//
+// The seed, and nothing else in this system. A dataset that wants payments IN
+// FLIGHT has to put them there the way the running system does, because a
+// payment handed to the clearing house as a row leaves no SHARE behind it — and
+// a share is what release hands to the bank that has to pay the payee. Composing
+// the institutions' halves directly, which is how the seed builds everything it
+// settles, cannot produce one; the file is what builds it. See
+// ClearingHouse.takeRecorded, and ClearingHouse.unhandable for what a cycle
+// without one costs.
+//
+// # Where it stops, and the one phase it takes out of turn
+//
+// It is a PREFIX of clear's list, ending before phase 3, and the reason is the
+// reason phases 3, 4 and 5 are in that order: settling is what moves reserves,
+// and a fixed dataset must not depend on when somebody advanced a clock. What it
+// leaves behind is the state every bank in a bulk scheme is really in between its
+// own cut-off and the next settlement.
+//
+// The members' collection from the CLEARING HOUSE is phase 6 in a full day and
+// runs here as the third thing. Nothing has settled, so that queue holds the
+// per-transaction answers and nothing else — and a submitting bank that did not
+// collect them would sit at Initiated where a carried payment reaches Accepted,
+// which is the divergence a sample dataset must not have.
+//
+// # The journal is emptied rather than kept
+//
+// Every other act the seed performs writes nothing to it: the composites go
+// straight at each institution's own network. A first day's report carrying six
+// uploads and nothing else would therefore describe the build's last minute and
+// none of the rest of it, dated on the day an operator happened to press the
+// button. So what happened here is dropped, and what could not happen is
+// returned — the scenario is hardcoded, so a problem in it is a build failure
+// rather than a line in a report.
+//
+// It takes no lock. Reset holds resetMu across the rebuild this runs inside, and
+// the only other caller is a boot with nothing serving yet.
+func (d *Deployment) CarryToClearing(ctx context.Context) error {
+	for _, b := range d.subscribers() {
+		_, problems := b.cutoff(ctx)
+		d.journal.problem(problems...)
+	}
+	d.journal.problem(d.csm.work(ctx)...)
+	for _, b := range d.subscribers() {
+		d.journal.problem(b.collect(ctx, d.cfg.ClearingHouseBIC, b.csm, ebics.BTD)...)
+	}
+
+	_, _, problems := d.journal.take()
+	return joinProblemDetails(problems)
 }

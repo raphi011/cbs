@@ -1,0 +1,382 @@
+# Design — what an institution is holding when the process ends
+
+Branch `spec/held-files-durability`, based on `main` at `cd5865c`.
+
+A reader opened the central bank console on a freshly seeded deployment and found
+three cycles sitting under **Settlement instructions**, `Closed`, neither the
+oldest nor the newest. They were the seed's, they had been there since the build,
+and no business day would ever move them. The one control the app offers —
+*Instruct again* on the clearing house's cycle page — settled them at the
+settlement agent and delivered nothing: reserves final, two payees' banks still
+reading `Initiated`, the money standing in those banks' clearing suspense with no
+act in this system able to move it.
+
+The refusal that makes that unreachable has landed (`ClearingHouse.unhandable`,
+`payment.ErrCycleNotReleasable`). This is the sub-project behind it: the state
+that made it possible, which is not one map and not the seed's fault alone.
+
+## The defect, stated once
+
+**An institution's obligations live in its process memory, and a process ends.**
+
+Between one business day and the next, the clearing house is holding files it owes
+to banks, a bank is holding instructions it owes to the network, and the EBICS
+host is holding queues neither of them has collected. None of it is in any of the
+N+2 databases. A restart is a bank run in the literal sense: everything owed and
+not yet handed over stops existing, while the money that moved against it stays
+moved.
+
+## What is in memory, and what each loss costs
+
+| Held | Where | Lost on restart | What it costs |
+| --- | --- | --- | --- |
+| Output shares, close → settle | ~~`ClearingHouse.output`~~ `held_files` | ~~every receiving bank's share of a cut-off~~ nothing | **closed by phase 2** |
+| A `pacs.004` uploaded, answer pending | ~~`ClearingHouse.held`~~ `held_returns` | ~~the return's second hop~~ nothing | **closed by phase 2** |
+| Instructions with committed debtor legs | `Bank.hub` | the file that was going to be built | customers debited, money in clearing suspense, no file ever uploaded |
+| Files released and not yet collected | ~~`ebics.Server.subs[…].queue`~~ `ebics_queue` | ~~a settled cut-off's output files~~ nothing | **closed by phase 3** |
+| Every order ever uploaded | ~~`ebics.Server.orders`~~ `ebics_orders` | ~~the order log~~ nothing | **closed by phase 3** |
+
+Rows 1–4 are the same loss wearing four hats: an obligation without a record.
+Row 5 is an audit trail, which is a different kind of bad.
+
+**Only row 3 is open.** The sharpest thing to understand before choosing scope was
+that the guard could close row 1 and could never close row 4, and it stayed true
+when the tables landed: phase 2 moved the cliff a few seconds later in the same
+day, and phase 3 removed it. What is left is one member bank's hub, which is
+separable by institution and is that bank's own sub-project.
+
+## Why the share cannot just be a rendered file
+
+`csm/0001_init.sql`'s `cycles` statement already argues this, and it is the
+constraint the table has to be designed around:
+
+> Those shares are POSITIONS in the submitters' documents, in memory, keyed by
+> cycle — so that a payment an operator rejects out of an open cycle is cut out of
+> the share when the rest of it settles, which a rendered file could not do.
+
+A share is built at ingestion (`takeRecorded`) and cut again at release
+(`releaseFiles`), against what `SettleAtCSM` actually settled. Between those two
+moments a payment can leave the cycle. So what is persisted is the **submitting
+bank's own document plus the positions within it**, not the file that will
+eventually be handed over — and `pendingFile.part`, today a closure over the
+parsed document, becomes a function of a stored one.
+
+## The shape
+
+Two tables in the clearing house's schema, named where the absence is currently
+argued:
+
+```sql
+CREATE TABLE held_files (
+    -- The cycle whose settlement releases this share. No foreign key to cycles:
+    -- see bank/0001_init.sql on absent parents.
+    cycle_id     TEXT    NOT NULL,
+    seq          INTEGER NOT NULL,  -- build order; shares release in it
+    destination  TEXT    NOT NULL,  -- the receiving bank's BIC
+    msg_def_idr  TEXT    NOT NULL,
+    -- The SUBMITTER's document, unrendered and uncut, because the share is cut
+    -- again at release against what actually settled.
+    document     BLOB    NOT NULL,
+    PRIMARY KEY (cycle_id, seq)
+) STRICT;
+
+CREATE TABLE held_file_transactions (
+    cycle_id    TEXT    NOT NULL,
+    seq         INTEGER NOT NULL,
+    position    INTEGER NOT NULL,  -- index within document
+    payment_id  TEXT    NOT NULL,
+    PRIMARY KEY (cycle_id, seq, position)
+) STRICT;
+```
+
+`held_returns` is the same shape one row wide: the `pacs.004` document, the
+returning bank, keyed by the payment it names.
+
+The reasoning goes **inside the parentheses**, per the repo rule: SQLite keeps a
+statement's text in `sqlite_master` and drops what sits above it.
+
+## The seed is a separate fix, and it is the cheap one
+
+This is worth stating flatly because the roadmap currently implies the opposite:
+**persisting shares does not reach the seed's three cycles, and the seed's fix
+does not need persistence.**
+
+The seed played every institution and uploaded nothing, so no share was ever
+built for a seeded payment — there was nothing for a table to have kept. And the
+shares it *would* build live in the same process that then serves the app, so an
+in-memory map is enough for them to survive until the first advance.
+
+Three candidate shapes for the seed's in-flight fixture:
+
+**S1 — in-flight is `Initiated`, in the submitting bank's hub.** The seed submits
+through `Deployment.Submit` and stops. No share is needed because no file has been
+uploaded; the first advance carries, clears, settles and delivers it correctly.
+Cheapest, and the state the *payment whereabouts* sub-project already taught the
+app to render. Costs the dataset both `Accepted` and `Cleared`.
+
+**S2 — in-flight is `Accepted`, in the open cycle, uploaded for real.** The seed
+needs one new act on `seed.Deployment` — the file-moving phases of a day without
+the settling ones — after which the payments sit in the open cycle with shares
+behind them. The first advance settles and delivers them properly, which is
+exactly what the current seed's own comment says it could not risk. Keeps
+`Accepted` where a reader meets it. **Chosen; see _What phase 1 actually cost_.**
+
+**S3 — keep closed-and-unsettled cycles, with shares.** Requires holding a day
+back between phases 3 and 4, which is a seam shaped like a debugger. It also
+re-manufactures a state that in a running deployment only follows an operator
+error or a refusal, and hands it to every new reader as the normal case. Rejected.
+
+Under S2 the guard never fires in the demo, and the three dead cycles stop being
+shipped.
+
+## What phase 1 actually cost
+
+S2 landed, and four things about it were not visible from the design above. Each
+is a fact a later phase has to work with rather than a regret.
+
+**It is TWO acts on `seed.Deployment`, not one.** A share is built from an
+uploaded file, so the payment has to reach a bank's hub before anything can carry
+it — which is `Submit`. `CarryToClearing` is the second, and it runs three
+phases: every member's cut-off, the clearing house's work, and each member
+collecting the answers. That last one is phase 6 of a day taken out of turn, and
+it has to be there: without it a submitting bank sits at `Initiated` where a
+carried payment reaches `Accepted`.
+
+**`cmd/server`'s startup order inverted.** `main` seeded and then planned the
+listeners, because the plan is the set of banks and seeding is what founds them.
+A seed that uploads needs the clearing house answering on its own address first,
+so `plan` split into `hostPlan` and `bankPlan`: bind the two institutions, seed,
+bind the banks. Nothing is ever pushed at a member bank, which is what makes that
+order available at all.
+
+**The rejected payment had to become a push.** The seed rejected a collection out
+of its cycle, and the assertion behind it was that the payer's bank reversed the
+leg it had posted. On a pull that bank posts at `AcceptInbound`, which under
+settle-before-release happens after finality — so a collection rejected before it
+is one nobody has posted anything for, and the reversal had nothing to find. The
+fixture now rejects a credit transfer (`SCT-021`), where the submitter IS the
+payer's bank and the reversal is real. The dataset gained a payment; the rejected
+collection's mandate story is unchanged, since `SDD-011` still uses it.
+
+The seed's `reject` narrowed with it, from both banks to the SUBMITTER only. A
+payment the seed carries through a real cut-off exists at the counterparty's
+bank only once a share has been released to it, so rejecting at both is
+rejecting one copy that is not there yet. Its one caller is a `submit`-built
+push, which is the case where the submitter is the payer's bank.
+
+**A cycle is opened AFTER the clock moves.** `AdvanceDay` opened the next day's
+cycles before advancing, so each was stamped with the day that had just ended
+rather than the one it would accept payments on — invisible until the seed
+started leaving a real open cycle behind for the demo to submit into.
+`TestTheCycleADayOpensNamesTheDayItWillClear` is the assertion. A clock that
+could not be moved leaves them on the day that just ran, which is still the day
+they will accumulate on.
+
+**`Cleared` left the dataset.** It was the status of the five payments in the
+dead cycles. Nothing but a settlement moves a `Cleared` payment, so shipping one
+is shipping a payment an operator has to rescue; it is still reachable in a
+running deployment by closing a cycle by hand, which is where `cmd/server`
+measures it. The seed's in-flight payments are `Accepted` and the first advance
+carries all six to `Settled`.
+
+Two tests inverted rather than moved: `TestTheBuildLeavesNoPaymentInAnOpenCycle`
+became `TestEveryPaymentInAnOpenCycleWasUploaded`, and
+`TestACutOffThatCouldNotBeReleasedIsRefusedBeforeTheReservesMove` now builds its
+subject — it drops one cycle's shares to model the restart, because the seed no
+longer hands it a broken cut-off for free.
+
+## What phase 2 actually cost
+
+The three tables landed close to the shape above. Five things about them were not
+visible from it.
+
+**The share carries the whole uploaded ENVELOPE, and `msg_def_idr` went away.**
+`iso20022.Marshal` takes an envelope, so there is no way to render a bare
+document and nothing to put in a `document BLOB` that could be read back. What is
+stored is the submitting bank's file exactly as it arrived; the header on it is
+that bank's and is dropped at release, which builds this institution's own. The
+definition column went with it — it is on the stored header AND on the document,
+and the codec refuses a file where those disagree, so a third copy could only
+drift.
+
+**One file addressed to three banks is stored three times.** The share is the
+unit that is built, cut and released, so normalising the bytes out from under it
+would need a file identity nothing in the conversation supplies. It is argued in
+the statement rather than fixed.
+
+**The shares are written in a SECOND unit of work, after the accepts.** A share
+names the cut-off that will release it and which cut-off that is is the
+acceptance's answer, so the two cannot be one transaction without inverting the
+whole of `takeRecorded`. That decides how a process ending between them fails,
+and the order chosen is the one `unhandable` already refuses: payments in a cycle
+with no share behind them. The other order fails silently.
+
+**The lock went.** `outputMu` existed because a business day and an HTTP request
+both reached the map. A store transaction orders them now, and `ClearingHouse`
+has no state at all.
+
+**`unhandable` runs BEFORE the legs are counted.** A cut-off in which every
+position cancels sends no instruction and is discharged by the clearing house
+itself, and everything a settlement releases is released on that path too. A
+guard placed after the empty-leg return therefore let the one batch nobody could
+be handed through the two operator doors — the one whose payments have no share
+behind them and nets to nothing — while the day's sweep refused it. An empty
+instruction is not the same thing as nothing owed.
+`TestACutOffThatNetsToNothingAndCannotBeReleasedIsRefusedToo` is the assertion.
+
+**Two tests inverted rather than moved.**
+`TestACutOffThatCouldNotBeReleasedIsRefusedBeforeTheReservesMove` used to model a
+restart by emptying the map; a restart no longer produces that state, so it now
+composes the crash-between-two-units-of-work case by dropping one cut-off's
+shares. `TestTheClearingHousesOtherCallersLeaveTheHeldReturnsAlone` was about an
+unlocked field and is now about a pending obligation no cut-off may sweep — the
+same three routes, a different reason.
+
+The ruling is [ADR-0003](../adr/0003-an-institutions-obligations-live-in-its-database.md),
+which is what a later reader needs before moving any of this back into memory.
+
+## Phasing
+
+1. **The seed (S2).** ~~Independent of everything below and fixes what the reader
+   actually hit.~~ **Done.** Two acts on `seed.Deployment`, the build's closing
+   section rewritten, `main`'s startup order split around the seed, and the suite
+   re-baselined against the new statuses.
+2. **`held_files` + `held_returns`.** ~~Schema, store methods, `takeRecorded` and
+   `releaseFiles` and `relayReturn` reading and writing them.~~ **Done.** Three
+   tables, six `payment.Tx` methods behind six on `csmOps`, and the restart test.
+   `unhandable` stays — it is now the guard on a defect that should no longer
+   occur, which is where a guard belongs. See _What phase 2 actually cost_.
+3. **The EBICS host.** ~~Queues and the order log, without which 1 and 2 leave the
+   cliff standing on the far side of the release. Largest, and the one that turns
+   `DATABASE_URL` into a deployment that genuinely resumes.~~ **Done.** Two tables
+   in each hosting institution's schema, a port declared by `ebics`, and the
+   restart test's sibling. See _What phase 3 actually cost_.
+
+Each phase is shippable and each leaves the system better than it found it. What
+must not happen is 2 alone, announced as "the clearing house is durable now".
+
+## What phase 3 actually cost
+
+The two tables landed close to the shape phase 2's did. Six things about them
+were not visible from the design above.
+
+**The argument against them was right, and about the wrong thing.**
+`csm/0001_init.sql` said a table of queued bytes "is a store this institution
+reads, and the first query anybody writes against it is a clearing house looking
+inside a file it is only carrying". What answers it is not that the bytes are
+unstored — real store-and-forward transports keep their queues on disk, which is
+what the word means — it is that nothing an institution can call reaches the
+table. The port is declared by `ebics`, whose vocabulary is subscribers, order
+ids, order types and payloads, and no method on `payment.Tx` names any of it. The
+crossing is not resisted; it is inexpressible. That is
+[ADR-0004](../adr/0004-a-queue-is-a-table-and-stays-opaque.md).
+
+**ENROLMENT stayed in memory, and it is the interesting half.** Everything else a
+host holds became rows; who is enrolled did not, because it is DERIVED — the
+roster is the durable record of who may dial, and provisioning admits every
+member again at each boot. So `ebics.Server` is a mutex over one map and a store
+for everything else, and `NewDeployment` re-enrolling from the roster is not
+recovery code, it is the same code a first boot runs.
+
+**One counter, not `MAX(seq)+1`.** A queue row is deleted when it is collected,
+so a sequence derived from the rows would mint an order id the host has already
+acknowledged under. The counter is a row in `id_sequences` — the one place in
+each schema that already holds every counter an institution draws from — and the
+`seq` column on both tables stores the ordinal the id was minted from rather than
+a row sequence of its own. It is the only deviation from that convention in
+either file and it is argued in the statement.
+
+**Answering an order became a SECOND unit of work.** The institution's work and
+the acknowledgement of it cannot be one transaction, because the work is dozens
+of units of its own. So a store failure after a file has been processed leaves
+the order on the list and it is worked again tomorrow — reported rather than
+dropped, and safe because the clearing house records a payment before it does
+anything else with a file and each of the settlement agent's three acts carries an
+idempotency key. The old code discarded both errors, which was correct when the
+only reachable failure was an unknown id.
+
+**`NewDeployment` took a fourth argument.** The two hosts' stores cannot come off
+`payment.Networks` without the domain naming the transport, so `cmd/server`
+declares a `Hosts` interface of two methods and `sqlite.Set` satisfies it
+structurally. Both halves meet in the composition root and nowhere below it.
+
+**A share is discharged ONE at a time, and only after its own hand-over.** The
+seam this phase created is the point: handing a share over writes `ebics_queue`
+and discharging it writes `held_files`, and no statement may do both, because
+the domain must not be able to name a queue. So the release is two units of work
+per share and the only thing between them is their order. Dropping a cut-off's
+shares together — read, release all, delete all — discharges the ones whose
+queueing failed, which destroys an obligation against reserves that have already
+moved: exactly the loss `held_files` exists to prevent, arriving through a failed
+hand-over instead of a dead process. `payment.HeldFile` therefore carries the
+`Seq` that names one, `DeleteHeldFiles` became `DeleteHeldFile`, and
+`TestAShareThatCouldNotBeHandedOverIsStillHeld` asserts both halves: the share
+that could not be queued stays, and the share that was handed over does not —
+one left behind would be released again by a redelivered answer, and a bank
+handed the same instructions twice credits the same customer twice.
+
+**The restart test gained a sibling and lost a step.**
+`TestACutOffSettledAfterARestartStillReachesEveryReceivingBank` no longer calls
+`Settle` by hand — the `pacs.009` is in the settlement agent's work list and the
+next day works through it — and
+`TestFilesReleasedBeforeARestartAreStillCollectedAfterIt` drops the process
+between the release and the members' collection, which is the loss phase 2
+explicitly left standing. It composes `Deployment.clear`'s phases 4 and 5 by
+hand, because `AdvanceDay` has no seam between releasing and collecting.
+
+## What this does not do
+
+`Bank.hub` (row 3) is one member bank's own database and its own sub-project. It
+is separable by institution, and naming it here is what stops this record reading
+as the whole story.
+
+## How it is proved
+
+- Two restart tests, in `cmd/server/restart_test.go`, and they are the only tests
+  that can fail for the reason this sub-project exists. Both build a deployment
+  against a file-backed store, drop the process, reopen over the same files and
+  ask whether every receiving bank was handed its instructions.
+  `TestACutOffSettledAfterARestartStillReachesEveryReceivingBank` drops it
+  between a cut-off and its settlement, and nothing is re-instructed;
+  `TestFilesReleasedBeforeARestartAreStillCollectedAfterIt` drops it between the
+  settlement and the members' collection, which is the loss on the far side of
+  the release. Together they say the deployment resumes rather than that one
+  institution's obligations survive.
+- `payment/recon`'s `partiesHoldTheirCopy` over the same deployment, which finds
+  in the books what the test above asserts on the wire.
+- The seed's own suite, re-baselined, plus `TestTheSeededNetworkReconciles` —
+  which under S2 reports an unreconciled position for the banks holding in-flight
+  payments and nothing else. It does, and only for the banks that PUSHED one: a
+  collection in flight has taken nobody's money, because the bank that posts on a
+  pull has not heard of it yet.
+
+## Documentation this moves
+
+Done with phase 2. The schema comment quoted above stopped being an argument for
+an absence and became a pointer to three tables; `README.md`'s *Persistence*
+section lost the clearing house from its "not stored" table and gained the pair
+of tables in its three-schemas paragraph; quiz chapter 15's "which of these get a
+table" question gained a share as a correct answer, and the `bulk-file` hint
+gained the paragraph about what waits between the sort and the release.
+`CONTEXT.md`'s *Share* and *Held return* entries no longer say "in memory", and
+the *Payment hub* entry now says it is the last one that is.
+[ADR-0003](../adr/0003-an-institutions-obligations-live-in-its-database.md) is
+the ruling, and ADR-0002's *What it costs* points at it instead of recording the
+defect.
+
+Phase 3 moved the same four layers again. `README.md`'s *Persistence* section
+turned its "not stored" table into a table of what IS kept and left one row in the
+absent one; the `download-queue` hint gained the paragraph about a queue
+outliving a process and why storing it is not the holder reading somebody else's
+mail; quiz chapter 15's "which of these get a table" question flipped the queue to
+a correct answer and gained a bank's hub as the wrong one; `CONTEXT.md` gained an
+*Order log* entry and its *Enrolment* entry now says it is the only thing a host
+keeps outside its database. The absence argued on `roster_entries` became a
+pointer to `ebics_queue` two sections down, and
+`TestSchemaArgumentsReachSqliteMaster` gained four cases against the new
+statements and lost the two that pinned the absences they replace. It is still
+three cases, one per shape; what changed is what each shape asserts.
+
+The two web views the 422 reaches moved with them: the central bank page's
+refusal alert now names a shortfall, since a cut-off the agent refused is the
+only refusal that route still reports, and the cycle page reads the same way.

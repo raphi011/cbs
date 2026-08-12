@@ -241,6 +241,30 @@ type Tx interface {
 	GetOpenCycle(ctx context.Context, scheme SchemeID) (ClearingCycle, error)
 	ListCycles(ctx context.Context) ([]ClearingCycle, error)
 
+	// The clearing house's unfinished business: see HeldFile and HeldReturn.
+	// Every one of these answers ErrNotInThisShape on the other two stores, and
+	// there is no shape in which both a book of accounts and a held file exist.
+	//
+	// AddHeldFile is the one write on this interface that is not an upsert. A
+	// share has no key its caller knows — it is the Nth file built for a cut-off,
+	// and the store allocates that N — so there is nothing for a second call to
+	// conflict with, and two identical shares are two obligations to the same
+	// bank rather than one recorded twice.
+	//
+	// DeleteHeldFile takes ONE share and names it by the N above, which
+	// ListHeldFiles reports for exactly this reason. A share is discharged when
+	// the bank it is addressed to has been handed it, and the hand-over is a
+	// write to another table that this transaction may not touch — so the two
+	// happen one share at a time and in that order. Deleting a cut-off's shares
+	// together would discharge the ones that never left.
+	AddHeldFile(ctx context.Context, f HeldFile) error
+	ListHeldFiles(ctx context.Context, id CycleID) ([]HeldFile, error)
+	DeleteHeldFile(ctx context.Context, id CycleID, seq int64) error
+
+	PutHeldReturn(ctx context.Context, r HeldReturn) error
+	GetHeldReturn(ctx context.Context, id PaymentID) (HeldReturn, error)
+	DeleteHeldReturn(ctx context.Context, id PaymentID) error
+
 	PutSettlement(ctx context.Context, s Settlement) error
 	GetSettlement(ctx context.Context, id SettlementID) (Settlement, error)
 	// GetSettlementByCycle is the settlement agent's answer to "have I already
@@ -357,6 +381,18 @@ type Tx interface {
 //     ListSettlementAdvices is scoped to ONE book and ordered by AdvisedAt then
 //     seq, like every other listing here.
 //     (SettlementAdviceIsScopedToTheBankThatWasAdvised.)
+//
+//   - GetHeldReturn -> ErrHeldReturnNotFound. ListHeldFiles answers an empty
+//     slice for a cut-off nothing was built for, because "no share" and "no such
+//     cycle" are the same fact to the caller: a cycle this institution took no
+//     file into is exactly a cycle with nothing to release.
+//
+//     Their listing order is the BUILD order and not a creation instant, which
+//     is the one place this schema departs from the rule below. A share carries
+//     no timestamp — it is not an event, it is an obligation — so the store's own
+//     monotonic seq is the whole of the order, and it is load-bearing: the banks
+//     are handed their files in the order the files arrived.
+//     (HeldFilesSurviveTheirCycleAndReleaseInBuildOrder.)
 //
 //   - Reset clears the payment tables too — this SHAPE's, which is the only
 //     thing it could now mean. (ResetClearsPaymentState, and its two

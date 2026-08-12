@@ -388,7 +388,8 @@ func build(t *testing.T, opts harnessOptions) *harness {
 	ctx := context.Background()
 
 	h := &harness{clock: calendar.NewClock(testTime)}
-	h.rec = newRecordingStores(testenv.NewSet(t, h.clock.Now))
+	set := testenv.NewSet(t, h.clock.Now)
+	h.rec = newRecordingStores(set)
 	h.nets = payment.NewNetworks(h.rec, h.clock.Now)
 	h.net = h.nets.ClearingHouse()
 
@@ -414,7 +415,7 @@ func build(t *testing.T, opts harnessOptions) *harness {
 	// No populate: this fixture builds its own two banks, and a deployment that
 	// reseeded on Reset would rebuild a scenario none of these tests describes.
 	var err error
-	if h.dep, err = NewDeployment(ctx, h.nets, h.clock, h.cfg, nil, slog.New(slog.DiscardHandler)); err != nil {
+	if h.dep, err = NewDeployment(ctx, h.nets, set, h.clock, h.cfg, nil, slog.New(slog.DiscardHandler)); err != nil {
 		t.Fatalf("NewDeployment: %v", err)
 	}
 
@@ -1610,7 +1611,7 @@ func (h *harness) injectRaw(t *testing.T, from, to iso20022.BIC, raw []byte) {
 			t.Fatalf("uploading raw bytes from %s to %s: %v", from, to, err)
 		}
 	default:
-		if _, err := h.hostOf(t, from).Enqueue(ebics.SubscriberID(to), ebics.CST, raw); err != nil {
+		if _, err := h.hostOf(t, from).Enqueue(context.Background(), ebics.SubscriberID(to), ebics.CST, raw); err != nil {
 			t.Fatalf("queueing raw bytes at %s for %s: %v", from, to, err)
 		}
 	}
@@ -1641,7 +1642,7 @@ func (h *harness) upload(t *testing.T, from, to iso20022.BIC, env iso20022.Envel
 			t.Fatalf("uploading a %s from %s to %s: %v", orderType, from, to, err)
 		}
 	default:
-		if _, err := h.hostOf(t, from).Enqueue(ebics.SubscriberID(to), orderType, raw); err != nil {
+		if _, err := h.hostOf(t, from).Enqueue(context.Background(), ebics.SubscriberID(to), orderType, raw); err != nil {
 			t.Fatalf("queueing a %s at %s for %s: %v", orderType, from, to, err)
 		}
 	}
@@ -1650,6 +1651,20 @@ func (h *harness) upload(t *testing.T, from, to iso20022.BIC, env iso20022.Envel
 // hostOf is the EBICS side of one of the two institutions that has one, and
 // fails on any other address: a member bank holds no host, because nothing is
 // ever pushed at one.
+// pendingAt is how many orders an institution still has to work through.
+//
+// A store failure is fatal rather than counted as zero: "the host is holding
+// nothing" and "the host could not be asked" are opposite answers, and a test
+// that read one as the other would pass on a broken database.
+func pendingAt(t *testing.T, host *ebics.Server) int {
+	t.Helper()
+	pending, err := host.Pending(context.Background())
+	if err != nil {
+		t.Fatalf("reading a host's work list: %v", err)
+	}
+	return len(pending)
+}
+
 func (h *harness) hostOf(t *testing.T, bic iso20022.BIC) *ebics.Server {
 	t.Helper()
 	switch bic {

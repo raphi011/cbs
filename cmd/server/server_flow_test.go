@@ -55,7 +55,8 @@ func newAPIHarness(t *testing.T) *server {
 
 	clock := calendar.NewClock(seed.BaseDate)
 	data := seed.New(clock)
-	nets := payment.NewNetworks(testenv.NewSet(t, clock.Now), clock.Now)
+	set := testenv.NewSet(t, clock.Now)
+	nets := payment.NewNetworks(set, clock.Now)
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 
 	s := &server{nets: nets, clock: clock}
@@ -72,7 +73,7 @@ func newAPIHarness(t *testing.T) *server {
 	cfg.ClearingHouseURL = csmHost.URL
 	cfg.CentralBankURL = cbHost.URL
 
-	dep, err := NewDeployment(ctx, nets, clock, cfg, data.Populate, log)
+	dep, err := NewDeployment(ctx, nets, set, clock, cfg, data.Populate, log)
 	if err != nil {
 		t.Fatalf("NewDeployment: %v", err)
 	}
@@ -324,14 +325,14 @@ func TestResetThrowsTheQueuesAwayWithTheRows(t *testing.T) {
 	payer := payerRoutes(t, srv)
 	postJSON(t, payer, "/payments", validSubmission(t, srv))
 	doJSON(t, payer, "POST", "/payments/cutoff", "", http.StatusAccepted)
-	if pending := len(srv.dep.ClearingHouse().host.Pending()); pending == 0 {
+	if pending := pendingAt(t, srv.dep.ClearingHouse().host); pending == 0 {
 		t.Fatal("the cut-off left no file at the clearing house, so this test would pass on nothing")
 	}
 	rec := post(t, srv.CentralBankRoutes(), "/admin/reset")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("reset = %d", rec.Code)
 	}
-	if pending := len(srv.dep.ClearingHouse().host.Pending()); pending != 0 {
+	if pending := pendingAt(t, srv.dep.ClearingHouse().host); pending != 0 {
 		t.Fatalf("%d files survived the reset; each describes a payment no institution now holds", pending)
 	}
 }
@@ -813,30 +814,58 @@ func TestAResetKeepsEveryBindingAListenerMadeAtStartup(t *testing.T) {
 	if _, err := client.Upload(ctx, ebics.CCT, []byte("<a file this test never asks anybody to read/>")); err != nil {
 		t.Fatalf("%s uploading to the host its listener mounts: %v", bic, err)
 	}
-	if got := len(csm.host.Pending()); got != 1 {
+	if got := pendingAt(t, csm.host); got != 1 {
 		t.Errorf("the clearing house has %d files to work through, and one was just uploaded to the host its listener mounts", got)
 	}
 }
 
 // A reset empties what the clearing house is holding between files.
 //
-// Two maps outlive a unit of work there: the returns waiting for finality, and
-// the receiving banks' shares of every file taken in. Both are keyed by ids the
-// store mints, and a reset restarts those sequences — so a share that survived
-// one would be released into a bank's queue by the next cycle to be given the
-// same id, carrying transactions about payments no institution holds a row for.
+// Two kinds of obligation outlive a unit of work there: the returns waiting for
+// finality, and the receiving banks' shares of every file taken in. Both are
+// keyed by ids the store mints, and a reset restarts those sequences — so a
+// share that survived one would be released into a bank's queue by the next
+// cycle to be given the same id, carrying transactions about payments no
+// institution holds a row for.
+//
+// Both are rows now, so what makes this true is Reset's table list rather than
+// two lines in Deployment.Reset — which is exactly why it is still measured
+// here: a table added to the schema and left out of the shape would be invisible
+// to every other test in this package.
 //
 // The cut-off and the carry are what put a share there at all. A submission on
 // its own leaves the instruction in the payer's bank's hub, so a version of this
-// test without them would measure a reset over an empty map.
+// test without them would measure a reset over nothing.
+//
+// # What it counts, and why it is not zero
+//
+// A reset REBUILDS, and the sample dataset carries its own in-flight payments
+// through a real cut-off — so the clearing house is legitimately holding shares
+// afterwards. What must hold is that it holds exactly what a fresh build holds,
+// which is what the baseline taken before anything is submitted is for. Counting
+// transactions rather than cycles is what makes an extra share visible: the id it
+// would be filed under is one the restarted sequence mints again, so the two are
+// indistinguishable by key and differ only in what is inside.
 func TestAResetThrowsAwayTheSharesTheClearingHouseHolds(t *testing.T) {
 	srv := newAPIHarness(t)
+	ctx := context.Background()
+	csm := srv.dep.ClearingHouse()
+	seeded := heldTransactions(t, csm)
+
+	// A return placed by hand, because the seed carries none and a return this
+	// deployment really relays is answered in the same business day — there is no
+	// moment a test could catch one waiting.
+	if err := csm.ops.HoldReturn(ctx, payment.HeldReturn{
+		PaymentID: "pay_sentinel", ReturnedBy: srv.dep.cfg.ClearingHouseBIC, File: []byte("<Envelope/>"),
+	}); err != nil {
+		t.Fatalf("HoldReturn: %v", err)
+	}
 
 	postJSON(t, payerRoutes(t, srv), "/payments", validSubmission(t, srv))
 	doJSON(t, payerRoutes(t, srv), "POST", "/payments/cutoff", "", http.StatusAccepted)
 	carry(t, srv)
-	if got := len(srv.dep.ClearingHouse().output); got == 0 {
-		t.Fatal("the clearing house holds no output file, so this test would pass on nothing")
+	if got := heldTransactions(t, csm); got <= seeded {
+		t.Fatalf("the clearing house holds %d held transactions and held %d before this test's own; it added no share, so this test would pass on nothing", got, seeded)
 	}
 
 	rec := post(t, srv.CentralBankRoutes(), "/admin/reset")
@@ -844,12 +873,35 @@ func TestAResetThrowsAwayTheSharesTheClearingHouseHolds(t *testing.T) {
 		t.Fatalf("reset = %d (body: %s)", rec.Code, rec.Body)
 	}
 
-	if got := len(srv.dep.ClearingHouse().output); got != 0 {
-		t.Errorf("%d output files survived the reset; each is addressed against a cycle id the store will mint again", got)
+	if got := heldTransactions(t, csm); got != seeded {
+		t.Errorf("the clearing house holds shares over %d transactions after the reset and a fresh build leaves %d; the difference survived, addressed against cycle ids the store will mint again", got, seeded)
 	}
-	if got := len(srv.dep.ClearingHouse().held); got != 0 {
-		t.Errorf("%d returns survived the reset; each names a payment no institution now holds", got)
+	if _, err := csm.ops.GetHeldReturn(ctx, "pay_sentinel"); !errors.Is(err, payment.ErrHeldReturnNotFound) {
+		t.Errorf("a held return survived the reset (%v); it names a payment no institution now holds", err)
 	}
+}
+
+// heldTransactions counts the transactions the clearing house is holding shares
+// for, across every cycle.
+func heldTransactions(t *testing.T, c *ClearingHouse) int {
+	t.Helper()
+
+	ctx := context.Background()
+	cycles, err := c.ops.ListCycles(ctx)
+	if err != nil {
+		t.Fatalf("ListCycles: %v", err)
+	}
+	var n int
+	for _, cycle := range cycles {
+		files, err := c.ops.ListHeldFiles(ctx, cycle.ID)
+		if err != nil {
+			t.Fatalf("ListHeldFiles(%s): %v", cycle.ID, err)
+		}
+		for _, f := range files {
+			n += len(f.Transactions)
+		}
+	}
+	return n
 }
 
 // A bank's console, bound before a reset, still reads and empties that bank's

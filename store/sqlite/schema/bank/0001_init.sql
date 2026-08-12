@@ -1509,11 +1509,13 @@ CREATE TABLE payments (
     --
     -- What a restart costs is therefore visible only as an absence: instructions
     -- whose debtor legs ARE committed, so the money is in clearing suspense
-    -- against a file that will never be built. That is recorded rather than
-    -- fixed. Storing the hub would make the queue a table three institutions
-    -- could be tempted to read, and payment/recon is the instrument for the
-    -- break, because a suspense that has not returned to zero is exactly what it
-    -- looks for.
+    -- against a file that will never be built. It is the LAST obligation in this
+    -- system a process still takes with it, and it is recorded here rather than
+    -- fixed because it is one member bank's own sub-project — a table in this
+    -- database, by the same ruling that made the clearing house's shares rows
+    -- (docs/adr/0003) and the transport's queues rows (docs/adr/0004). Until it
+    -- lands, payment/recon is the instrument for the break: a suspense that has
+    -- not returned to zero is exactly what it looks for.
     --
     -- NEITHER SHAPE HAS debtor_participant OR creditor_participant. They would
     -- name each party's bank as a ParticipantID beside an agent column naming the

@@ -1665,9 +1665,10 @@ func (s *Network) DepositTx(ctx context.Context, tx Tx, participant ParticipantI
 // Because a camt.025 carries no amount. The receipt names the request and says
 // what became of it, and there is no element on it for how much was moved, so a
 // bank cannot post its own leg FROM the answer. The two ways out are to post
-// first, or to remember the outstanding request in the actor until the answer
-// arrives — and the second is the shape csm.held already has, whose known defect
-// is that it does not survive a restart. So: post first.
+// first, or to remember the outstanding request until the answer arrives — and
+// the second is the shape a held return already has, which costs the clearing
+// house a table because a customer's money is waiting at the end of it. Nothing
+// is waiting at the end of this one. So: post first.
 //
 // What that costs is an interval in which the bank's own Reserve at Central Bank
 // says more than the central bank's book does — the unreconciled position this
@@ -4002,9 +4003,9 @@ func (s *Network) RejectAtCSM(ctx context.Context, id PaymentID, code iso20022.S
 // report — TestARejectionWhoseRefundFailsStandsAndIsReported forces exactly
 // that.
 //
-// One caller still composes both halves in ONE transaction, so the gap is not
-// open there: the seed, which builds a fixed scenario and uploads no files at
-// all.
+// One caller composes both halves itself and closes the gap by construction: the
+// seed, which runs them back to back over a scenario it panics on any failure
+// in.
 //
 // The reason text is validated HERE and not in the other half because this is
 // the half that stores it: RejectReason is persisted on the payment and copied

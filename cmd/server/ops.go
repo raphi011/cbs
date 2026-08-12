@@ -262,10 +262,10 @@ type bankOps interface {
 // and TestTheCSMStillTouchesOnlyItsOwnBookWhenItSettles extends it over the
 // cut-off and the settlement conversation.
 //
-// Relaying a RETURN needs no method: the message names both agents itself
-// (OrgnlTxRef) and the recipient is whichever of them the message did not come
-// from. What that hop does need is state, and state is not an interface — see
-// csm.held.
+// Relaying a RETURN needs no ROUTING method: the message names both agents
+// itself (OrgnlTxRef) and the recipient is whichever of them the message did not
+// come from. What that hop needs is somewhere to wait, which is the last block
+// below.
 type csmOps interface {
 	// The clearing house's own copy of an instruction it is carrying, written as
 	// it routes one. AcceptAtCSM loads the payment by id, and every institution
@@ -358,6 +358,27 @@ type csmOps interface {
 	// refreshed copy is written from — and both are read here because the roster
 	// is this institution's table and no bank may open it.
 	ListRosterEntries(ctx context.Context) ([]payment.RosterEntry, error)
+
+	// WHAT THIS INSTITUTION HAS TAKEN IN AND NOT YET HANDED OVER, which is the
+	// only state in this package that is an obligation rather than a record. See
+	// payment.HeldFile and payment.HeldReturn.
+	//
+	// They are on this interface and on no other, and there is nothing to narrow
+	// about that: a member bank holds no share of anybody's file and the
+	// settlement agent has no payments at all. What the block is really doing is
+	// saying that a clearing house between two files is not empty — it is holding
+	// instructions it owes to banks — and that where it holds them is a database.
+	//
+	// ListHeldFiles has two readers with opposite purposes. releaseFiles walks it
+	// to hand each bank its share; unhandable walks it to REFUSE a cut-off whose
+	// payments have no share behind them, before the reserves move.
+	HoldFile(ctx context.Context, f payment.HeldFile) error
+	ListHeldFiles(ctx context.Context, id payment.CycleID) ([]payment.HeldFile, error)
+	DropHeldFile(ctx context.Context, id payment.CycleID, seq int64) error
+
+	HoldReturn(ctx context.Context, r payment.HeldReturn) error
+	GetHeldReturn(ctx context.Context, id payment.PaymentID) (payment.HeldReturn, error)
+	DropHeldReturn(ctx context.Context, id payment.PaymentID) error
 }
 
 // settlementOps is the central bank's view: what a settlement handler may

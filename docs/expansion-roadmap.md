@@ -215,18 +215,32 @@ no business being inside a transport swap.
 **Three things it leaves behind**, none of them a surprise and each written where
 it bites rather than only here:
 
-- **The clearing house's held output files are in memory.** A restart between a
-  cycle settling and its files being released loses shares whose reserves have
-  already moved, and no receiving bank is ever handed the instructions it has to
-  apply. The fix is a table in that institution's own database; the absence is
-  argued inside `csm/0001_init.sql`'s `cycles` statement. It is no longer
-  SILENT, which is the half that has landed: `ClearingHouse.unhanded` reports
-  every payment a cut-off settled and released to nobody, naming the bank that
-  was owed the instruction, and `payment/recon`'s `partiesHoldTheirCopy` finds
-  the same state in the books afterwards.
-- **A bank's payment hub is in memory too**, so a restart loses instructions
-  whose debtor legs are committed — money in clearing suspense against a file
-  that will never be built. `payment/recon` is the instrument that finds it.
+- **The clearing house's held output files were in memory**, so a restart lost
+  the shares a cut-off's receiving banks are owed. Both halves of this are now
+  closed and it is left here because the third thing below still leans on the
+  argument. `ClearingHouse.unhandable` refuses to instruct a cut-off whose shares
+  are missing (`payment.ErrCycleNotReleasable`, 422), so the state costs no money
+  where it is still reachable; and the shares themselves are rows in that
+  institution's own database — `held_files`, `held_file_transactions`,
+  `held_returns` — under
+  [ADR-0003](adr/0003-an-institutions-obligations-live-in-its-database.md).
+  `ClearingHouse.unhanded` still reports the state where it is reachable without
+  an instruction, and `payment/recon`'s `partiesHoldTheirCopy` finds it in the
+  books afterwards.
+
+  **The seed no longer produces the state the guard refuses.** It used to ship
+  three closed cycles holding five Cleared payments no act in this system could
+  advance, because it played every institution and uploaded nothing. It now
+  submits its in-flight payments through the deployment's own door and runs the
+  file-moving phases of a day itself (`Deployment.CarryToClearing`), so each has
+  a real share behind it and the first advance settles and delivers all six.
+- **A bank's payment hub is in memory**, so a restart loses instructions whose
+  debtor legs are committed — money in clearing suspense against a file that will
+  never be built. It is now the LAST obligation in the system a process takes
+  with it: the same defect the clearing house's shares had, one institution over,
+  and ADR-0003 names it as the case it does not close. A table in that bank's own
+  database, by exactly that ruling. `payment/recon` is the instrument that finds
+  it meanwhile.
 - **One cut-off per business day**, where SEPA runs several settlement cycles.
   Adding more is a loop over a list of times, and it is deliberately out of
   scope: the calendar had to exist before a time of day within it meant anything.
@@ -352,6 +366,34 @@ short a number someone can see.
 
 Ranked by value per unit of effort. Nothing here blocks the sequence above, and
 each is a self-contained afternoon-to-a-week.
+
+### What an institution is holding when the process ends — `done`
+
+[`2026-08-12-held-files-durability-design.md`](specs/2026-08-12-held-files-durability-design.md).
+Every obligation an institution has not yet discharged was in process memory: the
+clearing house's output shares and held returns, a bank's hub, and the EBICS
+host's queues and order log. A restart made them stop existing while the money
+that moved against them stayed moved.
+
+Three phases, all landed. **Phase 1, the seed**: the sample dataset used to ship
+three closed cycles holding five payments nothing could advance, because it built
+no files at all. It now uploads for real — `seed.Deployment` gained `Submit` and
+`CarryToClearing`, `cmd/server` serves the two hosts before it seeds — and leaves
+six payments Accepted in the open cut-off for each scheme, every one with a share
+behind it. **Phase 2, the clearing house's own tables**: `held_files`,
+`held_file_transactions` and `held_returns`, under
+[ADR-0003](adr/0003-an-institutions-obligations-live-in-its-database.md).
+**Phase 3, the transport**: `ebics_queue` and `ebics_orders`, in both hosting
+institutions' schemas, under
+[ADR-0004](adr/0004-a-queue-is-a-table-and-stays-opaque.md) — which is where the
+argument against storing a queue at all is answered rather than dropped. The two
+tests in `cmd/server/restart_test.go` are the only ones in the repository that
+can fail for the reason this entry exists: one drops the process between a
+cut-off and its settlement, the other between a settlement and the members
+collecting what it released.
+
+**What is left is one member bank's hub**, which is separable by institution and
+is that bank's own sub-project; it has its own entry above.
 
 ### Where a payment is — the lifecycle trail and the hub that holds it — `spec`
 

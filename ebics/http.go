@@ -1,6 +1,7 @@
 package ebics
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 )
@@ -67,29 +68,32 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	write(w, s.answerRequest(sub, req))
+	write(w, s.answerRequest(r.Context(), sub, req))
 }
 
 // answerRequest is ServeHTTP without the HTTP, which is what makes the dispatch
 // testable and what a second transport would call.
-func (s *Server) answerRequest(sub SubscriberID, req Request) *Response {
+//
+// The context is the REQUEST's, so a subscriber that hangs up takes its own
+// store transaction down with it and no other.
+func (s *Server) answerRequest(ctx context.Context, sub SubscriberID, req Request) *Response {
 	switch {
 	case req.OrderType == HAC:
-		acks, err := s.Acknowledgements(sub)
+		acks, err := s.Acknowledgements(ctx, sub)
 		if err != nil {
 			return failed(err)
 		}
 		return &Response{ReturnCode: OK, Acknowledgements: acks}
 
 	case req.OrderType.IsDownload():
-		files, err := s.Download(sub, req.OrderType)
+		files, err := s.Download(ctx, sub, req.OrderType)
 		if err != nil {
 			return failed(err)
 		}
 		return &Response{ReturnCode: OK, Files: files}
 
 	case req.OrderType.IsUpload():
-		id, err := s.Upload(sub, req.OrderType, req.Payload)
+		id, err := s.Upload(ctx, sub, req.OrderType, req.Payload)
 		if err != nil {
 			return failed(err)
 		}

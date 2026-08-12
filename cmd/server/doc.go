@@ -387,9 +387,11 @@
 // the pacs.004 ONWARD for the other bank, routed by the agents OrgnlTxRef
 // carries. It holds that message until it has an ACSC, because a bank that
 // posted its customer leg against a return the settlement agent then refused
-// would have moved money for nothing. That is the only state any institution in
-// this package keeps between files, it is in memory, and ClearingHouse.relayReturn
-// records what a restart costs.
+// would have moved money for nothing. That message waits in the clearing
+// house's own database rather than in this process, because an obligation an
+// institution keeps only in memory stops existing when the process does while
+// the money that moved against it stays moved; see payment.HeldReturn, and
+// payment.HeldFile beside it for the same ruling about a cut-off's output.
 //
 // A bank both sends and receives returns, posting its own leg from the one it
 // collects (Bank.receiveReturn). That handler answers nothing, for the reason

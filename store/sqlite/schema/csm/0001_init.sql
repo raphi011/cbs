@@ -1,9 +1,10 @@
 -- csm/0001_init: the clearing house's whole world, in one migration.
 --
--- Seven tables, and the shortest of the three files by a wide margin. What is
--- absent is the substance of it: THE CLEARING HOUSE HAS NO LEDGER. No books, no
--- accounts, no transactions, no entries, no deposit register, no products, no
--- lending. It holds no money and posts nothing, so it has nowhere to post.
+-- Twelve tables, and a member bank's file is more than twice the length of this
+-- one. What is absent is the substance of it: THE CLEARING HOUSE HAS NO LEDGER.
+-- No books, no accounts, no transactions, no entries, no deposit register, no
+-- products, no lending. It holds no money and posts nothing, so it has nowhere
+-- to post.
 --
 -- One database holding every table makes that claim invisible: every
 -- institution's payment.Network reaches every book, and the only thing asserting
@@ -13,12 +14,15 @@
 -- not a policy violation, it is a syntax error against a table that does not
 -- exist.
 --
--- WHAT IT DOES HOLD is a routing table and a batch. roster_entries says who is
--- a member and in which assets, which is what lets it refuse to clear for
--- somebody who is not; cycles and cycle_payments are the batch it accumulates
--- between cut-offs; payments is its own copy of each payment it carries. That
--- is a clearing house: it knows where to send a message and which payments are
--- in the current window.
+-- WHAT IT DOES HOLD is a routing table, a batch, what it owes, and the wire.
+-- roster_entries says who is a member and in which assets, which is what lets it
+-- refuse to clear for somebody who is not; cycles and cycle_payments are the
+-- batch it accumulates between cut-offs; payments is its own copy of each payment
+-- it carries; held_files and held_returns are the instructions it has taken in
+-- and not yet handed over; ebics_queue and ebics_orders are the files waiting for
+-- each member to collect and the log of what each has sent. That is a clearing
+-- house: it knows where to send a message, which payments are in the current
+-- window, what it still owes whom, and what is on the wire in either direction.
 --
 -- WHERE A COMMENT HAS TO GO
 --
@@ -67,20 +71,13 @@ CREATE TABLE roster_entries (
     -- the rule and its enforcement are two different things — which is what the
     -- split was for.
     --
-    -- NOR IS THE DOWNLOAD QUEUE HERE, and that is the more interesting absence
-    -- now. Routing a file to this member means putting it in that member's
-    -- queue, so the queue is the routing table and this row is the membership —
-    -- two facts that could disagree if either were derived from the other. What
-    -- keeps them together is that enrolment is what creates a queue and
-    -- provisioning is what enrols, both outside this database.
-    --
-    -- The queue itself is a list of byte slices in the host's memory, and it is
-    -- deliberately not a table. One institution holding bytes addressed to
-    -- another is not a crossing while the bytes are OPAQUE to the holder; a
-    -- table of them is a store this institution reads, and the first query
-    -- anybody writes against it is a clearing house looking inside a file it is
-    -- only carrying. A restart empties every queue, which loses whatever had not
-    -- been collected — see cycles below, where the same absence costs more.
+    -- THE DOWNLOAD QUEUE IS NOT HERE EITHER, and it is a pointer rather than an
+    -- absence: it is ebics_queue, at the foot of this file. Routing a file to
+    -- this member means putting it in that member's queue, so the queue is the
+    -- routing table and this row is the membership — two facts that could
+    -- disagree if either were derived from the other. What keeps them together
+    -- is that enrolment is what admits a subscriber and provisioning is what
+    -- enrols, both outside this database.
     --
     -- Keyed by BIC, and it is the only key this institution has. A clearing
     -- house routes what a message addresses, and a message addresses a BIC.
@@ -403,26 +400,16 @@ CREATE TABLE cycles (
     -- schema, which is that agent's own row pointing at what it settled.
     --
     -- THE OUTPUT FILES THIS CYCLE IS HOLDING ARE NOT HERE EITHER, and that one
-    -- IS a defect rather than a boundary.
+    -- is a pointer rather than an absence: they are in held_files, two tables
+    -- down.
     --
     -- Between a cut-off and its settlement this institution has sorted every
-    -- submitted file by creditor agent and is holding each receiving bank's
-    -- share, releasing nothing until the cycle is final. Those shares are
-    -- POSITIONS in the submitters' documents, in memory, keyed by cycle — so
-    -- that a payment an operator rejects out of an open cycle is cut out of the
-    -- share when the rest of it settles, which a rendered file could not do.
-    --
-    -- A restart between the two loses them: the reserves have moved and no
-    -- receiving bank is ever handed the instructions it has to apply. Nothing
-    -- recovers that. The same is true of a pacs.004 held between its upload to
-    -- the settlement agent and the answer coming back.
-    --
-    -- It is written here rather than fixed because the fix is this table's
-    -- neighbour — a held_files table in this institution's own database — and
-    -- not a workaround anywhere else. What makes it survivable meanwhile is that
-    -- no deployment here outlives a process by design: the ephemeral store is
-    -- the default and a restart against a file resumes a system whose queues are
-    -- empty anyway.
+    -- submitted file by receiving agent and is holding each bank's share,
+    -- releasing nothing until the cycle is final. There are M shares per cycle
+    -- and each is a whole file, so no column on this row could hold them; and
+    -- what is held is not the file that will travel, because a payment an
+    -- operator rejects out of an open cycle has to be cut out of the share when
+    -- the rest of it settles.
     seq           INTEGER NOT NULL
 ) STRICT;
 
@@ -450,6 +437,250 @@ CREATE TABLE cycle_payments (
     payment_id TEXT NOT NULL,
     PRIMARY KEY (cycle_id, position)
 ) STRICT;
+
+-- ---------------------------------------------------------------------------
+-- What this institution is holding and has not handed over
+-- ---------------------------------------------------------------------------
+
+CREATE TABLE held_files (
+    -- ONE RECEIVING BANK's share of an uploaded instruction file, built when the
+    -- file is taken in and released when the cut-off carrying it settles. It is
+    -- the settle-before-release ruling made into a table: a share exists from
+    -- ingestion and reaches nobody until the settlement agent has discharged the
+    -- batch.
+    --
+    -- Nothing in the other two schemas is like it. A bank holds no share of
+    -- anybody's file and the settlement agent has no payments at all; sorting one
+    -- submitted file into M addressed ones is the act no member could perform for
+    -- itself, and this is where the M wait in between.
+    --
+    -- THE ROW IS AN OBLIGATION, and that is what makes it a table rather than a
+    -- map. Reserves move at settlement, and a receiving bank never handed its
+    -- instructions holds the money in clearing suspense with no act in this
+    -- system able to move it. A process that ended between the two cost exactly
+    -- that, for a whole batch at a time.
+    --
+    -- There is NO foreign key to cycles, even though the parent is in this same
+    -- database and the constraint would therefore be writable. It is
+    -- payments.cycle_id's reason from the other side: this row is what this
+    -- institution owes a bank, and it must be readable and removable whatever
+    -- became of the batch row that names it.
+    cycle_id    TEXT NOT NULL,
+    -- Build order, and shares are released in it. Allocated MAX(seq)+1 over the
+    -- whole table by the canonical rule (ledgers.seq in bank/0001_init.sql), so
+    -- it orders every share this institution holds rather than one cycle's. The
+    -- cycle leads the key because every read is one cut-off's.
+    --
+    -- It is also what NAMES one share for discharge, which is why the reader
+    -- gets it back. A share is removed when the bank it is addressed to has been
+    -- handed it, and that hand-over is a write to ebics_queue that the same
+    -- statement may not make — so one that could not be queued is still owed,
+    -- and removing a cut-off's together would discharge it anyway.
+    seq         INTEGER NOT NULL,
+    -- The receiving bank's BIC, which is also its subscriber id: enrolment is
+    -- what creates a queue, so a destination with no enrolment has nowhere for
+    -- this share to go and the transactions were refused RC01 before a row was
+    -- ever written. No foreign key to roster_entries — a member admitted while a
+    -- share of its own is standing here would be constrained by nothing, and one
+    -- that LEAVES the roster is still owed the instructions behind reserves that
+    -- have already moved.
+    destination TEXT NOT NULL,
+    -- The SUBMITTING BANK's file, exactly as it arrived, and not the file that
+    -- will travel.
+    --
+    -- Two things follow from that. Which transactions travel is not settled until
+    -- the cut-off is, so what is kept has to be cuttable — a rendered output file
+    -- could not have a rejected payment taken back out of it. And a bare document
+    -- is not something the codec renders: iso20022.Marshal takes an ENVELOPE, so
+    -- what is stored is the whole uploaded file, header and all. That header is
+    -- the submitter's and is dropped at release, which builds this institution's
+    -- own; what is read back out of these bytes is the document.
+    --
+    -- A file addressed to three banks is stored three times, once per share. The
+    -- share is the unit that is built, cut and released, and normalising the
+    -- bytes out from under it would save space in a table whose rows live for the
+    -- length of one cut-off.
+    --
+    -- No msg_def_idr column beside it. The definition is on the stored envelope's
+    -- header AND on the document it wraps, and iso20022 refuses a file where
+    -- those two disagree, so a third copy could only ever drift from them.
+    file        BLOB NOT NULL,
+    PRIMARY KEY (cycle_id, seq)
+) STRICT;
+
+CREATE TABLE held_file_transactions (
+    -- WHICH transactions of the file above are this share's, as POSITIONS in it
+    -- rather than as copies, and which payment each position is.
+    --
+    -- Positions because two things are indexed by them — the document's own
+    -- transaction list and this institution's payments rows — and an index is
+    -- what keeps the two in step without either being rebuilt. The PAIR is what
+    -- release needs: it asks the payment id whether the cut-off really settled
+    -- it, and cuts the document by the positions that survive.
+    --
+    -- The parent FOREIGN KEY stays, under the exemption stated on subledgers in
+    -- bank/0001_init.sql and for cycle_payments' reason: the store writes both
+    -- sides within one statement sequence, so no caller can produce an orphan.
+    -- It is also what makes releasing one share one DELETE. payment_id carries
+    -- none, which is the same rule from its other side — the payments row is in
+    -- this database, so the constraint could be written, and it stays out because
+    -- a share must be recordable whatever else is in the database.
+    cycle_id   TEXT NOT NULL,
+    seq        INTEGER NOT NULL,
+    position   INTEGER NOT NULL,
+    payment_id TEXT NOT NULL,
+    PRIMARY KEY (cycle_id, seq, position),
+    FOREIGN KEY (cycle_id, seq) REFERENCES held_files (cycle_id, seq) ON DELETE CASCADE
+) STRICT;
+
+CREATE TABLE held_returns (
+    -- One pacs.004 uploaded to the settlement agent and not yet answered: the
+    -- SECOND hop of a return, waiting for finality.
+    --
+    -- A return is a conversation with three participants, two of which never
+    -- address each other, so the file that makes the second bank post the leg the
+    -- returning bank does not hold has to be carried by the institution that has
+    -- seen both ends. It cannot be queued before the agent says ACSC — a bank
+    -- that had posted against a return the agent then refused would have moved a
+    -- customer's money for nothing, with no file in the flow that would ever tell
+    -- it — so it waits here.
+    --
+    -- Keyed by the PAYMENT the return names, which is the only thing the message
+    -- and the answer to it have in common: the answer quotes the payment and
+    -- nothing else. A return naming no payment is uploaded and never held,
+    -- because nothing could ever match it.
+    --
+    -- One row wide where a share is two tables, because there is nothing to cut:
+    -- a return is one settled payment coming back and it travels whole.
+    --
+    -- NO seq, and it is the one table here without one. The convention in this
+    -- file's header applies to LISTED tables; nothing lists these, because a held
+    -- return is looked up by the payment an arriving answer names, one at a time.
+    payment_id  TEXT PRIMARY KEY,
+    -- The RETURNING bank, and it is what the second hop is routed against: the
+    -- other bank is whichever of the message's two agents this one is not. Kept
+    -- rather than re-derived, because it is a fact about the connection this
+    -- institution observed and the message does not record it — re-deriving it
+    -- would mean asking which bank OUGHT to have uploaded a file whose subscriber
+    -- was seen.
+    returned_by TEXT NOT NULL,
+    -- The returning bank's file as it arrived; held_files.file carries the
+    -- argument. What differs is that the document travels UNCHANGED — it is what
+    -- that bank said and is not this institution's to rewrite — so release
+    -- rebuilds the header and nothing else.
+    file        BLOB NOT NULL
+) STRICT;
+
+-- ---------------------------------------------------------------------------
+-- The file transport
+-- ---------------------------------------------------------------------------
+
+CREATE TABLE ebics_queue (
+    -- THE DOWNLOAD QUEUES: files this host has addressed to a subscriber and
+    -- that the subscriber has not yet collected. This table and ebics_orders
+    -- below are the same two in centralbank/0001_init.sql, because those are the
+    -- two institutions that are DIALLED; the arguments for both are written here
+    -- and named there. A member bank has neither, and that is the topology
+    -- rather than an omission — EBICS has no push, so a bank only ever dials out
+    -- and hosts nothing.
+    --
+    -- Addressing IS enqueueing. There is no routing table, no URL and nothing
+    -- that can fall out of step with roster_entries: a party this deployment has
+    -- not admitted is not enrolled, and a file addressed to it is refused RC01
+    -- before a row is written.
+    --
+    -- WHY THE BYTES MAY SIT IN THIS INSTITUTION'S DATABASE AT ALL. One
+    -- institution holding bytes addressed to another is not a crossing while the
+    -- bytes are OPAQUE to the holder, and what keeps them opaque is not that they
+    -- are unstored: it is that nothing this institution can call reaches this
+    -- table. The only reader is the transport, whose whole vocabulary is
+    -- subscribers, order ids, order types and payloads — see the ebics package —
+    -- and no method on payment.Tx names this table or these columns. A clearing
+    -- house looking inside a file it is only carrying would have to be written,
+    -- and there is nothing to write it with.
+    --
+    -- WHAT THE ABSENCE COST is the other half of settle-before-release. A share
+    -- released into a receiving bank's queue and not yet collected is an
+    -- obligation with reserves already moved against it, and a process ending
+    -- while holding one lost the file with nothing refusing anything: a payee
+    -- never paid, the money in that bank's clearing suspense. held_files above
+    -- closed the same loss on the near side of the release.
+    order_id   TEXT PRIMARY KEY,
+    -- The subscriber the file is FOR, which is the only address in this system.
+    -- No foreign key to roster_entries: a file owed to a member that has since
+    -- left the roster is still owed, for held_files.destination's reason, and the
+    -- settlement agent's copy of this table has no roster to point at in any
+    -- case.
+    subscriber TEXT NOT NULL,
+    -- What the file IS, which the subscriber reads it by. It is a label and not a
+    -- selector: BTD and HAC name no file and are refused before a row is written.
+    order_type TEXT NOT NULL,
+    payload    BLOB NOT NULL,
+    -- The ORDINAL its order id was minted from, and the order files come out of
+    -- one subscriber's queue in.
+    --
+    -- It is NOT the MAX(seq)+1 of this file's convention, and this is the one
+    -- table that deviates: a collected file's row is deleted, so a counter
+    -- derived from the rows would hand a later file an id an earlier one had
+    -- already been acknowledged under. The counter is id_sequences, shared with
+    -- ebics_orders because one host mints one id space; see that table.
+    seq        INTEGER NOT NULL
+) STRICT;
+
+CREATE INDEX ebics_queue_subscriber_idx ON ebics_queue (
+    -- A download is one subscriber's queue in enqueue order, and it is the only
+    -- read this table has.
+    subscriber, seq
+);
+
+CREATE TABLE ebics_orders (
+    -- THE ORDER LOG: every order a subscriber has uploaded to this host, and
+    -- what this institution has since made of it. It is what a HAC download
+    -- answers from, and it is the one thing here that is an AUDIT TRAIL rather
+    -- than an obligation — nothing is owed on the strength of a row, and a
+    -- restart that emptied it left a subscriber unable to learn the fate of a
+    -- file it had been told EBICS_OK about.
+    --
+    -- Rows are never deleted. A queue row lives until it is collected; this one
+    -- lives for the life of the database, because an answer that disappears is
+    -- not an answer.
+    order_id   TEXT PRIMARY KEY,
+    -- The subscriber that SENT it, where ebics_queue.subscriber is the one a file
+    -- is for. Same column name, opposite direction, which is why the two are two
+    -- tables and not one with a flag.
+    subscriber TEXT NOT NULL,
+    order_type TEXT NOT NULL,
+    -- The file as it arrived. It is here rather than only in flight because the
+    -- institution's work list is read FROM this table — an order is worked
+    -- through on some later business day, and the process that took it in may be
+    -- gone by then.
+    --
+    -- It is not a second copy of held_files.file: that is a SHARE, sorted by
+    -- destination and cut again at release, and this is the upload the sorting
+    -- was done on. The two coincide in bytes for one hop and mean different
+    -- things.
+    payload    BLOB NOT NULL,
+    -- received, processed or rejected: what this host has made of the order, and
+    -- never what the payments inside it mean. TEXT because the values are the
+    -- protocol's own words rather than an iota enum, which is where this file's
+    -- convention would have put an INTEGER.
+    status     TEXT NOT NULL,
+    -- Free text from the host, for a human reading a log. Empty on the ordinary
+    -- path, which is why there is no NULL: an absent detail and an empty one are
+    -- the same fact.
+    detail     TEXT NOT NULL DEFAULT '',
+    -- The ordinal the order id was minted from, and the order this institution
+    -- works through them in. See ebics_queue.seq, which shares the counter: an
+    -- order id is unique at the host that minted it, so one host mints from one
+    -- sequence whether the file is arriving or leaving.
+    seq        INTEGER NOT NULL
+) STRICT;
+
+CREATE INDEX ebics_orders_subscriber_idx ON ebics_orders (
+    -- HAC: one subscriber's uploads, oldest first. The work list is the other
+    -- read and is a scan of the whole table by seq, which is what a work list is.
+    subscriber, seq
+);
 
 -- ---------------------------------------------------------------------------
 -- The audit log

@@ -235,6 +235,34 @@ var (
 	// instead of telling a clearing house that its settled cycle was rejected.
 	ErrCycleAlreadySettled = errors.New("clearing cycle has already settled")
 
+	// ErrCycleNotReleasable is the CLEARING HOUSE refusing to settle a cut-off
+	// whose instructions it could not afterwards hand to the banks that have to
+	// apply them.
+	//
+	// Settle-before-release only protects a receiving bank if the release is
+	// certain to follow. A share is built when a file is worked, so a cycle
+	// carrying a payment put into it without a file behind it would settle
+	// finally at the agent and reach nobody: reserves moved, and a payee whose
+	// bank was never told the payment exists. The clearing house holds the
+	// shares, so it is the only institution that can refuse this, and it refuses
+	// BEFORE the money rather than reporting after it.
+	//
+	// The cycle stays Closed and its payments stay Cleared, which is a state an
+	// operator can act on. That is the whole of what this buys: the same batch
+	// settled instead is a loss nothing in this system can unwind.
+	ErrCycleNotReleasable = errors.New("clearing cycle cannot be released to its receiving banks")
+
+	// ErrHeldReturnNotFound is the clearing house holding no return for a payment
+	// an answer names.
+	//
+	// It is an ordinary answer rather than a failure, which is why it is a
+	// sentinel a caller matches and not a refusal that stops the day. A pacs.004
+	// naming no payment is uploaded and never held — the answer to it names none
+	// either, so nothing could ever match it — and an answer that arrives for a
+	// payment nothing is held for is still owed to the bank that asked for the
+	// return. Only the second hop is missing.
+	ErrHeldReturnNotFound = errors.New("payment: the clearing house holds no return for this payment")
+
 	// ErrInvalidSettlement is a settlement instruction this agent cannot read as
 	// one batch: no legs, legs referencing different cycles or assets, no single
 	// settlement agent between them, or one member named twice.

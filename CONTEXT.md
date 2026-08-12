@@ -95,9 +95,14 @@ against.
 _Avoid_: message id — that is the `head.001` `BizMsgIdr`, minted by the sender
 
 **Download queue**:
-The files one host holds for one subscriber, in order. Enrolment creates it and
-it is the whole of routing.
+The files one host holds for one subscriber, in order, as rows in that host's
+own database. It is the whole of routing.
 _Avoid_: inbox, mailbox, actor table, address table
+
+**Order log**:
+Every order a host has been sent and what it made of each. What `HAC` answers
+from, and the hosting institution's own work list.
+_Avoid_: audit log — that is an institution's record of its own decisions
 
 **Subscriber**:
 A party enrolled at a host, which is what gives it a queue. A bank is a
@@ -105,8 +110,9 @@ subscriber at two hosts; the settlement agent is a subscriber nowhere.
 _Avoid_: actor, node, peer
 
 **Enrolment**:
-Giving a subscriber its download queue. A separate act from admission, and the
-one that makes a bank REACHABLE.
+Admitting a subscriber to a host, which is what makes a bank REACHABLE. A
+separate act from admission, and the only thing a host keeps outside its
+database — it is rebuilt from the roster at every boot.
 _Avoid_: admission, registration, provisioning
 
 **Host**:
@@ -160,7 +166,8 @@ _Avoid_: dead letter, error (bare), failure
 
 **Payment hub**:
 Where a bank's own instructions wait between submission and its cut-off. In
-memory, and one per bank.
+memory, and one per bank — the last obligation in this system that a restart
+takes with it.
 _Avoid_: queue, outbox, batch, pending payments
 
 **Cut-off (a bank's)**:
@@ -175,7 +182,7 @@ _Avoid_: cut-off (bare) where the other is meant
 
 **Share**:
 One receiving bank's transactions, cut out of one submitted file by creditor
-agent.
+agent. Kept as a row in the clearing house's own database until it is released.
 _Avoid_: output file (until it is released), batch, slice
 
 **Released output file**:
@@ -184,8 +191,7 @@ carrying it has settled.
 _Avoid_: relayed message, forwarded payment
 
 **Held return**:
-A `pacs.004` the clearing house keeps in memory until the settlement agent has
-answered it.
+A `pacs.004` the clearing house keeps until the settlement agent has answered it.
 _Avoid_: pending return, queued return
 
 ## Money a bank cannot pass on

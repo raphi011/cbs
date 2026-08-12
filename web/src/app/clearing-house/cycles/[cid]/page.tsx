@@ -70,10 +70,11 @@ export default function CycleDetailPage() {
                 <>
                   <p className="max-w-md text-xs text-muted-foreground">
                     Netted and awaiting settlement. Moving reserves is the
-                    central bank&apos;s act, not the clearing house&apos;s — so
-                    if this stays here, the instruction was refused. A net payer
-                    short of reserves is the usual reason. Fund them, then ask
-                    again.
+                    central bank&apos;s act, not the clearing house&apos;s — so a
+                    cycle that stays here was either refused, most often because
+                    a net payer is short of reserves, or never instructed at all.
+                    Asking again is what tells the two apart: it answers with the
+                    reason it will not go.
                   </p>
                   <ConfirmAction
                     trigger={

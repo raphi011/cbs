@@ -107,7 +107,8 @@ func bankSurface(s *server, pid string) http.Handler {
 func newServer(t *testing.T, populate func(context.Context, *payment.Networks, seed.Deployment) error) *server {
 	t.Helper()
 	clock := calendar.NewClock(fixedTime)
-	nets := payment.NewNetworks(testenv.NewSet(t, clock.Now), clock.Now)
+	set := testenv.NewSet(t, clock.Now)
+	nets := payment.NewNetworks(set, clock.Now)
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 
 	s := &server{nets: nets, clock: clock}
@@ -127,7 +128,7 @@ func newServer(t *testing.T, populate func(context.Context, *payment.Networks, s
 	cfg.ClearingHouseURL = csmHost.URL
 	cfg.CentralBankURL = cbHost.URL
 
-	dep, err := NewDeployment(context.Background(), nets, clock, cfg, populate, log)
+	dep, err := NewDeployment(context.Background(), nets, set, clock, cfg, populate, log)
 	if err != nil {
 		t.Fatalf("NewDeployment: %v", err)
 	}

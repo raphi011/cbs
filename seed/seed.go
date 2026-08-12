@@ -173,10 +173,11 @@ func recoverBuild(r any) error {
 // There is no Network() convenience constructor, and the reason is worth
 // recording rather than rediscovering.
 //
-// Building the scenario needs a DEPLOYMENT as well as a network — three acts
-// need a table no single institution owns — and a deployment is a composition
-// root, which a package it imports cannot name. So callers build the pieces
-// themselves: cmd/server does, and so does this package's own test helper.
+// Building the scenario needs a DEPLOYMENT as well as a network — some acts need
+// a table no single institution owns, and two need a file — and a deployment is a
+// composition root, which a package it imports cannot name. So callers build the
+// pieces themselves: cmd/server does, and so does this package's own test
+// helper.
 
 type builder struct {
 	ctx context.Context
@@ -185,12 +186,11 @@ type builder struct {
 	//
 	// One *payment.Network per institution: a member's mirror leg needs that
 	// member's own network and a cut-off needs the central bank's. The composites
-	// here — initiate, reject, returnPayment, settle — still run several
-	// institutions' halves inside ONE unit of work, and each half says whose it
-	// is.
+	// here — initiate, reject, returnPayment, settle — run several institutions'
+	// halves back to back, one unit of work each, and each half says whose it is.
 	nets *payment.Networks
-	// dep is the running system: the five acts the builder cannot perform for
-	// itself, because each needs more than one institution. See Deployment.
+	// dep is the running system: the acts the builder cannot perform for itself,
+	// because each needs more than one institution. See Deployment.
 	dep   Deployment
 	clock *calendar.Clock
 	// cats holds each bank's product IDs, keyed by participant: the
@@ -493,13 +493,24 @@ func (b *builder) lodge(p *payment.Bank, amount ledger.Amount) {
 // Nothing recovers from it and nothing tries to. The seed builds a hardcoded
 // scenario and panics on any error, so a half-built one is a programming bug
 // that fails startup — which is what it was before, one level of tidiness down.
-func (b *builder) initiate(req payment.InitiatePaymentRequest) payment.Payment {
-	// The SUBMITTING bank, which the scheme's direction decides: the payer's
-	// bank pushes and the payee's bank pulls.
-	submitter := req.DebtorDetails.Agent
-	if scheme, ok := b.csm().Scheme(req.Scheme); ok && scheme.Direction() == payment.Pull {
-		submitter = req.CreditorDetails.Agent
+// submitterOf names the bank that instructs, which the scheme's DIRECTION
+// decides and nothing else: the payer's bank pushes and the payee's bank pulls.
+//
+// It is asked here twice — once to run that bank's half, once to tell it a
+// rejection — and cmd/server's submitterOf is the same rule at the door. An
+// unknown scheme falls back to the payer's bank rather than refusing, because
+// every scheme this builder names is one it opened a cycle for moments ago; a
+// missing one is a programming bug the SubmitPayment below reports with the
+// error the caller can act on.
+func (b *builder) submitterOf(scheme payment.SchemeID, debtorAgent, creditorAgent iso20022.BIC) iso20022.BIC {
+	if s, ok := b.csm().Scheme(scheme); ok && s.Direction() == payment.Pull {
+		return creditorAgent
 	}
+	return debtorAgent
+}
+
+func (b *builder) initiate(req payment.InitiatePaymentRequest) payment.Payment {
+	submitter := b.submitterOf(req.Scheme, req.DebtorDetails.Agent, req.CreditorDetails.Agent)
 	p := must(b.bank(submitter).SubmitPayment(b.ctx, req))
 
 	// What the OTHER two institutions would have been sent, and it is the whole of
@@ -547,28 +558,33 @@ func (b *builder) initiate(req payment.InitiatePaymentRequest) payment.Payment {
 }
 
 // reject runs both halves of a rejection — the clearing house's transition and
-// the payer's bank's reversal of its own leg — leaving the payment Rejected with
-// the payer's money back in their account.
+// the submitting bank's reversal of its own leg — leaving the payment Rejected
+// with the payer's money back in their account.
 //
 // Split for the same reason initiate is: there is no method that plays both
 // actors, and the two cannot share a Tx — two institutions, two databases. So
 // the fixture has the running system's shape here as well, and what it promises
 // is the OUTCOME rather than the process.
+//
+// # ONE bank is told, and which one is the whole of settle-before-release
+//
+// The submitter, because before finality it is the only bank that has ever heard
+// of the payment: the clearing house holds the receiving bank's share and
+// releases it when the cycle settles, so a payment rejected out of an open cycle
+// is one that bank never learns existed. Telling it would be addressing a
+// rejection to an institution holding no copy to reject.
+//
+// On a push that bank is the payer's and has money to give back — the debtor leg
+// posted at submission, reversed here in the one unit of work that also records
+// the refusal (payment.RejectAtBankTx). On a pull it posted nothing and is being
+// told the answer to its own instruction, with nothing to undo.
+//
+// ClearingHouse.tell decides the same thing in the running system, and decides it
+// the same way.
 func (b *builder) reject(id payment.PaymentID, code iso20022.StatusReason, reason string) {
 	rejected := must(b.csm().RejectAtCSM(b.ctx, id, code, reason))
-	// Both banks record it, each on its own copy, and only the payer's bank gives
-	// any money back — one act at each of them, because the decision and the
-	// reversal cannot be separated once the row the guard reads is the acting
-	// bank's own. See payment.RejectAtBankTx.
-	//
-	// On a push the two are one bank and there is one call; on a pull the payee's
-	// bank submitted and is being told the answer to its instruction, with nothing
-	// to undo. ClearingHouse.tell is what decides the same thing in the running system, and it decides
-	// it the same way.
-	must(b.bank(rejected.DebtorDetails.Agent).RejectAtBank(b.ctx, id, code, reason))
-	if other := rejected.CreditorDetails.Agent; other != rejected.DebtorDetails.Agent {
-		must(b.bank(other).RejectAtBank(b.ctx, id, code, reason))
-	}
+	submitter := b.submitterOf(rejected.Scheme, rejected.DebtorDetails.Agent, rejected.CreditorDetails.Agent)
+	must(b.bank(submitter).RejectAtBank(b.ctx, id, code, reason))
 }
 
 // returnPayment runs all three institutions' halves of an R-transaction, leaving
@@ -721,8 +737,8 @@ func (b *builder) settle(id payment.CycleID) {
 // this fixture differs from the payer it is playing: a real payer reads the BIC
 // off an invoice. What the seed must not do is take it off a LOOKUP, and it does
 // not — cp is a bank this builder founded itself, in this process.
-func (b *builder) initSCT(dp *payment.Bank, d deposit.Account, cp *payment.Bank, c deposit.Account, amount ledger.Amount, e2e, desc string) payment.Payment {
-	return b.initiate(payment.InitiatePaymentRequest{
+func (b *builder) sct(dp *payment.Bank, d deposit.Account, cp *payment.Bank, c deposit.Account, amount ledger.Amount, e2e, desc string) payment.InitiatePaymentRequest {
+	return payment.InitiatePaymentRequest{
 		Scheme:      payment.SchemeSEPACT,
 		Debtor:      b.ref(d),
 		Creditor:    b.ref(c),
@@ -734,17 +750,17 @@ func (b *builder) initSCT(dp *payment.Bank, d deposit.Account, cp *payment.Bank,
 		// refilled from its own row either way (payment.SubmitPaymentTx), so
 		// naming it changes nothing about the payment — what it buys is that the
 		// seed's requests still say which bank submits, which is what initiate
-		// below reads and what cmd/server's Deployment.Submit on-us guard compares.
+		// reads and what cmd/server's Deployment.Submit on-us guard compares.
 		DebtorDetails:   payment.PartyDetails{Agent: dp.BIC, Name: d.Name},
 		CreditorDetails: payment.PartyDetails{Agent: cp.BIC, Name: c.Name},
-	})
+	}
 }
 
-// initSDD submits a direct debit. It is the SUBMITTING (creditor's) bank, so
-// the request must name the counterparty: the name on the debtor's account, and
-// the debtor's bank. See initSCT.
-func (b *builder) initSDD(dp *payment.Bank, d deposit.Account, cp *payment.Bank, c deposit.Account, amount ledger.Amount, mandate payment.MandateID, e2e, desc string) payment.Payment {
-	return b.initiate(payment.InitiatePaymentRequest{
+// sdd builds a direct debit. It is the SUBMITTING (creditor's) bank, so the
+// request must name the counterparty: the name on the debtor's account, and the
+// debtor's bank. See sct.
+func (b *builder) sdd(dp *payment.Bank, d deposit.Account, cp *payment.Bank, c deposit.Account, amount ledger.Amount, mandate payment.MandateID, e2e, desc string) payment.InitiatePaymentRequest {
+	return payment.InitiatePaymentRequest{
 		Scheme:      payment.SchemeSEPADD,
 		Debtor:      b.ref(d),
 		Creditor:    b.ref(c),
@@ -752,10 +768,34 @@ func (b *builder) initSDD(dp *payment.Bank, d deposit.Account, cp *payment.Bank,
 		MandateID:   mandate,
 		EndToEndID:  e2e,
 		Description: desc,
-		// Both sides; see initSCT.
+		// Both sides; see sct.
 		DebtorDetails:   payment.PartyDetails{Agent: dp.BIC, Name: d.Name},
 		CreditorDetails: payment.PartyDetails{Agent: cp.BIC, Name: c.Name},
-	})
+	}
+}
+
+// submit hands an instruction to the deployment's own door, which is the other
+// way a payment enters this scenario and the one that leaves a FILE behind it.
+//
+// # Why anything at all goes through the door
+//
+// A share of an output file is built when the clearing house takes an uploaded
+// file in, and a share is what it hands to the bank that has to pay the payee
+// when the cycle settles. Nothing composed leaves one: initiate hands the
+// clearing house a row, so a payment seeded straight into a cycle is one the
+// first business day would settle and could not deliver.
+//
+// So the two doors divide by what the scenario wants the payment to BE. A
+// payment this build settles itself goes through initiate, where playing all
+// three institutions is what makes the outcome fixed. A payment left IN FLIGHT
+// goes through here, because the state it is left in is one only the transport
+// can produce.
+//
+// Nothing has left the submitting bank when this returns; the instruction is in
+// that bank's hub, and builder.build calls CarryToClearing once at the end to
+// move every hub at once. See Deployment.
+func (b *builder) submit(req payment.InitiatePaymentRequest) payment.Payment {
+	return must(b.dep.Submit(b.ctx, req))
 }
 
 func (b *builder) build() {
@@ -895,9 +935,9 @@ func (b *builder) build() {
 
 	// --- Phase A: a fully settled SEPA Credit Transfer cycle ---------------
 	sct1 := must(b.csm().OpenCycle(b.ctx, payment.SchemeSEPACT))
-	b.initSCT(aurora, alice, nord, niklas, 25_000, "SCT-001", "Rent to N. Nyborg")
-	b.initSCT(nord, nora, verde, bella, 40_000, "SCT-002", "Invoice 2025-77")
-	b.initSCT(verde, bruno, soleil, chloe, 30_000, "SCT-003", "Consulting fee")
+	b.initiate(b.sct(aurora, alice, nord, niklas, 25_000, "SCT-001", "Rent to N. Nyborg"))
+	b.initiate(b.sct(nord, nora, verde, bella, 40_000, "SCT-002", "Invoice 2025-77"))
+	b.initiate(b.sct(verde, bruno, soleil, chloe, 30_000, "SCT-003", "Consulting fee"))
 	must(b.csm().CloseCycle(b.ctx, sct1.ID))
 	b.settle(sct1.ID)
 
@@ -905,8 +945,8 @@ func (b *builder) build() {
 
 	// --- Phase B: a settled SEPA Direct Debit cycle (one will be returned) --
 	sdd1 := must(b.csm().OpenCycle(b.ctx, payment.SchemeSEPADD))
-	b.initSDD(soleil, chloe, nord, nora, 20_000, m1.ID, "SDD-001", "Utility direct debit")
-	returned := b.initSDD(verde, bruno, aurora, aaron, 12_000, m2.ID, "SDD-002", "Gym membership")
+	b.initiate(b.sdd(soleil, chloe, nord, nora, 20_000, m1.ID, "SDD-001", "Utility direct debit"))
+	returned := b.initiate(b.sdd(verde, bruno, aurora, aaron, 12_000, m2.ID, "SDD-002", "Gym membership"))
 	must(b.csm().CloseCycle(b.ctx, sdd1.ID))
 	b.settle(sdd1.ID)
 
@@ -915,30 +955,27 @@ func (b *builder) build() {
 
 	b.day()
 
-	// --- Phase D: a closed-but-not-settled SCT cycle (payments stay Cleared) -
-	sct2 := must(b.csm().OpenCycle(b.ctx, payment.SchemeSEPACT))
-	b.initSCT(aurora, aaron, soleil, claude, 8_000, "SCT-010", "Book order")
-	b.initSCT(verde, bella, nord, niklas, 6_000, "SCT-011", "Shared dinner")
-	must(b.csm().CloseCycle(b.ctx, sct2.ID))
-
-	// --- Phase E: a second closed SDD cycle, with a rejected payment ---------
-	sdd2 := must(b.csm().OpenCycle(b.ctx, payment.SchemeSEPADD))
-	b.initSDD(soleil, chloe, nord, nora, 5_000, m1.ID, "SDD-010", "Monthly subscription")
-	reject := b.initSDD(verde, bruno, aurora, aaron, 3_000, m2.ID, "SDD-011", "Disputed charge")
-	// An operator-initiated rejection carries no more specific reason code
-	// than MS03 — the same choice the reject handler makes, for the same
-	// reason: nothing here is the system detecting a condition of its own.
+	// --- Phase D: the two cycles this build LEAVES OPEN ---------------------
 	//
-	// Both halves, in one unit of work, as with initiate: the clearing house
-	// transitions the payment and drops it from the cycle, the payer's bank
-	// reverses the leg it posted. There is no method that does both, so nobody
-	// plays the clearing house and the payer's bank without saying so.
-	b.reject(reject.ID, iso20022.StatusReasonNotSpecifiedAgentGenerated, "Insufficient mandate coverage")
-	must(b.csm().CloseCycle(b.ctx, sdd2.ID))
+	// One per scheme, and they are the cut-off windows the payments below are
+	// taken into. A day validates its files against the open window BEFORE it
+	// opens tomorrow's (see Deployment.AdvanceDay's ordering), so a deployment
+	// handed none would refuse every payment in the first day's files with TM01.
+	must(b.csm().OpenCycle(b.ctx, payment.SchemeSEPACT))
+	must(b.csm().OpenCycle(b.ctx, payment.SchemeSEPADD))
 
-	// --- Phase F: a third SCT cycle, closed at the end of the build ---------
-	sct3 := must(b.csm().OpenCycle(b.ctx, payment.SchemeSEPACT))
-	b.initSCT(aurora, alice, verde, bella, 7_000, "SCT-020", "Birthday gift")
+	// --- Phase E: the payments in flight, through the deployment's door -----
+	//
+	// Submitted and not carried: each joins its bank's hub and goes no further
+	// until phase G moves every hub at once, which is why the lending showcase
+	// below can add one more without a cut-off having run in between. See
+	// builder.submit for why these six do not go through initiate.
+	b.submit(b.sct(aurora, aaron, soleil, claude, 8_000, "SCT-010", "Book order"))
+	b.submit(b.sct(verde, bella, nord, niklas, 6_000, "SCT-011", "Shared dinner"))
+	b.submit(b.sct(aurora, alice, verde, bella, 7_000, "SCT-020", "Birthday gift"))
+	rejected := b.submit(b.sct(nord, nora, soleil, claude, 4_000, "SCT-021", "Deposit, flat viewing"))
+	b.submit(b.sdd(soleil, chloe, nord, nora, 5_000, m1.ID, "SDD-010", "Monthly subscription"))
+	b.submit(b.sdd(verde, bruno, aurora, aaron, 3_000, m2.ID, "SDD-011", "Gym membership"))
 
 	// --- Lending: credit facilities across the network ---------------------
 	b.lendingShowcase(aurora, verde, nord, alice, bruno, bella, niklas)
@@ -946,45 +983,54 @@ func (b *builder) build() {
 	// --- General-ledger primitives showcase on Aurora ----------------------
 	b.glShowcase(aurora, aaron)
 
-	// --- Every cycle this scenario opened is closed, and two empty ones wait -
+	// --- Phase G: the morning's files move, and nothing settles -------------
 	//
-	// SCT-030 joins Phase F's cycle from inside the lending showcase, so that one
-	// can only be closed once everything above has run. Closing it here is what
-	// makes this the last act of the build.
+	// The last act of the build, and it has to be: SCT-030 joins its bank's hub
+	// from inside the lending showcase, so one call here carries everything above
+	// and nothing is left behind in a hub.
 	//
-	// # Why no cycle may be left OPEN
+	// # What it leaves, and why THAT is the state to ship
 	//
-	// An open cycle is the one the next business day closes, nets, settles — and
-	// then releases the receiving banks' files for. This process builds no files:
-	// it plays every institution itself and hands the clearing house rows, so the
-	// clearing house holds no share to release for anything seeded into a cycle.
-	// A payment left Accepted would therefore be settled by the first advance
-	// against reserves that really move, and the bank that has to credit the payee
-	// would never be told the payment exists. See ClearingHouse.unhanded, which is
-	// what says so out loud, and payment/recon's partiesHoldTheirCopy, which finds
-	// it in the books afterwards.
+	// Every payment submitted in phase E is now Accepted, in the open cycle for
+	// its scheme, with each receiving bank's share of the file it arrived in HELD
+	// at the clearing house. The first business day anybody advances closes those
+	// cycles, settles them at the agent and releases the shares — so the payee's
+	// bank is handed its instructions and pays its customer, which is the whole
+	// point and is what a reader watching the day's report gets to see happen.
 	//
-	// A CLOSED cycle is safe for the reason Phase D already relies on: a business
-	// day closes open cycles and settles the closed ones that net to nothing, and
-	// neither of these does either. Their payments stay Cleared, their payers'
-	// money stays in clearing suspense, and every book agrees about why — which is
-	// a payment in flight, and is exactly what it looks like.
+	// The alternative is a cycle no act in this system can advance. A payment put
+	// into one without a file behind it has no share, so settling it is final at
+	// the agent and reaches nobody — and refusing to settle it, which is what the
+	// clearing house does, leaves the cut-off Closed with its payments Cleared and
+	// nothing that moves either. Neither outcome is a dataset to hand a reader.
+	// See ClearingHouse.unhandable and payment.ErrCycleNotReleasable.
 	//
-	// So the seed's in-flight payments are Cleared and never Accepted. Accepted is
-	// the one status this dataset cannot hold at the clearing house without
-	// leaving a payment the running system would settle and could not deliver. The
-	// SUBMITTING banks' own copies still read Accepted — the ACSC reached them —
-	// so the status is on the screens, in the place a bank would see it.
+	// # The receiving banks hold nothing yet, and that is correct
 	//
-	// # And why two empty ones are opened
+	// Before finality the submitting bank is the only bank that has heard of the
+	// payment. So a bank's copy exists for what it submitted and for nothing it is
+	// owed — which is settle-before-release read off the rows, and is why
+	// payment/recon walks only payments from Cleared onwards.
+	check(b.dep.CarryToClearing(b.ctx))
+
+	// --- Phase H: an operator rejects one out of the open cycle -------------
 	//
-	// A day validates its files against the open cut-off window BEFORE it opens
-	// tomorrow's (see Deployment.AdvanceDay's ordering), so a deployment handed no
-	// open cycle refuses every payment in the first day's files with TM01. Two
-	// empty cycles, one per scheme, are what a day would have left behind.
-	must(b.csm().CloseCycle(b.ctx, sct3.ID))
-	must(b.csm().OpenCycle(b.ctx, payment.SchemeSEPACT))
-	must(b.csm().OpenCycle(b.ctx, payment.SchemeSEPADD))
+	// The last thing that happens to SCT-021, and it is a state only an open cycle
+	// has: the clearing house drops the payment from the cut-off it was taken
+	// into, and the share built for the payee's bank keeps the position — which is
+	// cut out when the rest of the cycle settles, so that bank is handed the file
+	// without it. A rendered file could not do that, which is the argument
+	// csm/0001_init.sql's cycles statement makes and this is the fixture behind
+	// it.
+	//
+	// An operator-initiated rejection carries no more specific reason code than
+	// MS03 — the same choice the reject handler makes, for the same reason:
+	// nothing here is the system detecting a condition of its own.
+	//
+	// A PUSH, so the bank told is the payer's own and has money to give back. On a
+	// pull nothing has been posted yet and the rejection costs nobody anything;
+	// see builder.reject.
+	b.reject(rejected.ID, iso20022.StatusReasonNotSpecifiedAgentGenerated, "Payee's account details could not be confirmed")
 }
 
 // lendingShowcase exercises every state a credit facility can be in: a
@@ -1088,15 +1134,16 @@ func (b *builder) lendingShowcase(aurora, verde, nord *payment.Bank, alice, brun
 	// 30-day span, or the repricing's twenty-day offset, changes Bruno's
 	// final number.
 	//
-	// It joins the SCT cycle Phase F opened (only one may be open per scheme at
-	// a time) rather than opening a second one, which is also why it ends
-	// Cleared like SCT-020 rather than Settled: the build's closing act closes
-	// that cycle, and nothing settles it.
+	// It goes through the DOOR, like the rest of the build's in-flight payments,
+	// and joins Verde's hub rather than a cycle: the build's closing act carries
+	// every hub at once, and this one is submitted from inside a showcase that
+	// runs before it. So it ends Accepted in the open SCT cycle alongside SCT-020,
+	// and the first business day settles and delivers it.
 	check(verde.RunEndOfDay(ctx, b.clock.Now()))
 
 	brunoBalance := must(verde.Deposit.GetBalance(ctx, bruno.ID))
 	overdrawBy := ledger.Amount(20_000) // EUR 200 into the EUR 500 arranged limit
-	b.initSCT(verde, bruno, aurora, alice, brunoBalance.Book+overdrawBy, "SCT-030", "Card settlement")
+	b.submit(b.sct(verde, bruno, aurora, alice, brunoBalance.Book+overdrawBy, "SCT-030", "Card settlement"))
 
 	b.runDays(verde, 45)
 	must(verde.Deposit.ChargeOverdraftInterest(ctx, bruno.ID, b.clock.Now()))

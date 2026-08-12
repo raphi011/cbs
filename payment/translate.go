@@ -261,6 +261,21 @@ var reasonTable = []reasonMapping{
 	{ErrCycleNotClosed, "ErrCycleNotClosed", ""},
 	{ErrCycleAlreadyOpen, "ErrCycleAlreadyOpen", ""},
 
+	// A cut-off the clearing house will not settle because it could not release
+	// what it settled. The empty code for the cycle-lifecycle reason and one of
+	// its own: this refusal happens BEFORE any instruction is uploaded, so there
+	// is no message for a counterparty to be answered about — no settlement agent
+	// has been asked and no submitting bank is owed a verdict on its payment,
+	// which is still exactly where the cut-off left it.
+	{ErrCycleNotReleasable, "ErrCycleNotReleasable", ""},
+
+	// The clearing house holding no return for a payment an answer names. The
+	// empty code because it is not a verdict on anybody's message: the answer
+	// this arrives with is forwarded to the bank that asked either way, carrying
+	// the settlement agent's own code, and what is missing is only the second hop
+	// of a conversation that bank is not party to.
+	{ErrHeldReturnNotFound, "ErrHeldReturnNotFound", ""},
+
 	// A cut-off the settlement agent has already discharged. It is a redelivered
 	// pacs.009 and nothing more — the clearing house asked twice, or the queue
 	// did — so it takes ErrCycleNotClosed's empty code and ErrCycleNotClosed's
@@ -2246,9 +2261,10 @@ type SettlementLeg struct {
 //
 // The settlement agent works from the LEGS rather than from the cycle, because
 // it holds no cycles table. So two callers have to produce the same legs: the
-// clearing house, which renders them into a pacs.009, and the seed, which plays
-// every institution and uploads no files at all. Two renderings of one intent
-// are two things that can drift, and this is the one that decides what settles.
+// clearing house, which renders them into a pacs.009, and the seed, which
+// settles its own cut-offs by playing all three institutions rather than
+// instructing one. Two renderings of one intent are two things that can drift,
+// and this is the one that decides what settles.
 func SettlementLegsOf(c ClearingCycle, asset ledger.AssetCode, centralBank iso20022.BIC) []SettlementLeg {
 	legs := make([]SettlementLeg, 0, len(c.NetPositions))
 	// A cycle's positions are keyed by BIC and a leg is addressed by BIC, so there

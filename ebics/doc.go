@@ -43,6 +43,16 @@
 // claim in api. A reader should not infer that file transfer between banks is
 // unauthenticated by nature; it is the opposite, and this models none of it.
 //
+// # A queue outlives the process holding it
+//
+// The queues and the order log are rows in the hosting institution's own
+// database, reached through a port this package declares (Store) and implemented
+// somewhere this package does not name. Nothing here is lost when a process ends:
+// a file released into a receiving bank's queue is an obligation with money
+// already moved against it, and an order log a restart emptied would answer HAC
+// about nothing. The bytes stay opaque for all that — see Store, which carries
+// the argument.
+//
 // # One queue is ordered, two queues are not
 //
 // Files come out of a subscriber's queue in the order they went in, and there is
@@ -61,8 +71,9 @@
 //
 // No download receipt. Real EBICS downloads in three phases — initialisation,
 // transfer, receipt — and the receipt is what makes a client that died mid-read
-// collect the file again rather than lose it. Here the queue empties when the
-// response is written.
+// collect the file again rather than lose it. Here the queue row is deleted in
+// the same transaction that reads it, so a client that dies after the response
+// is written has lost the files and one that dies before it has not.
 //
 // And no delivery guarantee. The store-and-forward transports under real bulk
 // clearing, SWIFT FIN and FileAct, carry non-repudiation and a delivery

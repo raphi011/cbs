@@ -23,12 +23,13 @@ import (
 // state is silent and permanent: the payee is never credited, the amount stops
 // in that bank's clearing suspense, and its copy reads Initiated for ever.
 //
-// The seed is what could reach it. It plays every institution itself and uploads
-// nothing, so a payment it leaves in an OPEN cycle is settled by the first
-// advance and delivered to nobody. seed's own
-// TestTheBuildLeavesNoPaymentInAnOpenCycle is the constraint that keeps it out;
-// this is the same claim proved through the transport, over a real day, which is
-// the only place the release path actually runs.
+// The seed is what could reach it. What it composes it settles itself, so a
+// payment it left in an OPEN cycle with no file behind it would be settled by
+// the first advance and delivered to nobody — which is why its in-flight
+// payments go through a real cut-off instead. seed's own
+// TestEveryPaymentInAnOpenCycleWasUploaded is the constraint that keeps the
+// other kind out; this is the same claim proved through the transport, over a
+// real day, which is the only place the release path actually runs.
 //
 // # Why it advances the day rather than driving the phases
 //

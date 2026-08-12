@@ -98,14 +98,12 @@ pocket and asks for the money back.
 
 ## What it costs
 
-**The held files are not durable.** They are in the clearing house's memory,
-keyed by cycle, and a restart between settlement and release loses them: the
-reserves have moved and no receiving bank is ever handed the instructions it has
-to apply. This is recorded rather than fixed, because the fix is a table in that
-institution's own database and not a workaround anywhere else. The absence is
-argued inside `csm/0001_init.sql`'s `cycles` statement. The same is true of a
-`pacs.004` held between its upload to the settlement agent and the answer coming
-back.
+**The clearing house has to hold something between the two.** A share per
+receiving bank exists from the moment a file is taken in until the cut-off
+carrying it is final, and a `pacs.004` waits from its upload to the settlement
+agent until the answer comes back. Both are obligations rather than caches, and
+[ADR-0003](0003-an-institutions-obligations-live-in-its-database.md) is where
+they live and why.
 
 **One more round trip before a payee is paid.** The chain is eight files rather
 than six, and a payee's bank learns of a payment strictly later than it used to.

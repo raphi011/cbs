@@ -2,14 +2,12 @@ package main
 
 import (
 	"context"
-	"log/slog"
 	"testing"
 
-	"github.com/raphi011/cbs/calendar"
+	"github.com/raphi011/cbs/ebics"
+	"github.com/raphi011/cbs/iso20022"
 	"github.com/raphi011/cbs/ledger"
 	"github.com/raphi011/cbs/payment"
-	"github.com/raphi011/cbs/seed"
-	"github.com/raphi011/cbs/store/testenv"
 )
 
 // TestTheSeedLeavesNoPaymentHalfProcessed pins what a reader sees on the first
@@ -22,17 +20,17 @@ import (
 // waits — and Initiated is the status that names it: money gone from the payer,
 // no institution having yet said accept or reject.
 //
-// The property holds by CONSTRUCTION, and this test carries nothing of its own.
-// Every PAYMENT in the scenario is composed inside ONE unit of work
-// (seed.builder.initiate, and seed.builder.reject for the rejection's two), with
-// the seed playing each institution in turn rather than uploading anything: a
-// unit of work has no observable middle, so there is no instant at which a
-// seeded payment is half-processed.
+// Two things produce the property and they are different in kind. What the seed
+// COMPOSES it composes one institution's half at a time, in its own unit of
+// work, playing each in turn — so there is no instant at which one of those is
+// half-processed. What it UPLOADS goes through a real cut-off and is worked all
+// the way through before Populate returns, which is builder.build's closing act:
+// nothing is left in a bank's hub and nothing waits in a download queue.
 //
-// Nor is anything left waiting in a queue. The seed uploads no file at all — its
-// three deployment acts are an admission, a directory pull and a read of the
-// settlement agent's address, none of which is a file — so Populate returns a
-// scenario with nothing in flight and nothing pending.
+// The hubs and the hosts are therefore checked too, and that arm only exists now
+// that the seed uploads at all. A payment sitting in a hub is one whose payer is
+// debited and whose file has not been built; a file sitting unworked at a host
+// is one an institution was told had arrived and has not read.
 //
 // Two things are checked, because a status is only half the story. Money is the
 // other half: a rejection that transitioned the payment but never reversed the
@@ -43,28 +41,31 @@ import (
 func TestTheSeedLeavesNoPaymentHalfProcessed(t *testing.T) {
 	ctx := context.Background()
 
-	// The store, the network and the seed, exactly as main builds them.
-	clock := calendar.NewClock(seed.BaseDate)
-	data := seed.New(clock)
-	stores := testenv.NewSet(t, clock.Now)
-	nets := payment.NewNetworks(stores, clock.Now)
+	// A deployment with hosts that answer, which the seed now needs: its
+	// in-flight payments are uploaded for real. See seed.Deployment.
+	srv := newAPIHarness(t)
+	nets := srv.nets
+	stores := nets.Stores()
 	// The clearing house's view, for the network-scoped reads this test makes.
 	net := nets.ClearingHouse()
-	cfg := testConfig
-	// Two URLs that reach nothing, and nothing dials them. The seed composes both
-	// halves of every conversation it builds, so this deployment exists only to
-	// give Populate the three acts it asks for — an admission, a directory pull,
-	// and the settlement agent's address. A configuration with no URLs at all is
-	// refused, which is the point: an institution with nowhere to dial can neither
-	// send nor collect.
-	cfg.CentralBankURL = "http://127.0.0.1:1/ebics"
-	cfg.ClearingHouseURL = "http://127.0.0.1:1/ebics"
-	dep, err := NewDeployment(ctx, nets, clock, cfg, data.Populate, slog.New(slog.DiscardHandler))
-	if err != nil {
-		t.Fatalf("building the deployment: %v", err)
+
+	for _, b := range srv.dep.banksInOrder() {
+		if got := b.queued(); len(got) != 0 {
+			t.Errorf("%s's hub holds %d instructions the build never uploaded: %v; their payers are debited and no file carries them",
+				b.bic, len(got), got)
+		}
 	}
-	if err := data.Populate(ctx, nets, dep); err != nil {
-		t.Fatalf("populating the sample dataset: %v", err)
+	for _, host := range []struct {
+		at iso20022.BIC
+		s  *ebics.Server
+	}{
+		{srv.dep.cfg.ClearingHouseBIC, srv.dep.ClearingHouse().host},
+		{srv.dep.cfg.CentralBankBIC, srv.dep.CentralBank().host},
+	} {
+		if got := pendingAt(t, host.s); got != 0 {
+			t.Errorf("%d files are waiting unworked at %s; the build uploaded them and left before that institution read them",
+				got, host.at)
+		}
 	}
 
 	payments, err := net.ListPayments(ctx)
@@ -78,6 +79,14 @@ func TestTheSeedLeavesNoPaymentHalfProcessed(t *testing.T) {
 	// mid holds, per asset, the money the accepted-but-unsettled payments have
 	// taken out of a customer's account and not yet delivered. That is exactly
 	// what a clearing suspense account is for.
+	//
+	// A PUSH only, and the exclusion is settle-before-release rather than an
+	// exemption. Before finality the submitting bank is the only bank that has
+	// heard of the payment, and on a pull that bank is the payee's and posts
+	// NOTHING at submission: the account being collected from is the payer's
+	// bank's to look at, and that bank learns of the collection when its output
+	// file is released. So an in-flight direct debit has taken nobody's money and
+	// is in no suspense — counting it would demand a balance no bank should have.
 	mid := map[ledger.AssetCode]ledger.Amount{}
 	for _, p := range payments {
 		if p.Status == payment.Initiated {
@@ -90,6 +99,9 @@ func TestTheSeedLeavesNoPaymentHalfProcessed(t *testing.T) {
 		sc, ok := net.Scheme(p.Scheme)
 		if !ok {
 			t.Fatalf("payment %s names scheme %q, which the network does not have", p.ID, p.Scheme)
+		}
+		if sc.Direction() == payment.Pull {
+			continue
 		}
 		mid[sc.Asset()] += p.Amount
 	}

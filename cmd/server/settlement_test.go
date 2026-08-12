@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"maps"
+	"slices"
 	"strings"
 	"testing"
 
+	"github.com/raphi011/cbs/ebics"
 	"github.com/raphi011/cbs/iso20022"
 	"github.com/raphi011/cbs/ledger"
 	"github.com/raphi011/cbs/payment"
@@ -971,4 +973,299 @@ func TestACutOffThatNetsToNothingInstructsNobody(t *testing.T) {
 	if len(settlements) != 0 {
 		t.Errorf("the settlement agent holds %d settlements, and nobody instructed one", len(settlements))
 	}
+}
+
+// A cut-off whose instructions this institution could not hand over is refused
+// before the reserves move.
+//
+// Settling one would be final at the settlement agent and reach no receiving
+// bank, leaving a payee unpaid with the money standing in their own bank's
+// clearing suspense and no act in this system able to move it. That is the loss
+// unhanded reports after the fact; this is the refusal that makes it
+// unreachable.
+//
+// # The state is BUILT, and that is what it costs to reach
+//
+// The seeded dataset carries its in-flight payments through a real cut-off, so
+// every one of them has a share behind it and no deployment this repository
+// builds hands over a cut-off that cannot be released. Nor does a restart any
+// more: the shares are rows in the clearing house's own database. What is left
+// is a process that ends between accepting a file's transactions into a cycle
+// and recording the share behind them — two units of work, in that order, for
+// the reason takeRecorded gives — so that is what is composed here, by dropping
+// one cut-off's shares over a cycle they are asserted to have been in first.
+//
+// It goes through CloseCycle rather than Settle because that is the door an
+// operator reaches first, and it makes the refusal at the seam that matters: the
+// cut-off has netted, the payments are Cleared, and no instruction is uploaded.
+// Settle is asked afterwards, since re-instructing is the one route out of a
+// closed-and-undischarged cycle and must not be a way around this.
+//
+// It asserts the WHOLE of what the refusal preserves, because a guard that
+// refused and left something moved would be worse than none: the cycle where the
+// cut-off had it, the payments where the cut-off had them, and the settlement
+// agent never asked.
+func TestACutOffThatCouldNotBeReleasedIsRefusedBeforeTheReservesMove(t *testing.T) {
+	ctx := context.Background()
+	s := newAPIHarness(t)
+	csm := s.dep.ClearingHouse()
+
+	cycles, err := s.nets.ClearingHouse().ListCycles(ctx)
+	if err != nil {
+		t.Fatalf("ListCycles: %v", err)
+	}
+	var target payment.ClearingCycle
+	for _, c := range cycles {
+		if c.Status == payment.CycleOpen && len(c.PaymentIDs) > 0 {
+			target = c
+			break
+		}
+	}
+	if target.ID == "" {
+		t.Fatal("the seeded dataset holds no open cycle with payments in it; this test has nothing to lose the shares of")
+	}
+	files, err := csm.ops.ListHeldFiles(ctx, target.ID)
+	if err != nil {
+		t.Fatalf("ListHeldFiles: %v", err)
+	}
+	if len(files) == 0 {
+		t.Fatalf("the clearing house held no share for %s before this test dropped them; there was nothing to lose", target.ID)
+	}
+	// ONE cut-off's shares rather than every cut-off's, which is what leaves the
+	// OTHER open cycle holding its own — a day that refused everything would say
+	// nothing about refusing this one.
+	dropEveryShare(t, csm, target.ID)
+
+	settlementsBefore, err := s.nets.CentralBank().ListSettlements(ctx)
+	if err != nil {
+		t.Fatalf("ListSettlements: %v", err)
+	}
+
+	switch _, err := csm.CloseCycle(ctx, target.ID); {
+	case err == nil:
+		t.Fatalf("%s was instructed for settlement; the shares behind its payments are gone, so no receiving bank could have been told", target.ID)
+	case !errors.Is(err, payment.ErrCycleNotReleasable):
+		t.Fatalf("closing %s failed with %v, want ErrCycleNotReleasable", target.ID, err)
+	}
+
+	// And the way OUT of a closed cycle is shut too. Re-instructing is what an
+	// operator does about a cut-off the agent refused, and it must not be a way
+	// round this one.
+	switch _, err := csm.Settle(ctx, target.ID); {
+	case err == nil:
+		t.Fatalf("%s was re-instructed for settlement, and the shares behind it are still gone", target.ID)
+	case !errors.Is(err, payment.ErrCycleNotReleasable):
+		t.Fatalf("re-instructing %s failed with %v, want ErrCycleNotReleasable", target.ID, err)
+	}
+
+	// And a business day does not reach it either. It settles the OTHER cut-off
+	// the seed left open, which is the point of asserting per cycle below rather
+	// than on a total: a day that refused everything would prove nothing.
+	if _, err := s.dep.AdvanceDay(ctx); err != nil {
+		t.Fatalf("AdvanceDay: %v", err)
+	}
+
+	after, err := s.nets.ClearingHouse().GetCycle(ctx, target.ID)
+	if err != nil {
+		t.Fatalf("GetCycle: %v", err)
+	}
+	if after.Status != payment.CycleClosed {
+		t.Errorf("%s is %v after being refused, want Closed — the cut-off left it there and nothing here may move it", target.ID, after.Status)
+	}
+	for _, id := range target.PaymentIDs {
+		p, err := s.nets.ClearingHouse().GetPayment(ctx, id)
+		if err != nil {
+			t.Fatalf("GetPayment %s: %v", id, err)
+		}
+		if p.Status != payment.Cleared {
+			t.Errorf("payment %s is %v, want Cleared; a refused settlement moves no payment", id, p.Status)
+		}
+	}
+	settlementsAfter, err := s.nets.CentralBank().ListSettlements(ctx)
+	if err != nil {
+		t.Fatalf("ListSettlements: %v", err)
+	}
+	for _, st := range settlementsAfter {
+		if st.CycleID == target.ID {
+			t.Errorf("the settlement agent discharged %s; the refusal was supposed to come before the reserves", target.ID)
+		}
+	}
+	if len(settlementsAfter) <= len(settlementsBefore) {
+		t.Errorf("the settlement agent holds %d settlements and held %d; the day settled nothing at all, so refusing this one says nothing",
+			len(settlementsAfter), len(settlementsBefore))
+	}
+}
+
+// And a cut-off in which every position cancels is refused on the same ground.
+//
+// Such a batch instructs nothing — there is no leg to send — and the clearing
+// house discharges it itself, which makes the release the only thing standing
+// between two payers' money and their payees. A cut-off whose shares are gone
+// would go Settled with no instruction reaching either receiving bank, both
+// payers debited and both payees unpaid. So the refusal has to be asked before
+// the legs are counted, and not after: an empty instruction is not the same
+// thing as nothing owed.
+//
+// Both operator doors are tried, for the reason the test above tries them:
+// re-instructing is the one way out of a closed-and-undischarged cycle and must
+// not be a way around this.
+func TestACutOffThatNetsToNothingAndCannotBeReleasedIsRefusedToo(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+
+	// Both banks paying, which is what makes the positions cancel. See
+	// TestACutOffThatNetsToNothingSettlesAndReleasesItsFiles.
+	if err := h.bank(h.creditorBIC).Deposit(ctx, h.creditorPID, h.creditorAcct.ID, harnessFunding, "Opening deposit"); err != nil {
+		t.Fatalf("funding the payee: %v", err)
+	}
+	there := h.submitCreditTransfer(t)
+	back := h.submit(t, h.reverseCreditTransfer(t))
+	h.work(t)
+
+	csm := h.dep.ClearingHouse()
+	target := openCycleHolding(t, h, there.ID)
+	if !slices.Contains(target.PaymentIDs, back.ID) {
+		t.Fatalf("%s and %s are in different cycles; nothing here would net to nothing", there.ID, back.ID)
+	}
+
+	// The state this is about: the payments are in the cut-off and the shares
+	// behind them are not. See the test above for what reaches it.
+	files, err := csm.ops.ListHeldFiles(ctx, target.ID)
+	if err != nil {
+		t.Fatalf("ListHeldFiles: %v", err)
+	}
+	if len(files) == 0 {
+		t.Fatalf("the clearing house held no share for %s; there was nothing to lose", target.ID)
+	}
+	dropEveryShare(t, csm, target.ID)
+
+	switch _, err := csm.CloseCycle(ctx, target.ID); {
+	case err == nil:
+		t.Fatalf("%s was cut off without complaint; it nets to nothing, so nothing else would ever hand its payments over", target.ID)
+	case !errors.Is(err, payment.ErrCycleNotReleasable):
+		t.Fatalf("closing %s failed with %v, want ErrCycleNotReleasable", target.ID, err)
+	}
+	switch _, err := csm.Settle(ctx, target.ID); {
+	case err == nil:
+		t.Fatalf("%s was re-instructed, and the shares behind it are still gone", target.ID)
+	case !errors.Is(err, payment.ErrCycleNotReleasable):
+		t.Fatalf("re-instructing %s failed with %v, want ErrCycleNotReleasable", target.ID, err)
+	}
+
+	// And the sweep that exists for cut-offs nobody will answer for does not
+	// reach it either, which is the state the refusal is protecting: a payment
+	// that goes Settled here is one nothing can hand over afterwards.
+	if _, err := h.dep.AdvanceDay(ctx); err != nil {
+		t.Fatalf("AdvanceDay: %v", err)
+	}
+	for _, id := range []payment.PaymentID{there.ID, back.ID} {
+		p, err := h.net.GetPayment(ctx, id)
+		if err != nil {
+			t.Fatalf("GetPayment %s: %v", id, err)
+		}
+		if p.Status != payment.Cleared {
+			t.Errorf("payment %s is %v after the day, want Cleared; a refused cut-off settles nothing", id, p.Status)
+		}
+	}
+}
+
+// A share this institution could not hand over is still held after the cut-off
+// settles, and the ones it did hand over are gone.
+//
+// The hand-over and the discharge of the obligation behind it are two units of
+// work — a download queue is the transport's table and no statement may write
+// both — so what stands between them is the order they run in and nothing else.
+// A share deleted whatever became of the queueing is an obligation destroyed
+// against reserves that have already moved: the receiving bank is never told,
+// the payer's money stands in clearing suspense, and no act in this system can
+// move it. That is the same loss held_files exists to prevent, arriving through
+// a failed hand-over instead of through a process that ended.
+//
+// # It is asserted per share, because keeping everything would prove nothing
+//
+// One cut-off carries two payees at two banks. One bank's enrolment is taken
+// away between the cut-off and the release, which is what leaves its share with
+// nowhere to go; the other bank's share is handed over and must NOT survive,
+// because a share left behind is released again by a redelivered answer and a
+// bank handed the same instructions twice credits the same customer twice.
+func TestAShareThatCouldNotBeHandedOverIsStillHeld(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+
+	third, carla := h.aThirdBank(t)
+	reachable := h.submit(t, h.creditTransferToAccount(t, carla, "invoice 44"))
+	stranded := h.submitCreditTransfer(t)
+	h.work(t)
+
+	csm := h.dep.ClearingHouse()
+	target := openCycleHolding(t, h, stranded.ID)
+	if !slices.Contains(target.PaymentIDs, reachable.ID) {
+		t.Fatalf("%s and %s are in different cycles; this test needs one cut-off holding both", stranded.ID, reachable.ID)
+	}
+	h.closeCycle(t)
+
+	// The payee's bank loses its enrolment between the cut-off and the release,
+	// so the share standing for it has nowhere to go. Enrolment is what creates a
+	// queue, which is why this is the failure a receiving bank can really have.
+	csm.host.Reset()
+	for _, bic := range []iso20022.BIC{h.debtorBIC, third.BIC} {
+		csm.host.Enrol(ebics.SubscriberID(bic))
+	}
+
+	if err := h.workErr(t); err == nil {
+		t.Fatal("the release reported nothing; a share it could not hand over is a fault the day has to carry")
+	}
+
+	files, err := csm.ops.ListHeldFiles(ctx, target.ID)
+	if err != nil {
+		t.Fatalf("ListHeldFiles: %v", err)
+	}
+	held := make(map[iso20022.BIC]bool, len(files))
+	for _, f := range files {
+		held[f.Destination] = true
+	}
+	if !held[h.creditorBIC] {
+		t.Errorf("%s's share of %s is gone and it was never handed over; the payment is in nobody's hands and the reserves have moved",
+			h.creditorBIC, target.ID)
+	}
+	if held[third.BIC] {
+		t.Errorf("%s's share of %s is still held after being handed over; a redelivered answer would queue it a second time",
+			third.BIC, target.ID)
+	}
+}
+
+// dropEveryShare composes the state a process ending between accepting a file's
+// transactions into a cycle and recording the shares behind them would leave:
+// a cut-off holding payments no output file stands for.
+//
+// One share at a time, because that is the only way to discharge one. See
+// payment.DropHeldFile.
+func dropEveryShare(t *testing.T, c *ClearingHouse, id payment.CycleID) {
+	t.Helper()
+	ctx := context.Background()
+	files, err := c.ops.ListHeldFiles(ctx, id)
+	if err != nil {
+		t.Fatalf("ListHeldFiles: %v", err)
+	}
+	for _, f := range files {
+		if err := c.ops.DropHeldFile(ctx, id, f.Seq); err != nil {
+			t.Fatalf("DropHeldFile %s/%d: %v", id, f.Seq, err)
+		}
+	}
+}
+
+// openCycleHolding is the open cut-off one payment was accepted into.
+func openCycleHolding(t *testing.T, h *harness, id payment.PaymentID) payment.ClearingCycle {
+	t.Helper()
+	cycles, err := h.net.ListCycles(context.Background())
+	if err != nil {
+		t.Fatalf("ListCycles: %v", err)
+	}
+	for _, c := range cycles {
+		if c.Status == payment.CycleOpen && slices.Contains(c.PaymentIDs, id) {
+			return c
+		}
+	}
+	t.Fatalf("no open cycle holds %s", id)
+	return payment.ClearingCycle{}
 }

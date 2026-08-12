@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/raphi011/cbs/ebics"
 	"github.com/raphi011/cbs/iso20022"
 	"github.com/raphi011/cbs/ledger"
 	"github.com/raphi011/cbs/payment"
@@ -305,6 +306,21 @@ func (s *Set) CentralBank() payment.Store   { return s.cb.Payment() }
 // for the same reason BankStore exists.
 func (s *Set) ClearingHouseStore() *Store { return s.csm }
 func (s *Set) CentralBankStore() *Store   { return s.cb }
+
+// ClearingHouseEBICS and CentralBankEBICS are the two hosts' transport state:
+// the download queues and the order log of each institution that is DIALLED.
+//
+// There is no bank equivalent and there cannot be one. A member bank hosts
+// nothing, so a *Store opened as the Bank shape answers ErrNotInThisShape to
+// every method on this interface, and there is nothing here to hand one out
+// from.
+//
+// They are on the set rather than on payment.Stores because the domain must not
+// name the transport: a payment.Network that could reach a queue would be an
+// institution able to read a file it is only carrying. The composition root
+// holds both and is where the two meet.
+func (s *Set) ClearingHouseEBICS() ebics.Store { return s.csm.EBICS() }
+func (s *Set) CentralBankEBICS() ebics.Store   { return s.cb.EBICS() }
 
 // Reset empties every database in the set.
 //

@@ -171,7 +171,7 @@ func (c *CentralBank) Members(ctx context.Context) ([]*payment.Bank, error) {
 // enqueue addresses one document to one subscriber by putting it in that
 // subscriber's download queue. See ClearingHouse.enqueue, which is the same act
 // one institution over.
-func (c *CentralBank) enqueue(to iso20022.BIC, env iso20022.Envelope) error {
+func (c *CentralBank) enqueue(ctx context.Context, to iso20022.BIC, env iso20022.Envelope) error {
 	t, err := orderTypeOf(env.Document)
 	if err != nil {
 		return err
@@ -180,7 +180,7 @@ func (c *CentralBank) enqueue(to iso20022.BIC, env iso20022.Envelope) error {
 	if err != nil {
 		return fmt.Errorf("server: %s marshalling for %s: %w", c.bic, to, err)
 	}
-	id, err := c.host.Enqueue(ebics.SubscriberID(to), t, raw)
+	id, err := c.host.Enqueue(ctx, ebics.SubscriberID(to), t, raw)
 	if err != nil {
 		return fmt.Errorf("server: %s cannot address a %s to %s: %w", c.bic, t, to, err)
 	}
@@ -195,18 +195,30 @@ func (c *CentralBank) enqueue(to iso20022.BIC, env iso20022.Envelope) error {
 // Three arms, and every one of them moves central-bank money: a cut-off's
 // positions being discharged, one settled payment being sent back, and a member
 // lodging cash onto its own reserve.
+//
+// A file whose acknowledgement could not be written stays on this list and is
+// worked again tomorrow, which is where the three arms' idempotency earns its
+// place: a settlement is refused by SettleCycleTx's own state guard, a return by
+// the idempotency key on its reserve reversal, and a lodgement by the key derived
+// from the request's message id. None of the three can post twice.
 func (c *CentralBank) work(ctx context.Context) []Problem {
 	ctx = withActor(ctx, c.bic)
 
+	pending, err := c.host.Pending(ctx)
+	if err != nil {
+		return []Problem{{Institution: c.bic, Detail: fmt.Sprintf("reading the orders waiting to be worked through: %v", err)}}
+	}
 	var problems []Problem
-	for _, order := range c.host.Pending() {
-		err := c.handle(ctx, iso20022.BIC(order.Subscriber), order.Payload)
-		if err != nil {
+	for _, order := range pending {
+		answer, detail := c.host.Processed, ""
+		if err := c.handle(ctx, iso20022.BIC(order.Subscriber), order.Payload); err != nil {
 			problems = append(problems, Problem{Institution: c.bic, OrderID: order.ID, Detail: err.Error()})
-			_ = c.host.Rejected(order.ID, err.Error())
-			continue
+			answer, detail = c.host.Rejected, err.Error()
 		}
-		_ = c.host.Processed(order.ID, "")
+		if err := answer(ctx, order.ID, detail); err != nil {
+			problems = append(problems, Problem{Institution: c.bic, OrderID: order.ID,
+				Detail: fmt.Sprintf("recording what became of this order: %v", err)})
+		}
 	}
 	return problems
 }
@@ -225,7 +237,7 @@ func (c *CentralBank) work(ctx context.Context) []Problem {
 func (c *CentralBank) handle(ctx context.Context, from iso20022.BIC, raw []byte) error {
 	env, err := iso20022.Unmarshal(raw)
 	if err != nil {
-		return c.answerUnreadable(from, err)
+		return c.answerUnreadable(ctx, from, err)
 	}
 	switch doc := env.Document.(type) {
 	case *iso20022.Pacs009:
@@ -241,12 +253,12 @@ func (c *CentralBank) handle(ctx context.Context, from iso20022.BIC, raw []byte)
 
 // answerUnreadable queues an FF01 for the subscriber whose file would not parse.
 // See unreadable.
-func (c *CentralBank) answerUnreadable(from iso20022.BIC, cause error) error {
+func (c *CentralBank) answerUnreadable(ctx context.Context, from iso20022.BIC, cause error) error {
 	env, err := unreadable(c.d.messageContext(c.bic, from), cause)
 	if err != nil {
 		return errors.Join(fmt.Errorf("server: %s could not build the FF01 for %s: %w", c.bic, from, err), cause)
 	}
-	return c.enqueue(from, env)
+	return c.enqueue(ctx, from, env)
 }
 
 // receiveSettlement is the central bank answering a settlement instruction:
@@ -295,11 +307,11 @@ func (c *CentralBank) receiveSettlement(from iso20022.BIC, hdr iso20022.AppHdr, 
 		// and settling the survivors as if they were the whole instruction is the
 		// one thing a settlement agent must never do. It is answered against no
 		// cycle, because the instruction cannot be trusted to name one.
-		return c.answer(from, orig, notProvided, notProvided, iso20022.TransactionStatusRejected, err)
+		return c.answer(ctx, from, orig, notProvided, notProvided, iso20022.TransactionStatusRejected, err)
 	}
 	id, err := cycleOf(legs)
 	if err != nil {
-		return c.answer(from, orig, notProvided, notProvided, iso20022.TransactionStatusRejected, err)
+		return c.answer(ctx, from, orig, notProvided, notProvided, iso20022.TransactionStatusRejected, err)
 	}
 
 	// The legs travel on, because they ARE the instruction: this institution
@@ -310,12 +322,12 @@ func (c *CentralBank) receiveSettlement(from iso20022.BIC, hdr iso20022.AppHdr, 
 		if errors.Is(err, payment.ErrCycleAlreadySettled) {
 			return fmt.Errorf("server: %s was told to settle %s again: %w", c.bic, id, err)
 		}
-		return c.answer(from, orig, string(id), string(id), iso20022.TransactionStatusRejected, err)
+		return c.answer(ctx, from, orig, string(id), string(id), iso20022.TransactionStatusRejected, err)
 	}
-	if err := c.advise(statements); err != nil {
+	if err := c.advise(ctx, statements); err != nil {
 		return err
 	}
-	return c.answer(from, orig, string(id), string(id), iso20022.TransactionStatusSettlementCompleted, nil)
+	return c.answer(ctx, from, orig, string(id), string(id), iso20022.TransactionStatusSettlementCompleted, nil)
 }
 
 // advise puts each member's own reserve statement in that member's queue.
@@ -364,13 +376,13 @@ func (c *CentralBank) receiveSettlement(from iso20022.BIC, hdr iso20022.AppHdr, 
 // no longer be truncated by one member being down. What is left is a member with
 // no enrolment, which is a member of the roster this deployment never gave a
 // queue, and that is a wiring fault rather than an outage.
-func (c *CentralBank) advise(statements []payment.SettlementStatement) error {
+func (c *CentralBank) advise(ctx context.Context, statements []payment.SettlementStatement) error {
 	for _, st := range statements {
 		env, err := payment.StatementMessage(st, c.d.messageContext(c.bic, st.Agent))
 		if err != nil {
 			return fmt.Errorf("server: %s could not build the statement for %s: %w", c.bic, st.Agent, err)
 		}
-		if err := c.enqueue(st.Agent, env); err != nil {
+		if err := c.enqueue(ctx, st.Agent, env); err != nil {
 			return fmt.Errorf("server: %s settled %s and could not tell %s: %w", c.bic, st.Reference, st.Agent, err)
 		}
 	}
@@ -466,11 +478,11 @@ func (c *CentralBank) receiveReturn(ctx context.Context, from iso20022.BIC, hdr 
 	// PaymentReturn.validate), so there is always a first one to answer about.
 	first := body.TxInf[0]
 	if n := len(body.TxInf); n != 1 {
-		return c.answer(from, orig, returnedEndToEnd(first), first.OrgnlTxId, iso20022.TransactionStatusRejected,
+		return c.answer(ctx, from, orig, returnedEndToEnd(first), first.OrgnlTxId, iso20022.TransactionStatusRejected,
 			fmt.Errorf("this settlement agent returns one payment per message; TxInf carries %d", n))
 	}
 	if said := body.GrpHdr.NbOfTxs; said != "1" {
-		return c.answer(from, orig, returnedEndToEnd(first), first.OrgnlTxId, iso20022.TransactionStatusRejected,
+		return c.answer(ctx, from, orig, returnedEndToEnd(first), first.OrgnlTxId, iso20022.TransactionStatusRejected,
 			fmt.Errorf("GrpHdr/NbOfTxs says %q and one transaction arrived; a return lost in transit is a payer who is not repaid", said))
 	}
 
@@ -479,7 +491,7 @@ func (c *CentralBank) receiveReturn(ctx context.Context, from iso20022.BIC, hdr 
 	id := payment.PaymentID(first.OrgnlTxId)
 	ins, err := payment.ReadReturn(doc)
 	if err != nil {
-		return c.answer(from, orig, returnedEndToEnd(first), string(id), iso20022.TransactionStatusRejected, err)
+		return c.answer(ctx, from, orig, returnedEndToEnd(first), string(id), iso20022.TransactionStatusRejected, err)
 	}
 
 	statements, err := c.ops.SettleReturn(ctx, ins[0])
@@ -487,13 +499,13 @@ func (c *CentralBank) receiveReturn(ctx context.Context, from iso20022.BIC, hdr 
 		if errors.Is(err, payment.ErrReturnAlreadySettled) {
 			return fmt.Errorf("server: %s was told to return %s again: %w", c.bic, id, err)
 		}
-		return c.answer(from, orig, returnedEndToEnd(first), string(id), iso20022.TransactionStatusRejected, err)
+		return c.answer(ctx, from, orig, returnedEndToEnd(first), string(id), iso20022.TransactionStatusRejected, err)
 	}
 	// Before the answer. See advise, and the note above on the order.
-	if err := c.advise(statements); err != nil {
+	if err := c.advise(ctx, statements); err != nil {
 		return err
 	}
-	return c.answer(from, orig, returnedEndToEnd(first), string(id), iso20022.TransactionStatusSettlementCompleted, nil)
+	return c.answer(ctx, from, orig, returnedEndToEnd(first), string(id), iso20022.TransactionStatusSettlementCompleted, nil)
 }
 
 // receiveLodgement is the central bank crediting a member's reserve account
@@ -571,7 +583,7 @@ func (c *CentralBank) receiveLodgement(ctx context.Context, from iso20022.BIC, h
 			return fmt.Errorf("server: %s was sent a lodgement with no message id by %s, so no receipt could name it: %w",
 				c.bic, from, err)
 		}
-		return c.acknowledgeLodgement(from, payment.LodgementReceipt{
+		return c.acknowledgeLodgement(ctx, from, payment.LodgementReceipt{
 			Ref:    ref,
 			Status: iso20022.TransactionStatusRejected,
 			Reason: err.Error(),
@@ -588,13 +600,13 @@ func (c *CentralBank) receiveLodgement(ctx context.Context, from iso20022.BIC, h
 				"server: %s could not carry out %s's lodgement %s and did not refuse it, so the member's reserve mirror is now overstated: %w",
 				c.bic, from, in.Ref, err)
 		}
-		return c.acknowledgeLodgement(from, payment.LodgementReceipt{
+		return c.acknowledgeLodgement(ctx, from, payment.LodgementReceipt{
 			Ref:    in.Ref,
 			Status: iso20022.TransactionStatusRejected,
 			Reason: err.Error(),
 		})
 	}
-	return c.acknowledgeLodgement(from, receipt)
+	return c.acknowledgeLodgement(ctx, from, receipt)
 }
 
 // lodgementRefusals is everything a settlement agent may JUDGE about a lodgement,
@@ -638,12 +650,12 @@ func isLodgementRefusal(err error) bool {
 // The cause is NOT returned once it has been answered, for c.answer's reason: a
 // refusal the counterparty was told about is completed work, and returning it as
 // well would make every refused lodgement a line in the report too.
-func (c *CentralBank) acknowledgeLodgement(to iso20022.BIC, r payment.LodgementReceipt) error {
+func (c *CentralBank) acknowledgeLodgement(ctx context.Context, to iso20022.BIC, r payment.LodgementReceipt) error {
 	env, err := payment.LodgementReceiptMessage(r, c.d.messageContext(c.bic, to))
 	if err != nil {
 		return fmt.Errorf("server: %s could not build its camt.025 for %s: %w", c.bic, to, err)
 	}
-	return c.enqueue(to, env)
+	return c.enqueue(ctx, to, env)
 }
 
 // returnedEndToEnd is the payer's own reference for a returned payment, as the
@@ -716,7 +728,7 @@ func cycleOf(legs []payment.SettlementLeg) (payment.CycleID, error) {
 // a code and a text that statusReasonOf then drops, because a pacs.002 carries
 // StsRsnInf only for a rejection — the file would go out saying everything was
 // fine with the reason silently deleted.
-func (c *CentralBank) answer(to iso20022.BIC, orig payment.OriginalMessage, e2e, txid string,
+func (c *CentralBank) answer(ctx context.Context, to iso20022.BIC, orig payment.OriginalMessage, e2e, txid string,
 	status iso20022.TransactionStatus, cause error) error {
 
 	report := payment.TransactionStatusReport{
@@ -744,5 +756,5 @@ func (c *CentralBank) answer(to iso20022.BIC, orig payment.OriginalMessage, e2e,
 	// Bank.answer gives: a refusal the counterparty was told about is completed
 	// work, and returning it as well would make every AM04 a line in the report
 	// too.
-	return c.enqueue(to, env)
+	return c.enqueue(ctx, to, env)
 }

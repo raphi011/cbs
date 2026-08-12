@@ -1190,8 +1190,8 @@ func TestEachBankBooksItsOwnSettlementAndNoOtherBooks(t *testing.T) {
 // all.
 //
 // What this set does NOT say is that the clearing house learned nothing else: it
-// read the payment, and it is the only actor in this package that remembers
-// anything between messages (csm.held). The claim is about BOOKS. An actor that
+// read the payment, and it is the actor that holds one end of the return's
+// conversation until the agent answers. The claim is about BOOKS. An actor that
 // DID reach into a bank's ledger is not invisible here — a clearing-house half
 // that listed the returning bank's ledgers comes out holding that BANK's book
 // and fails the second assertion below.

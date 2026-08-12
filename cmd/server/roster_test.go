@@ -10,6 +10,7 @@ import (
 	"github.com/raphi011/cbs/iso20022"
 	"github.com/raphi011/cbs/ledger"
 	"github.com/raphi011/cbs/payment"
+	"github.com/raphi011/cbs/store/sqlite"
 	"github.com/raphi011/cbs/store/storetest"
 	"github.com/raphi011/cbs/store/testenv"
 )
@@ -25,16 +26,17 @@ var euroOnly = []ledger.AssetCode{"EUR"}
 // roster that was there before it existed, so the banks have to exist first.
 // Deployment.AddBank is the other door and gives one bank its place without
 // reading anything.
-func rosterNetwork(t *testing.T, bics map[string]iso20022.BIC) (*payment.Networks, *calendar.Clock) {
+func rosterNetwork(t *testing.T, bics map[string]iso20022.BIC) (*payment.Networks, *sqlite.Set, *calendar.Clock) {
 	t.Helper()
 	clock := calendar.NewClock(testTime)
-	nets := payment.NewNetworks(testenv.NewSet(t, clock.Now), clock.Now)
+	set := testenv.NewSet(t, clock.Now)
+	nets := payment.NewNetworks(set, clock.Now)
 	for name, bic := range bics {
 		if _, err := storetest.Admit(context.Background(), nets, name, bic, euroOnly); err != nil {
 			t.Fatalf("admitting %s: %v", name, err)
 		}
 	}
-	return nets, clock
+	return nets, set, clock
 }
 
 // unreachableConfig is testConfig with two URLs nothing listens on.
@@ -50,9 +52,9 @@ func unreachableConfig() Config {
 	return cfg
 }
 
-func newRosterDeployment(t *testing.T, nets *payment.Networks, clock *calendar.Clock) *Deployment {
+func newRosterDeployment(t *testing.T, nets *payment.Networks, hosts Hosts, clock *calendar.Clock) *Deployment {
 	t.Helper()
-	dep, err := NewDeployment(context.Background(), nets, clock, unreachableConfig(), nil, slog.New(slog.DiscardHandler))
+	dep, err := NewDeployment(context.Background(), nets, hosts, clock, unreachableConfig(), nil, slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatalf("NewDeployment: %v", err)
 	}
@@ -68,11 +70,11 @@ func newRosterDeployment(t *testing.T, nets *payment.Networks, clock *calendar.C
 // without one cannot be addressed at all.
 // TestABankTheRosterDoesNotNameGetsAViewAndNoQueue is the other half.
 func TestNewDeploymentEnrolsEveryMemberOfTheRoster(t *testing.T) {
-	nets, clock := rosterNetwork(t, map[string]iso20022.BIC{
+	nets, set, clock := rosterNetwork(t, map[string]iso20022.BIC{
 		"Aurora Bank": "AURODEFFXXX",
 		"Banca Verde": "VERDITMMXXX",
 	})
-	dep := newRosterDeployment(t, nets, clock)
+	dep := newRosterDeployment(t, nets, set, clock)
 
 	for _, bic := range []iso20022.BIC{"AURODEFFXXX", "VERDITMMXXX"} {
 		if _, err := dep.member(bic); err != nil {
@@ -114,7 +116,7 @@ func TestNewDeploymentEnrolsEveryMemberOfTheRoster(t *testing.T) {
 // pins is that the deployment does not paper over it: a queue for a bank with no
 // settlement account would let a payment reach a bank that cannot settle.
 func TestABankTheRosterDoesNotNameGetsAViewAndNoQueue(t *testing.T) {
-	nets, clock := rosterNetwork(t, map[string]iso20022.BIC{"Aurora Bank": "AURODEFFXXX"})
+	nets, set, clock := rosterNetwork(t, map[string]iso20022.BIC{"Aurora Bank": "AURODEFFXXX"})
 	ctx := context.Background()
 
 	// Founded and no further, through its OWN network, over its own database,
@@ -130,7 +132,7 @@ func TestABankTheRosterDoesNotNameGetsAViewAndNoQueue(t *testing.T) {
 		t.Fatalf("FoundBank Nordhaven: %v", err)
 	}
 
-	dep := newRosterDeployment(t, nets, clock)
+	dep := newRosterDeployment(t, nets, set, clock)
 
 	if _, err := dep.member("NORDSESSXXX"); err != nil {
 		t.Errorf("the half-provisioned bank has no view of its own: %v", err)
@@ -141,7 +143,7 @@ func TestABankTheRosterDoesNotNameGetsAViewAndNoQueue(t *testing.T) {
 	// So a file addressed to it has nowhere to go, and the clearing house is the
 	// institution that says so — off the queues it holds, which are the routing
 	// table.
-	if _, err := dep.ClearingHouse().host.Enqueue(ebics.SubscriberID("NORDSESSXXX"), ebics.CCT, []byte("x")); err == nil {
+	if _, err := dep.ClearingHouse().host.Enqueue(context.Background(), ebics.SubscriberID("NORDSESSXXX"), ebics.CCT, []byte("x")); err == nil {
 		t.Error("a file was addressed to a bank no scheme has admitted")
 	} else if ebics.CodeOf(err) != ebics.InvalidUserOrUserState {
 		t.Errorf("the refusal is %v, want the transport's one membership answer", err)

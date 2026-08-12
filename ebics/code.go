@@ -75,7 +75,12 @@ func CodeOf(err error) ReturnCode {
 	return ""
 }
 
-// ErrUnknownOrder is Client.OrderStatus finding no acknowledgement for an order
-// id. It is not a return code: HAC answers with the orders the host knows about,
-// and one it has never heard of is simply absent from the file.
+// ErrUnknownOrder is an order id this host never minted, asked about from either
+// side: Client.OrderStatus finding no acknowledgement for one, and a Store asked
+// to record what became of one.
+//
+// It is not a return code. HAC answers with the orders the host knows about, and
+// one it has never heard of is simply absent from the file; Server is what turns
+// the store's answer into a refusal, so the protocol's error surface stays this
+// package's and no caller ever sees a store's.
 var ErrUnknownOrder = errors.New("ebics: no such order at this host")
