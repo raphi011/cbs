@@ -91,23 +91,57 @@ table, shared by a bank and the clearing house because each keeps its own copy o
 every payment it is a party to. It is the store-layer twin of the 15 acts
 ADR-0006 left on the network core, and for the same reason.
 
-## What happens to `Shape`
+## `ErrNotInThisShape` goes, and `Open` is why
 
-**`ErrNotInThisShape` loses 104 of its callers and keeps a job.**
-`Shape.holds` is what `Reset` empties, and `Reset` still needs to know which
-tables exist. What goes is the per-method guard, because a method a shape does
-not hold is no longer on that shape's `Tx`.
+Splitting `Tx` alone would leave the error exactly one caller, and it is worth
+naming because it is the reason to go further rather than a reason to keep it.
 
-**What the split cannot express, and must keep.** `Shape.paymentLegs` and
-`Shape.paymentCycle` are the two places where two shapes hold the SAME table with
-DIFFERENT columns: a bank's `payments` carries legs and no cycle, the clearing
-house's carries a cycle and no legs. That is finer than table granularity, so
-`PaymentRowsTx` having `PutPayment` on both does not resolve it — the two
-implementations write different columns and must go on doing so. The fields stay
-and the schema files keep the argument.
+`Open` takes the shape as a RUNTIME VALUE and returns one `*Store` type whatever
+it is handed. So three `Tx` interfaces mean three accessors on that one type,
+with nothing connecting `Open(…, CSM, …)` to which accessor a caller may then
+use. Open the clearing house's shape, ask for the bank's store, and every
+bank-only method reaches a table that is not there. One mismatch at one seam —
+but a runtime one, which is the thing this design exists to remove.
+
+**So the shape becomes a constructor rather than a parameter**, which is
+[ADR-0006](../adr/0006-one-type-per-institution.md)'s move applied to the
+discriminator one layer down:
+
+```go
+OpenBank(ctx, bic, path, clock)      (*BankStore, error)
+OpenClearingHouse(ctx, path, clock)  (*ClearingHouseStore, error)
+OpenCentralBank(ctx, path, clock)    (*CentralBankStore, error)
+```
+
+`inShape` and `ErrNotInThisShape` then have **no callers at all** and both go.
+It is cheap: 12 `Open` call sites, three of them outside tests.
+
+It also retires a pairing that is currently only a convention. Every call site
+today pairs a shape with a fixed book — `CSM` with `ClearingHouseBook`,
+`CentralBank` with `CentralBankBook`, `Bank` with the BIC — and nothing enforces
+it. `OpenClearingHouse` needs no book argument, and `OpenBank` derives the book
+from the BIC, which is the same string (see `payment.AsBank`).
+
+**`Shape` itself survives, as an internal value.** It carries the migration
+directory and `holds`, which is what `Reset` empties. `Reset` never returned this
+error and does not need it.
+
+## What no type can express, and must stay
+
+`Shape.paymentLegs` and `Shape.paymentCycle` are the two places where two shapes
+hold the SAME table with DIFFERENT columns: a bank's `payments` carries legs and
+no cycle, the clearing house's carries a cycle and no legs. They are column-list
+branches inside the payment statements (`tx_payment.go`), not `inShape` calls, so
+they never produced `ErrNotInThisShape` and nothing above removes them.
 
 So the honest claim after this is: **the type refuses a table an institution does
 not have; the implementation still decides which columns it writes.**
+
+Whether those two flags should instead become two `PutPayment` implementations on
+two store types is deliberately left open. It would replace a bool branch with a
+second copy of one statement, and `CLAUDE.md`'s "nothing cross-checks the SQL" is
+an argument for having less SQL rather than more. The branch stays unless
+something else argues it down.
 
 ## `storetest` — the constraint, and a correction
 
@@ -143,10 +177,11 @@ payment rows) and the institution suites stop pretending to be shared.
    with `payment.Tx` retired as a name. `Stores`' three methods change return
    type; the compiler finds the rest. This is the phase that is mostly mechanical
    and entirely compiler-guided.
-3. **Retire the 104 `inShape` calls** whose crossing is now a build failure.
-   Keep `Shape.holds` for `Reset`, keep `paymentLegs`/`paymentCycle`, and add the
-   assertions that were never written for whatever refusal remains — so the
-   guard that survives is one a test can fail.
+3. **Typed constructors, and delete the guard.** `OpenBank`,
+   `OpenClearingHouse` and `OpenCentralBank` replace `Open`'s shape parameter, so
+   the 104 `inShape` calls and `ErrNotInThisShape` go together rather than the
+   calls going and the error surviving on one seam. `Shape` stays internal, for
+   the migration directory and `Reset`; `paymentLegs`/`paymentCycle` stay.
 4. **Correct the three documents** that claim three shapes run one suite, and
    point the suite runners at their institution's store type.
 
@@ -161,7 +196,12 @@ exactly this, and it is the cheapest thing on the board — assertions that
 strictly weaker: a tested runtime refusal is still a runtime refusal, and the
 whole argument of ADR-0006 is that the compiler should be holding this. It is
 worth doing FIRST if phase 2 is not going to start soon, and worth skipping if it
-is, because phase 3 deletes most of what it would test.
+is, because phase 3 deletes the error outright rather than most of it.
+
+**Split `Tx` and keep `Open`'s shape parameter.** This is the version that leaves
+`ErrNotInThisShape` alive on one seam, and it is where this record first landed.
+Three interfaces over a store whose shape is still chosen at runtime means a
+guard nothing else needs, kept for a crossing three constructors remove.
 
 **One `Tx` with the institution as a type parameter.** Go generics cannot vary a
 method SET by parameter, only the types inside one, so this expresses nothing the

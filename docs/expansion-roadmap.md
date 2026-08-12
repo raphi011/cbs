@@ -762,9 +762,15 @@ rows (4, bank and clearing house). Nothing spans all three but `audit_events` an
 `id_sequences`, which every schema holds and which are not guarded at all.
 
 So `BankTx = LedgerTx + PaymentRowsTx + 44`, `CsmTx = EbicsTx + PaymentRowsTx +
-14`, `CentralBankTx = LedgerTx + EbicsTx + 12` — 70 / 26 / 42 against 104 today,
-every crossing a build failure, and `ErrNotInThisShape` with nothing left to
-refuse. The pattern is already in the tree: `ledger.Tx`, `deposit.Tx` and
+14`, `CentralBankTx = LedgerTx + EbicsTx + 12` — 70 / 26 / 42 against 100 today,
+and every crossing a build failure.
+
+`Open` goes with them. It takes the shape as a runtime value and returns one
+`*Store` whatever it is handed, so splitting `Tx` alone would leave the guard
+alive on exactly that seam: open one shape, ask for another's store. Three
+constructors — `OpenBank`, `OpenClearingHouse`, `OpenCentralBank` — close it, and
+then `inShape` and `ErrNotInThisShape` have no callers and both go. `Shape`
+survives internally, for the migration directory and `Reset`. The pattern is already in the tree: `ledger.Tx`, `deposit.Tx` and
 `lending.Tx` are separate interfaces `payment.Tx` embeds, and this is carrying it
 through to the institution boundary.
 
