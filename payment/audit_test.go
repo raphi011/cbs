@@ -79,7 +79,7 @@ func bankAudit(t *testing.T, sys *testSystem, bic iso20022.BIC, entity string) [
 // csmAudit and cbAudit are the two named institutions' own logs.
 func csmAudit(t *testing.T, sys *testSystem, entity string) []ledger.AuditEvent {
 	t.Helper()
-	return institutionAudit(t, auditReader{net: sys.Network, book: ClearingHouseBook}, entity)
+	return institutionAudit(t, auditReader{net: sys.ClearingHouseNetwork, book: ClearingHouseBook}, entity)
 }
 
 func cbAudit(t *testing.T, sys *testSystem, entity string) []ledger.AuditEvent {
@@ -95,7 +95,12 @@ func cbAudit(t *testing.T, sys *testSystem, entity string) []ledger.AuditEvent {
 // naming the three books here means a change to that three-way answer breaks
 // this file instead of silently narrowing what these assertions read.
 type auditReader struct {
-	net  *Network
+	// net is an interface and not one of the three institution types because
+	// this fixture asks all three the same question. Reading one's own trail is
+	// the rare act that is every institution's, so it is the only method here.
+	net interface {
+		ListAudit(ctx context.Context, f ledger.AuditFilter) ([]ledger.AuditEvent, error)
+	}
 	book ledger.BookID
 }
 
@@ -118,7 +123,7 @@ func auditReaders(t *testing.T, sys *testSystem) []auditReader {
 	bics, err := sys.stores.Banks(context.Background())
 	assertNoError(t, err)
 	out := []auditReader{
-		{net: sys.Network, book: ClearingHouseBook},
+		{net: sys.ClearingHouseNetwork, book: ClearingHouseBook},
 		{net: sys.cb(), book: CentralBankBook},
 	}
 	for _, bic := range bics {

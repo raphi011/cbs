@@ -1115,8 +1115,8 @@ func TestCreditTransferRequestDoesNotBlameTheCounterpartyForAStoreFailure(t *tes
 	// Wrapping the clearing house's store instead reported a missing table
 	// rather than the injected failure, which is a true statement about the
 	// wrong institution.
-	broken := NewNetwork(failingStore{Store: n.bank(p.CreditorDetails.Agent).Store(), err: dropped},
-		func() time.Time { return fixedTime }, AsBank(ParticipantID(p.CreditorDetails.Agent)))
+	broken := NewBankNetwork(failingStore{Store: n.bank(p.CreditorDetails.Agent).Store(), err: dropped},
+		func() time.Time { return fixedTime }, ParticipantID(p.CreditorDetails.Agent))
 
 	_, err = broken.CreditTransferRequest(ctx, env.Document.(*iso20022.Pacs008))
 	if err == nil {

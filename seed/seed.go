@@ -220,11 +220,11 @@ type catalogue struct{ basic, premium product.ID }
 // a new one: every bank this builder names is one it founded itself, moments
 // ago, in this process, so a database that will not open is a programming bug
 // rather than a runtime condition.
-func (b *builder) bank(bic iso20022.BIC) *payment.Network {
+func (b *builder) bank(bic iso20022.BIC) *payment.BankNetwork {
 	return must(b.nets.Bank(b.ctx, payment.ParticipantID(bic)))
 }
-func (b *builder) csm() *payment.Network { return b.nets.ClearingHouse() }
-func (b *builder) cb() *payment.Network  { return b.nets.CentralBank() }
+func (b *builder) csm() *payment.ClearingHouseNetwork { return b.nets.ClearingHouse() }
+func (b *builder) cb() *payment.CentralBankNetwork    { return b.nets.CentralBank() }
 
 // must returns v, panicking on a non-nil error. Seed data is hardcoded and
 // deterministic, so any error is a programming bug that should fail loudly.

@@ -30,7 +30,7 @@ import (
 type Institution interface {
 	// Network is the clearing house's own view of the domain: the payments it
 	// relays, the cycles it runs, the roster it publishes.
-	Network() *payment.Network
+	Network() *payment.ClearingHouseNetwork
 
 	// Submit hands an instruction to the member bank whose act it is. This
 	// console is not any bank — see handleInitiatePayment, which reads the
@@ -65,4 +65,4 @@ type Institution interface {
 // surface is the handler receiver: one Institution, and nothing else.
 type surface struct{ inst Institution }
 
-func (s *surface) network() *payment.Network { return s.inst.Network() }
+func (s *surface) network() *payment.ClearingHouseNetwork { return s.inst.Network() }

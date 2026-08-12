@@ -371,17 +371,22 @@ func TestALodgementInFlightIsNotABreak(t *testing.T) {
 //
 // The clearing house has no ledger at all and the settlement agent holds no
 // reserve of its own, so the question has no answer at either rather than the
-// answer zero. Both come back through the same guard a bank's own act does,
-// which is what makes the identity on a Network load-bearing here.
+// answer zero.
+//
+// Reconcile is a method on BankNetwork, so neither institution's own handle can
+// name it. What is measured here is a bank's handle assembled over one of their
+// cores, which is the crossing the identity still guards — see bankHandleOver.
 func TestReconcileIsNotAnActTheOtherTwoInstitutionsCanPerform(t *testing.T) {
 	ctx := context.Background()
 	sys := testNetwork(t)
 	settledPair(t, sys)
 
-	if _, err := sys.Reconcile(ctx, testAsset); err == nil {
+	asCSM := bankHandleOver(sys.ClearingHouseNetwork.Network)
+	if _, err := asCSM.Reconcile(ctx, testAsset); err == nil {
 		t.Fatal("the clearing house reconciled books it does not have")
 	}
-	if _, err := sys.cb().Reconcile(ctx, testAsset); err == nil {
+	asCB := bankHandleOver(sys.cb().Network)
+	if _, err := asCB.Reconcile(ctx, testAsset); err == nil {
 		t.Fatal("the settlement agent reconciled a reserve it does not hold")
 	}
 }
@@ -442,7 +447,7 @@ func TestAConcurrentSettlementDoesNotMakeAReconciliationRunLie(t *testing.T) {
 	t.Cleanup(func() { assertNoError(t, set.Close()) })
 
 	nets := NewNetworks(set, func() time.Time { return fixedTime })
-	sys := &testSystem{Network: nets.ClearingHouse(), nets: nets, stores: set}
+	sys := &testSystem{ClearingHouseNetwork: nets.ClearingHouse(), nets: nets, stores: set}
 	a, _, alice, _ := settledPair(t, sys)
 	refillTheVault(t, sys, a, alice, 5000)
 

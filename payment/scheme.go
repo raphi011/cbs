@@ -86,7 +86,11 @@ type Scheme interface {
 // never a plain Network or Register method: those open a second unit of work
 // inside this one.
 type SchemeContext struct {
-	Network *Network
+	// Network is a MEMBER BANK's, because both halves that validate a payment run
+	// at one — a push at the submitting bank, a pull at the receiving bank, and
+	// both of those are the payer's. A scheme therefore reads the payer's own
+	// deposit register without asking which institution it is running as.
+	Network *BankNetwork
 	Tx      Tx
 	Now     time.Time
 }

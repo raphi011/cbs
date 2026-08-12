@@ -44,7 +44,7 @@ import (
 type Institution interface {
 	// Network is this bank's own view of the domain. Every read on this surface
 	// goes through it, and it resolves in this bank's register and no other.
-	Network() *payment.Network
+	Network() *payment.BankNetwork
 
 	// BIC is this bank as an ADDRESS: the identifier a payment names its parties
 	// by, and what every comparison against a payment's two sides needs.
@@ -94,7 +94,7 @@ type surface struct{ inst Institution }
 
 // network is this bank's own institution's network. Cheap, lock-free, safe for
 // concurrent use.
-func (s *surface) network() *payment.Network { return s.inst.Network() }
+func (s *surface) network() *payment.BankNetwork { return s.inst.Network() }
 
 // boundBIC is this listener's bank as an address. See Institution.BIC.
 func (s *surface) boundBIC() iso20022.BIC { return s.inst.BIC() }

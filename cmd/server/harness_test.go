@@ -116,7 +116,7 @@ type harness struct {
 	// on the settlement agent's alone. See payment.Networks, and payment's
 	// testSystem, which carries the same split for the same reason.
 	nets *payment.Networks
-	net  *payment.Network
+	net  *payment.ClearingHouseNetwork
 
 	// clock is the deployment's business date, and it MOVES: day advances it,
 	// and every row written afterwards carries the new date. The frozen clock
@@ -340,14 +340,14 @@ var euroAndDollar = []ledger.AssetCode{"EUR", "USD"}
 // inside an assertion and every address they pass is a bank this harness
 // founded, so a failure is a broken fixture rather than an outcome worth
 // reporting through the test's own error path.
-func (h *harness) bank(bic iso20022.BIC) *payment.Network {
+func (h *harness) bank(bic iso20022.BIC) *payment.BankNetwork {
 	net, err := h.nets.Bank(context.Background(), payment.ParticipantID(bic))
 	if err != nil {
 		panic("harness_test: opening " + string(bic) + "'s store: " + err.Error())
 	}
 	return net
 }
-func (h *harness) cb() *payment.Network { return h.nets.CentralBank() }
+func (h *harness) cb() *payment.CentralBankNetwork { return h.nets.CentralBank() }
 
 // cbBook is the central bank's book of accounts. Network.CentralBank returns an
 // error — every other institution's network has no such book — and here it

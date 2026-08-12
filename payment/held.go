@@ -104,7 +104,7 @@ type HeldReturn struct {
 // clearing house's decision about each transaction — accepted into the cycle, or
 // refused — is written by AcceptAtCSMTx and RejectAtCSMTx beside this. A share is
 // the mechanical consequence of those decisions and is not a second one.
-func (s *Network) HoldFile(ctx context.Context, f HeldFile) error {
+func (s *ClearingHouseNetwork) HoldFile(ctx context.Context, f HeldFile) error {
 	if err := s.clearingHouse(); err != nil {
 		return err
 	}
@@ -121,7 +121,7 @@ func (s *Network) HoldFile(ctx context.Context, f HeldFile) error {
 // walks them to refuse a cut-off whose payments have no share behind them — see
 // ErrCycleNotReleasable, which is what makes the release certain to be possible
 // before the reserves move.
-func (s *Network) ListHeldFiles(ctx context.Context, id CycleID) ([]HeldFile, error) {
+func (s *ClearingHouseNetwork) ListHeldFiles(ctx context.Context, id CycleID) ([]HeldFile, error) {
 	if err := s.clearingHouse(); err != nil {
 		return nil, err
 	}
@@ -156,7 +156,7 @@ func (s *Network) ListHeldFiles(ctx context.Context, id CycleID) ([]HeldFile, er
 // share still standing after its bank has been handed it is released a second
 // time by a redelivered answer, and a bank handed the same instructions twice
 // credits the same customer twice.
-func (s *Network) DropHeldFile(ctx context.Context, id CycleID, seq int64) error {
+func (s *ClearingHouseNetwork) DropHeldFile(ctx context.Context, id CycleID, seq int64) error {
 	if err := s.clearingHouse(); err != nil {
 		return err
 	}
@@ -167,7 +167,7 @@ func (s *Network) DropHeldFile(ctx context.Context, id CycleID, seq int64) error
 
 // HoldReturn records a return uploaded to the settlement agent, for the bank
 // that has not heard about it yet.
-func (s *Network) HoldReturn(ctx context.Context, r HeldReturn) error {
+func (s *ClearingHouseNetwork) HoldReturn(ctx context.Context, r HeldReturn) error {
 	if err := s.clearingHouse(); err != nil {
 		return err
 	}
@@ -182,7 +182,7 @@ func (s *Network) HoldReturn(ctx context.Context, r HeldReturn) error {
 // The miss is ordinary rather than exceptional: a pacs.004 naming no payment is
 // uploaded and never held, and an answer about a payment nothing was held for is
 // still owed to the bank that asked. The caller forwards the answer either way.
-func (s *Network) GetHeldReturn(ctx context.Context, id PaymentID) (HeldReturn, error) {
+func (s *ClearingHouseNetwork) GetHeldReturn(ctx context.Context, id PaymentID) (HeldReturn, error) {
 	if err := s.clearingHouse(); err != nil {
 		return HeldReturn{}, err
 	}
@@ -202,7 +202,7 @@ func (s *Network) GetHeldReturn(ctx context.Context, id PaymentID) (HeldReturn, 
 // message to the other bank and an RJCT drops it unsent, which is the whole
 // point of holding it. A row kept past either would be retried by nothing and
 // swept by nothing.
-func (s *Network) DropHeldReturn(ctx context.Context, id PaymentID) error {
+func (s *ClearingHouseNetwork) DropHeldReturn(ctx context.Context, id PaymentID) error {
 	if err := s.clearingHouse(); err != nil {
 		return err
 	}

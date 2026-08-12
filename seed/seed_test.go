@@ -235,7 +235,7 @@ func (d *testDeployment) uploaded() [][]taken {
 // these tests make, plus the factory Populate and the deployment both take. See
 // payment.Networks.
 type testNets struct {
-	*payment.Network
+	*payment.ClearingHouseNetwork
 	nets *payment.Networks
 	// stores is the set the networks are minted over, for the one question no
 	// institution can answer: which banks exist. See listParticipants.
@@ -244,14 +244,14 @@ type testNets struct {
 
 // cb is the settlement agent's view, which is the only one that can be asked
 // what a member's reserve balance is.
-func (n testNets) cb() *payment.Network { return n.nets.CentralBank() }
+func (n testNets) cb() *payment.CentralBankNetwork { return n.nets.CentralBank() }
 
 // bank is one member bank's own view, over that bank's own database.
 //
 // It panics on a failure to open rather than taking a *testing.T, for the reason
 // seed's own builder.bank does: every bank a fixture here names is one Populate
 // founded moments ago in this process.
-func (n testNets) bank(pid payment.ParticipantID) *payment.Network {
+func (n testNets) bank(pid payment.ParticipantID) *payment.BankNetwork {
 	net, err := n.nets.Bank(context.Background(), pid)
 	if err != nil {
 		panic("seed_test: opening " + string(pid) + "'s store: " + err.Error())
@@ -276,7 +276,7 @@ func testNetworkAndClock(t *testing.T) (testNets, *calendar.Clock) {
 	if err := d.Populate(context.Background(), nets, newTestDeployment(nets, clock.Now)); err != nil {
 		t.Fatalf("populate: %v", err)
 	}
-	return testNets{Network: nets.ClearingHouse(), nets: nets, stores: stores}, clock
+	return testNets{ClearingHouseNetwork: nets.ClearingHouse(), nets: nets, stores: stores}, clock
 }
 
 func TestNetworkShape(t *testing.T) {
@@ -1061,7 +1061,7 @@ func TestPopulateIsIdempotent(t *testing.T) {
 	d := New(clock)
 	stores := testenv.NewSet(t, clock.Now)
 	nets := payment.NewNetworks(stores, clock.Now)
-	net := testNets{Network: nets.ClearingHouse(), nets: nets, stores: stores}
+	net := testNets{ClearingHouseNetwork: nets.ClearingHouse(), nets: nets, stores: stores}
 	dep := newTestDeployment(nets, clock.Now)
 
 	if err := d.Populate(ctx, nets, dep); err != nil {
@@ -1094,7 +1094,7 @@ func TestPopulateIsIdempotent(t *testing.T) {
 	secondClock := calendar.NewClock(resumed)
 	second := New(secondClock)
 	secondNets := payment.NewNetworks(stores, secondClock.Now)
-	secondNet := testNets{Network: secondNets.ClearingHouse(), nets: secondNets, stores: stores}
+	secondNet := testNets{ClearingHouseNetwork: secondNets.ClearingHouse(), nets: secondNets, stores: stores}
 	if err := second.Populate(ctx, secondNets, newTestDeployment(secondNets, secondClock.Now)); err != nil {
 		t.Fatalf("Populate from a second process: %v", err)
 	}
@@ -1189,7 +1189,7 @@ func TestPopulateAfterResetRebuildsTheSameDataset(t *testing.T) {
 	d := New(clock)
 	stores := testenv.NewSet(t, clock.Now)
 	nets := payment.NewNetworks(stores, clock.Now)
-	net := testNets{Network: nets.ClearingHouse(), nets: nets, stores: stores}
+	net := testNets{ClearingHouseNetwork: nets.ClearingHouse(), nets: nets, stores: stores}
 	dep := newTestDeployment(nets, clock.Now)
 
 	if err := d.Populate(ctx, nets, dep); err != nil {

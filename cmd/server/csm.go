@@ -59,7 +59,7 @@ type ClearingHouse struct {
 	// net is this institution's whole view, and it has ONE caller: Network,
 	// which api/csm's surface reads every request through. Everything else here
 	// goes through ops.
-	net *payment.Network
+	net *payment.ClearingHouseNetwork
 	ops csmOps
 
 	bic iso20022.BIC
@@ -96,8 +96,8 @@ type ClearingHouse struct {
 	// own cut-off.
 }
 
-func (c *ClearingHouse) Network() *payment.Network { return c.net }
-func (c *ClearingHouse) Log() *slog.Logger         { return c.d.log }
+func (c *ClearingHouse) Network() *payment.ClearingHouseNetwork { return c.net }
+func (c *ClearingHouse) Log() *slog.Logger                      { return c.d.log }
 
 // EBICS is this institution's file-transfer endpoint, mounted on its own
 // listener. It is one URL that everything POSTs to, which is the protocol's own

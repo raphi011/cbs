@@ -20,7 +20,7 @@ import (
 // read into another institution's database. See DirectoryEntry.
 
 // RefreshDirectory is RefreshDirectoryTx in its own unit of work.
-func (s *Network) RefreshDirectory(ctx context.Context, published []RosterEntry) ([]DirectoryEntry, error) {
+func (s *BankNetwork) RefreshDirectory(ctx context.Context, published []RosterEntry) ([]DirectoryEntry, error) {
 	var out []DirectoryEntry
 	err := s.store.Update(ctx, func(ctx context.Context, tx Tx) error {
 		var err error
@@ -65,7 +65,7 @@ func (s *Network) RefreshDirectory(ctx context.Context, published []RosterEntry)
 // row carries the same RefreshedAt, because a snapshot is one act. What that
 // costs is that a member which has left the roster stops being routable here,
 // which is the point of taking delivery rather than merging.
-func (s *Network) RefreshDirectoryTx(ctx context.Context, tx Tx, published []RosterEntry) ([]DirectoryEntry, error) {
+func (s *BankNetwork) RefreshDirectoryTx(ctx context.Context, tx Tx, published []RosterEntry) ([]DirectoryEntry, error) {
 	if _, err := s.self(); err != nil {
 		return nil, err
 	}
@@ -102,7 +102,7 @@ func (s *Network) RefreshDirectoryTx(ctx context.Context, tx Tx, published []Ros
 // honest thing a subscriber can report. It is not "who is in the scheme": that
 // question is the clearing house's ListRosterEntries, and the two disagreeing is
 // legal.
-func (s *Network) ListDirectory(ctx context.Context) ([]DirectoryEntry, error) {
+func (s *BankNetwork) ListDirectory(ctx context.Context) ([]DirectoryEntry, error) {
 	if _, err := s.self(); err != nil {
 		return nil, err
 	}
@@ -193,7 +193,7 @@ func (s *Network) routeTx(ctx context.Context, tx Tx, ident deposit.Identifier, 
 // A miss is ErrRosterEntryNotFound — no member is published under this code —
 // which is a different statement from a subscriber's ErrBankCodeUnknown for the
 // reason those two sentinels set out: this institution CAN tell.
-func (s *Network) RosterAgentFor(ctx context.Context, ident deposit.Identifier) (iso20022.BIC, error) {
+func (s *ClearingHouseNetwork) RosterAgentFor(ctx context.Context, ident deposit.Identifier) (iso20022.BIC, error) {
 	if err := s.clearingHouse(); err != nil {
 		return "", err
 	}
@@ -228,7 +228,7 @@ func (s *Network) RosterAgentFor(ctx context.Context, ident deposit.Identifier) 
 // same table, so a form that shows a BIC and a submission that routes to one
 // cannot disagree. What it answers on a miss is ErrBankCodeUnknown, which cannot
 // say whether the bank is absent from the scheme or merely absent from this copy.
-func (s *Network) ResolveBankCode(ctx context.Context, issuer iban.Issuer) (DirectoryEntry, error) {
+func (s *BankNetwork) ResolveBankCode(ctx context.Context, issuer iban.Issuer) (DirectoryEntry, error) {
 	if _, err := s.self(); err != nil {
 		return DirectoryEntry{}, err
 	}

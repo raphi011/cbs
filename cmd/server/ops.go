@@ -455,7 +455,7 @@ type settlementOps interface {
 // true: a method added to one of the interfaces above that the Network does not
 // have fails the build here rather than at the handler that wanted it.
 var (
-	_ bankOps       = (*payment.Network)(nil)
-	_ csmOps        = (*payment.Network)(nil)
-	_ settlementOps = (*payment.Network)(nil)
+	_ bankOps       = (*payment.BankNetwork)(nil)
+	_ csmOps        = (*payment.ClearingHouseNetwork)(nil)
+	_ settlementOps = (*payment.CentralBankNetwork)(nil)
 )

@@ -184,7 +184,7 @@ var ErrAddressTaken = errors.New("provision: another bank already holds this add
 // A miss is the ordinary case and not a failure — asking nets.Bank for an
 // address is what CREATES that database, so the first read of a new bank's own
 // row is a read of an empty one. See payment.Stores.
-func refuseAnotherBankOnThisAddress(ctx context.Context, applicant *payment.Network, spec BankSpec) error {
+func refuseAnotherBankOnThisAddress(ctx context.Context, applicant *payment.BankNetwork, spec BankSpec) error {
 	held, err := applicant.GetBank(ctx, payment.ParticipantID(spec.BIC))
 	if errors.Is(err, payment.ErrParticipantNotFound) {
 		return nil

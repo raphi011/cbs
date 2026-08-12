@@ -238,7 +238,7 @@ func (s *Network) ListPayments(ctx context.Context) ([]Payment, error) {
 // here rather than papered over with a per-row probe of this bank's own register,
 // which would be a workaround the next step deletes. What closes it is
 // store/testenv opening N+2 stores, not another guard here.
-func (s *Network) ListMandates(ctx context.Context) ([]Mandate, error) {
+func (s *BankNetwork) ListMandates(ctx context.Context) ([]Mandate, error) {
 	if _, err := s.self(); err != nil {
 		return nil, err
 	}

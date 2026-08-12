@@ -701,10 +701,11 @@ func TestABankRefusesAnInstructionItIsNotTheDebtorFor(t *testing.T) {
 func TestEachListenerActsAsItsOwnInstitution(t *testing.T) {
 	srv := newServer(t, nil)
 
-	// The two entities that are not banks: neither has a participant.
+	// The two entities that are not banks: neither has a participant. They are
+	// two types, so the row is held by the question being asked of both.
 	for _, e := range []struct {
 		who string
-		net *payment.Network
+		net interface{ Identity() payment.Identity }
 	}{
 		{"the central bank", srv.dep.CentralBank().Network()},
 		{"the clearing house", srv.dep.ClearingHouse().Network()},

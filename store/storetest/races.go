@@ -282,7 +282,7 @@ func RunClearingHouseRaces(t *testing.T, newStore func(*testing.T) payment.Store
 		// One institution, one store, so NewNetwork rather than the factory: a
 		// Networks over a single store is not a thing that can exist any more,
 		// and this case never needed a second institution.
-		csm := payment.NewNetwork(s, frozen, payment.AsClearingHouse())
+		csm := payment.NewClearingHouseNetwork(s, frozen)
 
 		// Several applicants, one address, a DIFFERENT admission reference each
 		// — which is the only case AdmitMemberTx refuses, and the case that must
@@ -392,7 +392,7 @@ func RunCentralBankRaces(t *testing.T, newStore func(*testing.T) payment.Store) 
 	t.Run("ConcurrentSettlementAccountOpeningsKeepEveryAsset", func(t *testing.T) {
 		s := newStore(t)
 		ctx := context.Background()
-		cb := payment.NewNetwork(s, frozen, payment.AsCentralBank())
+		cb := payment.NewCentralBankNetwork(s, frozen)
 
 		assets := []ledger.AssetCode{"EUR", "USD"}
 		errs := runConcurrently(len(assets), func(i int) error {

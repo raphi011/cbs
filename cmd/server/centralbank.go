@@ -67,7 +67,7 @@ type CentralBank struct {
 	// net is this institution's whole view, and it has ONE caller: Network,
 	// which api/centralbank's surface reads every request through. Everything
 	// else here goes through ops.
-	net *payment.Network
+	net *payment.CentralBankNetwork
 	ops settlementOps
 
 	bic iso20022.BIC
@@ -77,8 +77,8 @@ type CentralBank struct {
 	host *ebics.Server
 }
 
-func (c *CentralBank) Network() *payment.Network { return c.net }
-func (c *CentralBank) Log() *slog.Logger         { return c.d.log }
+func (c *CentralBank) Network() *payment.CentralBankNetwork { return c.net }
+func (c *CentralBank) Log() *slog.Logger                    { return c.d.log }
 
 // EBICS is this institution's file-transfer endpoint, mounted on its own
 // listener. See ebics.Server.ServeHTTP.

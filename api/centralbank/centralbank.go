@@ -35,7 +35,7 @@ import (
 type Institution interface {
 	// Network is the settlement agent's own view: its reserve register, its
 	// settlements, its own book.
-	Network() *payment.Network
+	Network() *payment.CentralBankNetwork
 
 	// Members is every bank the deployment holds a database for, each read out of
 	// its own database. The widest read in the process, and the operator's rather
@@ -68,4 +68,4 @@ type Institution interface {
 // surface is the handler receiver: one Institution, and nothing else.
 type surface struct{ inst Institution }
 
-func (s *surface) network() *payment.Network { return s.inst.Network() }
+func (s *surface) network() *payment.CentralBankNetwork { return s.inst.Network() }

@@ -1505,7 +1505,7 @@ func (s *Network) ReturnMessage(p Payment, reason iso20022.ReturnReason, text st
 // It returns REQUESTS and not Payments: nothing here is accepted, deduplicated
 // or posted. That is AcceptInboundTx's job, and the separation is what lets a
 // receiving bank translate a file without a write and reject it before one.
-func (s *Network) CreditTransferRequest(ctx context.Context, doc *iso20022.Pacs008) ([]InboundTransaction, error) {
+func (s *BankNetwork) CreditTransferRequest(ctx context.Context, doc *iso20022.Pacs008) ([]InboundTransaction, error) {
 	// Before the message is read at all, and the placement is what makes the
 	// paragraph above exact rather than nearly true. The identity is reached
 	// otherwise only through localPartyIn, at the end, so a MALFORMED pacs.008
@@ -1572,7 +1572,7 @@ type InboundTransaction struct {
 // becomes a problem in the day's report and the file is answered by nobody,
 // which is truthful; reported per transaction it would tell a thousand payers
 // their payees' accounts were bad.
-func (s *Network) localSideIn(ctx context.Context, tx *InboundTransaction, side *PartyRef) error {
+func (s *BankNetwork) localSideIn(ctx context.Context, tx *InboundTransaction, side *PartyRef) error {
 	ref, err := s.localPartyIn(ctx, side.Identifier)
 	switch {
 	case err == nil:
@@ -1661,7 +1661,7 @@ func (s *Network) creditTransferIn(doc *iso20022.Pacs008) ([]InboundTransaction,
 // bank's customer's account, the mandate is the only thing that makes it
 // authorised, and the message that came with no mandate should not become a
 // request that looks like one.
-func (s *Network) DirectDebitRequest(ctx context.Context, doc *iso20022.Pacs003) ([]InboundTransaction, error) {
+func (s *BankNetwork) DirectDebitRequest(ctx context.Context, doc *iso20022.Pacs003) ([]InboundTransaction, error) {
 	// First, for CreditTransferRequest's reason.
 	if _, err := s.self(); err != nil {
 		return nil, err
@@ -1821,7 +1821,7 @@ func amountIn(amt iso20022.ActiveCurrencyAndAmount) (ledger.Amount, ledger.Asset
 //
 // LOCAL means whose register is searched: this network's own identity rather
 // than an argument the caller supplies — see ResolveIdentifier.
-func (s *Network) localPartyIn(ctx context.Context, ident deposit.Identifier) (PartyRef, error) {
+func (s *BankNetwork) localPartyIn(ctx context.Context, ident deposit.Identifier) (PartyRef, error) {
 	var ref PartyRef
 	err := s.store.View(ctx, func(ctx context.Context, tx Tx) error {
 		var err error
@@ -1856,7 +1856,7 @@ func (s *Network) localPartyIn(ctx context.Context, ident deposit.Identifier) (P
 // TestCreditTransferRequestRefusesAnAddressTwoBanksClaim and
 // TestCreditTransferRequestDoesNotBlameTheCounterpartyForAStoreFailure; both
 // fail on the collapsed shape.
-func (s *Network) addressedPartyTx(ctx context.Context, tx Tx, ident deposit.Identifier) (PartyRef, error) {
+func (s *BankNetwork) addressedPartyTx(ctx context.Context, tx Tx, ident deposit.Identifier) (PartyRef, error) {
 	ref, err := s.ResolveIdentifierTx(ctx, tx, ident)
 	if errors.Is(err, deposit.ErrIdentifierNotFound) {
 		return PartyRef{}, fmt.Errorf("%w: %s", ErrAccountNotInParticipant, ident.Value)

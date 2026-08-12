@@ -103,7 +103,7 @@ const MetadataLodgementRef = "lodgement_ref"
 // while a cut-off committed underneath them. It is therefore a read-then-write —
 // the one shape the ephemeral store hides, which is why the concurrency test for
 // it opens a file.
-func (s *Network) Reconcile(ctx context.Context, asset ledger.AssetCode) (Reconciliation, error) {
+func (s *BankNetwork) Reconcile(ctx context.Context, asset ledger.AssetCode) (Reconciliation, error) {
 	var out Reconciliation
 	err := s.store.Update(ctx, func(ctx context.Context, tx Tx) error {
 		var err error
@@ -118,7 +118,7 @@ func (s *Network) Reconcile(ctx context.Context, asset ledger.AssetCode) (Reconc
 // It refuses an institution that is no bank: the clearing house has no ledger at
 // all and the settlement agent holds no reserve of its own, so the question has
 // no answer at either of them rather than an empty one.
-func (s *Network) ReconcileTx(ctx context.Context, tx Tx, asset ledger.AssetCode) (Reconciliation, error) {
+func (s *BankNetwork) ReconcileTx(ctx context.Context, tx Tx, asset ledger.AssetCode) (Reconciliation, error) {
 	bank, err := s.selfBankTx(ctx, tx)
 	if err != nil {
 		return Reconciliation{}, err
@@ -295,7 +295,7 @@ func (s *Network) suspenseIsAged(ctx context.Context, tx Tx, bank *Bank, accts B
 // It refuses an institution that is no bank, for ReconcileTx's reason. An advice
 // belongs to the MEMBER that was advised — Book is part of its identity — and
 // neither of the other two institutions holds one.
-func (s *Network) ListSettlementAdvices(ctx context.Context) ([]SettlementAdvice, error) {
+func (s *BankNetwork) ListSettlementAdvices(ctx context.Context) ([]SettlementAdvice, error) {
 	var out []SettlementAdvice
 	err := s.store.View(ctx, func(ctx context.Context, tx Tx) error {
 		var err error
@@ -307,7 +307,7 @@ func (s *Network) ListSettlementAdvices(ctx context.Context) ([]SettlementAdvice
 
 // ListSettlementAdvicesTx is ListSettlementAdvices within a caller-supplied unit
 // of work.
-func (s *Network) ListSettlementAdvicesTx(ctx context.Context, tx Tx) ([]SettlementAdvice, error) {
+func (s *BankNetwork) ListSettlementAdvicesTx(ctx context.Context, tx Tx) ([]SettlementAdvice, error) {
 	bank, err := s.selfBankTx(ctx, tx)
 	if err != nil {
 		return nil, err

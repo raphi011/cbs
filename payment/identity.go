@@ -171,23 +171,23 @@ func NewNetworks(stores Stores, clock func() time.Time) *Networks {
 // keyed by ParticipantID would have to answer what happens when that bank is
 // deleted by a Reset. Callers hold the result for the lifetime of an actor or a
 // listener, which is where the cost would be if there were one.
-func (n *Networks) Bank(ctx context.Context, pid ParticipantID) (*Network, error) {
+func (n *Networks) Bank(ctx context.Context, pid ParticipantID) (*BankNetwork, error) {
 	store, err := n.stores.Bank(ctx, iso20022.BIC(pid))
 	if err != nil {
 		return nil, fmt.Errorf("payment: opening member bank %s's store: %w", pid, err)
 	}
-	return newNetwork(store, n.clock, AsBank(pid), n.schemes), nil
+	return &BankNetwork{Network: *newNetwork(store, n.clock, AsBank(pid), n.schemes)}, nil
 }
 
 // ClearingHouse returns the CSM's view, over the clearing house's database.
-func (n *Networks) ClearingHouse() *Network {
-	return newNetwork(n.stores.ClearingHouse(), n.clock, AsClearingHouse(), n.schemes)
+func (n *Networks) ClearingHouse() *ClearingHouseNetwork {
+	return &ClearingHouseNetwork{Network: *newNetwork(n.stores.ClearingHouse(), n.clock, AsClearingHouse(), n.schemes)}
 }
 
 // CentralBank returns the settlement agent's view, which is the only one holding
 // the central bank's book, over the central bank's database.
-func (n *Networks) CentralBank() *Network {
-	return newNetwork(n.stores.CentralBank(), n.clock, AsCentralBank(), n.schemes)
+func (n *Networks) CentralBank() *CentralBankNetwork {
+	return &CentralBankNetwork{Network: *newNetwork(n.stores.CentralBank(), n.clock, AsCentralBank(), n.schemes)}
 }
 
 // Stores is the set of databases these networks are minted over, so a caller

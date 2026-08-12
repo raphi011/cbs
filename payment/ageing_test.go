@@ -35,7 +35,7 @@ func agedNetwork(t *testing.T) *agedSystem {
 	stores := testenv.NewSet(t, clock)
 	nets := NewNetworks(stores, clock)
 	return &agedSystem{
-		testSystem: &testSystem{Network: nets.ClearingHouse(), nets: nets, stores: stores},
+		testSystem: &testSystem{ClearingHouseNetwork: nets.ClearingHouse(), nets: nets, stores: stores},
 		nanos:      nanos,
 	}
 }
@@ -376,15 +376,22 @@ func TestARefundThePayerCouldNotTakeIsTerminal(t *testing.T) {
 // Reconcile has, and it is asserted here too because these are separate entry
 // points: a clearing house has no ledger and a settlement agent holds neither of
 // these accounts.
+//
+// Both acts are methods on BankNetwork, so neither is reachable through a handle
+// Networks minted for another institution. What is measured here is the one
+// crossing left: a bank's handle assembled over another institution's core. See
+// bankHandleOver.
 func TestAgeingIsNotAnActTheOtherTwoInstitutionsCanPerform(t *testing.T) {
 	ctx := context.Background()
 	sys := agedNetwork(t)
 	setupTwoBanks(t, sys.testSystem)
 
-	if _, err := sys.AgeClearingSuspense(ctx, testAsset); err == nil {
+	asCSM := bankHandleOver(sys.ClearingHouseNetwork.Network)
+	if _, err := asCSM.AgeClearingSuspense(ctx, testAsset); err == nil {
 		t.Fatal("the clearing house aged a suspense it does not have")
 	}
-	if _, err := sys.cb().AgeUnclaimedBalances(ctx, testAsset); err == nil {
+	asCB := bankHandleOver(sys.cb().Network)
+	if _, err := asCB.AgeUnclaimedBalances(ctx, testAsset); err == nil {
 		t.Fatal("the settlement agent aged unclaimed balances it does not have")
 	}
 }

@@ -32,6 +32,15 @@ import (
 // wrote. The two translators are on it for the same reason: they resolve one
 // party in this bank's own register, through ResolveIdentifierTx.
 //
+// # The handle is assembled, because a minted one cannot be wrong
+//
+// Every act below is a method on BankNetwork, so reaching one through the
+// handle Networks minted for another institution does not compile and there is
+// nothing here to measure. What these rows drive is a BankNetwork built over
+// another institution's core, which is a wiring mistake rather than a call — and
+// it is the shape the guard exists for now that the type carries the rest. See
+// bankHandleOver.
+//
 // # Both wrong identities, because they are wrong in different ways
 //
 // The clearing house has no book of accounts at all; the central bank has one
@@ -62,43 +71,43 @@ func TestAMemberBanksActsAreRefusedOnAnyOtherInstitutionsNetwork(t *testing.T) {
 
 	acts := []struct {
 		name string
-		call func(n *Network) error
+		call func(n *BankNetwork) error
 	}{
 		// A well-formed address, so that what refuses the act is the identity
 		// guard. A malformed one is refused for its check digits by every
 		// institution alike, which would make this row pass without the guard.
-		{"ResolveIdentifier", func(n *Network) error {
+		{"ResolveIdentifier", func(n *BankNetwork) error {
 			_, err := n.ResolveIdentifier(ctx, mintAt(t, a, 999_999))
 			return err
 		}},
-		{"AcceptInbound", func(n *Network) error { return n.AcceptInbound(ctx, pay.ID, relayedFrom(pay)) }},
-		{"SettleAtBank", func(n *Network) error { _, err := n.SettleAtBank(ctx, pay.ID); return err }},
-		{"PostReturnLeg", func(n *Network) error { _, err := n.PostReturnLeg(ctx, pay.ID, "AC04"); return err }},
-		{"ReverseReturnLeg", func(n *Network) error { return n.ReverseReturnLeg(ctx, pay.ID, "AM04") }},
-		{"PostSettlementAdvice", func(n *Network) error {
+		{"AcceptInbound", func(n *BankNetwork) error { return n.AcceptInbound(ctx, pay.ID, relayedFrom(pay)) }},
+		{"SettleAtBank", func(n *BankNetwork) error { _, err := n.SettleAtBank(ctx, pay.ID); return err }},
+		{"PostReturnLeg", func(n *BankNetwork) error { _, err := n.PostReturnLeg(ctx, pay.ID, "AC04"); return err }},
+		{"ReverseReturnLeg", func(n *BankNetwork) error { return n.ReverseReturnLeg(ctx, pay.ID, "AM04") }},
+		{"PostSettlementAdvice", func(n *BankNetwork) error {
 			_, err := n.PostSettlementAdvice(ctx, AdvisedMovement{
 				Account: "200.100.001", Asset: testAsset, Movement: 1, Reference: "cyc-1",
 			})
 			return err
 		}},
-		{"LodgeReserves", func(n *Network) error {
+		{"LodgeReserves", func(n *BankNetwork) error {
 			_, _, err := n.LodgeReserves(ctx, testAsset, 1, MessageContext{
 				From: testBIC, To: testBIC2, MsgID: "m", Now: fixedTime,
 			})
 			return err
 		}},
-		{"RecordMembership", func(n *Network) error {
+		{"RecordMembership", func(n *BankNetwork) error {
 			_, err := n.RecordMembership(ctx, AdmissionAcknowledgement{
 				BIC: testBIC, Issuer: testAllocation, Ref: "adm-1",
 				Accounts: map[ledger.AssetCode]ledger.AccountID{testAsset: "200.100.001"},
 			})
 			return err
 		}},
-		{"CreditTransferRequest", func(n *Network) error {
+		{"CreditTransferRequest", func(n *BankNetwork) error {
 			_, err := n.CreditTransferRequest(ctx, &iso20022.Pacs008{})
 			return err
 		}},
-		{"DirectDebitRequest", func(n *Network) error {
+		{"DirectDebitRequest", func(n *BankNetwork) error {
 			_, err := n.DirectDebitRequest(ctx, &iso20022.Pacs003{})
 			return err
 		}},
@@ -106,10 +115,10 @@ func TestAMemberBanksActsAreRefusedOnAnyOtherInstitutionsNetwork(t *testing.T) {
 
 	for _, imposter := range []struct {
 		who string
-		net *Network
+		net *BankNetwork
 	}{
-		{"the clearing house", sys.Network},
-		{"the central bank", sys.cb()},
+		{"the clearing house", bankHandleOver(sys.ClearingHouseNetwork.Network)},
+		{"the central bank", bankHandleOver(sys.cb().Network)},
 	} {
 		for _, act := range acts {
 			t.Run(act.name+" as "+imposter.who, func(t *testing.T) {
@@ -135,11 +144,11 @@ func TestAMemberBanksActsAreRefusedOnAnyOtherInstitutionsNetwork(t *testing.T) {
 // argument.
 //
 // A Network that held a ledger.Book over CentralBankBook would put the book
-// central-bank money lives in inside every institution in this system. What
-// keeps a bank handler out of it in cmd/server is that bankOps names no method
-// that reaches it — a fact about that package, not about this one, and all five
-// of these are exported. A test fixture, api, seed or payment/recon could call
-// any of them on any network and post reserves.
+// central-bank money lives in inside every institution in this system. All five
+// of these are methods on CentralBankNetwork, so a test fixture, api, seed or
+// payment/recon holding any other institution's handle cannot NAME one — which
+// is what leaves this suite measuring the assembled handle rather than the
+// minted one. See the note above the table in the test before this.
 //
 // The list is derived from the other side as the table above is: it is every
 // caller of Network.centralBankBook.
@@ -150,38 +159,38 @@ func TestTheCentralBanksBookIsReachableOnlyFromTheSettlementAgentsNetwork(t *tes
 
 	acts := []struct {
 		name string
-		call func(n *Network) error
+		call func(n *CentralBankNetwork) error
 	}{
-		{"OpenSettlementAccount", func(n *Network) error {
+		{"OpenSettlementAccount", func(n *CentralBankNetwork) error {
 			_, _, err := n.OpenSettlementAccount(ctx, AdmissionRequest{
 				Name: "Aurora Bank", BIC: testBIC, Country: testAllocation.Country, Asset: testAsset, Ref: "adm-1",
 			})
 			return err
 		}},
-		{"ReceiveLodgement", func(n *Network) error {
+		{"ReceiveLodgement", func(n *CentralBankNetwork) error {
 			_, err := n.ReceiveLodgement(ctx, LodgementInstruction{
 				Ref: "lodge-1", BIC: testBIC, Asset: testAsset, Amount: 1,
 			})
 			return err
 		}},
-		{"SettleCycle", func(n *Network) error { _, _, err := n.SettleCycle(ctx, "cyc-1", nil); return err }},
-		{"SettleReturn", func(n *Network) error {
+		{"SettleCycle", func(n *CentralBankNetwork) error { _, _, err := n.SettleCycle(ctx, "cyc-1", nil); return err }},
+		{"SettleReturn", func(n *CentralBankNetwork) error {
 			_, err := n.SettleReturn(ctx, ReturnInstruction{
 				PaymentID: "pay-1", DebtorAgent: testBIC, CreditorAgent: testBIC2,
 				Amount: 1, Asset: testAsset, Reason: "AC04",
 			})
 			return err
 		}},
-		{"ReserveBalance", func(n *Network) error { _, err := n.ReserveBalance(ctx, a.BIC, testAsset); return err }},
-		{"CentralBank", func(n *Network) error { _, err := n.CentralBank(); return err }},
+		{"ReserveBalance", func(n *CentralBankNetwork) error { _, err := n.ReserveBalance(ctx, a.BIC, testAsset); return err }},
+		{"CentralBank", func(n *CentralBankNetwork) error { _, err := n.CentralBank(); return err }},
 	}
 
 	for _, imposter := range []struct {
 		who string
-		net *Network
+		net *CentralBankNetwork
 	}{
-		{"the clearing house", sys.Network},
-		{"a member bank", sys.bank(a.BIC)},
+		{"the clearing house", centralBankHandleOver(sys.ClearingHouseNetwork.Network)},
+		{"a member bank", centralBankHandleOver(sys.bank(a.BIC).Network)},
 	} {
 		for _, act := range acts {
 			t.Run(act.name+" as "+imposter.who, func(t *testing.T) {
@@ -239,9 +248,15 @@ func TestARegisteredSchemeReachesEveryInstitutionsNetwork(t *testing.T) {
 	// Registered on the clearing house's handle, which is not where it is read.
 	sys.RegisterScheme(dollarPush{})
 
+	// The three institutions are three types, and the registry is the one thing
+	// they must agree about, so the rows are held by what they have in common
+	// rather than by a handle only one of them could be.
 	for _, seen := range []struct {
 		who string
-		net *Network
+		net interface {
+			Scheme(id SchemeID) (Scheme, bool)
+			ListSchemes() []Scheme
+		}
 	}{
 		{"the central bank", sys.cb()},
 		{"a member bank", sys.bank(testBIC)},

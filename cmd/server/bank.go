@@ -82,7 +82,7 @@ type Bank struct {
 	// net is this bank's whole view of the domain, and it has ONE caller:
 	// Network, which api/bank's surface reads every request through. Everything
 	// this file does goes through ops instead.
-	net *payment.Network
+	net *payment.BankNetwork
 
 	// ops is the same network NARROWED. A bank that called SettleCycle through
 	// it does not compile; see ops.go for what that is worth and what it is not.
@@ -126,9 +126,9 @@ type Bank struct {
 	hub   []payment.PaymentID
 }
 
-func (b *Bank) Network() *payment.Network { return b.net }
-func (b *Bank) BIC() iso20022.BIC         { return b.bic }
-func (b *Bank) Log() *slog.Logger         { return b.d.log }
+func (b *Bank) Network() *payment.BankNetwork { return b.net }
+func (b *Bank) BIC() iso20022.BIC             { return b.bic }
+func (b *Bank) Log() *slog.Logger             { return b.d.log }
 
 // Submit runs this bank's own half of a customer's instruction and puts it in
 // this bank's hub. Which bank's half that is belongs to the deployment, because

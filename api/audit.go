@@ -6,7 +6,6 @@ import (
 	"strconv"
 
 	"github.com/raphi011/cbs/ledger"
-	"github.com/raphi011/cbs/payment"
 )
 
 // The audit plumbing, shared by all three surfaces because there is one audit
@@ -50,10 +49,18 @@ func AuditFilterFrom(r *http.Request, book ledger.BookID, scope ledger.Scope) le
 	return f
 }
 
+// AuditReader is the one method this file needs, and it is named here rather
+// than taking an institution's network because all three kinds have an audit
+// trail and no two of them are the same type. Reading one's own events is the
+// rare act that is every institution's.
+type AuditReader interface {
+	ListAudit(ctx context.Context, f ledger.AuditFilter) ([]ledger.AuditEvent, error)
+}
+
 // AuditPage runs one filter against one institution's network and renders the
 // page. Every audit route on every surface ends here, so all of them share the
 // ordering, the DTO and the empty-page shape.
-func AuditPage(ctx context.Context, net *payment.Network, f ledger.AuditFilter) ([]AuditEventDTO, error) {
+func AuditPage(ctx context.Context, net AuditReader, f ledger.AuditFilter) ([]AuditEventDTO, error) {
 	events, err := net.ListAudit(ctx, f)
 	if err != nil {
 		return nil, err

@@ -116,7 +116,7 @@ func (l AgedLot) Overdue() bool { return l.Deadline > 0 && l.Days >= l.Deadline 
 // a suspense nothing in its own database explains, and it has done nothing
 // wrong; only the settlement agent's register separates that from a defect, and
 // reading it is what no institution may do. See payment/recon, which can.
-func (s *Network) AgeClearingSuspense(ctx context.Context, asset ledger.AssetCode) (AgeingReport, error) {
+func (s *BankNetwork) AgeClearingSuspense(ctx context.Context, asset ledger.AssetCode) (AgeingReport, error) {
 	var out AgeingReport
 	err := s.store.View(ctx, func(ctx context.Context, tx Tx) error {
 		var err error
@@ -128,7 +128,7 @@ func (s *Network) AgeClearingSuspense(ctx context.Context, asset ledger.AssetCod
 
 // AgeClearingSuspenseTx is AgeClearingSuspense within a caller-supplied unit of
 // work.
-func (s *Network) AgeClearingSuspenseTx(ctx context.Context, tx Tx, asset ledger.AssetCode) (AgeingReport, error) {
+func (s *BankNetwork) AgeClearingSuspenseTx(ctx context.Context, tx Tx, asset ledger.AssetCode) (AgeingReport, error) {
 	bank, accts, err := s.ownAccountsTx(ctx, tx, asset)
 	if err != nil {
 		return AgeingReport{}, err
@@ -166,7 +166,7 @@ func (s *Network) AgeClearingSuspenseTx(ctx context.Context, tx Tx, asset ledger
 //     has been sent back and the payer's own bank is holding it for a customer
 //     who closed the account. It is terminal, and blocked for that reason rather
 //     than for a missing message.
-func (s *Network) AgeUnclaimedBalances(ctx context.Context, asset ledger.AssetCode) (AgeingReport, error) {
+func (s *BankNetwork) AgeUnclaimedBalances(ctx context.Context, asset ledger.AssetCode) (AgeingReport, error) {
 	var out AgeingReport
 	err := s.store.View(ctx, func(ctx context.Context, tx Tx) error {
 		var err error
@@ -178,7 +178,7 @@ func (s *Network) AgeUnclaimedBalances(ctx context.Context, asset ledger.AssetCo
 
 // AgeUnclaimedBalancesTx is AgeUnclaimedBalances within a caller-supplied unit
 // of work.
-func (s *Network) AgeUnclaimedBalancesTx(ctx context.Context, tx Tx, asset ledger.AssetCode) (AgeingReport, error) {
+func (s *BankNetwork) AgeUnclaimedBalancesTx(ctx context.Context, tx Tx, asset ledger.AssetCode) (AgeingReport, error) {
 	bank, accts, err := s.ownAccountsTx(ctx, tx, asset)
 	if err != nil {
 		return AgeingReport{}, err
@@ -229,7 +229,7 @@ func (s *Network) AgeUnclaimedBalancesTx(ctx context.Context, tx Tx, asset ledge
 // accounts in one asset. The clearing house has no ledger and the settlement
 // agent holds no suspense of its own, so both are refused here rather than
 // answered with an empty report.
-func (s *Network) ownAccountsTx(ctx context.Context, tx Tx, asset ledger.AssetCode) (*Bank, BankAccounts, error) {
+func (s *BankNetwork) ownAccountsTx(ctx context.Context, tx Tx, asset ledger.AssetCode) (*Bank, BankAccounts, error) {
 	bank, err := s.selfBankTx(ctx, tx)
 	if err != nil {
 		return nil, BankAccounts{}, err

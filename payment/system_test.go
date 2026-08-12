@@ -88,7 +88,7 @@ var testBICs = []iso20022.BIC{testBIC, testBIC2, "BANKFRPPXXX", "BANKESMMXXX"}
 // house's. bank() and cb() are the other two, and they are visible at every call
 // site that uses them.
 type testSystem struct {
-	*Network
+	*ClearingHouseNetwork
 	nets *Networks
 	// stores is the set the networks are minted over, for the assertions that
 	// have to reach a database directly rather than through an institution.
@@ -106,7 +106,7 @@ type testSystem struct {
 // this file. Nothing here can recover from a bank's database refusing to open,
 // every caller is one expression deep inside an assertion, and the alternative
 // is a (t *testing.T) argument on a helper called several hundred times.
-func (s *testSystem) bank(bic iso20022.BIC) *Network {
+func (s *testSystem) bank(bic iso20022.BIC) *BankNetwork {
 	net, err := s.nets.Bank(context.Background(), ParticipantID(bic))
 	if err != nil {
 		panic("payment_test: opening " + string(bic) + "'s store: " + err.Error())
@@ -116,7 +116,24 @@ func (s *testSystem) bank(bic iso20022.BIC) *Network {
 
 // cb is the settlement agent's view, and the only one holding the central
 // bank's book of accounts.
-func (s *testSystem) cb() *Network { return s.nets.CentralBank() }
+func (s *testSystem) cb() *CentralBankNetwork { return s.nets.CentralBank() }
+
+// The two mis-wired handles: one institution's TYPE over another's identity.
+//
+// An institution's acts are methods on that institution's type, so reaching
+// another's through a handle minted by Networks does not compile and cannot be
+// tested for. What is still reachable is a handle assembled by hand — the core
+// carries the identity, and a composite literal may be given any core at all —
+// and that is the shape the identity guards refuse.
+//
+// These exist so the suites that measure those guards say which crossing they
+// are making, rather than each spelling out a literal whose point is easy to
+// misread as ordinary construction.
+func bankHandleOver(core Network) *BankNetwork { return &BankNetwork{Network: core} }
+
+func centralBankHandleOver(core Network) *CentralBankNetwork {
+	return &CentralBankNetwork{Network: core}
+}
 
 // testCentralBankBIC is the address this fixture's settlement agent is reached
 // at. It has no store row — a settlement agent is not a member of the scheme it
@@ -167,7 +184,7 @@ func testNetwork(t *testing.T) *testSystem {
 	clock := func() time.Time { return fixedTime }
 	stores := testenv.NewSet(t, clock)
 	nets := NewNetworks(stores, clock)
-	return &testSystem{Network: nets.ClearingHouse(), nets: nets, stores: stores}
+	return &testSystem{ClearingHouseNetwork: nets.ClearingHouse(), nets: nets, stores: stores}
 }
 
 // accountsOf returns a participant's internal accounts in the test asset,
@@ -473,7 +490,7 @@ func fundAccount(t *testing.T, ctx context.Context, sys *testSystem, p *Bank, ac
 // holds the cash.
 //
 // Through the BANK's own network, because a deposit is the bank's act on its own
-// register. It went through sys.Network — the clearing house's — while there was
+// register. It went through the clearing house's handle while there was
 // one store, which was the same defect the seed's initiate carried: the act
 // looked identical because both views reached the same database.
 func takeCashIn(t *testing.T, ctx context.Context, sys *testSystem, p *Bank, acct deposit.Account, amount ledger.Amount) {
@@ -981,8 +998,8 @@ func TestASettlementStoreFailureDoesNotRouteMoneyToUnclaimedBalances(t *testing.
 	// under test is that bank's own, in its own unit of work, and the settlement
 	// agent is not in it at all.
 	dropped := errors.New("connection reset by peer")
-	broken := NewNetwork(failingUpdateStore{Store: sys.Store(), accountErr: dropped},
-		func() time.Time { return fixedTime }, AsBank(b.ID))
+	broken := NewBankNetwork(failingUpdateStore{Store: sys.Store(), accountErr: dropped},
+		func() time.Time { return fixedTime }, b.ID)
 
 	if _, err := broken.SettleAtBank(ctx, pay.ID); err == nil {
 		t.Error("a creditor leg over a store that could not read the payee's account succeeded; " +
@@ -1864,15 +1881,17 @@ func mustUpdate(t *testing.T, ctx context.Context, sys *testSystem, fn func(cont
 	assertNoError(t, sys.Store().Update(ctx, fn))
 }
 
-// mustUpdateAt is mustUpdate at ONE NAMED BANK: its network, and its own
+// mustUpdateAt is mustUpdate at ONE NAMED INSTITUTION: its network, and its own
 // database's unit of work.
 //
 // The two are not interchangeable and mustUpdate is the clearing house's. A
-// bank's act run through the clearing house's network is refused outright
-// (ErrNotThisInstitutionsAct) and a bank's row written into the clearing house's
-// store is a table that shape does not have, so every *Tx act below whose
-// subject is a bank has to come through here. See payment.Networks.
-func mustUpdateAt(t *testing.T, ctx context.Context, net *Network, fn func(context.Context, Tx) error) {
+// row written into the wrong institution's store is a table that shape does not
+// have, so every *Tx act below whose subject is a bank or the settlement agent
+// has to come through here. See payment.Networks.
+//
+// It is held by the one method it needs rather than by an institution's type,
+// because all three have a database and the callers below name two of them.
+func mustUpdateAt(t *testing.T, ctx context.Context, net interface{ Store() Store }, fn func(context.Context, Tx) error) {
 	t.Helper()
 	assertNoError(t, net.Store().Update(ctx, fn))
 }
@@ -1918,7 +1937,9 @@ func allBanks(t *testing.T, ctx context.Context, sys *testSystem) []*Bank {
 // message's values and back-fills nothing, because it holds no register to
 // back-fill from. Every assertion about a party ref has to say whose copy it is
 // reading, and this is where it says so.
-func mustGetPaymentAt(t *testing.T, ctx context.Context, net *Network, id PaymentID) Payment {
+func mustGetPaymentAt(t *testing.T, ctx context.Context, net interface {
+	GetPayment(context.Context, PaymentID) (Payment, error)
+}, id PaymentID) Payment {
 	t.Helper()
 	p, err := net.GetPayment(ctx, id)
 	assertNoError(t, err)
@@ -2907,9 +2928,11 @@ func TestAMandateBelongsToItsCreditorsBankAndToNoOther(t *testing.T) {
 	_, err := sys.bank(a.BIC).CreateMandate(ctx, a.BIC, debtor,
 		PartyRef{Account: "dep_no_such_account"}, 0)
 	assertError(t, err, ErrAccountNotInParticipant)
-	// The clearing house cannot either, and that refusal is unchanged: it is not
-	// a member bank, so this is not its act at all.
-	_, err = sys.CreateMandate(ctx, a.BIC, debtor, creditor, 0)
+	// The clearing house cannot either: it is not a member bank, so this is not
+	// its act at all. Recording one is a method on BankNetwork, so the crossing
+	// left to measure is a bank's handle over the clearing house's core.
+	asCSM := bankHandleOver(sys.ClearingHouseNetwork.Network)
+	_, err = asCSM.CreateMandate(ctx, a.BIC, debtor, creditor, 0)
 	assertError(t, err, ErrNotThisInstitutionsAct)
 
 	// The creditor's bank can, and the row carries its own account's asset and
@@ -2921,7 +2944,7 @@ func TestAMandateBelongsToItsCreditorsBankAndToNoOther(t *testing.T) {
 
 	// Revoking is still refused to anything that is not a member bank, which is
 	// the whole of what the row can now decide on its own.
-	if err := sys.RevokeMandate(ctx, m.ID); !errors.Is(err, ErrNotThisBanksMandate) {
+	if err := asCSM.RevokeMandate(ctx, m.ID); !errors.Is(err, ErrNotThisBanksMandate) {
 		t.Errorf("the clearing house revoked a mandate: %v", err)
 	}
 
@@ -3020,7 +3043,7 @@ func TestCrossAssetPaymentSurvivesInitiationAndFailsAtThePayeesBank(t *testing.T
 	assertEqual(t, "settlements recorded", len(settlements), 1)
 	// The clearing house's copy, which is where Cleared is a status at all: it
 	// is that institution's record of having taken the payment into the cut-off.
-	assertEqual(t, "payment status", mustGetPaymentAt(t, ctx, sys.Network, pay.ID).Status, Cleared)
+	assertEqual(t, "payment status", mustGetPaymentAt(t, ctx, sys.ClearingHouseNetwork, pay.ID).Status, Cleared)
 	assertEqual(t, "bob's euro account was not credited", customerBalance(t, b, bob), 0)
 	assertEqual(t, "bob's bitcoin account was not credited", customerBalance(t, b, bobBTC.ID), 0)
 }
@@ -4538,11 +4561,11 @@ func TestAcceptInboundDoesNotBlameTheSenderForAStoreFailure(t *testing.T) {
 				// table instead of the injected failure — a true statement
 				// about the wrong institution, and one that would have hidden
 				// the very confusion this test exists to prevent.
-				broken := NewNetwork(failingUpdateStore{
+				broken := NewBankNetwork(failingUpdateStore{
 					Store:          n.bank(receiverOf(n, p)).Store(),
 					participantErr: tc.participantErr,
 					accountErr:     tc.accountErr,
-				}, func() time.Time { return fixedTime }, AsBank(ParticipantID(receiverOf(n, p))))
+				}, func() time.Time { return fixedTime }, ParticipantID(receiverOf(n, p)))
 
 				err = broken.AcceptInbound(ctx, p.ID, relayedFrom(p))
 				if !errors.Is(err, dropped) {
@@ -4765,7 +4788,7 @@ func TestAFailedRejectionAtABankLeavesThatBanksCopyUntouched(t *testing.T) {
 	// is redelivered until the bank can act on it — and it is stated so that a
 	// future unit of work quietly spanning both institutions would fail this.
 	assertEqual(t, "status at the clearing house",
-		mustGetPaymentAt(t, ctx, n.Network, p.ID).Status, Rejected)
+		mustGetPaymentAt(t, ctx, n.ClearingHouseNetwork, p.ID).Status, Rejected)
 }
 
 // A collection the clearing house refuses before the payer's bank has answered
@@ -4839,7 +4862,7 @@ func TestRejectionRefusesAnUnsafeReasonInBothHalves(t *testing.T) {
 		t.Fatalf("RejectAtCSM with an unprintable reason = %v, want ErrInvalidText", err)
 	}
 	assertEqual(t, "status after the refused rejection",
-		mustGetPaymentAt(t, ctx, n.Network, p.ID).Status, Initiated)
+		mustGetPaymentAt(t, ctx, n.ClearingHouseNetwork, p.ID).Status, Initiated)
 
 	// The debtor bank's half does not repeat the check, because the ledger
 	// makes it: the reason travels in the reversal's description.
@@ -5499,8 +5522,8 @@ func TestAReturnStoreFailureDoesNotRouteTheRefundToUnclaimedBalances(t *testing.
 		_, err := sys.bank(b.BIC).PostReturnLeg(ctx, pay.ID, "AC04: account closed")
 		assertNoError(t, err)
 
-		broken := NewNetwork(failingUpdateStore{Store: sys.Store(), accountErr: dropped},
-			func() time.Time { return fixedTime }, AsBank(a.ID))
+		broken := NewBankNetwork(failingUpdateStore{Store: sys.Store(), accountErr: dropped},
+			func() time.Time { return fixedTime }, a.ID)
 		if _, err := broken.PostReturnLeg(ctx, pay.ID, "AC04: account closed"); err == nil {
 			t.Error("a refund over a store that could not read the payer's account succeeded; " +
 				"a read that cannot answer is not permission to put the money somewhere else")
@@ -5521,8 +5544,8 @@ func TestAReturnStoreFailureDoesNotRouteTheRefundToUnclaimedBalances(t *testing.
 		a, b, alice, biller := setupTwoBanks(t, sys)
 		pay := settledCollection(t, sys, a, alice, b, biller, 25000)
 
-		broken := NewNetwork(failingUpdateStore{Store: sys.Store(), accountErr: dropped},
-			func() time.Time { return fixedTime }, AsBank(b.ID))
+		broken := NewBankNetwork(failingUpdateStore{Store: sys.Store(), accountErr: dropped},
+			func() time.Time { return fixedTime }, b.ID)
 		if _, err := broken.PostReturnLeg(ctx, pay.ID, "MD06: refund requested by the payer"); err == nil {
 			t.Error("a forced clawback over a store that could not read the biller's account succeeded; " +
 				"forcing is a decision about a customer's account and cannot be made without reading it")
