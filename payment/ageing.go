@@ -6,25 +6,23 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/raphi011/cbs/calendar"
 	"github.com/raphi011/cbs/iso20022"
 	"github.com/raphi011/cbs/ledger"
 )
 
 // ReturnWindowDays is how long a receiving bank has to send back money it cannot
-// apply, in whole calendar days.
+// apply, in whole BANKING BUSINESS days.
 //
-// The rulebook figure is THREE BANKING BUSINESS DAYS (EPC SCT, D+3), and this is
-// calendar days because there is no business date in this system — no roll
-// event, no calendar and no holiday handling. What the approximation costs is
-// exactly one thing: a balance that arrives on a Thursday is called overdue on
-// Sunday where the rulebook would call it overdue on Tuesday. The error is
-// always EARLY and never late.
+// It is the rulebook figure (EPC SCT, D+3) counted on the settlement agent's own
+// calendar, so a credit arriving on a Thursday is due back the following Tuesday
+// and not on the Sunday three calendar days later. calendar.AddSettlementDays is
+// what counts it, and a weekend or a TARGET holiday is not part of the window.
 //
-// That costs nothing operationally, because the window GATES NO ACT. A bank may
-// return an unapplicable credit at any time; the rulebook window is a deadline
-// on its obligation and not permission to begin. So the window decides which
-// line of a report is printed in bold, which is the whole amount of correctness
-// a calendar-day approximation can carry.
+// The window GATES NO ACT. A bank may return an unapplicable credit at any time;
+// the rulebook window is a deadline on its obligation and not permission to
+// begin. So it decides which line of a report is printed in bold, and nothing
+// else.
 //
 // It is SCT's, and it is applied to push schemes because SCT is the only one. A
 // second push scheme states its own or inherits this deliberately; a PULL scheme
@@ -55,7 +53,7 @@ type AgeingReport struct {
 func (r AgeingReport) Overdue() []AgedLot {
 	var out []AgedLot
 	for _, l := range r.Lots {
-		if l.Overdue() {
+		if l.Overdue(r.AsOf) {
 			out = append(out, l)
 		}
 	}
@@ -73,11 +71,17 @@ type AgedLot struct {
 	Payment PaymentID
 	Scheme  SchemeID
 
-	// Deadline is the rulebook window in whole days, and ZERO where there is no
-	// rulebook clock on this money at all. A clearing suspense is discharged by
-	// a conversation rather than by a clock, so its lots carry none; an
-	// unclaimed balance on a push scheme carries ReturnWindowDays.
+	// Deadline is the rulebook window in whole banking business days, and ZERO
+	// where there is no rulebook clock on this money at all. A clearing suspense
+	// is discharged by a conversation rather than by a clock, so its lots carry
+	// none; an unclaimed balance on a push scheme carries ReturnWindowDays.
 	Deadline int
+
+	// Due is the day the window runs out, Deadline settlement days after the
+	// lot's own day, and ZERO wherever Deadline is. A rulebook states a DAY
+	// rather than an age, and this is what Overdue compares against: Lot.Days
+	// counts calendar days, so the two disagree across every weekend.
+	Due time.Time
 
 	// Blocked says why this bank cannot clear this lot itself, and is empty when
 	// it can. It is prose because a reader of it is deciding what to do next,
@@ -85,9 +89,14 @@ type AgedLot struct {
 	Blocked string
 }
 
-// Overdue reports whether a rulebook clock has run out on this lot. A lot with
-// no deadline is never overdue, however old it is.
-func (l AgedLot) Overdue() bool { return l.Deadline > 0 && l.Days >= l.Deadline }
+// Overdue reports whether a rulebook clock has run out on this lot by asOf. A
+// lot with no deadline is never overdue, however old it is.
+//
+// It takes the day rather than reading Lot.Days because the window is counted in
+// settlement days and Days is not.
+func (l AgedLot) Overdue(asOf time.Time) bool {
+	return !l.Due.IsZero() && !ledger.DayStart(asOf).Before(l.Due)
+}
 
 // AgeClearingSuspense decomposes this bank's clearing suspense by age.
 //
@@ -220,6 +229,7 @@ func (s *BankNetwork) AgeUnclaimedBalancesTx(ctx context.Context, tx BankTx, ass
 				scheme.Direction(), ReturnerOf(scheme, p.DebtorDetails.Agent, p.CreditorDetails.Agent))
 		default:
 			lot.Deadline = ReturnWindowDays
+			lot.Due = calendar.AddSettlementDays(lot.Since, ReturnWindowDays)
 		}
 	}
 	return rep, nil

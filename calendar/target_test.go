@@ -121,9 +121,8 @@ func TestNextSettlementDayCrossesTheLongestClosure(t *testing.T) {
 }
 
 // TestAddSettlementDaysCountsARulebookWindow is the case payment.ReturnWindowDays
-// documents itself as getting wrong: a credit that arrives on a Thursday is due
-// back on the Tuesday, where three calendar days would call it overdue on the
-// Sunday.
+// is counted in: a credit that arrives on a Thursday is due back on the Tuesday,
+// where three calendar days would call it overdue on the Sunday.
 func TestAddSettlementDaysCountsARulebookWindow(t *testing.T) {
 	thursday := date(2026, time.June, 11)
 

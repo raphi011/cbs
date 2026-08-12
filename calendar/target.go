@@ -94,8 +94,7 @@ func NextSettlementDay(t time.Time) time.Time {
 // This is what a rulebook deadline is counted in. EPC SCT's return window is
 // three BANKING BUSINESS DAYS, and a credit that arrives on a Thursday is due
 // back the following Tuesday rather than on the Sunday three calendar days
-// later — see payment.ReturnWindowDays for what that approximation costs while
-// nothing counts in this.
+// later. See payment.ReturnWindowDays, which counts in this.
 func AddSettlementDays(t time.Time, n int) time.Time {
 	d := ledger.DayStart(t)
 	step := 1

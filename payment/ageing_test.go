@@ -191,24 +191,26 @@ func TestAClearingSuspenseHasNoDeadlineHoweverOldItIs(t *testing.T) {
 }
 
 // TestAnUnclaimedBalanceGoesOverdueWhenTheWindowRunsOut pins the boundary, and
-// the boundary is where the calendar-day approximation lives.
+// the boundary is a day on the settlement calendar rather than an age.
 //
-// The rulebook figure is three BANKING BUSINESS days and this is three calendar
-// days, because there is no business date in this system. The error is always
-// early and never late, and it costs nothing operationally because the window
-// gates no act: the return is available for the whole life of a settled payment
-// and this only decides which line of a report is printed in bold.
+// The credit lands on a Wednesday and the window is three BANKING BUSINESS days,
+// so it runs out on the Monday — five calendar days later, because the weekend
+// is not part of it. A report that compared the age against the figure would
+// have called this overdue on the Saturday, which is the error this does not
+// make.
 func TestAnUnclaimedBalanceGoesOverdueWhenTheWindowRunsOut(t *testing.T) {
 	sys := agedNetwork(t)
 	_, b, _, _ := pushToAClosedPayee(t, sys.testSystem)
 
-	sys.advance(ReturnWindowDays - 1)
-	assertEqual(t, "inside the window", len(unclaimed(t, sys.testSystem, b.BIC).Overdue()), 0)
+	sys.advance(4)
+	sunday := unclaimed(t, sys.testSystem, b.BIC)
+	assertEqual(t, "older than the figure in calendar days", sunday.Lots[0].Days, 4)
+	assertEqual(t, "and still inside the window", len(sunday.Overdue()), 0)
 
 	sys.advance(1)
 	overdue := unclaimed(t, sys.testSystem, b.BIC).Overdue()
-	assertEqual(t, "on the day it runs out", len(overdue), 1)
-	assertEqual(t, "age", overdue[0].Days, ReturnWindowDays)
+	assertEqual(t, "on the Monday it runs out", len(overdue), 1)
+	assertEqual(t, "the day it was due", overdue[0].Due, time.Date(2025, 1, 20, 0, 0, 0, 0, time.UTC))
 }
 
 // TestReturningAnAgedUnclaimedBalanceClearsIt is the whole point of the report:
@@ -223,7 +225,7 @@ func TestAnUnclaimedBalanceGoesOverdueWhenTheWindowRunsOut(t *testing.T) {
 func TestReturningAnAgedUnclaimedBalanceClearsIt(t *testing.T) {
 	sys := agedNetwork(t)
 	a, b, alice, pay := pushToAClosedPayee(t, sys.testSystem)
-	sys.advance(ReturnWindowDays + 1)
+	sys.advance(6) // the Wednesday credit's window ran out on Monday
 
 	found := unclaimed(t, sys.testSystem, b.BIC).Overdue()
 	assertEqual(t, "the report found one", len(found), 1)

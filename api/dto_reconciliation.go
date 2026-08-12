@@ -81,8 +81,9 @@ type AgeingReportDTO struct {
 type AgedLotDTO struct {
 	Transaction string    `json:"transaction"`
 	Since       time.Time `json:"since"`
-	// Days is whole days from Since, same-day being 0. Calendar days: there is
-	// no business date in this system. See payment.ReturnWindowDays.
+	// Days is whole CALENDAR days from Since, same-day being 0. A rulebook window
+	// is counted in business days, so days can pass deadline without the lot
+	// being overdue; due is the day that settles it.
 	Days        int    `json:"days"`
 	Amount      int64  `json:"amount"`
 	Description string `json:"description,omitempty"`
@@ -90,11 +91,14 @@ type AgedLotDTO struct {
 	Payment string `json:"payment,omitempty"`
 	Scheme  string `json:"scheme,omitempty"`
 
-	// Deadline is the rulebook window in whole days and is ABSENT where no
-	// rulebook puts a clock on this money — a clearing suspense is discharged by
-	// a conversation, and a lot this bank has no instrument to clear carries no
-	// deadline either.
+	// Deadline is the rulebook window in whole banking business days and is
+	// ABSENT where no rulebook puts a clock on this money — a clearing suspense
+	// is discharged by a conversation, and a lot this bank has no instrument to
+	// clear carries no deadline either.
 	Deadline int `json:"deadline,omitempty"`
+	// Due is the day the window runs out, on the settlement calendar. Absent
+	// with deadline.
+	Due time.Time `json:"due,omitzero"`
 	// Overdue is the line a report prints in bold, and it is on the wire rather
 	// than left to the client for reconciled's reason: a lot with no deadline is
 	// never overdue however old it is, and that rule is the domain's.
@@ -172,7 +176,8 @@ func ToAgeingReportDTO(r payment.AgeingReport) AgeingReportDTO {
 			Payment:     string(l.Payment),
 			Scheme:      string(l.Scheme),
 			Deadline:    l.Deadline,
-			Overdue:     l.Overdue(),
+			Due:         l.Due,
+			Overdue:     l.Overdue(r.AsOf),
 			Blocked:     l.Blocked,
 		})
 	}
