@@ -744,9 +744,10 @@ Measured, they do not: `api/bank` shares 3 of its 17 methods with `bankOps` and
 `api/centralbank` shares 0 of its 5 with `settlementOps`. `ops.go` stays, with a
 different subject — which of ONE institution's acts a business day performs.
 
-### Separate the store by institution — `spec`
+### Separate the store by institution — `plan`
 
-[Design record](specs/2026-08-12-store-per-institution-design.md).
+[Design record](specs/2026-08-12-store-per-institution-design.md), which carries
+the method lists, the six tasks and the verification.
 
 The defect ADR-0006 removed from `payment.Network`, still in place one layer
 down. `payment.Tx` is one interface over three schemas, so every shape implements
@@ -770,7 +771,15 @@ and every crossing a build failure.
 alive on exactly that seam: open one shape, ask for another's store. Three
 constructors — `OpenBank`, `OpenClearingHouse`, `OpenCentralBank` — close it, and
 then `inShape` and `ErrNotInThisShape` have no callers and both go. `Shape`
-survives internally, for the migration directory and `Reset`. The pattern is already in the tree: `ledger.Tx`, `deposit.Tx` and
+survives internally, for the migration directory and `Reset`.
+
+**It reaches `ledger` too**, which the first pass did not expect. `ledger.Tx`'s
+29 methods are three things: 22 the ledger proper, 3 slot accounts a bank alone
+holds, and `NextID`/`Now`/`AppendAudit`/`ListAudit`, which every institution
+needs. So **the clearing house writes its audit trail through a ledger interface
+and has no ledger** — the four come out as a `CommonTx` every institution embeds,
+because a `CsmTx` embedding `ledger.Tx` for its audit trail would rebuild the
+defect being removed. The pattern is already in the tree: `ledger.Tx`, `deposit.Tx` and
 `lending.Tx` are separate interfaces `payment.Tx` embeds, and this is carrying it
 through to the institution boundary.
 

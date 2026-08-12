@@ -62,23 +62,63 @@ The three overlaps are not leftovers. Each is one coherent capability that two
 institutions genuinely share, and two of them are **already separate interfaces
 in the tree**: `ledger.Tx` and `ebics.Tx`. Only the payment rows are not.
 
+## `ledger.Tx` splits too, and that is the finding
+
+The obvious composition — `BankTx = ledger.Tx + deposit.Tx + …` — does not work,
+and taking `ledger.Tx` apart is what says why.
+
+Its 29 declared methods are three things, not one:
+
+| | methods | who holds the tables |
+| --- | --- | --- |
+| the ledger proper | 22 | a bank and the settlement agent |
+| slot accounts | 3 | **a bank alone** — `slot_accounts` is created only by the bank schema, and the other two say so in a comment about its absence |
+| `NextID`, `Now`, `AppendAudit`, `ListAudit` | 4 | **all three** — `audit_events` and `id_sequences` are in every schema, and neither carries a guard |
+
+The second row is a small thing. The third is not:
+
+**The clearing house writes its audit trail through a ledger interface, and it
+has no ledger.** `AppendAudit` reaches it today only because `payment.Tx` embeds
+`deposit.Tx` embeds `product.Tx` embeds `ledger.Tx`. A `CsmTx` that embedded
+`ledger.Tx` to keep its audit trail would be re-creating the defect this design
+removes; one that did not embed it would lose the audit trail.
+
+So there is a fourth shared capability, and it is the one every institution
+needs: `CommonTx` — `NextID`, `Now`, `AppendAudit`, `ListAudit`. It comes out of
+`ledger.Tx`, which means **this touches the `ledger` package and not only
+`payment`.** That is the main scope surprise in this record.
+
 ## The design
 
 **One `Tx` per institution, composed from capability interfaces.**
 
+| capability | methods | held by | status |
+| --- | --- | --- | --- |
+| `CommonTx` | 4 | all three | **new**, out of `ledger.Tx` |
+| `ledger.Tx` (narrowed) | 22 | bank, settlement agent | exists, loses 7 |
+| `SlotAccountTx` | 3 | bank | **new**, out of `ledger.Tx` |
+| `ebics.Tx` | 8 | clearing house, settlement agent | exists, correct already |
+| `PaymentRowsTx` | 4 | bank, clearing house | **new**, out of `payment.Tx` |
+| `deposit.Tx` + `product.Tx` + `lending.Tx` | 29 | bank | exist, correct already |
+| bank's own payment rows | 12 | bank | out of `payment.Tx` |
+| clearing house's own | 14 | clearing house | out of `payment.Tx` |
+| settlement agent's own | 12 | settlement agent | out of `payment.Tx` |
+
 ```
-BankTx        = ledger.Tx + deposit.Tx + lending.Tx + PaymentRowsTx + bankOnly(44)
-CsmTx         = ebics.Tx  + PaymentRowsTx + clearingHouseOnly(14)
-CentralBankTx = ledger.Tx + ebics.Tx     + settlementAgentOnly(12)
+BankTx        = CommonTx + ledger.Tx + SlotAccountTx + deposit.Tx + product.Tx
+                         + lending.Tx + PaymentRowsTx + 12
+CsmTx         = CommonTx + ebics.Tx + PaymentRowsTx + 14
+CentralBankTx = CommonTx + ledger.Tx + ebics.Tx + 12
 ```
 
-Reach, against 100-for-everyone today:
+Reach from one `*sqlite.Store`, which today exposes all 108 whatever shape it was
+opened as:
 
 | | today | after |
 | --- | --- | --- |
-| a bank | 100 | **70** |
-| the clearing house | 100 | **26** |
-| the settlement agent | 100 | **42** |
+| a bank | 108 | **74** |
+| the clearing house | 108 | **30** |
+| the settlement agent | 108 | **46** |
 
 `payment.Store` splits the same way — `Update`/`View` differ only in the `Tx`
 they hand the closure — and `Stores.Bank`, `Stores.ClearingHouse` and
@@ -86,10 +126,10 @@ they hand the closure — and `Stores.Bank`, `Stores.ClearingHouse` and
 signatures change and the call sites follow. This is the shape ADR-0006 used and
 it worked: 83 receivers moved, and the compiler found every crossing.
 
-**`PaymentRowsTx` is the one new capability.** Four methods over the `payments`
-table, shared by a bank and the clearing house because each keeps its own copy of
-every payment it is a party to. It is the store-layer twin of the 15 acts
-ADR-0006 left on the network core, and for the same reason.
+**`ebics` needs no work beyond the constructor.** `Set.ClearingHouseEBICS` and
+`Set.CentralBankEBICS` already hand it to those two and to nobody else; what is
+wrong is only that `(*sqlite.Store).EBICS()` exists on all three, which typed
+constructors remove.
 
 ## `ErrNotInThisShape` goes, and `Open` is why
 
@@ -169,24 +209,141 @@ against interfaces, naming no table and no dialect. What changes is that "shared
 becomes true of the capability suites (`ledger`, `deposit`, `product`, `lending`,
 payment rows) and the institution suites stop pretending to be shared.
 
-## Phasing
+## The method lists
 
-1. **Extract `PaymentRowsTx`.** Four methods out of `payment.Tx` into their own
-   interface, embedded back into it. No behaviour change, nothing else moves.
-2. **Three `Tx` interfaces and three `Store` interfaces**, composed as above,
-   with `payment.Tx` retired as a name. `Stores`' three methods change return
-   type; the compiler finds the rest. This is the phase that is mostly mechanical
-   and entirely compiler-guided.
-3. **Typed constructors, and delete the guard.** `OpenBank`,
-   `OpenClearingHouse` and `OpenCentralBank` replace `Open`'s shape parameter, so
-   the 104 `inShape` calls and `ErrNotInThisShape` go together rather than the
-   calls going and the error surviving on one seam. `Shape` stays internal, for
-   the migration directory and `Reset`; `paymentLegs`/`paymentCycle` stay.
-4. **Correct the three documents** that claim three shapes run one suite, and
-   point the suite runners at their institution's store type.
+Derived from the tree, not from judgement: each name below is a method whose
+`inShape` guard names a table, bucketed by which schemas create that table. A new
+method appearing in none of these lists is one nobody classified.
 
-Phase 3 is where the win is banked and phase 1 is a no-op on its own, so the
-order matters: 1 and 2 land together or not at all.
+**`CommonTx` (4) — out of `ledger.Tx`, held by all three**
+
+`NextID` · `Now` · `AppendAudit` · `ListAudit`
+
+**`SlotAccountTx` (3) — out of `ledger.Tx`, a bank's alone**
+
+`GetSlotAccount` · `ListSlotAccounts` · `PutSlotAccount`
+
+**`ledger.Tx` after narrowing (22) — a bank's and the settlement agent's**
+
+`BookBalance` · `GetAccount` · `GetLedger` · `GetSubledger` · `GetTransaction` ·
+`GetTransactionByIdempotencyKey` · `ListAccounts` · `ListLedgers` ·
+`ListSubledgers` · `ListTransactions` · `ListTransactionsForPosition` ·
+`LockAccounts` · `MarkReversed` · `NextAccountSeq` · `NextSubledgerBlock` ·
+`PutAccount` · `PutLedger` · `PutSubledger` · `PutTransaction` ·
+`SubsidiaryBalances` · `ValueDateBalance` · `ValueDatedSeries`
+
+**`PaymentRowsTx` (4) — out of `payment.Tx`, a bank's and the clearing house's**
+
+`GetPayment` · `GetPaymentByEndToEndID` · `ListPayments` · `PutPayment`
+
+**A bank's own, out of `payment.Tx` (12)**
+
+`GetBank` · `GetDirectoryEntry` · `GetMandate` · `GetSettlementAdvice` ·
+`ListBanks` · `ListDirectoryEntries` · `ListMandates` · `ListSettlementAdvices` ·
+`PutBank` · `PutMandate` · `PutSettlementAdvice` · `ReplaceRoutingDirectory`
+
+**The clearing house's own, out of `payment.Tx` (14)**
+
+`AddHeldFile` · `DeleteHeldFile` · `DeleteHeldReturn` · `GetCycle` ·
+`GetHeldReturn` · `GetOpenCycle` · `GetRosterEntry` · `GetRosterEntryByIssuer` ·
+`ListCycles` · `ListHeldFiles` · `ListRosterEntries` · `PutCycle` ·
+`PutHeldReturn` · `PutRosterEntry`
+
+**The settlement agent's own, out of `payment.Tx` (12)**
+
+`GetBankCode` · `GetBankCodeForBIC` · `GetSettlement` · `GetSettlementByCycle` ·
+`GetSettlementMember` · `ListBankCodes` · `ListSettlementMembers` ·
+`ListSettlements` · `NextBankCodeSerial` · `PutBankCode` · `PutSettlement` ·
+`PutSettlementMember`
+
+**`ebics.Tx` (8) — already right, the clearing house's and the settlement agent's**
+
+`AddOrder` · `AddQueuedFile` · `AnswerOrder` · `DeleteQueuedFiles` ·
+`ListAcknowledgements` · `ListPendingOrders` · `ListQueuedFiles` · `NextOrderSeq`
+
+The remaining 29 bank-only methods are already their own interfaces and move
+whole: `deposit.Tx` (15), `product.Tx` (6), `lending.Tx` (8).
+
+## Tasks
+
+Ordered, and 1–4 land together: none is a win on its own, task 1 is a pure
+no-op until task 3 uses it, and task 4 is what lets task 5 delete the guard
+outright rather than leave it alive on the `Open` seam.
+
+1. **Split `ledger.Tx`.** `CommonTx` (4) and `SlotAccountTx` (3) come out;
+   `ledger.Tx` keeps 22 and embeds `CommonTx`. `ledger.Book` gains
+   `SlotAccountTx` where it uses those three. Everything still compiles because
+   every current holder embeds all of it.
+2. **Extract `PaymentRowsTx`** (4) from `payment.Tx`, embedded straight back in.
+   No behaviour change.
+3. **Three `Tx` interfaces and three `Store` interfaces** in `payment`, composed
+   as the table above. `payment.Tx` and `payment.Store` retire as names.
+   `Stores`' three methods change return type; the compiler finds the rest. The
+   `sqlite` side keeps ONE `tx` struct and one `Store` struct — three interfaces
+   over one implementation.
+4. **Typed constructors.** `OpenBank(ctx, bic, path, clock)`,
+   `OpenClearingHouse(ctx, path, clock)`, `OpenCentralBank(ctx, path, clock)`
+   replace `Open`'s `Shape` parameter and its `book` argument. `Set` builds each
+   through its own. `(*sqlite.Store).EBICS()` moves to the two types that have a
+   queue.
+5. **Delete `inShape` and `ErrNotInThisShape`** — 104 call sites and the error.
+   `Shape` stays unexported-in-effect, carrying the migration directory and
+   `holds` for `Reset`; `paymentLegs` and `paymentCycle` stay.
+6. **Point the suite runners at their institution's store type** and correct the
+   documentation below.
+
+## Verification
+
+Each of these is a command, not a judgement.
+
+- `go build ./... && go vet ./... && go test ./...` and `gofmt -l .` — the
+  baseline, green before and after.
+- **The crossing is a build failure, per institution.** Three throwaway probes,
+  the shape ADR-0006 used: a file naming `PutCycle` on a `BankTx`, `PutBank` on a
+  `CsmTx`, `PutPayment` on a `CentralBankTx`. Each must fail to compile, and the
+  probe is deleted after. Nothing else proves the win.
+- **`ErrNotInThisShape` has no callers.**
+  `grep -rn 'ErrNotInThisShape\|inShape' --include='*.go' .` returns nothing
+  outside its own deletion.
+- **`Reset` still empties every table.** `store/sqlite`'s existing reset cases
+  cover this and must stay green without change — if one needed editing, `holds`
+  was damaged.
+- **The two column flags still branch.** `TestSchemaArgumentsReachSqliteMaster`
+  and the payment round-trip cases in `RunPayment` and `RunClearingHousePayment`
+  cover a bank's legs and the clearing house's cycle respectively.
+- **Nothing gained a second implementation.** `grep -c 'func (t \*tx)'` over
+  `store/sqlite/tx_*.go` should total what it did before, on one `tx` struct.
+
+## Documentation layers
+
+This is a store change, so the schema comments are domain content and move with
+it (`CLAUDE.md`, *Domain knowledge stays consistent across layers*).
+
+- `CLAUDE.md` — the *N+2 stores* section names `ErrNotInThisShape` as how a
+  method reaching a table its schema does not create is refused. After task 5
+  that refusal is a build failure and the sentence is wrong.
+- `store/sqlite/schema/{bank,csm,centralbank}/0001_init.sql` — each argues about
+  tables the shape does NOT hold. Those arguments stay true and gain a second
+  mechanism; `bank/0001_init.sql` is the canonical home per `CLAUDE.md`.
+- [ADR-0004](../adr/0004-a-queue-is-a-table-and-stays-opaque.md) — leans on the
+  shape refusal for the queue. Check whether its Consequences still hold when the
+  queue is on two types and no third can name it.
+- `README.md` *Persistence* — states the three-shape mapping.
+- An ADR for this ruling, as ADR-0006 was for the layer above.
+- The learner-facing layers (`hint-content.ts`, quiz chapters 15–16) name no repo
+  symbol, so they move only if a DOMAIN claim changes. None does here: which
+  institution holds which table is unchanged, and only what enforces it moves.
+
+## What this does not do
+
+**It does not split the implementation.** One `tx` struct, one `Store` struct,
+one body of SQL, three interfaces over them. See the rejected alternative below.
+
+**It does not make `Shape` disappear.** `Reset` needs `holds`, the migrations
+need `dir`, and `paymentLegs`/`paymentCycle` are finer than any interface.
+
+**It does not touch the databases.** N+2 before and after, three schemas before
+and after, no migration.
 
 ## Alternatives rejected
 
