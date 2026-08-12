@@ -125,9 +125,9 @@ func (c *ClearingHouse) Return(ctx context.Context, id payment.PaymentID, reason
 // refusal, rather than a reachability answer and a membership answer that could
 // disagree.
 //
-// Writing to a queue cannot fail on the RECIPIENT's account, which is the one
-// improvement worth naming: a statement fan-out can no longer be truncated by an
-// unreachable bank, because there is nothing to reach.
+// Writing to a queue cannot fail on the RECIPIENT's account, which is worth
+// naming: a statement fan-out cannot be truncated by an unreachable bank, because
+// there is nothing to reach.
 //
 // It is a WRITE, in its own unit of work, and it is deliberately not in the
 // caller's: a queue row committed alongside a decision the store then rolled back
@@ -178,11 +178,10 @@ func (c *ClearingHouse) upload(ctx context.Context, env iso20022.Envelope) error
 // not yet been answered about, oldest first.
 //
 // ONE pass, over every order type, and that is a consequence of settling before
-// releasing: a file taken in here reaches no bank until the cycle carrying it
-// has settled, so there is no answer to a file this same pass could have routed
-// a moment earlier. What used to need two phases a day apart now needs none —
-// the ordering that mattered is between this phase and the cut-off, not inside
-// it.
+// releasing: a file taken in here reaches no bank until the cycle carrying it has
+// settled, so there is no answer to a file this same pass could have routed a
+// moment earlier. The ordering that matters is between this phase and the
+// cut-off, not inside it.
 //
 // Every order is answered on its acknowledgement, which is the seam this
 // transport exists for: the uploader was told EBICS_OK and went away, so

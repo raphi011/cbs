@@ -2142,8 +2142,8 @@ func ReturnReason(info *iso20022.ReturnReasonInformation) string {
 // A transaction whose OrgnlTxRef is absent, names only one agent, or names an
 // agent with no BICFI, is refused rather than half-read.
 // iso20022.ReturnTransaction.validate makes OrgnlTxRef optional — a hard
-// requirement would make a return built before this task, or a counterparty
-// that has not adopted it, unreadable — so a document that has been through
+// requirement would make a return built without it, or a counterparty that has
+// not adopted it, unreadable — so a document that has been through
 // Unmarshal can still reach here with nothing to resolve accounts from. This
 // function does not assume validate ran at all: it checks both agents'
 // presence AND their BICFI itself, rather than trusting either the pointer or

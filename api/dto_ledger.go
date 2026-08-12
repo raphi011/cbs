@@ -164,9 +164,8 @@ func ToTransactionDTO(tx ledger.Transaction, assets map[ledger.AccountID]ledger.
 			// Taken per leg, not from tx.ValueDate: on a payment's debtor
 			// posting the two differ by the settlement delay, and collapsing
 			// them here is exactly the bug this field fixes. A stored entry
-			// always carries a concrete date, so the address is never of a zero
-			// time — but a leg written before this field existed would render
-			// as an absent valueDate rather than as 0001-01-01.
+			// always carries a concrete date, so the address is never of a
+			// zero time.
 			ValueDate: valueDatePtr(e.ValueDate),
 		}
 	}

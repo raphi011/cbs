@@ -888,8 +888,8 @@ func (r *Register) checkIdentifierFreeTx(ctx context.Context, tx Tx, owner Accou
 //
 // It refuses an IBAN (ErrIBANIsIssued). That address is this bank's to allocate,
 // not a caller's to assert, and the act that replaces one is ReissueIdentifier —
-// which mints and withdraws together, because remove-then-add no longer
-// composes when the add is refused.
+// which mints and withdraws together, because remove-then-add does not compose
+// when the add is refused.
 func (r *Register) AddIdentifier(ctx context.Context, id AccountID, ident Identifier) error {
 	return r.store.Update(ctx, func(ctx context.Context, tx Tx) error {
 		return r.AddIdentifierTx(ctx, tx, id, ident)

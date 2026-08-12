@@ -191,8 +191,8 @@ func TestTheDirectDebitChainIsEightFiles(t *testing.T) {
 //
 // It is the same rule stated twice over, once per direction: a pacs.002 is the
 // answer to an instruction, and it goes back to whoever gave it. TM01 is the
-// refusal available, because after task 8 the clearing house is the only
-// institution that rejects anything and a scheme with no open cut-off window is
+// refusal available, because the clearing house is the only institution that rejects
+// anything and a scheme with no open cut-off window is
 // the cheapest of its refusals to build.
 func TestARejectedCollectionIsAnsweredToThePayeesBank(t *testing.T) {
 	h := newHarnessWithNoOpenCycle(t)

@@ -130,8 +130,8 @@ func (s *BankNetwork) ListDirectory(ctx context.Context) ([]DirectoryEntry, erro
 // rather than checked against the answer. There is nothing to check: the
 // directory is this bank's only source for the pairing, so a disagreement would
 // be the caller contradicting the only authority in the room. What that costs is
-// that the payer can no longer choose which bank receives their money, which is
-// the whole gain.
+// that the payer cannot choose which bank receives their money, which is the
+// whole gain.
 //
 //   - The address parses and its code is in the copy: that entry's BIC.
 //   - The address parses and its code is not: ErrBankCodeUnknown. Refresh, or

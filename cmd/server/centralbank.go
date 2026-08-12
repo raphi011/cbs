@@ -353,17 +353,17 @@ func (c *CentralBank) receiveSettlement(from iso20022.BIC, hdr iso20022.AppHdr, 
 // SettleCycleTx would be one a bank could book against a settlement the store
 // then rolled back.
 //
-// Before the answer, and that used to be load-bearing in a way it no longer can
-// be. The two queues share NO ORDERING: a member's statement sits at the
-// settlement agent and its ACSC sits at the clearing house, and nothing about
-// the order they were written in survives the trip. What guarantees the mirror
-// leg is booked before the creditor legs draw on it is the BANK's own collection
-// order — the central bank first, then the clearing house — which is a decision
-// each bank makes about its own operations. See AdvanceDay.
+// Before the answer, though nothing depends on it. The two queues share NO
+// ORDERING: a member's statement sits at the settlement agent and its ACSC sits
+// at the clearing house, and nothing about the order they were written in
+// survives the trip. What guarantees the mirror leg is booked before the creditor
+// legs draw on it is the BANK's own collection order — the central bank first,
+// then the clearing house — which is a decision each bank makes about its own
+// operations. See AdvanceDay.
 //
-// The order here is kept anyway because it costs nothing and because the answer
-// is the last thing a caller should see: an ACSC written before the statements
-// would say the batch was complete while a queue write could still fail.
+// The order here is kept because it costs nothing and because the answer is the
+// last thing a caller should see: an ACSC written before the statements would say
+// the batch was complete while a queue write could still fail.
 //
 // # A failed enqueue is not a failed settlement
 //
@@ -371,11 +371,11 @@ func (c *CentralBank) receiveSettlement(from iso20022.BIC, hdr iso20022.AppHdr, 
 // institution cannot unsay it. So a failure comes back as an error, which lands
 // in the day's report, rather than being retried or swallowed.
 //
-// What it costs is narrower than it was. Writing to a queue cannot fail on the
-// RECIPIENT's account — there is nobody to be unreachable — so the fan-out can
-// no longer be truncated by one member being down. What is left is a member with
-// no enrolment, which is a member of the roster this deployment never gave a
-// queue, and that is a wiring fault rather than an outage.
+// Writing to a queue cannot fail on the RECIPIENT's account — there is nobody to
+// be unreachable — so the fan-out cannot be truncated by one member being down.
+// What is left is a member with no enrolment, which is a member of the roster
+// this deployment never gave a queue, and that is a wiring fault rather than an
+// outage.
 func (c *CentralBank) advise(ctx context.Context, statements []payment.SettlementStatement) error {
 	for _, st := range statements {
 		env, err := payment.StatementMessage(st, c.d.messageContext(c.bic, st.Agent))

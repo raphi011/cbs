@@ -1161,8 +1161,8 @@ func (s *snapshot) rosterAgreesWithTheRegistry(rep *Report) {
 // See StaleDirectory and the package doc. A copy that is behind is the behaviour
 // the subscription model was chosen for, so the finding is a line an operator
 // reads — "two entries not copied, pulled three days ago" — and a run holding one
-// still passes. Turning this into a break is the mistake this comment exists to
-// stop; the pairings that CANNOT legitimately differ are the two checks above.
+// still passes. Turning this into a break is the mistake to avoid; the pairings
+// that CANNOT legitimately differ are the two checks above.
 //
 // It reports a bank that has never pulled at all, with an empty copy, exactly as
 // it reports one behind by two entries. There is no third state and no threshold:

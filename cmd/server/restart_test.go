@@ -18,8 +18,8 @@ import (
 	"github.com/raphi011/cbs/store/sqlite"
 )
 
-// The two tests in this repository that can fail for the reason the held-files
-// sub-project exists.
+// The two tests in this repository that can fail for the reason an institution's
+// unfinished obligations live in its own database.
 //
 // Everything else here runs inside one process, so an institution keeping its
 // obligations in a map and an institution keeping them in a database look
@@ -106,7 +106,7 @@ func (r *restartable) boot(t *testing.T) {
 // institution keeps outside its database — each host's enrolments, every bank's
 // hub, the clock's position — and everything in the N+2 databases stays. The
 // enrolments come back because provisioning admits every member again from the
-// roster; the hub does not, and it is its own sub-project.
+// roster; the hub does not.
 func (r *restartable) restart(t *testing.T) {
 	t.Helper()
 	if err := r.nets.Stores().Close(); err != nil {
@@ -316,8 +316,8 @@ func (r *restartable) queuedForTheMembers(t *testing.T) int {
 	return n
 }
 
-// everyPaymentReachedItsReceivingBank is the question the whole sub-project is
-// about: did the bank that has to move a customer's money get told?
+// everyPaymentReachedItsReceivingBank is the question a restart is about: did the
+// bank that has to move a customer's money get told?
 //
 // Read the way TestSeededInFlightPaymentsAreAppliedWhenTheirCycleSettles reads
 // it — the payment as the clearing house holds it, then the same payment as the

@@ -108,7 +108,7 @@ import (
 // what makes "the clearing house has no ledger" a fact about the database rather
 // than a claim one test asserts.
 //
-// It no longer refuses anything, and that is the point: WHICH METHODS AN
+// It refuses nothing, and that is the point: WHICH METHODS AN
 // INSTITUTION HAS IS A TYPE — see BankStore, ClearingHouseStore and
 // CentralBankStore — so a method reaching a table its schema does not create
 // cannot be named, let alone called. What is left here is what a type cannot

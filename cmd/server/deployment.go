@@ -466,9 +466,8 @@ func (d *Deployment) messageContext(from, to iso20022.BIC) payment.MessageContex
 // to that bank's hub.
 //
 // It returns an Initiated payment and nothing more, which is why api answers 202
-// rather than 201 — and the 202 now says something narrower than it used to: not
-// "sent and unanswered" but "taken and not yet sent". GET /payments/pending is
-// the difference.
+// rather than 201: the 202 says "taken and not yet sent", not "sent and
+// unanswered". GET /payments/pending is the difference.
 //
 // # Which bank is handed the instruction
 //

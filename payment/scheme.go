@@ -192,8 +192,7 @@ func (SCT) Validate(ctx context.Context, p *Payment, sc SchemeContext) error {
 
 // ValidateMandate has nothing to check: a credit transfer is the payer
 // instructing their own bank, and the instruction IS the authorisation. A
-// mandate quoted on one is simply ignored rather than refused, exactly as it
-// was before this half existed.
+// mandate quoted on one is simply ignored rather than refused.
 func (SCT) ValidateMandate(context.Context, *Payment, SchemeContext) error { return nil }
 
 // ---------------------------------------------------------------------------

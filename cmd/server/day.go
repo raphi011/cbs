@@ -413,7 +413,7 @@ var beforeClock = []phase{
 		// Each member collects, THE SETTLEMENT AGENT FIRST. The order is
 		// load-bearing and is the only thing that guarantees the mirror leg is
 		// booked before the creditor legs draw on it — see CentralBank.advise,
-		// which argues it where the guarantee used to live.
+		// which argues it.
 		//
 		// # Why one phase and not three
 		//

@@ -35,11 +35,11 @@ func TestCreditTransferReachesAcceptedThroughTheCSM(t *testing.T) {
 // The chain is eight files over one business day, and naming them in order is
 // the point of the package. Nothing here is a function call across a boundary.
 //
-// The order is the whole of what task 8 is about. Read the middle four: the
-// clearing house instructs settlement, the settlement agent discharges it and
-// advises both members — and only THEN does the payee's bank receive the
-// instruction it is to act on. The money is final before the instruction to
-// apply it exists at the bank that will apply it, which is what makes a receiving
+// The order is the whole point. Read the middle four: the clearing house instructs
+// settlement, the settlement agent discharges it and advises both members — and only
+// THEN does the payee's bank receive the instruction it is to act on. The money is
+// final before the instruction to apply it exists at the bank that will apply it,
+// which is what makes a receiving
 // bank unable to credit a customer against a cut-off that might still fail.
 //
 // It is asserted as a count and a route rather than as an exact byte sequence,
@@ -187,9 +187,9 @@ func TestTheReturnOfAnUnpayableTransferCarriesAC01(t *testing.T) {
 // It is the pacs.002 that makes the money come back, so the payer's bank has to
 // receive one carrying the code.
 //
-// The refusal under test is the CLEARING HOUSE's, because after task 8 that is
-// the only institution that rejects anything: a bank's own refusal comes too
-// late to be one and is a return instead. TM01 is the cheapest of them to build
+// The refusal under test is the CLEARING HOUSE's, because that is the only
+// institution that rejects anything: a bank's own refusal comes too late to be one
+// and is a return instead. TM01 is the cheapest of them to build
 // — a scheme with no cut-off window open — and what it measures is the message,
 // not the code.
 func TestARejectedCreditTransferIsAnsweredToThePayersBank(t *testing.T) {

@@ -1436,8 +1436,8 @@ func (s *BankNetwork) RecordMembershipTx(ctx context.Context, tx BankTx, in Admi
 	}
 
 	// And the ALLOCATION, which is the other thing this bank learns here and
-	// nowhere else: the code its customers' addresses will carry. Before this
-	// line it has a country and no range, so every account it tried to open was
+	// nowhere else: the code its customers' addresses will carry. Until this line
+	// runs it has a country and no range, so every account it tries to open is
 	// refused deposit.ErrNoIssuer.
 	//
 	// The country is compared rather than taken. A bank applied to one register

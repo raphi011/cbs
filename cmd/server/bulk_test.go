@@ -266,7 +266,7 @@ func TestAMixedFileIsAnsweredPART(t *testing.T) {
 }
 
 // A bulk collection settles whole and is RETURNED per transaction, which is the
-// pull's half of what a batch answer means after task 8.
+// pull's half of what a batch answer means.
 //
 // Two collections in one file, one payable and one not, and the refusal is the
 // PAYER's bank's own: it is the only institution that can see the account being

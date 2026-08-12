@@ -258,12 +258,12 @@ func (b *Bank) upload(ctx context.Context, to iso20022.BIC, c *ebics.Client, env
 // one this whole transport is for: a member bank does not talk to a clearing
 // house a payment at a time, it accumulates and uploads.
 //
-// So there is ONE failure mode where there were two. A refused instruction moved
-// nothing — payment.TakeInstruction posts the debtor leg and proves the payment
-// can be put in a file in one unit of work, so an instruction this bank could
-// never send is refused before its payer is debited. The half-happened outcome
-// that used to live here, a committed leg behind a file that would not go out,
-// has moved to the cut-off, which is where the file now is.
+// There is ONE failure mode. A refused instruction moved nothing —
+// payment.TakeInstruction posts the debtor leg and proves the payment can be put
+// in a file in one unit of work, so an instruction this bank could never send is
+// refused before its payer is debited. The half-happened outcome — a committed
+// leg behind a file that would not go out — belongs to the cut-off, which is
+// where the file is.
 func (b *Bank) submit(ctx context.Context, req payment.InitiatePaymentRequest) (payment.Payment, error) {
 	// Everything below is this bank's work, and is recorded as this bank's. See
 	// withActor.
@@ -711,12 +711,11 @@ func (b *Bank) answerUnreadable(ctx context.Context, host iso20022.BIC, cause er
 // the reserves have moved and the money is in this bank's clearing suspense
 // before it has looked at a single line. That is the whole point of settling
 // before release: a receiving bank never credits a customer against money that
-// has not settled. What it costs is the answer it used to be able to give — a
-// pacs.002 saying no — and what replaces it is a pacs.004 saying "here it is
-// back", which is what a real SEPA bank sends and why AC01 and AC04 are return
-// reasons as well as rejection ones.
+// has not settled. What it costs is any answer saying no — a pacs.002 — and what
+// replaces it is a pacs.004 saying "here it is back", which is what a real SEPA
+// bank sends and why AC01 and AC04 are return reasons as well as rejection ones.
 //
-// # Two questions, and the order still decides the code
+// # Two questions, and the order decides the code
 //
 // First: can this file be resolved to instructions at all? That is
 // CreditTransferRequest, which resolves the CREDITOR of every transaction — this

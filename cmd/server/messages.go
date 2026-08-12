@@ -62,8 +62,8 @@ func orderTypeOf(doc iso20022.Document) (ebics.OrderType, error) {
 // (payment's checkNbOfTxs), and the sender of an output file is the clearing
 // house.
 //
-// What that costs is stated rather than left to be discovered: NbOfTxs no longer
-// spans the whole chain, so a clearing house that dropped a transaction while
+// What that costs is stated rather than left to be discovered: NbOfTxs does not
+// span the whole chain, so a clearing house that dropped a transaction while
 // sorting would assert a count that matched what it sent. The check still catches
 // a submitting bank's truncated upload, which is the hop the element exists for
 // and the only one where sender and receiver are different institutions with

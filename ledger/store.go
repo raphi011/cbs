@@ -160,8 +160,8 @@ type Tx interface {
 	ListTransactionsForPosition(ctx context.Context, book BookID, pos Position) ([]Transaction, error)
 
 	// MarkReversed sets status to Reversed only if it is currently Posted, and
-	// returns ErrTransactionAlreadyReversed otherwise. Conditional because a
-	// read-compare-write would race once a mutex no longer covers it.
+	// returns ErrTransactionAlreadyReversed otherwise. Conditional because no mutex
+	// covers it and a read-compare-write would race.
 	MarkReversed(ctx context.Context, book BookID, id TransactionID) error
 
 	// BookBalance aggregates entries rather than replaying them in Go. normal is
