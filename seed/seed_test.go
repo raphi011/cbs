@@ -23,31 +23,22 @@ import (
 // with a seeded bank would be two institutions at one address.
 const testCentralBankBIC iso20022.BIC = "CBSEDEFFXXX"
 
-// testDeployment is the running system a scenario is built into, composed
-// directly instead of carried.
+// testDeployment is the running system a scenario is built into, composed directly
+// instead of carried.
 //
-// Populate's acts are the ones needing a table no single institution owns (see
-// Deployment). Two need nothing else at all here: an admission writes no row, so
-// it is the network's own to make, and the settlement agent's address is
-// configuration. RefreshDirectory reads one institution's table and writes
-// another's, which is exactly what the real one does.
+// Populate's acts are the ones needing a table no single institution owns. Two need
+// nothing else here: an admission writes no row, so it is the network's own to make,
+// and the settlement agent's address is configuration.
 //
-// # What it leaves out is the FILE, and for the last two that is the point
+// What it leaves out is the FILE. Submit and CarryToClearing are one act split in two
+// by a hub, and what travels between them is a pacs.008 or a pacs.003 — marshalling
+// one needs an EBICS host at each end and a bank enrolled on it, which is a
+// composition root, and a composition root is what this package may not import.
 //
-// Submit and CarryToClearing are one act split in two by a hub, and what travels
-// between them is a pacs.008 or a pacs.003. Marshalling one needs an EBICS host
-// at each end and a bank enrolled on it, which is a composition root — and a
-// composition root is what this package may not import, since cmd/server imports
-// this one.
-//
-// So the pair is composed: the submitting bank's half, the ids held, and then
-// the clearing house's own half over each of them. The ROWS come out identical —
-// the same three databases, the same statuses, the same cycle — and exactly one
-// thing does not, because it is not a row: the receiving bank's share of the
-// uploaded file. Nothing in this package can see one. The claim that the real
-// deployment leaves them behind is cmd/server's, over a real transport and a
-// real business day, and
-// TestSeededInFlightPaymentsAreAppliedWhenTheirCycleSettles is where it is made.
+// So the pair is composed and the ROWS come out identical: the same three databases,
+// statuses and cycle. Exactly one thing does not, because it is not a row — the
+// receiving bank's share of the uploaded file, which nothing here can see. That claim
+// is cmd/server's, over a real transport and a real business day.
 type testDeployment struct {
 	nets *payment.Networks
 	now  func() time.Time
@@ -59,11 +50,9 @@ type testDeployment struct {
 }
 
 // taken is one instruction sitting in its bank's hub: who submitted it, and the
-// instruction as that bank rewrote it.
-//
-// The REQUEST is carried and not just the id, because the clearing house is
-// handed an instruction and not a lookup — its copy is written from what the
-// file said. See builder.initiate, which composes the same three halves.
+// instruction as that bank rewrote it. The REQUEST is carried and not just the id,
+// because the clearing house is handed an instruction and not a lookup — its copy is
+// written from what the file said.
 type taken struct {
 	by iso20022.BIC
 	tx payment.InboundTransaction
@@ -100,13 +89,10 @@ func (d *testDeployment) RefreshDirectory(ctx context.Context, bic iso20022.BIC)
 }
 
 // Submit runs the submitting bank's half and holds the instruction, which is
-// Deployment.Submit's shape and the whole of what it promises: nothing has left
-// that bank when this returns.
-//
-// The relayed instruction is built here rather than at the cut-off for
-// builder.initiate's reason — the two DETAILS come off the payment, because the
-// submitting bank overwrote its own side from its own register and the file it
-// would build carries what it wrote.
+// Deployment.Submit's shape and the whole of what it promises: nothing has left that
+// bank when this returns. The relayed instruction is built here rather than at the
+// cut-off because the submitting bank overwrote its own side from its own register,
+// and the file it would build carries what it wrote.
 func (d *testDeployment) Submit(ctx context.Context, req payment.InitiatePaymentRequest) (payment.Payment, error) {
 	scheme, ok := d.nets.ClearingHouse().Scheme(req.Scheme)
 	if !ok {
@@ -134,22 +120,16 @@ func (d *testDeployment) Submit(ctx context.Context, req payment.InitiatePayment
 	return p, nil
 }
 
-// CarryToClearing empties every hub into the clearing house and tells each
-// submitting bank what became of its instructions.
+// CarryToClearing empties every hub into the clearing house and tells each submitting
+// bank what became of its instructions.
 //
-// # The order is the real day's, and it is the reason this is not one loop
+// A cut-off visits the banks ASCENDING BY ADDRESS and uploads one file per scheme, and
+// the clearing house works through what it was sent before any bank collects an
+// answer. Two loops is what that looks like with the transport taken out.
 //
-// A cut-off visits the banks ASCENDING BY ADDRESS and uploads one file per
-// scheme, and the clearing house works through what it was sent before any bank
-// collects an answer. Two loops is what that looks like with the transport taken
-// out: every file recorded and taken into its cycle, and only then the
-// submitters told. See the clearing and collection phases of a business day,
-// and CarryToClearing.
-//
-// The FILE is what is missing and it is the one thing that matters: the real
-// clearing house builds each receiving bank's share of the document it was sent,
-// and there is no document here. Nothing in this package can observe a share, so
-// nothing here pretends to; cmd/server proves that half.
+// The FILE is what is missing and it is the one thing that matters: the real clearing
+// house builds each receiving bank's share of the document it was sent, and there is
+// no document here. cmd/server proves that half.
 func (d *testDeployment) CarryToClearing(ctx context.Context) error {
 	files := d.uploaded()
 	d.hub = nil
@@ -185,13 +165,10 @@ func (d *testDeployment) CarryToClearing(ctx context.Context) error {
 	return nil
 }
 
-// uploaded sorts the hub into the files a cut-off would have built: one per bank
-// and scheme, the banks ascending by address, each file's transactions in the
-// order that bank took them.
-//
-// A settlement date batches a file too, and is not asked about here: this
-// builder submits and carries within one instant, so every instruction in the
-// hub asserts the same one. See Bank.cutoff, which asks both.
+// uploaded sorts the hub into the files a cut-off would have built: one per bank and
+// scheme, the banks ascending by address, each file's transactions in the order that
+// bank took them. A settlement date batches a file too and is not asked about here:
+// this builder submits and carries within one instant.
 func (d *testDeployment) uploaded() [][]taken {
 	var order []struct {
 		by     iso20022.BIC
@@ -224,16 +201,12 @@ func (d *testDeployment) uploaded() [][]taken {
 	return out
 }
 
-// testNetwork builds the sample scenario over the store testenv hands it.
-//
-// It is what makes the seed assertions (deterministic IDs, conserved reserves,
-// status coverage) claims about the seed rather than about a store, and it is
-// the whole of what a caller of this package assembles for itself: a store, a
-// set of networks, a deployment, and Populate over the three.
-//
-// testNets is what a seed fixture holds: the clearing house's view for the reads
-// these tests make, plus the factory Populate and the deployment both take. See
-// payment.Networks.
+// testNets is what a seed fixture holds: the clearing house's view for the reads these
+// tests make, plus the factory Populate and the deployment both take. testNetwork
+// below builds the sample scenario over the store testenv hands it, which is what
+// makes the seed assertions claims about the seed rather than about a store — and is
+// the whole of what a caller of this package assembles: a store, a set of networks, a
+// deployment, and Populate over the three.
 type testNets struct {
 	*payment.ClearingHouseNetwork
 	nets *payment.Networks
@@ -246,11 +219,9 @@ type testNets struct {
 // what a member's reserve balance is.
 func (n testNets) cb() *payment.CentralBankNetwork { return n.nets.CentralBank() }
 
-// bank is one member bank's own view, over that bank's own database.
-//
-// It panics on a failure to open rather than taking a *testing.T, for the reason
-// seed's own builder.bank does: every bank a fixture here names is one Populate
-// founded moments ago in this process.
+// bank is one member bank's own view, over that bank's own database. It panics on a
+// failure to open rather than taking a *testing.T: every bank a fixture here names is
+// one Populate founded moments ago in this process.
 func (n testNets) bank(pid payment.ParticipantID) *payment.BankNetwork {
 	net, err := n.nets.Bank(context.Background(), pid)
 	if err != nil {
@@ -335,34 +306,21 @@ func TestNetworkShape(t *testing.T) {
 	}
 }
 
-// TestEveryPaymentInAnOpenCycleWasUploaded is the constraint a payment added to
-// this scenario later would break without it.
+// TestEveryPaymentInAnOpenCycleWasUploaded is the constraint a payment added to this
+// scenario later would break without it.
 //
-// A share of an output file is built when the clearing house takes an uploaded
-// FILE in, and a share is what release hands to the bank that has to pay the
-// payee. A payment put into a cycle any other way has none — so the first
-// business day anybody advances settles it, against reserves that really move,
-// and the bank that has to credit the payee is never told it exists. It is
-// silent, it is permanent, and the money stops in that bank's clearing suspense.
+// A share of an output file is built when the clearing house takes an uploaded FILE
+// in, and a share is what release hands to the bank that has to pay the payee. A
+// payment put into a cycle any other way has none — so the first business day anybody
+// advances settles it against reserves that really move, and the bank that has to
+// credit the payee is never told. Silent, permanent, and the money stops in that
+// bank's clearing suspense.
 //
-// So the rule is about the DOOR and not about the cycle: a payment left in the
-// open cut-off must have gone through builder.submit, which is the only path
-// here that uploads. builder.initiate hands the clearing house a row, and
-// everything it builds this scenario settles itself.
-//
-// # What it can check from inside this package, and what it cannot
-//
-// Not the share, which lives in a composition root this package may not import.
-// What it can check is the fact that stands in for it: a payment in an open
-// cycle whose SUBMITTING bank does not hold it as Accepted never came through a
-// cut-off, because the answer to an uploaded file is what moves that bank's own
-// copy. Both doors leave the clearing house's copy Accepted, and only one leaves
-// the bank's.
-//
-// cmd/server's TestSeededInFlightPaymentsAreAppliedWhenTheirCycleSettles is the
-// claim at the other end — it advances a real day over this dataset and checks
-// every settled payment reached the bank that has to apply it. That one is where
-// the share is real; this one says why, here, where the mistake would be made.
+// So the rule is about the DOOR: a payment left in the open cut-off must have gone
+// through builder.submit, the only path here that uploads. What this package can check
+// is the fact that stands in for the share — a payment in an open cycle whose
+// SUBMITTING bank does not hold it as Accepted never came through a cut-off, because
+// the answer to an uploaded file is what moves that bank's own copy.
 func TestEveryPaymentInAnOpenCycleWasUploaded(t *testing.T) {
 	ctx := context.Background()
 	net := testNetwork(t)
@@ -424,19 +382,13 @@ func TestPaymentStatusCoverage(t *testing.T) {
 	for _, p := range payments {
 		byStatus[p.Status]++
 	}
-	// No Cleared, and its absence is the assertion.
-	//
-	// Cleared is a payment a CUT-OFF has netted and no settlement agent has
-	// discharged, which is a state an operator's half-finished day leaves behind
-	// and not one a fixture should ship: nothing but a settlement moves a Cleared
-	// payment, so a cycle left closed here would hold payments no act in this
-	// system could advance. The build stops one phase earlier instead — the files
-	// move, the cycles stay open — so its in-flight payments are Accepted and the
-	// first advance carries every one of them to Settled.
-	//
-	// The status is still reachable in a running deployment, on the operator's own
-	// console: closing a cycle by hand is what produces it, and cmd/server is
-	// where that is measured.
+	// No Cleared, and its absence is the assertion. Cleared is a payment a CUT-OFF has
+	// netted and no settlement agent has discharged — an operator's half-finished day,
+	// not something a fixture should ship: nothing but a settlement moves a Cleared
+	// payment, so a cycle left closed here would hold payments no act could advance.
+	// The build stops one phase earlier — the files move, the cycles stay open — so its
+	// in-flight payments are Accepted and the first advance carries them to Settled.
+	// The status is still reachable on an operator's console; cmd/server measures that.
 	want := map[payment.PaymentStatus]int{
 		payment.Settled:  4,
 		payment.Returned: 1,
@@ -451,32 +403,23 @@ func TestPaymentStatusCoverage(t *testing.T) {
 	}
 }
 
-// TestTheSeededNetworkReconciles holds all six of this scenario's databases
-// against each other at once.
+// TestTheSeededNetworkReconciles holds all six of this scenario's databases against
+// each other at once, and asks a strictly larger question than TestReservesConserved.
+// That one sums the reserves the SETTLEMENT AGENT holds, which is one institution's
+// book agreeing with itself; this holds every member's own Reserve at Central Bank
+// against the agent's liability to it, every member's clearing suspense against what
+// is still owed, the clearing house's cycles against the agent's settlements, and each
+// institution's copy of a payment against the other two. Not one of those is a
+// question any actor in this system may ask.
 //
-// It is the seed's counterpart to TestReservesConserved and it asks a
-// strictly larger question. That one sums the reserves the SETTLEMENT AGENT
-// holds and checks the total against what was funded, which is one
-// institution's book agreeing with itself; this one holds every member's own
-// Reserve at Central Bank against the agent's liability to it, every member's
-// clearing suspense against what is still owed to that member, the clearing
-// house's cycles against the agent's settlements, and each of the three
-// institutions' copy of a payment against the other two. Not one of those is a
-// question any actor in this system may ask — see payment/recon.
+// The seed is the right subject because it is the widest deployment this repository
+// builds: four banks, twelve payments in four statuses, four cycles in two, two
+// settlements and a return.
 //
-// The seed is the right subject for it because it is the widest deployment this
-// repository builds: four banks, twelve payments in four statuses, four cycles
-// in two, two settlements and a return. Every earlier assertion in this file
-// is about one of those in isolation.
-//
-// The unreconciled positions are asserted rather than ignored, and that is the
-// point of the second half. This scenario deliberately ends with payments in
-// flight — six Accepted, in the open cut-off for each scheme — so a bank's
-// suspense NOT returning to zero is the correct outcome and a harness that
-// demanded zero would be measuring the wrong thing. What must be true is that
-// every non-zero suspense has something outstanding against it, which is what
-// Check enforces, and that it is the banks holding the in-flight payments that
-// have one.
+// The unreconciled positions are asserted rather than ignored. This scenario
+// deliberately ends with six payments in flight, so a bank's suspense NOT returning to
+// zero is the correct outcome; what must be true is that every non-zero suspense has
+// something outstanding against it.
 func TestTheSeededNetworkReconciles(t *testing.T) {
 	net := testNetwork(t)
 
@@ -496,32 +439,21 @@ func TestTheSeededNetworkReconciles(t *testing.T) {
 	}
 }
 
-// TestABanksOwnRunAgreesWithTheHarness calibrates the narrow instrument against
-// the wide one, over the same six databases the test above reads.
+// TestABanksOwnRunAgreesWithTheHarness calibrates the narrow instrument against the
+// wide one, over the same six databases. payment/recon opens all of them at once,
+// precisely because no institution may; payment.Network.Reconcile is one member bank
+// over its own.
 //
-// There are two instruments now and they answer the same question from different
-// numbers of databases. payment/recon opens all of them at once, precisely
-// because no institution may; payment.Network.Reconcile is one member bank over
-// its own, which is an act that bank performs. This holds the second against the
-// first.
+// The agreement can only hold in one direction, because a bank sees a subset. What is
+// asserted is that NO BREAK A BANK REPORTS IS ABSENT FROM THE HARNESS'S REPORT — never
+// the converse, which is false by construction: the harness catches a member's advice
+// row against the AGENT's register, and a bank holding no such register cannot. Over
+// this scenario the harness reports no break at all, so the containment says all four
+// banks reconcile from inside.
 //
-// # The agreement can only ever hold in one direction
-//
-// A bank sees a subset. So what is asserted is that NO BREAK A BANK REPORTS IS
-// ABSENT FROM THE HARNESS'S REPORT — never the converse, which is false by
-// construction: the harness catches a member's advice row against the AGENT's
-// register, and a bank holding no such register cannot. Over this scenario the
-// harness reports no break at all, so the containment says every one of the four
-// banks reconciles from inside, across twelve payments in four statuses, two
-// settlements and a return. A false positive in the narrow instrument fails here.
-//
-// # The positions agree in BOTH directions, and that is the stronger half
-//
-// A clearing suspense that has not returned to zero is the one finding both
-// instruments read off the same account — the harness out of the bank's book, the
-// bank out of its own — so the two must name the same banks. This scenario ends
-// with six payments in flight deliberately, which is what makes that assertion
-// have something to bite on.
+// The positions agree in BOTH directions, which is the stronger half: a clearing
+// suspense that has not returned to zero is the one finding both instruments read off
+// the same account, so the two must name the same banks.
 func TestABanksOwnRunAgreesWithTheHarness(t *testing.T) {
 	ctx := context.Background()
 	net := testNetwork(t)
@@ -569,19 +501,15 @@ func TestABanksOwnRunAgreesWithTheHarness(t *testing.T) {
 	}
 }
 
-// TestTheRejectedTransferWasReversedInThePayersBank pins the second half of the
-// seed's one rejection. build() composes both halves itself — the clearing house
-// transitions the payment, the submitting bank reverses the leg it posted — and
-// only the first is visible in the payment row every other seed assertion reads.
-// Without this, the reversal could vanish from the seed and the sample data would
-// show a Rejected payment whose payer never got their money back.
+// TestTheRejectedTransferWasReversedInThePayersBank pins the second half of the seed's
+// one rejection. build() composes both halves — the clearing house transitions the
+// payment, the submitting bank reverses the leg it posted — and only the first is
+// visible in the payment row every other seed assertion reads.
 //
-// It is a PUSH that this scenario rejects, and that is what gives the test
-// something to find. On a push the submitting bank is the payer's own and posted
-// the debtor leg when it took the instruction; on a pull it has posted nothing
-// yet, and the payer's bank — which posts on a collection — has not heard of the
-// payment at all before finality. A rejected collection therefore reverses
-// nothing anywhere, which is settle-before-release working rather than a gap.
+// It is a PUSH that this scenario rejects, which is what gives the test something to
+// find: on a push the submitting bank is the payer's own and posted the debtor leg,
+// while on a pull it has posted nothing and the payer's bank has not heard of the
+// payment before finality. A rejected collection therefore reverses nothing anywhere.
 func TestTheRejectedTransferWasReversedInThePayersBank(t *testing.T) {
 	ctx := context.Background()
 	net := testNetwork(t)
@@ -598,11 +526,9 @@ func TestTheRejectedTransferWasReversedInThePayersBank(t *testing.T) {
 	if rejected.ID == "" {
 		t.Fatal("no rejected payment in the seed data")
 	}
-	// The leg is on the PAYER'S BANK's copy and on no other. The clearing house's
-	// row — which is what ListPayments above returns — has no leg columns at all,
-	// so reading DebtorLegTx off it would report a fixture that does not cover a
-	// reversal when the reversal is there all along. On a push that bank is the
-	// submitter, and the submitter is the only one holding a copy before finality.
+	// The leg is on the PAYER'S BANK's copy and no other. The clearing house's row has
+	// no leg columns at all, so reading DebtorLegTx off it would report a fixture that
+	// does not cover a reversal when the reversal is there all along.
 	payerBIC := payment.ParticipantID(rejected.DebtorDetails.Agent)
 	atPayer, err := net.bank(payerBIC).GetPayment(ctx, rejected.ID)
 	if err != nil {
@@ -625,47 +551,31 @@ func TestTheRejectedTransferWasReversedInThePayersBank(t *testing.T) {
 	}
 }
 
-// TestSeedRejectLeavesThePayersBankUntouchedWhenItsHalfFails pins the shape of
-// the seed's composite, not just its result.
+// TestSeedRejectLeavesThePayersBankUntouchedWhenItsHalfFails pins the shape of the
+// seed's composite, not just its result.
 //
-// # It was TestSeedRejectIsOneUnitOfWork, and that unit of work is gone
+// The two halves cannot run on ONE transaction: that would span the clearing house and
+// a bank, and a unit of work is ONE DATABASE's. b.reject is three of them, so a
+// reversal that fails leaves the clearing house's transition standing — a dataset this
+// seed can build.
 //
-// The two halves cannot run on ONE transaction: that would span the clearing
-// house and a bank, and a unit of work is ONE DATABASE's. b.reject is three of
-// them — the decision, and each bank recording it on its own copy — so a
-// reversal that fails leaves the clearing house's transition standing, which is
-// a dataset this seed can build.
-//
-// So the half-happened state RejectAtCSMTx names is reachable here, as it always
-// was over the transport, and the guarantee that replaces it is the one a single
-// institution can still make: RejectAtBankTx transitions THIS bank's copy and
-// reverses THIS bank's leg together, so a bank that cannot give the money back
-// does not record the rejection either. That is the inconsistency that would
-// cost real money; the clearing house's decision standing while a bank has not
-// acted is a message waiting to be redelivered.
-//
-// The forced failure is a leg that has already been reversed, which is what a
-// retried rejection produces. b.reject reports it the way the whole builder
-// does, by panicking with a seedErr, so the call goes through recoverBuild.
+// The guarantee that replaces atomicity is the one a single institution can make:
+// RejectAtBankTx transitions THIS bank's copy and reverses THIS bank's leg together,
+// so a bank that cannot give the money back does not record the rejection either. The
+// forced failure is a leg already reversed, which is what a retried rejection
+// produces.
 func TestSeedRejectLeavesThePayersBankUntouchedWhenItsHalfFails(t *testing.T) {
 	ctx := context.Background()
 	net := testNetwork(t)
 
-	// The subject is BUILT rather than scavenged out of the finished dataset.
+	// The subject is BUILT rather than scavenged out of the finished dataset. What this
+	// forces is a reversal that FAILS, by reversing the leg out from under the composite
+	// first, so the subject has to be a payment nothing else asserts on — the build's own
+	// in-flight payments are each somebody's fixture.
 	//
-	// What this forces is a reversal that FAILS, by reversing the leg out from
-	// under the composite first — so the subject has to be a payment nothing else
-	// asserts on. The build's own in-flight payments are each somebody's fixture:
-	// six of them are what the first business day settles and delivers, and the
-	// one it rejects is already Rejected. So the precondition is made here: one
-	// more instruction, through the same composite the build uses, into the open
-	// cycle it left.
-	//
-	// Its parties are taken off a payment this scenario already settled, because
-	// those are two customers at two banks it has proved can pay each other — the
-	// addresses resolve, both banks are admitted, and the payer has money. A pair
-	// this test invented would be asserting on the resolution rather than on the
-	// rejection.
+	// Its parties are taken off a payment this scenario already settled: two customers at
+	// two banks it has proved can pay each other. A pair this test invented would be
+	// asserting on the resolution rather than on the rejection.
 	b := &builder{ctx: ctx, nets: net.nets}
 
 	payments, err := net.ListPayments(ctx)
@@ -791,14 +701,11 @@ func TestReservesConserved(t *testing.T) {
 	}
 }
 
-// TestBrunoOverdraftRepricing pins the one figure seed.go's comments argue for
-// at length: Bruno's overdraft ends the build with three terms rows (opening,
-// 15%, 18%) and a final accrued interest blending both rates. 487 (EUR 4.87)
-// is derived, not read off a run: 15% ACT/365 on EUR 200.00 for the days up to
-// the repricing's effective date, 18% from it, per the arithmetic walked
-// through in the comment above lendingShowcase's SetOverdraftTerms call for
-// the repricing. Without this, a change to Bella's 30-day span or the
-// repricing's twenty-day offset would rot that comment silently.
+// TestBrunoOverdraftRepricing pins the one figure seed.go's comments argue for at
+// length: Bruno's overdraft ends the build with three terms rows (opening, 15%, 18%)
+// and a final accrued interest blending both rates. 487 (EUR 4.87) is derived, not
+// read off a run — 15% ACT/365 on EUR 200.00 up to the repricing's effective date, 18%
+// from it. Without this, a change to Bella's 30-day span would rot that comment.
 func TestBrunoOverdraftRepricing(t *testing.T) {
 	ctx := context.Background()
 	net := testNetwork(t)
@@ -846,17 +753,14 @@ func TestBrunoOverdraftRepricing(t *testing.T) {
 	}
 }
 
-// The seeded data holds the catalogue's three pricing cases side by side, so a
-// reader can see them in the web app without writing a test: an account
-// floating with its product, one whose negotiated overlay outranks it, and one
-// migrated onto another product.
+// The seeded data holds the catalogue's three pricing cases side by side, so a reader
+// can see them in the web app without writing a test: an account floating with its
+// product, one whose negotiated overlay outranks it, and one migrated onto another
+// product.
 //
-// The floating account's rate is asserted to EQUAL the product's version in
-// force today rather than a hardcoded number. That is the claim worth pinning —
-// the account tracks the product, with no per-account write — and it stays true
-// if the story's length or the reprice's offset ever moves. The reprice itself
-// is pinned separately, on the timeline, where a hardcoded figure means
-// something.
+// The floating account's rate is asserted to EQUAL the product's version in force
+// today rather than a hardcoded number: the account tracks the product, with no
+// per-account write, and that stays true if the story's length ever moves.
 func TestSeededCatalogueShowsAllThreePricingCases(t *testing.T) {
 	ctx := context.Background()
 	net, clock := testNetworkAndClock(t)
@@ -985,13 +889,10 @@ func TestDeterministicIDs(t *testing.T) {
 	}
 }
 
-// A mutation made after the scenario is built is dated on the DEPLOYMENT's
-// timeline, where the scenario left it, and not on the wall clock.
-//
-// That is what makes one screen readable. The sample dataset is dated months
-// before today, so a row stamped with real time beside it would put two
-// timelines a year apart on one page — and a reader would have no way to tell a
-// stale seed date from the day the deployment is actually on.
+// A mutation made after the scenario is built is dated on the DEPLOYMENT's timeline,
+// where the scenario left it, and not on the wall clock. The sample dataset is dated
+// months before today, so a row stamped with real time beside it would put two
+// timelines a year apart on one page.
 func TestAMutationAfterTheBuildIsDatedOnTheDeploymentsTimeline(t *testing.T) {
 	ctx := context.Background()
 	net, clock := testNetworkAndClock(t)
@@ -1017,15 +918,11 @@ func TestAMutationAfterTheBuildIsDatedOnTheDeploymentsTimeline(t *testing.T) {
 	}
 }
 
-// listParticipants and listPayments keep the ctx/error plumbing out of the
-// assertions above.
-//
-// listParticipants goes through the STORES rather than through an institution,
-// and that is the shape of the question rather than a workaround. The clearing
-// house holds no banks table, and the roster it does hold names addresses and
-// says nothing about a bank that was founded and never admitted. "Which banks
-// exist" is the composition root's question and no institution has it. See
-// payment's allBanks and auditReaders.
+// listParticipants and listPayments keep the ctx/error plumbing out of the assertions
+// above. listParticipants goes through the STORES rather than an institution, which is
+// the shape of the question: the clearing house holds no banks table, and the roster
+// names addresses and says nothing about a bank founded and never admitted. "Which
+// banks exist" is the composition root's question.
 func listParticipants(t *testing.T, ctx context.Context, net testNets) []*payment.Bank {
 	t.Helper()
 	bics, err := net.stores.Banks(ctx)
@@ -1083,13 +980,10 @@ func TestPopulateIsIdempotent(t *testing.T) {
 		t.Fatalf("the business date after a second Populate = %v, want %v — the skip moved the clock", got, built)
 	}
 
-	// The case the idempotent skip exists for: a second process opening a store
-	// that outlived the first. Its clock is the one calendar.OpenClock read back
-	// from beside the databases — a day well past the anchor and past where this
-	// scenario's own timeline ended — and the skip must leave it exactly there. A
-	// rewind here would put the business date behind books already holding
-	// entries dated later, and every accrual and ageing report after it would be
-	// computed against a day that has been lived through.
+	// The case the idempotent skip exists for: a second process opening a store that
+	// outlived the first. Its clock is a day well past the anchor and past where this
+	// scenario's timeline ended, and the skip must leave it exactly there — a rewind
+	// would put the business date behind books already holding entries dated later.
 	resumed := BaseDate.AddDate(0, 0, 400)
 	secondClock := calendar.NewClock(resumed)
 	second := New(secondClock)

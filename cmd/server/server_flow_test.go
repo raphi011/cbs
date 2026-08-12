@@ -26,29 +26,22 @@ import (
 
 // What this file is for: the seam between HTTP and the business day.
 //
-// Every other file here drives the three surfaces over a store. These tests
-// drive one over a store AND the real transport, because what they are about is
-// the thing that is not answered synchronously: a request returns while the file
-// it produced is still sitting in another institution's order log, and the answer
-// arrives at a different institution later. No test here waits for a duration to
-// find out — nothing runs in the background, so "later" means "the next time the
-// day is carried".
+// Every other file here drives the three surfaces over a store. These drive one over
+// a store AND the real transport, because what they are about is what is not answered
+// synchronously: a request returns while the file it produced is still in another
+// institution's order log. Nothing runs in the background, so "later" means "the next
+// time the day is carried".
 
-// newAPIHarness is a seeded deployment with both hosts really listening.
+// newAPIHarness is a seeded deployment with both hosts really listening. Seeded,
+// because a payment needs two banks that can address each other, an open cut-off
+// window for its scheme, and a payer with money — and seed.Populate is the dataset
+// the running system serves, so these tests exercise the same rows a reader sees in
+// the app. They name them by IBAN rather than by id.
 //
-// Seeded, because a payment needs two banks that can address each other, an open
-// cut-off window for its scheme, and a payer with money. seed.Populate is the
-// dataset the running system serves, so these tests exercise the same rows a
-// reader will see in the app. They name them by IBAN rather than by id — see
-// seededParty.
-//
-// The listeners are bound BEFORE the seed, which is the order cmd/server uses:
-// the seed admits its banks through this deployment's own doors.
-//
-// There is no gate and nothing to hold still. Under a synchronous day a payment
-// submitted and not yet carried is PROVABLY still Initiated — the file is in the
-// clearing house's order log and no goroutine will touch it — so the test that
-// used to need an observer installed in the transport now needs nothing at all.
+// The listeners are bound BEFORE the seed, the order cmd/server uses: the seed admits
+// its banks through this deployment's own doors. Under a synchronous day a payment
+// submitted and not yet carried is PROVABLY still Initiated, so there is no gate and
+// nothing to hold still.
 func newAPIHarness(t *testing.T) *server {
 	t.Helper()
 	ctx := context.Background()
@@ -87,24 +80,17 @@ func newAPIHarness(t *testing.T) *server {
 
 // seededParty is the participant and account behind one of the seed's IBANs.
 //
-// The ids are not written down. Every id in a book comes from one counter, so an
-// act that allocates one more id moves every id after it — and the seed builds
-// the same things in the same order only for as long as nobody adds an act.
+// The ids are not written down: every id in a book comes from one counter, so an act
+// that allocates one more moves every id after it. An IBAN is the seed's own stable
+// name for a customer, stable for a durable reason — the seed CHOSE it, where an id
+// is whatever the counter had reached.
 //
-// An IBAN is the seed's own stable name for a customer and is what these tests
-// ask by. It is stable for a durable reason: the seed CHOSE it, where an id is
-// whatever the counter had reached.
+// It SWEEPS, and has to do the sweeping itself: no bank can answer "whose IBAN is
+// this", so this helper asks each bank about its own register in turn. That is the
+// harness standing outside the network, which a test may do and no institution may.
 //
-// It SWEEPS, and it has to do the sweeping itself: no bank can answer "whose
-// IBAN is this" (payment.ResolveIdentifier), so this helper asks each bank about
-// its own register in turn. That is the test harness standing outside the network
-// and looking at all of it, which is a thing a test may do and no institution
-// may — the same standing payment/recon is built on.
-//
-// It returns the BANK as well as the ref, because a payment.PartyRef names none
-// (see payment.PartyRef) and every caller here needs both: the account to quote
-// on an instruction, and the address to bind a listener to or to put in an agent
-// field. The sweep already knows which bank answered.
+// It returns the BANK as well as the ref, because a payment.PartyRef names none and
+// every caller needs both.
 func seededParty(t *testing.T, s *server, iban string) (iso20022.BIC, payment.PartyRef) {
 	t.Helper()
 	ctx := context.Background()
@@ -147,46 +133,37 @@ func payerRoutes(t *testing.T, s *server) http.Handler {
 
 // The seed's two customers these tests move money between, named by address.
 //
-// Derived rather than written out, because a bank MINTS its customers'
-// addresses: these are the allocations the settlement agent gives those two
-// banks and the order the seed opens their accounts in, which is the only thing
-// about them a test can depend on. A literal would say what the check digits are
+// Derived rather than written out, because a bank MINTS its customers' addresses:
+// these are the allocations the settlement agent gives those two banks and the order
+// the seed opens their accounts in. A literal would say what the check digits are
 // today and go stale silently the first time an account is inserted above.
 //
-// The CODES are still written out and are the one thing here that could drift.
-// A registry allocates from the top of each country's range downwards, so the
-// first bank admitted in Germany gets 99999999 and the first in Italy 99999 —
-// which holds for as long as the seed admits those two banks first in their
-// countries. See payment.allocateBankCodeTx.
-//
-// Note that they are in different countries, of different lengths, with the
-// bank code at a different offset in each. That is the seed's point, and it is
-// what makes the routing directory a lookup rather than a substring.
+// The CODES are still written out and are the one thing that could drift: a registry
+// allocates from the top of each country's range downwards, so the first bank
+// admitted in Germany gets 99999999 and the first in Italy 99999. They are in
+// different countries, of different lengths, with the bank code at a different offset
+// in each — which is what makes the routing directory a lookup rather than a
+// substring.
 var (
 	aliceIBAN = mustMint(iban.DE, "99999999", 1) // Aurora Bank's first account
 	bellaIBAN = mustMint(iban.IT, "99999", 2)    // Banca Verde's second
 )
 
 // validSubmission is Alice at Aurora Bank paying Bella at Banca Verde: a credit
-// transfer the seeded network can carry the whole way.
-//
-// The IBANs are quoted in the body as well as used to look the ids up, because
-// SEPA credit transfer is addressed BY iban (payment.Scheme.AddressedBy):
-// without them the payee's bank has no address to resolve and answers AC01.
-//
-// The amount is small enough that Alice can afford it whatever else the seeded
-// scenario has already taken out of her account.
+// transfer the seeded network can carry the whole way. The IBANs are quoted in the
+// body as well as used to look the ids up, because SEPA credit transfer is addressed
+// BY iban — without them the payee's bank has no address to resolve and answers AC01.
+// The amount is small enough that Alice can afford it whatever else the scenario has
+// taken out of her account.
 func validSubmission(t *testing.T, s *server) string {
 	t.Helper()
 	_, payer := seededParty(t, s, aliceIBAN)
 	_, payee := seededParty(t, s, bellaIBAN)
-	// NO agent on either side, and none to give: the instruction carries an
-	// address and a name, and the payer's bank derives the routing element from
-	// the address through its own copy of the scheme's directory. See api's
-	// InitiatePaymentRequest and payment.SubmitPaymentTx.
-	//
-	// A party object carries no "participant" either. Which bank a side is at is
-	// something this request never says; see api.PartyRefDTO.
+	// NO agent on either side, and none to give: the instruction carries an address
+	// and a name, and the payer's bank derives the routing element from the address
+	// through its own copy of the scheme's directory. A party object carries no
+	// "participant" either — which bank a side is at is something this request never
+	// says.
 	return fmt.Sprintf(`{
 		"scheme":"sepa.ct",
 		"debtor":{"account":%q,"identifier":{"scheme":"IBAN","value":%q}},
@@ -248,12 +225,10 @@ func TestSubmitAnswers202AndThePaymentIsNotYetAccepted(t *testing.T) {
 	}
 	id := decodePaymentID(t, rec)
 
-	// Read on the PAYER'S BANK's surface, because until the file is carried that
-	// bank is the only institution with a row for this payment at all — the
-	// instruction has not been sent, so the clearing house has not been told it
-	// exists and answers 404 rather than "Initiated". Which is the same claim in
-	// a stronger form: the response was written before any other institution had
-	// heard of the payment.
+	// Read on the PAYER'S BANK's surface, because until the file is carried that bank
+	// is the only institution with a row for this payment at all: the instruction has
+	// not been sent, so the clearing house answers 404 rather than "Initiated". Which
+	// is the same claim in a stronger form.
 	var before api.PaymentDTO
 	getJSON(t, payerRoutes(t, srv), "/payments/"+id, &before)
 	if before.Status != "Initiated" {
@@ -269,13 +244,10 @@ func TestSubmitAnswers202AndThePaymentIsNotYetAccepted(t *testing.T) {
 	}
 }
 
-// The two routes the hub added, over HTTP, on the bank's own port: what is
-// waiting, and the act that sends it.
-//
-// It is the API half of what bulk_test.go measures inside the deployment, and
-// the assertion that matters here is the ORDER ID: a cut-off answers with a
-// receipt from the transport and not with an outcome, because what the clearing
-// house makes of the file comes back on a later download.
+// The two routes the hub added, over HTTP, on the bank's own port: what is waiting,
+// and the act that sends it. The assertion that matters is the ORDER ID — a cut-off
+// answers with a receipt from the transport and not with an outcome, because what the
+// clearing house makes of the file comes back on a later download.
 func TestPendingAndCutoffOnABanksOwnPort(t *testing.T) {
 	srv := newAPIHarness(t)
 	payer := payerRoutes(t, srv)
@@ -308,18 +280,12 @@ func TestPendingAndCutoffOnABanksOwnPort(t *testing.T) {
 	}
 }
 
-// A reset throws the queues away with the rows, and the file a cut-off left
-// behind is one of them.
-//
-// There is nothing to drain: no goroutine is carrying anything, so the only way
-// a file survives a reset is if the reset left the queue standing — and a file
-// about a payment no institution now holds a row for would be worked through on
-// the first day after it, against tables the reset has emptied. Both hosts are
-// therefore emptied, which is what this measures.
-//
-// The cut-off is what puts a file there at all. A submission on its own leaves
-// the instruction in the payer's bank's hub and nothing on any connection, so a
-// version of this test without one would measure a reset over an empty host.
+// A reset throws the queues away with the rows, and the file a cut-off left behind is
+// one of them. There is nothing to drain, so the only way a file survives is if the
+// reset left the queue standing — and a file about a payment no institution now holds
+// a row for would be worked through on the first day after it, against tables the
+// reset has emptied. The cut-off is what puts a file there at all: a submission on its
+// own leaves the instruction in the payer's bank's hub.
 func TestResetThrowsTheQueuesAwayWithTheRows(t *testing.T) {
 	srv := newAPIHarness(t)
 	payer := payerRoutes(t, srv)
@@ -337,27 +303,17 @@ func TestResetThrowsTheQueuesAwayWithTheRows(t *testing.T) {
 	}
 }
 
-// TestAnAddressNoMemberIsPublishedUnderIsUnprocessable is the clearing house's
-// console meeting an address it cannot hand to anybody.
+// TestAnAddressNoMemberIsPublishedUnderIsUnprocessable is the clearing house's console
+// meeting an address it cannot hand to anybody. On a bank's own port the submitting
+// bank is the port; on THIS one it is read out of the payer's address through the
+// roster this institution publishes, so an address under a bank code no member holds
+// is one this console cannot act on.
 //
-// An instruction names no bank at all. On a bank's own port the submitting bank
-// is the port; on THIS one it is read out of the payer's address, through the
-// roster this institution publishes — so an address under a bank code no member
-// holds is one this console cannot act on, and 422 is the answer.
-//
-// It is the clearing house's own version of the refusal a member meets from its
-// copy (payment.ErrBankCodeUnknown), and the difference between the two is the
-// whole of the subscription model: this institution CAN tell that no member holds
-// the code, because the roster is where a member comes into existence. A member
-// asking the same question of its own snapshot cannot.
-//
-// The 422 rather than a 404 is the older ruling, unchanged: an address nobody is
-// published under is a well-formed field this system will not act on, not a
-// missing resource.
-//
-// It is asked of this console because that is the only surface that can ask it. A
-// bank's own POST /payments is bound to one bank and takes the submitting side
-// from that binding, so it has no way to name a stranger as the payer.
+// It is the clearing house's own version of the refusal a member meets from its copy,
+// and the difference is the whole of the subscription model: this institution CAN tell
+// that no member holds the code, because the roster is where a member comes into
+// existence. The 422 rather than a 404 is the older ruling: an address nobody is
+// published under is a well-formed field this system will not act on.
 func TestAnAddressNoMemberIsPublishedUnderIsUnprocessable(t *testing.T) {
 	srv := newAPIHarness(t)
 	// A well-formed German address under a code this scheme has allocated to
@@ -370,20 +326,15 @@ func TestAnAddressNoMemberIsPublishedUnderIsUnprocessable(t *testing.T) {
 	}
 }
 
-// TestAReseededNetworkCanStillBePaidThrough is the guarantee that moved when
-// Reset stopped calling JoinRoster.
+// TestAReseededNetworkCanStillBePaidThrough checks from the outside that a reseed
+// enrols the banks it founds. A reset forgets every bank actor, truncates and
+// reseeds; the actors are not put back in a step of the reset's own, because the
+// reseed admits its banks through the deployment — a better division of labour and a
+// weaker guarantee, since nothing in Reset can check that a reseed did it.
 //
-// A reset forgets every bank actor, truncates and reseeds. The actors are not put
-// back in a step of the reset's own: the reseed admits its banks through the
-// deployment, so each one is enrolled in the call that founds it. That is a better division
-// of labour and a weaker guarantee, because nothing in Reset can check that a
-// reseed did it. This is what checks it, from the outside, in the only way that matters:
-// a payment between two reseeded banks reaches the far side.
-//
-// A row with no actor answers every read, so an assertion on the participant
-// list would pass over exactly the failure this exists to catch. It has to be a
-// payment, and it has to be carried to Accepted, because that is the state only
-// the PAYEE's bank can put it in.
+// A row with no actor answers every read, so an assertion on the participant list
+// would pass over exactly the failure this exists to catch. It has to be a payment
+// carried to Accepted, the state only the PAYEE's bank can put it in.
 func TestAReseededNetworkCanStillBePaidThrough(t *testing.T) {
 	srv := newAPIHarness(t)
 
@@ -405,18 +356,11 @@ func TestAReseededNetworkCanStillBePaidThrough(t *testing.T) {
 	}
 }
 
-// A reset empties the network, so it has to empty the deployment's picture of it.
-//
-// The sequence that fails without it: provision a bank, reset, provision the same
-// BIC again. If the deployment keeps the first bank's queues, a file addressed
-// to that BIC lands in a queue about a payment no institution holds a row for,
-// on a system whose roster is empty. What is KEPT is the bank itself, because a
-// listener holds it — see TestAResetKeepsEveryBindingAListenerMadeAtStartup.
-//
-// Every assertion below is one of the three things that go wrong: the address is
-// free again, the bank that comes back can actually be paid through — a row with
-// no actor answers every read and carries no payment — and the refusal that IS
-// still reachable says something true.
+// A reset empties the network, so it has to empty the deployment's picture of it. The
+// sequence that fails without it: provision a bank, reset, provision the same BIC
+// again. If the deployment keeps the first bank's queues, a file addressed to that BIC
+// lands in a queue about a payment no institution holds a row for, on a system whose
+// roster is empty. Every assertion below is one of the three things that go wrong.
 func TestAReadmittedBankCanBePaidThroughAfterAReset(t *testing.T) {
 	h := newServer(t, nil)
 
@@ -469,13 +413,10 @@ func TestAReadmittedBankCanBePaidThroughAfterAReset(t *testing.T) {
 	}
 }
 
-// The reseeded banks are rejoined, not just recreated.
-//
-// The sample dataset is rebuilt by seed.Populate, which drives payment.Network
-// directly and knows nothing about a deployment — so every bank it creates is a row
-// with no actor until Reset rejoins the roster. Without that, a reset leaves a
-// system that answers every read and cannot carry a payment, which is the worst
-// shape a demo can be in: nothing looks broken until somebody tries to pay.
+// The reseeded banks are rejoined, not just recreated. seed.Populate drives
+// payment.Network directly and knows nothing about a deployment, so every bank it
+// creates is a row with no actor until Reset rejoins the roster — without which a
+// reset leaves a system that answers every read and cannot carry a payment.
 func TestPayingAfterAResetGoesThroughTheReseededBanks(t *testing.T) {
 	srv := newAPIHarness(t)
 
@@ -497,22 +438,15 @@ func TestPayingAfterAResetGoesThroughTheReseededBanks(t *testing.T) {
 
 // The two kinds of failure a file-driven handler has, and the line between them.
 //
-// A submission the payer's own bank refuses is decided inside its own unit of
-// work, before anything is sent, so it comes back as a status code in the
-// response to the request that caused it. A payment the FAR SIDE refuses cannot:
-// by the time the payee's bank has looked at the address, this handler has
-// answered 202 and the connection is gone. The outcome lands on the payment's
-// own row instead, and the caller finds it by asking again.
+// A submission the payer's own bank refuses is decided inside its own unit of work,
+// before anything is sent, so it comes back as a status code. A payment the FAR SIDE
+// refuses cannot: by the time the payee's bank has looked at the address, this handler
+// has answered 202 and the connection is gone.
 //
-// What the far side's refusal IS has moved. It is handed the instruction only
-// after the cycle carrying it is final, so it cannot reject: the payment settles,
-// the payee's bank sends it back, and the row the caller reads ends up Returned.
-// The caller's experience is the same shape either way — ask again — which is the
-// half this test is about.
-//
-// Both halves are asserted here because the split is what ruling 4 of this task
-// is about, and either half alone would be satisfied by a system that had got the
-// other one wrong.
+// What the far side's refusal IS follows from settling before releasing: it is handed
+// the instruction only after the cycle is final, so it cannot reject — the payment
+// settles, the payee's bank sends it back, and the row ends up Returned. The caller's
+// experience is the same shape either way.
 func TestWhichRefusalsReachTheCallerAndWhichDoNot(t *testing.T) {
 	srv := newAPIHarness(t)
 
@@ -524,12 +458,10 @@ func TestWhichRefusalsReachTheCallerAndWhichDoNot(t *testing.T) {
 		t.Errorf("a payment the payer's own bank refuses answered %d, want 422 (body: %s)", rec.Code, rec.Body.String())
 	}
 
-	// Unanswerable: the IBAN is well-formed and belongs to nobody. Only the
-	// payee's bank can know that, and it is not this request's to report.
-	// Under VERDE's OWN bank code, so it routes: the payer's bank resolves the
-	// code and sends, and the address is one Verde does not hold. An address under
-	// some other code would be refused here instead, by the payer's own directory,
-	// which is the case the test above is about.
+	// Unanswerable: the IBAN is well-formed and belongs to nobody, which only the
+	// payee's bank can know. Under VERDE's OWN bank code, so it routes — an address
+	// under some other code would be refused here instead, by the payer's own
+	// directory.
 	unknown := strings.Replace(validSubmission(t, srv), bellaIBAN, mustMint(iban.IT, "99999", 9999), 1)
 	rec = postJSON(t, payerRoutes(t, srv), "/payments", unknown)
 	if rec.Code != http.StatusAccepted {
@@ -554,23 +486,13 @@ func TestWhichRefusalsReachTheCallerAndWhichDoNot(t *testing.T) {
 	}
 }
 
-// The cut-off instructs settlement, and the console can reach it.
+// The cut-off instructs settlement, and the console can reach it. Closing a cycle
+// sends a pacs.009, and there is no second console button that discharges it.
 //
-// Closing a cycle sends a pacs.009. There is no second console button that
-// discharges it, and that is the whole of what "the transport is wired into api"
-// buys.
-//
-// What this test asserts, exactly: 200 with a Closed cycle carrying no
-// settlement, then a drain, then — through the CENTRAL BANK's surface and only
-// that one — the cycle read back as Settled and the settlement it names. Two of
-// its four reads, one operator.
-//
-// The rest of the 6b read surface is covered where it was covered before, and
-// deliberately not duplicated here: TestTheCentralBankCanReadTheCycleItSettles
-// (surface_test.go) walks all four of the central bank's, and
-// TestTheClearingHouseReadsTheSettlementItDidNotPerform walks the clearing
-// house's side of the same settlement. This test is about the INSTRUCTION, not
-// about who may read what.
+// Exactly: 200 with a Closed cycle carrying no settlement, then a drain, then —
+// through the CENTRAL BANK's surface and only that one — the cycle read back as
+// Settled and the settlement it names. The rest of the read surface is covered
+// elsewhere and deliberately not duplicated: this test is about the INSTRUCTION.
 func TestClosingACycleThroughTheAPIInstructsSettlement(t *testing.T) {
 	srv := newAPIHarness(t)
 
@@ -608,14 +530,10 @@ func TestClosingACycleThroughTheAPIInstructsSettlement(t *testing.T) {
 		t.Fatalf("cycle is %q after draining, want Settled — the pacs.009 is what discharges it", settled.Status)
 	}
 
-	// And the settlement is found at the SETTLEMENT AGENT, by the cycle it names
-	// rather than by an id the cycle names.
-	//
-	// The cycle carries no settlementId: the settlement's id is allocated inside
-	// the settlement agent's own unit of work in its own database, and what comes
-	// back to the clearing house is a pacs.002 quoting the CYCLE. So the link is
-	// asserted from the end that can hold it. That closing a cycle does not settle
-	// it is the Status above and the empty listing below.
+	// And the settlement is found at the SETTLEMENT AGENT, by the cycle it names rather
+	// than by an id the cycle names. The cycle carries no settlementId: that id is
+	// allocated inside the agent's own unit of work, and what comes back to the clearing
+	// house is a pacs.002 quoting the CYCLE.
 	var settlements []api.SettlementDTO
 	getJSON(t, cbSurface(srv), "/settlements", &settlements)
 	var found api.SettlementDTO
@@ -634,22 +552,14 @@ func TestClosingACycleThroughTheAPIInstructsSettlement(t *testing.T) {
 	}
 }
 
-// An operator's rejection is the clearing house's half and the payer's bank's
-// half, and only the first one is in the response.
+// An operator's rejection is the clearing house's half and the payer's bank's half,
+// and only the first is in the response. The refund is another institution's act in
+// another institution's book and happens when the pacs.002 gets there, so the 200
+// cannot describe a payer who has already been refunded.
 //
-// The refund is another institution's act in another institution's book, and it
-// happens when the pacs.002 gets there — so the 200 cannot describe a payer who
-// has already been refunded.
-//
-// What this test can honestly assert is the RESPONSE — which describes the
-// clearing house's half and only that — and the balance after the drain. It
-// deliberately does not read the balance in between: the payer's bank actor runs
-// concurrently with this goroutine, so "not yet refunded" would be a race dressed
-// up as an assertion. This package's own
-// TestAnOperatorRejectionRefundsThePayerOnlyOnceTheMessageArrives measures which
-// actor posted the refund, without a clock, and
-// TestARejectionWhoseRefundFailsStandsAndIsReported pins that the two halves
-// are not one unit of work.
+// It asserts the RESPONSE and the balance after the drain, and deliberately does not
+// read the balance in between: the payer's bank actor runs concurrently with this
+// goroutine, so "not yet refunded" would be a race dressed up as an assertion.
 func TestRejectingThroughTheAPIRefundsThePayerOnlyAfterTheMessageArrives(t *testing.T) {
 	srv := newAPIHarness(t)
 
@@ -677,20 +587,13 @@ func TestRejectingThroughTheAPIRefundsThePayerOnlyAfterTheMessageArrives(t *test
 }
 
 // A return goes round the network, and the reason code it carries is how that is
-// visible from here.
-//
-// The distinction this pins is not "did the money come back" — a synchronous
-// domain call would do that too. It is WHO did it and WITH WHAT. Deployment.Return
-// hands the instruction to the bank that RECEIVED the original — the payee's bank
-// on a push — which posts its own clawback and sends a pacs.004; the refund
-// asserted below is a DIFFERENT bank's posting, made from that same message after
-// the settlement agent has reversed the reserves, and the reason travels the
-// whole way as a code and a text. The refund's own description in the payer's
-// ledger is where both surface.
+// visible from here. The distinction is not "did the money come back" but WHO did it
+// and WITH WHAT: Deployment.Return hands the instruction to the bank that RECEIVED the
+// original, which posts its own clawback and sends a pacs.004, and the refund asserted
+// below is a DIFFERENT bank's posting made from that same message.
 //
 // The payment is a SETTLED one out of the seeded dataset, because finality is a
-// return's precondition: PostReturnLegTx refuses anything else, and the
-// returning bank checks it again before any message exists.
+// return's precondition.
 func TestReturningThroughTheAPIGoesRoundTheNetwork(t *testing.T) {
 	srv := newAPIHarness(t)
 
@@ -759,20 +662,15 @@ func aliceBalance(t *testing.T, s *server) int64 {
 	return int64(bal["book"].(float64))
 }
 
-// A reset leaves every binding a listener made at startup pointing at the
-// institution that is still running.
+// A reset leaves every binding a listener made at startup pointing at the institution
+// that is still running.
 //
-// serve binds each surface and each EBICS host ONCE, before the first request:
-// there is no lookup per request anywhere in this process, and there cannot be,
-// because http.Server takes a handler. So a reset that REPLACED an institution
-// would leave a deployment nobody could reach — banks uploading into a host
-// nothing reads, an operator's cut-off emptying a hub nothing fills — and every
-// test in this package would pass, because the fixtures ask the deployment for
-// its institutions again after the reset and a real listener never does.
-//
-// The mounted host below is therefore the point of the test: it is captured
-// exactly as serve captures it, and the reseeded bank has to be enrolled at the
-// one it is serving.
+// serve binds each surface and each EBICS host ONCE, before the first request, and
+// there cannot be a lookup per request because http.Server takes a handler. So a reset
+// that REPLACED an institution would leave a deployment nobody could reach — and every
+// test in this package would pass, because the fixtures ask the deployment for its
+// institutions again after the reset and a real listener never does. The mounted host
+// below is captured exactly as serve captures it.
 func TestAResetKeepsEveryBindingAListenerMadeAtStartup(t *testing.T) {
 	srv := newAPIHarness(t)
 	ctx := context.Background()
@@ -819,33 +717,21 @@ func TestAResetKeepsEveryBindingAListenerMadeAtStartup(t *testing.T) {
 	}
 }
 
-// A reset empties what the clearing house is holding between files.
+// A reset empties what the clearing house is holding between files: the returns
+// waiting for finality, and the receiving banks' shares of every file taken in. Both
+// are keyed by ids the store mints, and a reset restarts those sequences — so a share
+// that survived one would be released into a bank's queue by the next cycle given the
+// same id, carrying transactions about payments no institution holds a row for.
 //
-// Two kinds of obligation outlive a unit of work there: the returns waiting for
-// finality, and the receiving banks' shares of every file taken in. Both are
-// keyed by ids the store mints, and a reset restarts those sequences — so a
-// share that survived one would be released into a bank's queue by the next
-// cycle to be given the same id, carrying transactions about payments no
-// institution holds a row for.
+// Both are rows, so what makes this true is Reset's table list, which is why it is
+// still measured here: a table added to the schema and left out of the shape would be
+// invisible to every other test in this package.
 //
-// Both are rows now, so what makes this true is Reset's table list rather than
-// two lines in Deployment.Reset — which is exactly why it is still measured
-// here: a table added to the schema and left out of the shape would be invisible
-// to every other test in this package.
-//
-// The cut-off and the carry are what put a share there at all. A submission on
-// its own leaves the instruction in the payer's bank's hub, so a version of this
-// test without them would measure a reset over nothing.
-//
-// # What it counts, and why it is not zero
-//
-// A reset REBUILDS, and the sample dataset carries its own in-flight payments
-// through a real cut-off — so the clearing house is legitimately holding shares
-// afterwards. What must hold is that it holds exactly what a fresh build holds,
-// which is what the baseline taken before anything is submitted is for. Counting
-// transactions rather than cycles is what makes an extra share visible: the id it
-// would be filed under is one the restarted sequence mints again, so the two are
-// indistinguishable by key and differ only in what is inside.
+// The count is not zero. A reset REBUILDS, and the sample dataset carries its own
+// in-flight payments through a real cut-off, so the clearing house legitimately holds
+// shares afterwards — what must hold is that it holds exactly what a fresh build
+// holds. Counting transactions rather than cycles is what makes an extra share
+// visible: the id it would be filed under is one the restarted sequence mints again.
 func TestAResetThrowsAwayTheSharesTheClearingHouseHolds(t *testing.T) {
 	srv := newAPIHarness(t)
 	ctx := context.Background()
@@ -904,15 +790,12 @@ func heldTransactions(t *testing.T, c *ClearingHouse) int {
 	return n
 }
 
-// A bank's console, bound before a reset, still reads and empties that bank's
-// own hub afterwards.
-//
-// The hub is the one thing a bank holds outside its database, and a submission
-// goes to the bank the DEPLOYMENT routes it to while GET /payments/pending and
-// POST /payments/cutoff answer out of the bank the LISTENER was given. A reset
-// that made those two different banks would leave a console reporting an empty
-// hub for ever and a cut-off route that emptied nothing, with every row in the
-// database looking exactly right.
+// A bank's console, bound before a reset, still reads and empties that bank's own hub
+// afterwards. The hub is the one thing a bank holds outside its database, and a
+// submission goes to the bank the DEPLOYMENT routes it to while the pending and
+// cut-off routes answer out of the bank the LISTENER was given. A reset that made those
+// two different banks would leave a console reporting an empty hub for ever, with
+// every row in the database looking exactly right.
 func TestABankConsoleBoundBeforeAResetStillHoldsItsOwnHub(t *testing.T) {
 	srv := newAPIHarness(t)
 	payer := payerRoutes(t, srv)

@@ -1,11 +1,8 @@
-// Package deposit_test holds the deposit layer's tests.
-//
-// They live outside package deposit because they build a Register over a store
-// from store/testenv, which reaches store/sqlite, which imports deposit — an
-// in-package test file importing it would be an import cycle. The package is
-// dot-imported so the test bodies read exactly as they did when they were
-// in-package; deposit/export_test.go re-exports the one unexported thing they
-// still need.
+// Package deposit_test holds the deposit layer's tests. They live outside package
+// deposit because they build a Register over a store from store/testenv, which
+// reaches store/sqlite, which imports deposit. The package is dot-imported so the
+// test bodies read as in-package ones; deposit/export_test.go re-exports the one
+// unexported thing they still need.
 package deposit_test
 
 import (
@@ -22,13 +19,10 @@ import (
 	"github.com/raphi011/cbs/store/testenv"
 )
 
-// fixedTime is the instant returned by the test clock, matching the ledger
-// package's own test clock.
-//
-// The clock is deliberately frozen: every row then ties on CreatedAt, which is
-// exactly the case the store's ordering tie-break has to get right. A ticking
-// clock would hide a listing that falls back to comparing IDs — where "dep_10"
-// sorts ahead of "dep_8" — so freezing it is the stronger fixture.
+// fixedTime is the instant the test clock returns. The clock is deliberately frozen:
+// every row then ties on CreatedAt, which is exactly the case the store's ordering
+// tie-break has to get right. A ticking clock would hide a listing that falls back to
+// comparing IDs, where "dep_10" sorts ahead of "dep_8".
 var fixedTime = time.Date(2025, 1, 15, 12, 0, 0, 0, time.UTC)
 
 // ---------------------------------------------------------------------------
@@ -52,14 +46,10 @@ type mutableClock struct{ at time.Time }
 func (c *mutableClock) set(t time.Time) { c.at = t }
 func (c *mutableClock) now() time.Time  { return c.at }
 
-// newTestRegister creates a Register backed by a fresh ledger with a fixed
-// clock, returning the register, its *ledger.Book, the customer-deposits
-// subledger ID and the ID of a published product to open accounts from.
-//
-// The product is interest-free, so every test written before the catalogue
-// existed keeps exactly the behaviour it had: an account with a limit and no
-// price. A test about pricing publishes its own version — see
-// newTestRegisterWithCatalogue, which hands back the catalogue too.
+// newTestRegister creates a Register backed by a fresh ledger with a fixed clock,
+// returning the register, its book, the customer-deposits subledger and a published
+// product to open accounts from. The product is interest-free, so a test that says
+// nothing about pricing gets an account with a limit and no price.
 func newTestRegister(t *testing.T) (*Register, *ledger.Book, ledger.SubledgerID, product.ID) {
 	t.Helper()
 	return newTestRegisterOn(t, func() time.Time { return fixedTime })
@@ -139,14 +129,10 @@ func owed(t *testing.T, reg *Register, id AccountID) ledger.Position {
 	return pos
 }
 
-// setTerms is the pre-catalogue SetOverdraftTerms, rebuilt from the two calls
-// that replaced it.
-//
-// Every test that used the old method was describing one customer: a limit the
-// bank granted them and a rate it promised them. That is exactly a pinned limit
-// plus a negotiated overlay, so the behaviour those tests pin is unchanged —
-// what changed is that the two are now separate decisions, and that a rate can
-// alternatively come from the product.
+// setTerms is the pre-catalogue SetOverdraftTerms, rebuilt from the two calls that
+// replaced it: a pinned limit plus a negotiated overlay. Every test that used the old
+// method was describing one customer — a limit the bank granted and a rate it
+// promised — and the two are now separate decisions.
 func setTerms(ctx context.Context, reg *Register, id AccountID, limit ledger.Amount, rate, unarranged interest.Rate, dc interest.DayCount, effectiveFrom time.Time) (OverdraftTerms, error) {
 	if _, err := reg.SetOverdraftLimit(ctx, id, limit, effectiveFrom); err != nil {
 		return OverdraftTerms{}, err
@@ -506,12 +492,10 @@ func TestCaptureHoldIsAtomic(t *testing.T) {
 	_ = book
 }
 
-// The other half of atomicity, and the half a two-transaction implementation
-// cannot provide: when a capture is composed into a caller's unit of work that
-// later fails, the GL transaction it posted must not survive either.
-//
-// This is what the payment layer will rely on — a settlement that captures a
-// hold and then hits a problem must leave no posting behind.
+// The half of atomicity a two-transaction implementation cannot provide: when a
+// capture is composed into a caller's unit of work that later fails, the GL
+// transaction it posted must not survive either. It is what the payment layer relies
+// on.
 func TestCaptureHoldRollsBackWithTheCallersUnitOfWork(t *testing.T) {
 	ctx := context.Background()
 	reg, book, acct := newFundedAccount(t)
@@ -561,11 +545,9 @@ func TestCaptureHoldRollsBackWithTheCallersUnitOfWork(t *testing.T) {
 	}
 }
 
-// A capture that moves money into an account of a different asset needs no
-// check in the deposit layer: the posting debits one asset and credits
-// another, and the ledger's per-asset balance rule refuses it. This is the
-// invariant paying for itself — deposit relies on the GL posting for a check
-// it never has to implement on its own.
+// A capture that moves money into an account of a different asset needs no check in
+// the deposit layer: the posting debits one asset and credits another, and the
+// ledger's per-asset balance rule refuses it.
 func TestCaptureHoldRejectsCrossAssetCounterparty(t *testing.T) {
 	ctx := context.Background()
 	reg, book, deposits, prd := newTestRegister(t)
@@ -750,13 +732,11 @@ func TestStringers(t *testing.T) {
 // Overdraft Terms
 // ---------------------------------------------------------------------------
 
-// One receivable serves every account in an asset, and the detail under it is
-// the entries — which is what makes a shared one duplicate nothing.
-//
-// Σ(subsidiary balances) == control balance cannot fail arithmetically, and that
-// is exactly why it is worth computing: it is a control on the pipeline, and it
-// would catch a posting that named the pool without naming whose interest it
-// was.
+// One receivable serves every account in an asset, and the detail under it is the
+// entries — which is what makes a shared one duplicate nothing. Σ(subsidiary
+// balances) == control balance cannot fail arithmetically, and that is why it is
+// worth computing: it would catch a posting that named the pool without naming whose
+// interest it was.
 func TestOneReceivableServesEveryAccountInAnAsset(t *testing.T) {
 	ctx := context.Background()
 	reg, book, sub, prd := newTestRegister(t)
@@ -805,10 +785,9 @@ func TestOneReceivableServesEveryAccountInAnAsset(t *testing.T) {
 	assertEqual(t, "the pool is the sum of its customers", pool, brunoAccrued+carlaAccrued)
 }
 
-// Four writes on one effective DAY — the opening row plus three setter calls —
-// are ONE row. A terms row is identified by (account, day), which is what makes
-// "the terms in force on day D" unique by construction rather than by a
-// validation rule.
+// Four writes on one effective DAY — the opening row plus three setter calls — are
+// ONE row. A terms row is identified by (account, day), which makes "the terms in
+// force on day D" unique by construction rather than by a validation rule.
 func TestSameDayTermsWritesCollapseToOneRow(t *testing.T) {
 	ctx := context.Background()
 	reg, _, _, prd := newTestRegister(t)
@@ -885,10 +864,9 @@ func overdrawBy(t *testing.T, reg *Register, book *ledger.Book, sub ledger.Suble
 	}
 }
 
-// overdrawValueDated is overdrawBy with explicit dates. A BACK-DATED posting is
-// one whose booking date is today and whose value date is a day already accrued
-// through, which is the case every acceptance test below turns on and which
-// overdrawBy — value-dated at the clock — cannot express.
+// overdrawValueDated is overdrawBy with explicit dates. A BACK-DATED posting is one
+// whose booking date is today and whose value date is a day already accrued through,
+// which overdrawBy — value-dated at the clock — cannot express.
 func overdrawValueDated(t *testing.T, reg *Register, book *ledger.Book, sub ledger.SubledgerID, acct Account, amount ledger.Amount, booking, value time.Time) {
 	t.Helper()
 	ctx := context.Background()
@@ -907,27 +885,16 @@ func overdrawValueDated(t *testing.T, reg *Register, book *ledger.Book, sub ledg
 	assertNoError(t, err)
 }
 
-// expectedFromTimeline sums what the account SHOULD have accrued, day by day,
-// from functions the test states rather than from the implementation under
-// test. drawnOn and rateOn are the two things a timeline decides, and every
-// acceptance figure below is computed this way — never copied out of what the
-// code happens to print.
+// expectedFromTimeline sums what the account SHOULD have accrued, day by day, from
+// functions the test states rather than from the implementation under test. Every
+// acceptance figure below is computed this way, never copied out of what the code
+// happens to print. It is deliberately the same shape as interest.perDay: one Accrue
+// call per day, so the per-call integer truncation lands identically.
 //
-// It is deliberately the same shape as interest.perDay: one Accrue call per
-// day, so the per-call integer truncation lands identically.
-//
-// Both closures are indexed by the same thing, on the one day axis the engine
-// uses: a span is NAMED BY ITS END DATE, so span n is [start+n-1, start+n) and
-// n runs 1..days. interest.AccrueSeries is what fixes that — a movement
-// value-dated V ends the preceding run at V-1 and so first bites on [V-1, V) —
-// and deposit's accrual resolves termsAt on the same `to`. So both closures
-// read straight off the dates a test states:
-//
-//   - drawnOn(n) is the balance a movement value-dated start+n puts in force.
-//   - rateOn(n) is the terms a row effective from start+n puts in force.
-//
-// No off-by-one to keep straight in either direction, which is the point of
-// making the two agree.
+// Both closures are indexed on the one day axis the engine uses: a span is NAMED BY
+// ITS END DATE, so span n is [start+n-1, start+n) and n runs 1..days. drawnOn(n) is
+// the balance a movement value-dated start+n puts in force; rateOn(n) is the terms a
+// row effective from start+n puts in force. No off-by-one in either direction.
 func expectedFromTimeline(start time.Time, days int, dc interest.DayCount,
 	drawnOn func(n int) ledger.Amount, rateOn func(n int) interest.Rate) interest.Accrued {
 	var total interest.Accrued
@@ -938,10 +905,9 @@ func expectedFromTimeline(start time.Time, days int, dc interest.DayCount,
 	return total
 }
 
-// countingTx wraps a Tx and counts value-dated series reads, so a test can
-// assert that a run was skipped BEFORE any I/O rather than that it happened to
-// produce zero. The two are indistinguishable from the balance alone, and only
-// one of them is the guard doing its job.
+// countingTx wraps a Tx and counts value-dated series reads, so a test can assert
+// that a run was skipped BEFORE any I/O rather than that it happened to produce zero.
+// The two are indistinguishable from the balance alone.
 type countingTx struct {
 	Tx
 	series *int
@@ -1065,11 +1031,9 @@ func TestAccrueOverdraft_TiersAtTheLimit(t *testing.T) {
 	assertEqual(t, "tiered accrual", got.Accrued, interest.Accrued(8_333_333))
 }
 
-// TestAccrueOverdraft_ExcessFallsBackToTheArrangedRate covers the configuration
-// most accounts here are opened with: an arranged rate and NO unarranged one.
-// An unarranged rate is a surcharge, so its absence must mean the same rate
-// applies throughout — never that the part beyond the limit is free, which
-// would make exceeding a limit cheaper than respecting it.
+// An unarranged rate is a surcharge, so its absence must mean the arranged rate
+// applies throughout — never that the part beyond the limit is free, which would make
+// exceeding a limit cheaper than respecting it.
 func TestAccrueOverdraft_ExcessFallsBackToTheArrangedRate(t *testing.T) {
 	ctx := context.Background()
 	reg, book, sub, prd := newTestRegister(t)
@@ -1090,16 +1054,14 @@ func TestAccrueOverdraft_ExcessFallsBackToTheArrangedRate(t *testing.T) {
 	got, err := reg.GetAccount(ctx, acct.ID)
 	assertNoError(t, err)
 
-	// The WHOLE €150 accrues at 12%. It is still computed tier by tier, and
-	// Accrue truncates each one, so the figure is one micro-minor-unit under
-	// the single-base 5_000_000:
+	// The WHOLE €150 accrues at 12%, computed tier by tier with Accrue truncating
+	// each, so the figure is one micro-minor-unit under the single-base 5_000_000:
 	//
 	//	arranged 10_000 × 120_000 / 360 = 3_333_333.33 -> 3_333_333
 	//	excess    5_000 × 120_000 / 360 = 1_666_666.67 -> 1_666_666
 	//	                                                 = 4_999_999
 	//
-	// Skipping the excess would leave 3_333_333 — the €50 beyond the limit
-	// costing nothing at all.
+	// Skipping the excess leaves 3_333_333 — the €50 beyond the limit costing nothing.
 	assertEqual(t, "excess accrual at the arranged rate", got.Accrued, interest.Accrued(4_999_999))
 }
 
@@ -1223,11 +1185,9 @@ func TestChargeOverdraftInterest_NothingAccruedPostsNothing(t *testing.T) {
 	}
 }
 
-// TestChargeOverdraftInterest_RefusesClosedAccount pins the guard on an
-// explicitly-invoked charge: posting a debit to an account CloseTx only let
-// through at zero would reopen a balance on it. Reaching a closed account with
-// an overdraft history takes the whole flow — charge, repay, close — because
-// CloseTx now refuses an account whose receivable is still outstanding.
+// The guard on an explicitly-invoked charge: posting a debit to an account CloseTx
+// only let through at zero would reopen a balance on it. Reaching a closed account
+// with an overdraft history takes the whole flow — charge, repay, close.
 func TestChargeOverdraftInterest_RefusesClosedAccount(t *testing.T) {
 	ctx := context.Background()
 	reg, book, sub, prd := newTestRegister(t)
@@ -1262,12 +1222,11 @@ func TestChargeOverdraftInterest_RefusesClosedAccount(t *testing.T) {
 	assertError(t, err, ErrAccountClosed)
 }
 
-// TestClose_RefusesAStrandedReceivable is the guard that test now depends on.
-// An account that was overdrawn, accrued interest and repaid its principal has
-// a zero book balance and a live receivable: closing there would strand
-// recognized interest income as a debit in an Asset account nothing can ever
-// clear, because accrual afterwards skips a closed account and charging one is
-// refused outright. lending.CloseTx applies the same rule to a facility.
+// An account that was overdrawn, accrued interest and repaid its principal has a zero
+// book balance and a live receivable. Closing there would strand recognized interest
+// income as a debit in an Asset account nothing can clear, because accrual afterwards
+// skips a closed account and charging one is refused. lending.CloseTx applies the
+// same rule to a facility.
 func TestClose_RefusesAStrandedReceivable(t *testing.T) {
 	ctx := context.Background()
 	reg, book, sub, prd := newTestRegister(t)
@@ -1312,22 +1271,17 @@ func TestClose_RefusesAStrandedReceivable(t *testing.T) {
 }
 
 // TestClose_SucceedsOnAnExactHalfMinorUnitResidue pins the one residue
-// Accrued.Minor() cannot represent as settled: exactly half a minor unit.
-// Minor() rounds half AWAY from zero, so Minor(500_000) is 1 and
-// Minor(-500_000) is -1 — never 0 — even though the receivable itself is
-// fully cleared. If CloseTx tested the record instead of the receivable's own
-// ledger balance, an account that ever lands on this exact residue could
-// never be closed again: once its balance stops moving, further accrual adds
-// nothing and the residue never resolves.
+// Accrued.Minor() cannot represent as settled: exactly half a minor unit. Minor()
+// rounds half AWAY from zero, so Minor(500_000) is 1 and Minor(-500_000) is -1 — never
+// 0 — even though the receivable is fully cleared. Testing the record instead of the
+// receivable's own ledger balance would make such an account unclosable for ever.
 //
-// €18.25 overdrawn at 10% (ACT/365), for exactly one day:
+// €18.25 overdrawn at 10% (ACT/365) for exactly one day:
 //
 //	1_825 × 100_000 × 1 / 365 = 500_000 micro-minor-units, exactly half a cent.
 //
-// Minor(500_000) = 1, so charging capitalizes 1 cent and leaves the record at
-// 500_000 − 1_000_000 = −500_000. Minor(−500_000) = −1, which is nonzero — and
-// the receivable, credited by the same 1 cent that was debited into it during
-// accrual, is back to zero. The guard reads the receivable and not the record.
+// Charging capitalizes 1 cent and leaves the record at −500_000, while the receivable
+// is back to zero. The guard reads the receivable.
 func TestClose_SucceedsOnAnExactHalfMinorUnitResidue(t *testing.T) {
 	ctx := context.Background()
 	reg, book, sub, prd := newTestRegister(t)
@@ -1415,11 +1369,9 @@ func TestRunEndOfDay_AccruesEveryOverdrawnAccount(t *testing.T) {
 	assertEqual(t, "accrued after a re-run", again.Accrued, got.Accrued)
 }
 
-// This test is the design, not a detail of it. An overdrawn current account is
-// a loan, and it reaches the Asset side of the balance sheet by AGGREGATION,
-// not by a posting: its drawn amount is the negative balance of its own
-// Liability account viewed by sign, and has no independent existence. A future
-// author who adds a reclassification journal or a sweep will fail here.
+// This test is the design. An overdrawn current account is a loan, and it reaches the
+// Asset side of the balance sheet by AGGREGATION, not by a posting: its drawn amount
+// is the negative balance of its own Liability account viewed by sign.
 func TestTotals_OverdraftsAreDerivedAndNothingIsPosted(t *testing.T) {
 	ctx := context.Background()
 	reg, book, sub, prd := newTestRegister(t)
@@ -1435,20 +1387,15 @@ func TestTotals_OverdraftsAreDerivedAndNothingIsPosted(t *testing.T) {
 	fundBy(t, reg, book, sub, satoshi, 500_000)
 	overdrawBy(t, reg, book, sub, bruno, 5_000)
 
-	// Run end-of-day before asserting anything. RunEndOfDayTx already loops
-	// every deposit account nightly, which is exactly where a future author
-	// would be tempted to add a reclassification posting or a sweep of drawn
-	// balances into an Asset account — the doc comment above even names "a
-	// nightly feed" as the real-bank analogue. None of these accounts has a
-	// non-zero Rate, so this must accrue and post nothing; if it does, that
-	// is a real finding, not something to relax below. Do not remove this
-	// call as unnecessary: it is what makes the EOD path a place this test
-	// actually pins, rather than one it happens to be silent about.
+	// Run end-of-day before asserting anything. RunEndOfDayTx loops every deposit
+	// account nightly, which is where a reclassification posting or a sweep of drawn
+	// balances would be tempting. None of these accounts has a non-zero Rate, so this
+	// must accrue and post nothing — which is what makes the EOD path a place this test
+	// pins rather than one it is silent about.
 	assertNoError(t, reg.RunEndOfDay(ctx, time.Date(2025, time.January, 15, 0, 0, 0, 0, time.UTC)))
 
-	// Overdrawing posted exactly one transaction against Bruno's account, and
-	// both of its legs are Liability: the debit to Bruno, the credit to the
-	// counterparty. No Asset account was touched, and no second transaction
+	// Overdrawing posted exactly one transaction against Bruno's account, and both legs
+	// are Liability. No Asset account was touched, and no second transaction
 	// reclassified anything.
 	txs, err := book.ListTransactionsForPosition(ctx, where(t, reg, bruno.ID))
 	assertNoError(t, err)
@@ -1493,18 +1440,15 @@ func TestTotals_OverdraftsAreDerivedAndNothingIsPosted(t *testing.T) {
 // Value-dated overdraft accrual
 // ---------------------------------------------------------------------------
 
-// accrualStart is the day the value-dated accrual tests open their accounts on,
-// and therefore the day their recompute window opens: the window starts at the
-// account's opening terms row. It is a midnight because these tests want that
-// day to be a business date.
+// accrualStart is the day the value-dated accrual tests open their accounts on, and
+// therefore the day their recompute window opens. A midnight, because these tests
+// want that day to be a business date.
 var accrualStart = time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 
-// postTo moves amount against acct's position at the given value
-// date, with a fresh counterparty as the contra leg — overdrawBy and fundBy
-// with the direction and the value date spelled out, which is what a backdated
-// posting needs. The contra is typed so the book keeps its classification: a
-// debit to the customer is funded by another Liability, a credit to them by an
-// Asset, exactly as those two helpers already do.
+// postTo moves amount against acct's position at the given value date, with a fresh
+// counterparty as the contra leg. The contra is typed so the book keeps its
+// classification: a debit to the customer is funded by another Liability, a credit by
+// an Asset.
 func postTo(t *testing.T, reg *Register, book *ledger.Book, sub ledger.SubledgerID, acct Account, amount ledger.Amount, dir ledger.Direction, value time.Time) {
 	t.Helper()
 	ctx := context.Background()
@@ -1603,11 +1547,10 @@ func TestOverdraftAccrualCorrectsABackdatedDebit(t *testing.T) {
 		t.Errorf("accrued after backdated debit = %d, want more than %d", corrected, after)
 	}
 
-	// "More than before" is not enough: simply accruing one more day on today's
-	// balance is also more than before, which is exactly what the incrementing
-	// version this replaced would do — 82 cents plus a day at −400 is 99. The
-	// recompute goes back and re-derives days 3 to 11 at the balance the
-	// backdated debit gave them:
+	// "More than before" is not enough: accruing one more day on today's balance is
+	// also more than before, which is what an incrementing version would do — 82 cents
+	// plus a day at −400 is 99. The recompute re-derives days 3 to 11 at the balance
+	// the backdated debit gave them:
 	//
 	//	days 1-2   at −200   2 × 8_219_178  =  16_438_356
 	//	days 3-11  at −400   9 × 16_438_356 = 147_945_204
@@ -1639,15 +1582,11 @@ func TestOverdraftAccrualIgnoresAForwardValueDatedDebit(t *testing.T) {
 	}
 }
 
-// TestSettingOverdraftTermsAccruesAndResetsNothing pins what a repricing costs
-// the accrual state: nothing at all.
-//
-// Appending a terms row is a PURE WRITE: it runs no accrual, discards no gross
-// and moves no LastAccrualDate. There is no window boundary to protect, because
-// every day is re-derived at the terms that were in force on it.
-//
-// The surviving half of the old claim is the important one and is still here:
-// prior accrual is not rewritten by entering a repricing.
+// TestSettingOverdraftTermsAccruesAndResetsNothing pins what a repricing costs the
+// accrual state: nothing at all. Appending a terms row is a PURE WRITE — it runs no
+// accrual, discards no gross and moves no LastAccrualDate — because every day is
+// re-derived at the terms that were in force on it. Prior accrual is not rewritten by
+// entering a repricing.
 func TestSettingOverdraftTermsAccruesAndResetsNothing(t *testing.T) {
 	ctx := context.Background()
 	reg, book, sub, acct, clock := newOverdraftAccount(t)
@@ -1715,12 +1654,10 @@ func TestOverdraftCorrectionRefundsWhatTheReceivableCannotAbsorb(t *testing.T) {
 		t.Errorf("customer balance %d -> %d; the unabsorbed correction must be refunded to them", balBefore, balAfter)
 	}
 
-	// The refunded part left in cash, so it must leave the record too. If it
-	// does not, the account carries a permanent negative that the customer gets
-	// the benefit of twice: the next interest genuinely owed is swallowed
-	// paying it off, and at a tenth of a cent a day it never unwinds. This is
-	// the same assertion the unclamped sibling above makes, and it is the one
-	// that catches it.
+	// The refunded part left in cash, so it must leave the record too. Otherwise the
+	// account carries a permanent negative the customer gets the benefit of twice: the
+	// next interest genuinely owed is swallowed paying it off, and at a tenth of a cent
+	// a day it never unwinds.
 	got, err := reg.GetAccount(ctx, acct.ID)
 	assertNoError(t, err)
 	if recv != got.Accrued.Minor() {
@@ -1728,12 +1665,10 @@ func TestOverdraftCorrectionRefundsWhatTheReceivableCannotAbsorb(t *testing.T) {
 			recv, got.Accrued.Minor())
 	}
 
-	// And the account goes on working. Overdraw him again and accrue: the
-	// receivable and the record must still agree afterwards. With the refund
-	// left on the record they do not — the delta is a difference of rounded
-	// values, so the posting still lands, but the record it is supposed to
-	// mirror is 247 cents adrift and stays that way. api/dto_deposit.go
-	// reports that record straight through.
+	// And the account goes on working. Overdraw him again and accrue: the receivable
+	// and the record must still agree. With the refund left on the record they do not —
+	// the delta is a difference of rounded values, so the posting lands, but the record
+	// is 247 cents adrift and stays that way, and api reports it straight through.
 	postTo(t, reg, book, sub, acct, 20_000, ledger.Debit, accrualStart.AddDate(0, 0, 32))
 	assertNoError(t, reg.AccrueOverdraft(ctx, acct.ID, accrualStart.AddDate(0, 0, 33)))
 	next, err := reg.GetAccount(ctx, acct.ID)
@@ -1748,23 +1683,14 @@ func TestOverdraftCorrectionRefundsWhatTheReceivableCannotAbsorb(t *testing.T) {
 	}
 }
 
-// TestARepricingPricesItsOwnEffectiveDay pins the answer at the boundary.
+// TestARepricingPricesItsOwnEffectiveDay pins the answer at the boundary. There is no
+// window boundary to fall between: a repricing writes a row and pre-accrues nothing.
 //
-// A moving window would swallow a day: freezing the old window and opening the
-// new one at the same instant leaves the span since the last end-of-day
-// belonging to neither, so it would have to be pre-accrued at the OUTGOING terms
-// before the boundary moved. There is no boundary, so there is nothing to fall
-// between and nothing to pre-accrue.
-//
-// What remains is a question the old design never had to answer cleanly: which
-// day does a row effective from day 10 first price? A day is named by the date
-// its span ENDS on — interest.AccrueSeries fixes that, because a movement
-// value-dated V first bites on [V-1, V) — so day 10 is the span [9, 10) and the
-// row effective day 10 prices it. Terms and balances then move on the same day
-// axis, which is the whole reason the resolution is on `to`.
-//
-// The day is still not dropped, which is what the original test was really
-// protecting, and the three-way discrimination that proves it is kept.
+// What remains is which day a row effective from day 10 first prices. A day is named
+// by the date its span ENDS on — interest.AccrueSeries fixes that, a movement
+// value-dated V first biting on [V-1, V) — so day 10 is the span [9, 10) and the row
+// effective day 10 prices it. Terms and balances move on the same day axis, which is
+// why the resolution is on `to`.
 func TestARepricingPricesItsOwnEffectiveDay(t *testing.T) {
 	ctx := context.Background()
 	reg, book, sub, acct, clock := newOverdraftAccount(t)
@@ -1790,15 +1716,13 @@ func TestARepricingPricesItsOwnEffectiveDay(t *testing.T) {
 	// land on 82_191_780 before any run had asked for day 10.
 	assertEqual(t, "accrued when the row is merely entered", entered.Accrued, interest.Accrued(73_972_602))
 
-	// The next run adds day 10. Three outcomes are distinguishable, which is
-	// the point of tripling the rate rather than nudging it:
+	// The next run adds day 10. Three outcomes are distinguishable, which is the point
+	// of tripling the rate rather than nudging it:
 	//
 	//	73_972_602  the day was dropped between the two windows
-	//	82_191_780  charged at the outgoing 15% — what the moving window did,
-	//	            and what resolving terms on the span's START would still do
+	//	82_191_780  charged at the outgoing 15% — what resolving terms on the span's
+	//	            START would do
 	//	98_630_136  charged at the incoming 45%   <- correct
-	//
-	// 73_972_602 + 20_000 × 450_000 / 365 = 73_972_602 + 24_657_534.
 	assertNoError(t, reg.AccrueOverdraft(ctx, acct.ID, accrualStart.AddDate(0, 0, 10)))
 	got, err := reg.GetAccount(ctx, acct.ID)
 	assertNoError(t, err)
@@ -1818,25 +1742,16 @@ func TestARepricingPricesItsOwnEffectiveDay(t *testing.T) {
 	assertEqual(t, "accrued a day past the repricing", after.Accrued, interest.Accrued(123_287_670))
 }
 
-// TestOverdraftRepricingDoesNotRewindTheAccrualWindow pins the other direction
-// of the same seam: a repricing entered while LastAccrualDate is already AHEAD
-// of the wall clock.
+// TestOverdraftRepricingDoesNotRewindTheAccrualWindow pins the other direction of the
+// same seam: a repricing entered while LastAccrualDate is already AHEAD of the wall
+// clock. End-of-day is callable for any date, so a run for a future date is reachable
+// and charges the whole span up to it.
 //
-// End-of-day is callable for any date — POST /participants/{pid}/end-of-day
-// takes the date from the request body — so a run for a date in the future is
-// reachable, and it charges the whole span up to that date. Under the old
-// mutable-columns model this was the dangerous case: opening the new window at
-// the wall clock put TermsEffectiveFrom and LastAccrualDate BEHIND a span
-// already charged, with AccruedGross reset to zero, and every subsequent run
-// recomputed that overlap from scratch and added it to Accrued a second time.
-// A clamp forward to LastAccrualDate is what stopped it.
-//
-// The clamp is gone, along with the window it protected: a repricing writes a
-// row and touches no accrual state at all, so LastAccrualDate cannot rewind
-// because nothing writes it here. The double-charge this test exists for cannot
-// happen for a stronger reason than the clamp gave — AccruedGross is never
-// reset, so an overlap re-derived is an overlap already counted in the gross it
-// is compared against.
+// A repricing writes a row and touches no accrual state, so LastAccrualDate cannot
+// rewind — nothing writes it here. The double-charge this test exists for cannot
+// happen for a stronger reason than a clamp would give: AccruedGross is never reset,
+// so an overlap re-derived is an overlap already counted in the gross it is compared
+// against.
 func TestOverdraftRepricingDoesNotRewindTheAccrualWindow(t *testing.T) {
 	ctx := context.Background()
 	reg, book, sub, acct, clock := newOverdraftAccount(t)
@@ -1851,10 +1766,9 @@ func TestOverdraftRepricingDoesNotRewindTheAccrualWindow(t *testing.T) {
 	assertNoError(t, err)
 	assertEqual(t, "accrued through day 100", charged.Accrued, interest.Accrued(821_917_800))
 
-	// Reprice from day 100, entered while the wall clock reads day 0 — the
-	// entry date is a hundred days behind the effective date, and behind what
-	// has already been charged. Day 100 has been accrued, so the row is
-	// retroactive by exactly one day and the next run trues that day up.
+	// Reprice from day 100, entered while the wall clock reads day 0 — the entry date a
+	// hundred days behind the effective date, and behind what has already been charged.
+	// Day 100 has been accrued, so the row is retroactive by one day.
 	clock.set(accrualStart)
 	row, err := setTerms(ctx, reg, acct.ID, 50_000, 450_000, 0, interest.ACT365, ahead)
 	assertNoError(t, err)
@@ -1873,18 +1787,16 @@ func TestOverdraftRepricingDoesNotRewindTheAccrualWindow(t *testing.T) {
 	}
 	assertEqual(t, "accrued across the repricing", repriced.Accrued, interest.Accrued(821_917_800))
 
-	// The proof it is not double-charged: the next run adds ONE day and reprices
-	// ONE day, not a hundred and one of either. €200 at 45% is 24_657_534 a
-	// day, at 15% it is 8_219_178:
+	// The proof it is not double-charged: the next run adds ONE day and reprices ONE
+	// day, not a hundred and one of either. €200 at 45% is 24_657_534 a day, at 15% it
+	// is 8_219_178:
 	//
 	//	days   1-99  at 15%  99 ×  8_219_178 = 813_698_622
 	//	days 100-101 at 45%   2 × 24_657_534 =  49_315_068
 	//	                                       863_013_690
 	//
 	// Day 100 moves from 15% to 45% because the row is effective from it — the
-	// retroactive true-up, worth 16_438_356 — and day 101 is the new day. A
-	// window that had rewound would instead re-derive all hundred days as a
-	// fresh delta and add them to Accrued a second time.
+	// retroactive true-up, worth 16_438_356 — and day 101 is the new day.
 	assertNoError(t, reg.AccrueOverdraft(ctx, acct.ID, ahead.AddDate(0, 0, 1)))
 	after, err := reg.GetAccount(ctx, acct.ID)
 	assertNoError(t, err)
@@ -1896,11 +1808,10 @@ func TestOverdraftRepricingDoesNotRewindTheAccrualWindow(t *testing.T) {
 	assertEqual(t, "receivable after the repricing", receivable, ledger.Amount(863))
 }
 
-// TestOverdraftAccrualUnderThirty360SkipsThe31st is the only 30/360 coverage on
-// the deposit path, and interest.Recompute's day-at-a-time walk leans on that
-// convention for its justification: under 30/360-US the 31st collapses onto the
-// 30th, so a day can count as no days at all, and what a window comes to depends
-// on how it is cut.
+// TestOverdraftAccrualUnderThirty360SkipsThe31st is the only 30/360 coverage on the
+// deposit path, and interest.Recompute's day-at-a-time walk leans on that convention:
+// under 30/360-US the 31st collapses onto the 30th, so a day can count as no days at
+// all, and what a window comes to depends on how it is cut.
 func TestOverdraftAccrualUnderThirty360SkipsThe31st(t *testing.T) {
 	ctx := context.Background()
 	clock := &mutableClock{}
@@ -1929,13 +1840,10 @@ func TestOverdraftAccrualUnderThirty360SkipsThe31st(t *testing.T) {
 	assertNoError(t, err)
 	assertEqual(t, "accrued 30 -> 31 January", got.Accrued, interest.Accrued(4_166_666))
 
-	// 1 February charges one day, not two: Days(31st, 1st) is 1, and the 31st
-	// still counts for nothing.
-	//
-	// 8_333_332 is also what pins the day-by-day walk. One call over the whole
-	// window would be 10_000 × 150_000 × 2 / 360 = 8_333_333 — a unit more,
-	// because Accrue divides once per call and this balance truncates upward
-	// when the days are taken together.
+	// 1 February charges one day, not two: Days(31st, 1st) is 1, and the 31st still
+	// counts for nothing. 8_333_332 also pins the day-by-day walk — one call over the
+	// whole window would be 10_000 × 150_000 × 2 / 360 = 8_333_333, a unit more, because
+	// Accrue divides once per call.
 	assertNoError(t, reg.AccrueOverdraft(ctx, acct.ID, time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC)))
 	got, err = reg.GetAccount(ctx, acct.ID)
 	assertNoError(t, err)
@@ -1943,14 +1851,10 @@ func TestOverdraftAccrualUnderThirty360SkipsThe31st(t *testing.T) {
 }
 
 // TestCheckCredit_RefusesOnlyAClosedAccount is the whole status matrix from the
-// receiving side, and it is deliberately far more permissive than
-// CheckWithdrawal's.
-//
-// A credit cannot fail for want of money, so the only question it can answer is
-// whether this account is still somewhere money may land. Dormant is — an
-// incoming payment is exactly what revives it. Frozen is, because a freeze here
-// is a DEBIT block: the garnishment and fraud-investigation case, where money
-// owed to the customer keeps arriving while they cannot take any out.
+// receiving side, deliberately far more permissive than CheckWithdrawal's. A credit
+// cannot fail for want of money, so the only question is whether this account is
+// still somewhere money may land. Dormant is — an incoming payment revives it. Frozen
+// is, because a freeze here is a DEBIT block: the garnishment case.
 func TestCheckCredit_RefusesOnlyAClosedAccount(t *testing.T) {
 	ctx := context.Background()
 	reg, _, _, prd := newTestRegister(t)
@@ -1976,8 +1880,8 @@ func TestCheckCredit_RefusesOnlyAClosedAccount(t *testing.T) {
 
 // TestCheckWithdrawal_NamesDormancy pins the error a blocked debit on a dormant
 // account reports. Falling through requireActive's default branch would give
-// ErrInvalidStatusTransition — an error about changing a status, raised by an
-// operation that is not changing one.
+// ErrInvalidStatusTransition — an error about changing a status, from an operation
+// that is not changing one.
 func TestCheckWithdrawal_NamesDormancy(t *testing.T) {
 	ctx := context.Background()
 	reg, book, deposits, prd := newTestRegister(t)
@@ -2059,10 +1963,9 @@ func TestPublishingAVersionRepricesEveryFloatingAccount(t *testing.T) {
 	}
 }
 
-// A negotiated rate is one customer's price instead of the product's, and it
-// outranks a product reprice underneath it. Clearing it puts the account back on
-// the product — at whatever the product costs by then, not at what it cost when
-// the overlay was set.
+// A negotiated rate is one customer's price instead of the product's and outranks a
+// product reprice underneath it. Clearing it puts the account back on the product, at
+// whatever the product costs by then.
 func TestAnOverlayOutranksTheProductAndClearsBackToIt(t *testing.T) {
 	ctx := context.Background()
 	origin := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)

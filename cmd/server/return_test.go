@@ -14,17 +14,13 @@ import (
 	"github.com/raphi011/cbs/payment"
 )
 
-// A return is routed to the CENTRAL BANK, not the CSM. payment.SettleReturnTx
-// moves reserves, and the actor that owns reserve movement is the settlement
-// agent — payment/doc.go already records that returns settle immediately rather
-// than through a later R-cycle, so a return genuinely is a settlement act here.
+// A return is routed to the CENTRAL BANK, not the CSM: payment.SettleReturnTx moves
+// reserves, and the actor that owns reserve movement is the settlement agent.
 //
-// The clearing house's book set is the other half, and it is the assertion that
-// this actor POSTS nothing on a flow it runs three hops of. It holds its own
-// book, because being told a return went through is a fact it records on its own
-// copy of the payment (payment.CompleteReturnTx) — and ClearingHouseBook is a
-// row-book with no accounts in it, so an entry here is not a posting. See
-// TestWhichBooksAReturnReaches.
+// The clearing house's book set is the other half — that this actor POSTS nothing on
+// a flow it runs three hops of. It holds its own book because being told a return
+// went through is a fact it records on its own copy, and ClearingHouseBook is a
+// row-book with no accounts in it.
 func TestAReturnIsExecutedByTheCentralBank(t *testing.T) {
 	h := newHarness(t)
 	p := h.settledPayment(t)
@@ -41,10 +37,8 @@ func TestAReturnIsExecutedByTheCentralBank(t *testing.T) {
 		h.booksTouchedBy(h.cfg.ClearingHouseBIC), []ledger.BookID{payment.ClearingHouseBook})
 }
 
-// TestTheMessagesAReturnPutsOnTheWire names the conversation, the way
-// TestTheMessagesACutOffPutsOnTheWire names the cut-off. It is what PINS the
-// routing decisions this flow makes; the status assertions elsewhere in this
-// file cannot see who sent what to whom.
+// TestTheMessagesAReturnPutsOnTheWire names the conversation and PINS its routing
+// decisions; the status assertions elsewhere cannot see who sent what to whom.
 //
 // Seven messages, of which four are the chain a reader might expect:
 //
@@ -53,67 +47,30 @@ func TestAReturnIsExecutedByTheCentralBank(t *testing.T) {
 //	payee's bank  <--pacs.002--  clearing house  <--pacs.002--  central bank
 //	payer's bank  <--pacs.004-->  clearing house
 //
-// The PAYEE's bank starts it, because a return is sent by the bank that RECEIVED
-// the original instruction — the SEPA rule book's own division, and the opposite
-// end from the one that submitted. See returnerOf.
+// The PAYEE's bank starts it, because a return is sent by the bank that RECEIVED the
+// original instruction. It goes to the CENTRAL BANK because a return moves reserves,
+// and THROUGH the clearing house because a member bank uploads a pacs.004 there and
+// nowhere else — a claim only this test makes, since an institution that is skipped
+// touches no book either. The PAYER's bank is in two of the seven: it holds the leg
+// the returning bank does not, and is told LAST, the clearing house holding the
+// relay until the return is final.
 //
-// It goes to the CENTRAL BANK, because a return moves reserves — which is why
-// this flow lives at the settlement agent — and THROUGH the clearing house
-// rather than bank-to-central-bank directly, because a member bank uploads a
-// pacs.004 to the clearing house and to nobody else. That claim is this test's
-// and not the book assertions': point the returning bank straight at the
-// settlement agent and every book assertion stays green, because an institution
-// that is skipped touches no book either.
+// It is a SET plus the orderings that are forced. The tap fires when a file CROSSES,
+// so what is observed is delivery order, and files in two institutions' queues have
+// no order between them.
 //
-// The two CAMT.053s are the reserve movement stated to the two banks whose
-// accounts moved, exactly as at a cut-off. The PAYER's bank is in TWO of the
-// seven: it is sent the pacs.004 because it holds the leg the returning bank
-// does not, and it is sent that message LAST, out of the handler of the
-// settlement agent's ACSC, because the clearing house holds it until the return
-// is final. See csm.relayReturn.
+// Three relations survive: the returning bank's pacs.004 is uploaded FIRST; the
+// agent's pacs.002 crosses before both files the clearing house queues; and the
+// PAYER's BANK's camt.053 crosses before the pacs.004 addressed to that same bank.
+// The last is the load-bearing one, and it is not a chain argument — the two are in
+// different queues at different institutions. What forces it is the BANK's own
+// collection order, the settlement agent first.
 //
-// # It is a SET, plus the orderings that are actually forced
-//
-// The tap fires when a file CROSSES — on the upload, or on the download that
-// hands it over — so what this test observes is delivery order. Files sitting in
-// two different institutions' queues have no order at all between them, and a
-// positional assertion over all seven would be asserting the order the phases
-// happen to run in.
-//
-// Three relations survive: the returning bank's pacs.004 is uploaded FIRST, the
-// settlement agent's pacs.002 crosses before both files the clearing house
-// queues — both chain arguments, since each is built by the institution that
-// collected the one before — and the PAYER's BANK's camt.053 crosses before the
-// pacs.004 addressed to that same bank, which is not a chain argument and is the
-// load-bearing one.
-//
-// # Why that pair CAN be asserted when the set cannot be ordered
-//
-// Not because both go to one bank: they are in two DIFFERENT queues, at the
-// settlement agent and at the clearing house, and two connections share no
-// ordering whatever. What forces the pair is the BANK's own collection order —
-// the settlement agent first, then the clearing house — which is a decision each
-// bank makes about its own operations. See AdvanceDay's phase 7, and
-// CentralBank.advise, which argues what the other order would cost.
-//
-// A reader who tries to falsify it by swapping advise and answer will find the
-// test still passes, and that is the point rather than a weakness: the order the
-// settlement agent wrote the two files in is not what decides anything any more.
-// Swapping the BANK's two collections is what inverts the pair, and with that
-// swapped the assertion fails every run.
-//
-// What it pins is why centralBank.advise sends the statements before it answers.
-// The payer's bank receives the reserves back, so its camt.053 CREDITS the
-// clearing suspense that its refund then draws on, and the relayed pacs.004 is
-// what makes it draw. Reverse the two and that bank pays its customer out of a
-// suspense the return has not yet credited — which commits, because suspense is
-// a Liability the ledger does not guard, and which for that interval has the
-// bank's own books saying it lent its customer the money.
-//
-// The PAYEE's bank receives a pair too and the same chain orders it. It is not
-// asserted because nothing depends on it: that bank posted its clawback before
-// any of this. What remains genuinely undetermined is the INTERLEAVING across
-// actors.
+// That is why centralBank.advise sends the statements before it answers: the payer's
+// bank's camt.053 CREDITS the clearing suspense its refund then draws on. Reversed,
+// that bank pays its customer out of a suspense the return has not credited — which
+// commits, suspense being a Liability the ledger does not guard. See
+// docs/notes/cmd-server.md for the falsification.
 func TestTheMessagesAReturnPutsOnTheWire(t *testing.T) {
 	h := newHarness(t)
 	p := h.settledPayment(t)
@@ -177,12 +134,8 @@ func TestTheMessagesAReturnPutsOnTheWire(t *testing.T) {
 		}
 	}
 	// The load-bearing pair, and not a chain argument: both are handled by the
-	// PAYER'S BANK, one goroutine popping one FIFO queue, so their order here is
-	// that bank's handling order. The statement credits the clearing suspense;
-	// the relayed return is what makes the refund draw on it. The other way round
-	// and that bank pays its customer out of a suspense the return has not
-	// credited yet. centralBank.receiveReturn advises before it answers for
-	// exactly this reason.
+	// PAYER'S BANK, one goroutine popping one FIFO queue. The statement credits the
+	// clearing suspense; the relayed return makes the refund draw on it.
 	if order[payerStatement] > order[payerReturn] {
 		t.Errorf("the payer's bank handled the relayed return at %d and its own camt.053 at %d; "+
 			"the statement credits the suspense the refund draws on and must come first",
@@ -190,18 +143,12 @@ func TestTheMessagesAReturnPutsOnTheWire(t *testing.T) {
 	}
 }
 
-// TestAReturnPutsTheMoneyBackInThePayersAccount is what a return is FOR,
-// asserted where the customers are rather than where the message is.
-//
-// Both accounts, because a return is not a refund out of thin air: the payee's
-// bank claws the money back out of the payee's account and the payer's bank
-// credits the payer, and the reserve leg between the two banks is what makes
-// those two postings one act. A test that checked only the payer would pass on
-// a system that paid them twice.
-//
-// The balances are read through each bank's own deposit register, which is the
-// only place the answer exists — the payment row says Returned, and a status is
-// not a balance.
+// TestAReturnPutsTheMoneyBackInThePayersAccount is what a return is FOR, asserted
+// where the customers are. Both accounts, because a return is not a refund out of
+// thin air: the payee's bank claws the money back and the payer's bank credits the
+// payer, and a test that checked only the payer would pass on a system that paid
+// them twice. Read through each bank's own register, the only place the answer
+// exists — a status is not a balance.
 func TestAReturnPutsTheMoneyBackInThePayersAccount(t *testing.T) {
 	h := newHarness(t)
 	p := h.settledPayment(t)
@@ -223,39 +170,24 @@ func TestAReturnPutsTheMoneyBackInThePayersAccount(t *testing.T) {
 	}
 }
 
-// TestAReturnedCollectionIsSentByThePayersBank is the other direction, and it
-// is the one that says returnerOf is a rule about ROLES rather than a habit of
-// picking the creditor.
+// TestAReturnedCollectionIsSentByThePayersBank is the other direction, and the one
+// that says returnerOf is a rule about ROLES rather than a habit of picking the
+// creditor. A collection is submitted by the payee's bank and answered by the
+// payer's, so the bank that returns it is the payer's — the SEPA rule book's own
+// division, which is what MD01 says here.
 //
-// A collection is submitted by the payee's bank and answered by the payer's, so
-// the bank that received the instruction — and therefore the bank that returns
-// it — is the payer's. That is the SEPA rule book's own division: a debtor bank
-// returns a collection its customer disputes, which is what MD01 says here.
-//
-// # The payee's bank is told twice
-//
-// A network in which the settlement agent clawed the biller back inside its own
-// unit of work would tell it nothing: the bank whose customer lost the money
-// would learn by reading a payment row it shared with everybody. A real network
-// has to tell it.
-//
-// It is told twice, and the two messages are two different things:
+// The payee's bank is told twice, and the two messages are different things:
 //
 //   - a camt.053, because its settlement account is one of the two the reserve
 //     reversal moved. On a pull that bank is the one PAYING the reserves back.
-//   - the pacs.004 itself, relayed by the clearing house once the return is
-//     final, because on a pull the CREDITOR's bank holds the clawback — and it
-//     cannot refuse it. The payer's refund right is unconditional, so a biller
-//     who cannot fund it goes overdrawn or leaves a Returns Receivable behind.
-//     See payment.PostReturnLegTx.
+//   - the pacs.004 itself, relayed once the return is final, because on a pull the
+//     CREDITOR's bank holds the clawback and cannot refuse it. The payer's refund
+//     right is unconditional, so a biller who cannot fund it goes overdrawn or
+//     leaves a Returns Receivable behind.
 //
-// So the two directions are the same seven messages with the banks swapped,
-// which is what makes returnerOf a rule: the SAME bank composes the pacs.004 in
-// both, and it is the far end from the submitter both times. What flips is only
-// which of the two legs it is holding.
-//
-// The clawback is asserted at the biller's own balance, because that is where a
-// pull return differs from a push and the message count cannot see it.
+// So the two directions are the same seven messages with the banks swapped: the SAME
+// bank composes the pacs.004 in both, the far end from the submitter both times, and
+// what flips is only which leg it holds.
 func TestAReturnedCollectionIsSentByThePayersBank(t *testing.T) {
 	h := newHarness(t)
 	p := h.settledCollection(t)
@@ -313,31 +245,20 @@ func TestAReturnedCollectionIsSentByThePayersBank(t *testing.T) {
 	}
 }
 
-// TestABankCannotReturnAPaymentItHasNotBeenHanded is what a return before
-// finality now runs into, and it is a stronger refusal than the guard it
-// replaces.
+// TestABankCannotReturnAPaymentItHasNotBeenHanded: the bank that returns a payment
+// is the one that RECEIVED the instruction, and it receives that only once the cycle
+// carrying it has settled. So before the cut-off there is no copy at that bank to
+// return FROM, and the refusal is "this bank has never heard of this payment" rather
+// than "this payment is in the wrong state".
 //
-// The bank that returns a payment is the one that RECEIVED the instruction, and
-// it receives that instruction only once the cycle carrying it has settled. So
-// before the cut-off there is no copy at that bank to return FROM: the refusal is
-// not "this payment is in the wrong state", it is "this bank has never heard of
-// this payment", which is the truth and is what the caller is told.
+// The state guard is still reached, by a payment that has already been RETURNED —
+// asking twice. Refused at the door it is the caller's answer and names the status;
+// payment.PostReturnLegTx's ErrInvalidStateTransition carries the empty code, so an
+// institution that received such a return could only report it.
 //
-// # Why the state guard is still there, and what still reaches it
-//
-// bank.returnPayment refuses anything that is not Settled before it builds a
-// message, and that arm is reached by a payment that has already been RETURNED —
-// asking twice. payment.PostReturnLegTx refuses it too, with
-// ErrInvalidStateTransition, and that sentinel is the one payment's reasonTable
-// gives the empty code: an institution that received such a return could only
-// report it, so the operator who asked would hear nothing. Refused at the
-// door, it is the caller's answer and it names the status.
-//
-// And nothing goes on the wire either way, which is the second half of the
-// claim: a refusal that had already sent the pacs.004 would have the settlement
-// agent settling reserves for a payment this bank knew was not returnable.
-// Nothing downstream would catch it, because the settlement agent does not read
-// the payment at all — it acts on what the message says.
+// Nothing goes on the wire either way: a refusal that had already sent the pacs.004
+// would have the settlement agent settling reserves for a payment this bank knew was
+// not returnable, and nothing downstream would catch it.
 func TestABankCannotReturnAPaymentItHasNotBeenHanded(t *testing.T) {
 	h := newHarness(t)
 	p := h.submitCreditTransfer(t)
@@ -357,13 +278,10 @@ func TestABankCannotReturnAPaymentItHasNotBeenHanded(t *testing.T) {
 	}
 }
 
-// TestABankRefusesToReturnAPaymentTwice is the state guard bank.returnPayment
-// makes before any message exists.
-//
-// It is the arm that survives settling before releasing: a payment that is
-// already Returned is the one shape a returning bank can be asked about and must
-// decline, and the refusal names the status this BANK records rather than
-// anybody else's — it holds its own copy and can read no other.
+// TestABankRefusesToReturnAPaymentTwice is the state guard bank.returnPayment makes
+// before any message exists: a payment that is already Returned is the one shape a
+// returning bank can be asked about and must decline, and the refusal names the
+// status this BANK records — it holds its own copy and can read no other.
 func TestABankRefusesToReturnAPaymentTwice(t *testing.T) {
 	h := newHarness(t)
 	p := h.settledPayment(t)
@@ -387,22 +305,14 @@ func TestABankRefusesToReturnAPaymentTwice(t *testing.T) {
 	}
 }
 
-// TestARedeliveredReturnIsReportedAndNotAnswered is the same
-// discrimination one hop further on, and it is the case that actually reaches
-// the settlement agent.
+// TestARedeliveredReturnIsReportedAndNotAnswered is the same discrimination one hop
+// on, and the case that actually reaches the settlement agent.
 //
-// A queue redelivers, so the pacs.004 the clearing house carried can arrive
-// twice. The second copy names a payment whose return this network has already
-// settled, SettleReturnTx answers ErrReturnAlreadySettled, and turning that into
-// a pacs.002 would tell the returning bank that a return which in fact happened
-// was rejected — MS03, through ReasonFor's fallback, which is what reasonTable's
-// empty code exists to forbid. Dead letter, and no status at all.
-//
-// The settlement agent holds no payment row on this path — it acts on the
-// message — so what catches the redelivery is the idempotency key on the reserve
-// reversal, in the central bank's own ledger. That sentinel carries the empty
-// code in reasonTable, because it describes this system's state and not the
-// sender's message.
+// A queue redelivers, so the pacs.004 can arrive twice. SettleReturnTx answers
+// ErrReturnAlreadySettled, and turning that into a pacs.002 would tell the returning
+// bank that a return which in fact happened was rejected. Dead letter, no status.
+// The agent holds no payment row here, so what catches the redelivery is the
+// idempotency key on the reserve reversal, in its own ledger.
 func TestARedeliveredReturnIsReportedAndNotAnswered(t *testing.T) {
 	h := newHarness(t)
 	p := h.settledPayment(t)
@@ -415,13 +325,10 @@ func TestARedeliveredReturnIsReportedAndNotAnswered(t *testing.T) {
 	answered := h.statusesSentTo(h.creditorBIC)
 	h.injectRaw(t, h.cfg.ClearingHouseBIC, h.cfg.CentralBankBIC, relayed)
 
-	// Errorf and not Fatalf: "reported" and "not answered" are two claims,
-	// and a settlement agent that answered this instead would break both at
-	// once. Stopping at the first would leave the second unobserved in exactly
-	// the case it exists for.
-	// Matched on the TEXT and not with errors.Is, because a day's report is prose:
-	// Problem.Detail is what an operator reads, and the sentinel the institution
-	// refused with does not survive into it as a wrapped error.
+	// Errorf and not Fatalf: "reported" and "not answered" are two claims, and an
+	// agent that answered instead would break both at once. Matched on the TEXT rather
+	// than errors.Is, because a day's report is prose and the sentinel does not survive
+	// into Problem.Detail as a wrapped error.
 	if err := h.workErr(t); err == nil || !strings.Contains(err.Error(), payment.ErrReturnAlreadySettled.Error()) {
 		t.Errorf("the day reported %v, want the already-settled return as a problem", err)
 	}
@@ -437,21 +344,15 @@ func TestARedeliveredReturnIsReportedAndNotAnswered(t *testing.T) {
 	}
 }
 
-// TestAReturnTheSettlementAgentCannotActOnWholeIsRefused is the guard on the
-// one assumption this actor makes about the message it is handed: that it is
-// being asked to return exactly one payment.
+// TestAReturnTheSettlementAgentCannotActOnWholeIsRefused guards the one assumption
+// this actor makes about the message it is handed: that it is being asked to return
+// exactly one payment. Two ways a message can break that, both refused rather than
+// half-executed — returning the first and dropping the rest would leave a payment
+// somebody was told had been sent back and never was.
 //
-// Two ways a message can break that, and both are refused rather than
-// half-executed, for the reason cycleOf gives about a settlement instruction
-// naming two cycles. Returning the first and dropping the rest would leave a
-// payment somebody was told had been sent back and never was.
-//
-// Injected rather than provoked, because no actor in this deployment emits either:
-// payment.ReturnMessage builds exactly one transaction and counts it. So each
-// case is a real message, doctored — which is also why the refusal is asserted
-// at the RETURNING BANK rather than at the clearing house. The whole path runs:
-// the clearing house carries the doctored return, the settlement agent refuses
-// it, and the answer comes back to the bank that asked.
+// Injected rather than provoked, since payment.ReturnMessage builds exactly one
+// transaction. The refusal is asserted at the RETURNING BANK, so the whole path
+// runs: the clearing house carries the doctored return and the answer comes back.
 func TestAReturnTheSettlementAgentCannotActOnWholeIsRefused(t *testing.T) {
 	cases := []struct {
 		name     string
@@ -513,31 +414,19 @@ func TestAReturnTheSettlementAgentCannotActOnWholeIsRefused(t *testing.T) {
 	}
 }
 
-// TestTheReturnsReasonTravelsFromTheAskingBankToTheLedgers is the datum a
-// pacs.004 exists to carry, followed the whole way.
+// TestTheReturnsReasonTravelsFromTheAskingBankToTheLedgers follows the datum a
+// pacs.004 exists to carry the whole way. Every other assertion in this file would
+// pass on a system that returned the money for the wrong reason, or for none: two
+// returns of the same payment under opposite codes move the same amounts between the
+// same accounts.
 //
-// Every other assertion in this file would pass on a system that returned the
-// money for the wrong reason, or for none: two returns of the same payment
-// under opposite codes move exactly the same amounts between exactly the same
-// accounts. The reason is what tells a payer whose account was closed from a
-// payer who disputed a mandate, and it is the only part of a return that is
-// pure information.
+// Asserted at both ends: ON THE WIRE, in the message the agent acted on — which also
+// says the relay left the document alone — and IN THE BOOKS, in the descriptions of
+// the two postings that move a customer's money.
 //
-// So it is asserted at both ends and in both directions of travel:
-//
-//   - ON THE WIRE, in the message the settlement agent acted on. That is the
-//     copy the clearing house carried, so it also says the relay left the
-//     document alone (csm.relay replaces the header and nothing else).
-//   - IN THE BOOKS, in the descriptions of the two postings that move a
-//     customer's money. payment.PostReturnLegTx writes the reason into both —
-//     the clawback in one bank's book, the refund in the other's — which is
-//     what makes the return legible on a statement months later.
-//
-// The CENTRAL BANK's own leg is asserted NOT to carry it, and that is not
-// pedantry: it is the sentence in payment.ReturnReason's doc that would
-// otherwise be wrong. payment.SettleReturnTx describes the reserve reversal as
-// the settlement it is, so the reason reaches the two customer legs and not the
-// third posting.
+// The CENTRAL BANK's own leg is asserted NOT to carry it, which is the sentence in
+// payment.ReturnReason's doc that would otherwise be wrong: the reserve reversal is
+// a settlement, so the reason reaches the two customer legs and not the third.
 func TestTheReturnsReasonTravelsFromTheAskingBankToTheLedgers(t *testing.T) {
 	h := newHarness(t)
 	p := h.settledPayment(t)
@@ -586,45 +475,25 @@ func TestTheReturnsReasonTravelsFromTheAskingBankToTheLedgers(t *testing.T) {
 	}
 }
 
-// TestAProprietaryReturnReasonReachesTheLedgersToo is the other arm of the
-// choice, and it is why payment.ReturnReason reads both.
+// TestAProprietaryReturnReasonReachesTheLedgersToo is the other arm of the choice,
+// and why payment.ReturnReason reads both.
 //
 // ReturnReasonChoice is an xsd:choice with a code and a PROPRIETARY text, and
-// iso20022 refuses a return carrying neither. A code is what this system's own
-// banks send, so the proprietary arm is only reachable from a counterparty that
-// uses one — which is exactly what a real network is full of, since the arm
-// exists for reasons the external code set has no member for. A settlement
-// agent that read only the code would describe such a return as "returned" and
-// throw away the only thing the sender said about it.
+// iso20022 refuses a return carrying neither. A code is what this system's own banks
+// send, so the proprietary arm is reachable only from a counterparty that uses one —
+// which a real network is full of, the arm existing for reasons the external code
+// set has no member for. An agent reading only the code would throw away the only
+// thing the sender said. The free text is left empty as well, covering the join's
+// other arm at the same time.
 //
-// Injected, because no actor in this deployment emits one: payment.ReturnMessage
-// takes an iso20022.ReturnReason and puts it in Cd. The free text is left empty
-// as well, so this covers the join's other arm at the same time — a reason with
-// a code and no text.
+// The injection puts the message on the wire WITHOUT the returning bank's own act
+// behind it: that bank never posted its clawback. So the far leg lands and the near
+// one never existed, and the cost is asserted on the RETURNING BANK's own copy.
 //
-// # The injection skips a half, and it is a LEG that is missing rather than a
-// status
-//
-// Sending a doctored pacs.004 into the clearing house puts the message on the
-// wire WITHOUT the returning bank's own act behind it — that bank never posted
-// its clawback, because bank.returnPayment is what does that and this test does
-// not call it. So the far leg lands and the near one never existed.
-//
-// What that costs is asserted on the RETURNING BANK's own copy, and this took two
-// rewrites to state. It first asserted Returned; then Settled, on the argument
-// that the row takes both legs to move. Neither is a claim a single row can carry
-// any more. Each institution holds its own copy and each moves on what IT did or
-// was told: the payer's bank posted the refund it was sent and reached Returned,
-// the settlement agent reversed the reserves, and the clearing house and the
-// returning bank were both told the return went through and marked their copies
-// Returned too (payment.CompleteReturnTx). Every one of those is correct — the
-// return DID settle — and none of them is evidence about the leg.
-//
-// The leg is. A clawback is a posting in the payee's bank's own ledger and its id
-// is a column on that bank's own copy, so the absence is read there and nowhere
-// else. That leaves this test measuring exactly what it is named for — the reason
-// reaching a customer's ledger — asserted on the one leg the message really did
-// cause, plus the one it did not.
+// Not on its STATUS: each institution holds its own copy and each moves on what IT
+// did or was told, so Returned is correct everywhere — the return did settle — and
+// none of it is evidence about the leg. The leg is. A clawback is a posting in the
+// payee's bank's own ledger and its id is a column on that bank's own copy.
 func TestAProprietaryReturnReasonReachesTheLedgersToo(t *testing.T) {
 	h := newHarness(t)
 	p := h.settledPayment(t)
@@ -652,40 +521,25 @@ func TestAProprietaryReturnReasonReachesTheLedgersToo(t *testing.T) {
 	}
 }
 
-// TestAReturnThatNamesNoPaymentCannotBeAnswered pins the one refusal in this
-// flow that reaches nobody, so that its cost is recorded rather than
-// rediscovered.
+// TestAReturnThatNamesNoPaymentCannotBeAnswered pins the one refusal in this flow
+// that reaches nobody, so its cost is recorded rather than rediscovered.
 //
-// A pacs.004 may refer back by OrgnlEndToEndId alone: OrgnlTxId is optional in
-// the schema and iso20022's ReturnTransaction.validate accepts either. This
-// system identifies payments by OrgnlTxId, so such a message names no payment
-// this network holds. The sender is told nothing and the payment is untouched;
-// what is reported is the answer.
+// A pacs.004 may refer back by OrgnlEndToEndId alone: OrgnlTxId is optional in the
+// schema and ReturnTransaction.validate accepts either. This system identifies
+// payments by OrgnlTxId, so such a message names no payment this network holds. The
+// sender is told nothing and the payment is untouched; what is reported is the
+// answer.
 //
-// # WHERE it dies has moved, and half the limit is closed
+// centralBank.answer quotes the reference the RETURNING BANK gave rather than the
+// payment id, because quoting the payment id as the end-to-end reference too would
+// break the convention every other per-payment status follows. So the refusal is
+// built and sent and dies one hop later: the clearing house turns an answer back
+// into a payment by OrgnlTxId, the element this message lacks.
 //
-// centralBank.answer quotes the reference the RETURNING BANK gave
-// (returnedEndToEnd) rather than the payment id. Quoting the payment id as the
-// end-to-end reference as well as the transaction id breaks the convention every
-// other per-payment status follows — so a bank could not match an ordinary answer
-// against what it sent — and leaves a message with neither with nothing to refer
-// back by, which the codec refuses.
-//
-// So the refusal is built and sent, and dies one hop later instead: the
-// clearing house is what turns an answer back into a payment, and it looks up
-// by OrgnlTxId, which is the element this message does not have.
-//
-// WHAT refuses it is a money guard rather than a lookup. The settlement agent
-// reads no payment row, so payment.ReadReturn refuses the message: the reserve
-// reversal's idempotency key is derived from the payment id, and an empty one
-// would move reserves under a key every nameless return shares. See
-// TestReadReturnRefusesATransactionThatNamesNoPayment. The outcome for the
-// returning bank is that it is told nothing, and the other half of the limit is
-// that the clearing house would have to resolve a payment by its end-to-end
-// reference, which is a lookup this system does not have.
-//
-// No actor in this deployment emits one — payment.ReturnMessage always writes
-// OrgnlTxId — so it is injected.
+// WHAT refuses it is a money guard rather than a lookup: the reserve reversal's
+// idempotency key is derived from the payment id, and an empty one would move
+// reserves under a key every nameless return shares. Injected, since
+// payment.ReturnMessage always writes OrgnlTxId.
 func TestAReturnThatNamesNoPaymentCannotBeAnswered(t *testing.T) {
 	h := newHarness(t)
 	p := h.settledPayment(t)
@@ -775,21 +629,15 @@ func TestARefusedReturnNamesTheSettlementAgentAsTheOriginator(t *testing.T) {
 	}
 }
 
-// TestTheSettlementAgentsAnswerQuotesTheReferenceTheBankSent is the convention
-// every per-payment status in this deployment follows, asserted at the one actor that
-// had drifted off it.
+// TestTheSettlementAgentsAnswerQuotesTheReferenceTheBankSent is the convention every
+// per-payment status follows, asserted at the one actor that had drifted off it. A
+// bank matches an answer to its instruction by comparing what it SENT with what came
+// back, and the payment id as an end-to-end reference matches nothing any bank sent.
 //
-// A bank matches an answer to its instruction by comparing what it SENT with
-// what came back. centralBank.answer quoted the payment id as the end-to-end
-// reference as well as the transaction id, which matches nothing any bank ever
-// sent — endToEndOf is the same convention on the other side of the network,
-// and payment's own helper is where it comes from.
-//
-// Both cases, because the convention has two halves and only one of them is
-// visible in a fixture with no client reference: a payment that quotes one gets
-// it back verbatim, and a payment that quotes none gets NOTPROVIDED. The second
-// is the EPC's convention for "the payer gave no reference" and is what the
-// pacs.008 carried on the way out.
+// Both cases, because the convention has two halves and only one is visible in a
+// fixture with no client reference: a payment that quotes one gets it back verbatim,
+// and a payment that quotes none gets NOTPROVIDED — the EPC's convention for "the
+// payer gave no reference", and what the pacs.008 carried on the way out.
 func TestTheSettlementAgentsAnswerQuotesTheReferenceTheBankSent(t *testing.T) {
 	for _, tc := range []struct{ name, e2e, want string }{
 		{"a payment with a client reference", "INV-42", "INV-42"},
@@ -830,15 +678,11 @@ func TestTheSettlementAgentsAnswerQuotesTheReferenceTheBankSent(t *testing.T) {
 	}
 }
 
-// TestTheSettlementAgentCannotAnswerYesWithAReason is the guard bank.answer has
-// and centralBank.answer had drifted away from.
-//
-// A pacs.002 carries StsRsnInf only for a rejection (payment.statusReasonOf), so
-// a cause passed beside SettlementCompleted would set a code and a text that the
-// builder then silently drops — a message saying everything is fine, with the
-// reason it was not deleted on the way out. No handler does it today; this is
-// what stops the next one, and it is asserted directly because there is no
-// message that provokes it.
+// TestTheSettlementAgentCannotAnswerYesWithAReason: a pacs.002 carries StsRsnInf
+// only for a rejection, so a cause passed beside SettlementCompleted sets a code and
+// a text the builder then silently drops — a message saying everything is fine, with
+// the reason it was not deleted on the way out. No handler does it today; this is
+// what stops the next one, asserted directly because no message provokes it.
 func TestTheSettlementAgentCannotAnswerYesWithAReason(t *testing.T) {
 	h := newHarness(t)
 	cb := &CentralBank{d: h.dep, net: h.cb(), ops: h.cb(), bic: h.cfg.CentralBankBIC, host: h.dep.CentralBank().host}
@@ -867,29 +711,20 @@ func TestTheSettlementAgentCannotAnswerYesWithAReason(t *testing.T) {
 	}
 }
 
-// TestAPayeeWhoSpentTheMoneyStopsTheReturnOnTheWire is the observable half of
-// the return's one rule — a bank can refuse a leg only if it posts it before it
-// sends.
+// TestAPayeeWhoSpentTheMoneyStopsTheReturnOnTheWire is the observable half of the
+// return's one rule: a bank can refuse a leg only if it posts it before it sends.
+// payment's own test measures the domain call; this measures three things it cannot
+// see — the caller of Deployment.Return gets the refusal, NOTHING goes on the wire,
+// and the code is AM04 about the returning bank's OWN customer.
 //
-// payment.TestAPayeeWhoSpentTheMoneyStopsTheReturnBeforeItIsSent measures the
-// domain call. This measures what the MESH does with it, which is three things
-// that test cannot see: the caller of Deployment.Return gets the refusal, NOTHING goes
-// on the wire, and the code the refusal carries is AM04 about the returning
-// bank's OWN customer.
+// That last is worth stating. AM04 here has meant a payer's empty account and a
+// bank's empty reserve; this is a third speaker, the bank that RECEIVED a credit
+// transfer saying its own beneficiary has spent the money and cannot be made to give
+// it back.
 //
-// That last one is the part worth stating. AM04 in this system has meant a
-// payer's empty account (a debtor's bank refusing a collection) and a bank's
-// empty reserve (the settlement agent refusing a cut-off). This is a third
-// speaker: the bank that RECEIVED a credit transfer, saying its own beneficiary
-// has spent the money and cannot be made to give it back. No bank force-takes
-// money from a customer who has spent it — and before the returning bank held a
-// leg of its own, this system had no way to say so.
-//
-// Nothing on the wire is the half that makes the refusal binding rather than
-// merely reported. A bank that had sent the pacs.004 first and discovered the
-// shortfall afterwards would have the reserves already reversed and no way back:
-// the settlement agent does not read the payment and would have no reason to
-// refuse.
+// Nothing on the wire is what makes the refusal binding rather than reported: a bank
+// that had sent the pacs.004 first would have the reserves already reversed and no
+// way back, the settlement agent not reading the payment at all.
 func TestAPayeeWhoSpentTheMoneyStopsTheReturnOnTheWire(t *testing.T) {
 	h := newHarness(t)
 	p := h.settledPayment(t)
@@ -926,40 +761,29 @@ func TestAPayeeWhoSpentTheMoneyStopsTheReturnOnTheWire(t *testing.T) {
 }
 
 // TestARefusedReturnUnwindsTheReturningBanksLeg is the price of that binding
-// refusal, and the reason payment.ReverseReturnLegTx exists at all.
+// refusal, and why payment.ReverseReturnLegTx exists. The returning bank posts
+// BEFORE it sends, so an RJCT leaves that posting standing against a return that
+// will not happen.
 //
-// The returning bank posts BEFORE it sends, so by the time an answer arrives it
-// has already moved its own customer's money. An RJCT leaves that posting
-// standing against a return that will not happen — a customer looking at a
-// balance nobody can explain — so this handler unwinds it.
+// A genuine RJCT takes a real shortfall, and a doctored message will not do: an
+// injected pacs.004 has no returning bank behind it. What is left is the one thing
+// SettleReturnTx decides — whether the CREDITOR's bank can cover the reversal — and
+// the direction that reaches it is the pull:
 //
-// # Getting a genuine RJCT takes a real shortfall, and the PULL is where one fits
-//
-// The refusal has to come from the settlement agent AFTER a returning bank has
-// really posted, so a doctored message will not do: an injected pacs.004 has no
-// returning bank behind it. What is left is the one thing SettleReturnTx
-// decides — whether the CREDITOR's bank can cover the reserve reversal — and the
-// direction that reaches it is the pull:
-//
-//   - a collection settles, so the payee's bank has the reserves and the payee
-//     has the money;
+//   - a collection settles, so the payee's bank has the reserves and the payee the
+//     money;
 //   - the payee spends it, which takes both away;
 //   - the payer's bank returns the collection. It holds the REFUND, which is
 //     unconditional and always postable, so it posts and sends;
 //   - the central bank finds the payee's bank short and answers AM04.
 //
-// On a push the same shortfall would have stopped the return one step earlier,
-// at the clawback — see TestAPayeeWhoSpentTheMoneyStopsTheReturnOnTheWire — which
-// is the two halves of the rule meeting.
+// On a push the same shortfall stops the return one step earlier, at the clawback.
 //
-// # What the refusal must leave behind
-//
-// The payer is back where the collection left them, the refund posting is in the
-// book marked Reversed rather than deleted, and the payee's bank is never sent
-// the pacs.004 at all. That last one is what the clearing house holding the
-// message buys: a bank that had been relayed it on arrival would have clawed its
-// biller back for a return the network then refused, with no message in this
-// flow that would ever tell it.
+// What the refusal must leave behind: the payer back where the collection left them,
+// the refund posting marked Reversed rather than deleted, and the payee's bank never
+// sent the pacs.004 at all. That last is what the clearing house holding the message
+// buys — a bank relayed it on arrival would have clawed its biller back for a return
+// the network then refused, with no message that would ever tell it.
 func TestARefusedReturnUnwindsTheReturningBanksLeg(t *testing.T) {
 	h := newHarness(t)
 	p := h.settledCollection(t)
@@ -1024,39 +848,24 @@ func TestARefusedReturnUnwindsTheReturningBanksLeg(t *testing.T) {
 	}
 }
 
-// TestAReturnRetriedAfterAnUnwindRepaysThePayer is the second half of the
-// unwind, and the half the unwind exists for.
+// TestAReturnRetriedAfterAnUnwindRepaysThePayer is the half the unwind exists for.
+// AM04 is a SHORTFALL — the counterparty's bank was short at that moment, and
+// somebody can cover it — so the return is asked again, and this is the only test
+// that asks it. The payer's eight-week refund right does not expire because the
+// biller's bank was briefly empty.
 //
-// TestARefusedReturnUnwindsTheReturningBanksLeg stops where the RJCT does: the
-// leg is Reversed, the money is back where the refused return found it, and the
-// payment is Settled. That is a system that has correctly done nothing. But AM04
-// is a SHORTFALL — the counterparty's bank was short of reserves at that moment,
-// and somebody can cover it — so the return is asked again, and this is the only
-// test in this repository that asks it. The payer's eight-week refund right does
-// not expire because the biller's bank was briefly empty.
-//
-// # It asserts on the MONEY, and that is the whole point
-//
-// A return that runs its conversation to completion and sets Returned looks
-// identical from the status, the pacs.002 and the message tap whether or not the
-// payer was actually repaid. So the assertions here are three balances and a
-// suspense:
+// It asserts on the MONEY, because a return that runs to completion and sets Returned
+// looks identical from the status, the pacs.002 and the tap whether or not the payer
+// was repaid:
 //
 //   - the PAYER is up by the amount. That is what a return is.
 //   - the BILLER is down by it. On a pull the biller's bank is FORCED into the
-//     clawback after finality, so an empty biller goes overdrawn rather than
-//     stopping the return — see payment.PostReturnLegTx.
-//   - the returning bank's CLEARING SUSPENSE is back to zero. It is the account
-//     that would hold the difference if exactly one of the two halves happened,
-//     and an amount stranded there is stranded for ever: nothing in this system
-//     sweeps it.
+//     clawback after finality, so an empty biller goes overdrawn.
+//   - the returning bank's CLEARING SUSPENSE is back to zero. It is the account that
+//     would hold the difference if exactly one half happened, and an amount stranded
+//     there is stranded for ever: nothing sweeps it.
 //
-// The measured defect it pins: a retry whose leg id was left on the payment by
-// the unwind was read as "this bank has already posted", so PostReturnLegTx
-// answered the redelivery arm without posting. The conversation then ran to
-// completion around a refund that did not exist — the biller clawed back, the
-// payer repaid nothing, 250000 stranded in the returning bank's suspense, and an
-// ACSC on the wire saying it had all worked.
+// The measured defect it pins is in docs/notes/cmd-server.md.
 func TestAReturnRetriedAfterAnUnwindRepaysThePayer(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()
@@ -1080,14 +889,10 @@ func TestAReturnRetriedAfterAnUnwindRepaysThePayer(t *testing.T) {
 		t.Fatalf("the first refund is %v, want Reversed — this test retries a return whose leg no longer stands", got.Status)
 	}
 
-	// What makes the retry askable: the biller pays cash in over the counter, and
-	// the bank then places that cash on reserve. Two acts, and a deposit is only
-	// the first.
-	//
-	// A deposit reaches the bank's vault and no institution but that bank. What
-	// replenishes a RESERVE is a lodgement, because the reserve account is in the
-	// central bank's book and only the central bank can credit it. Nothing about
-	// the payment changes either way.
+	// What makes the retry askable: the biller pays cash in over the counter, and the
+	// bank then places that cash on reserve. Two acts — a deposit reaches the bank's
+	// vault and no institution but that bank, and what replenishes a RESERVE is a
+	// lodgement, the reserve account being in the central bank's book.
 	if err := h.bank(h.creditorBIC).Deposit(ctx, h.creditorPID, h.creditorAcct.ID, harnessAmount, "cash in over the counter"); err != nil {
 		t.Fatalf("funding the biller's bank so the return can be retried: %v", err)
 	}
@@ -1124,39 +929,26 @@ func TestAReturnRetriedAfterAnUnwindRepaysThePayer(t *testing.T) {
 	}
 }
 
-// TestTheClearingHousesOtherCallersLeaveTheHeldReturnsAlone turns an invariant
-// about held_returns into a measurement.
+// TestTheClearingHousesOtherCallersLeaveTheHeldReturnsAlone turns an invariant about
+// held_returns into a measurement. A return waiting for the settlement agent's answer
+// is the one obligation this institution carries that belongs to NO cut-off, and the
+// three methods reached from outside a business day — closeCycle, settle and reject
+// — each sweep something it is holding. A cut-off that dropped a pending return would
+// leave the other bank never told to post its leg, with the reserves about to move
+// under a batch that has nothing to do with it.
 //
-// A return waiting for the settlement agent's answer is the one obligation this
-// institution carries that belongs to NO cut-off. The three methods reached from
-// outside a business day — closeCycle, settle and reject — each sweep something
-// the clearing house is holding, and none of them may sweep this: a cut-off that
-// dropped a pending return would leave the other bank never told to post its
-// leg, with the reserves about to move under a batch that has nothing to do with
-// it.
-//
-// A comment saying so is a claim nobody has to keep true. This is the same
-// answer this package gives to the analogous hole in the recorder, where
-// TestRecordingTxOverridesEveryBookScopedMethod guards "a method nobody
-// wrapped": assert the property rather than write it down.
-//
-// It drives all three through the MESH rather than calling them directly, so
-// that what is measured is the whole of what each does — including the sends and
-// the handlers they provoke — and not a hand-picked prefix of it. A return is
-// left in flight across each so that there is something to disturb, which is the
-// only arrangement in which "left it alone" is a claim about anything.
+// It drives all three through the MESH rather than calling them directly, so what is
+// measured is the whole of what each does, and leaves a return in flight across each
+// so that there is something to disturb.
 func TestTheClearingHousesOtherCallersLeaveTheHeldReturnsAlone(t *testing.T) {
 	h := newHarness(t)
 	p := h.settledPayment(t)
 	ctx := context.Background()
 
-	// A real pacs.004 is built and carried, so that the row placed below is the
-	// value this actor really holds rather than a shape invented by the test. It
-	// cannot be LEFT in flight: every return this deployment carries is answered,
-	// and an answer is what drops the row. So the flow is run to completion and
-	// one row is then put back by hand — which is the honest arrangement anyway,
-	// since what is under test is the three OTHER callers and not how a return
-	// came to be waiting.
+	// A real pacs.004 is built and carried, so the row placed below is the value this
+	// actor really holds rather than a shape invented by the test. It cannot be LEFT in
+	// flight — every return this deployment carries is answered, and an answer drops the
+	// row — so the flow runs to completion and one row is put back by hand.
 	env, err := h.net.ReturnMessage(p, iso20022.ReturnReasonClosedAccountNumber, "account closed",
 		payment.MessageContext{From: h.creditorBIC, To: h.cfg.ClearingHouseBIC, MsgID: "rtn-held", Now: testTime})
 	if err != nil {
