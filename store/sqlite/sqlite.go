@@ -159,10 +159,12 @@ var (
 		"audit_events", "id_sequences").withPaymentLegs()
 
 	// CSM is the clearing house: a roster, cycles, its own copy of each payment
-	// it carries, and no book of accounts of any kind.
+	// it carries, the files and returns it has taken in and not yet handed over,
+	// and no book of accounts of any kind.
 	CSM = shape("csm",
 		"roster_entries", "roster_entry_assets",
 		"payments", "cycles", "cycle_payments",
+		"held_files", "held_file_transactions", "held_returns",
 		"audit_events", "id_sequences").withPaymentCycle()
 
 	// CentralBank is the settlement agent: a ledger holding the members' reserve

@@ -76,9 +76,14 @@ interface Shortfall {
 // actor answers it — so there is no act for a human here and no route behind
 // one. What is left is watching, and the three sections
 // below are what watching consists of: the instructions still outstanding, the
-// ones that were discharged, and the reserves they moved. A cycle sitting in the
-// first section still Closed is one the central bank REFUSED, and the reserves
-// are why.
+// ones that were discharged, and the reserves they moved.
+//
+// A cycle sitting in the first section still Closed is one no settlement was
+// written for, and this console cannot say which of two things that is: an
+// instruction the agent REFUSED, or one it was never sent. What distinguishes
+// them is a message, and a settlement agent holds no record of a file that never
+// arrived. So nothing here claims either — what it shows is the reserves, which
+// are the same figures whichever it was and the only ones an operator acts on.
 export default function CentralBankPage() {
   const reserves = useReserves();
   const cycles = useCentralBankCycles();
@@ -242,12 +247,14 @@ function InstructionCard({
       </CardHeader>
       <CardContent className="space-y-3">
         {shortfall ? (
-          <RefusedAlert cycle={cycle} shortfall={shortfall} />
+          <ShortfallAlert cycle={cycle} shortfall={shortfall} />
         ) : (
           <p className="text-sm text-muted-foreground">
             Closed and not settled. The clearing house sends a{" "}
             <code>pacs.009</code> carrying these positions, and the central bank
-            answers it; a discharged cycle moves to Settlements below.
+            answers it; a discharged cycle moves to Settlements below. Every
+            payer here can cover, so what is outstanding is the instruction
+            itself — refused for some other reason, or never sent.
           </p>
         )}
         <NetPositionsTable positions={cycle.netPositions} asset={cycle.asset} />
@@ -256,15 +263,19 @@ function InstructionCard({
   );
 }
 
-// RefusedAlert is the state this console could not show before: an instruction
-// the central bank answered RJCT/AM04.
+// ShortfallAlert is a member that cannot cover its position in a cut-off nobody
+// has settled.
 //
-// Both numbers are on screen because the operator's next move depends on the
-// gap and not on the fact — the member has to be funded by the difference before
-// the cut-off can be instructed again. AM04 is named because it is what actually
-// went on the wire, and it is the only thing a bank's own exception queue will
-// show.
-function RefusedAlert({ cycle, shortfall }: { cycle: ClearingCycle; shortfall: Shortfall }) {
+// It states the shortfall and what an instruction naming this cut-off MEETS —
+// present tense, and a hypothesis rather than a history. Whether one was ever
+// sent is not something this console can see, and a card that said "answered
+// RJCT/AM04" would be inventing a message for the one case where none was.
+//
+// Both numbers are on screen because the operator's next move depends on the gap
+// and not on the fact: the member has to be funded by the difference before the
+// cut-off can go through. AM04 is named because it is what such an instruction
+// comes back with, and it is the only thing a bank's own exception queue shows.
+function ShortfallAlert({ cycle, shortfall }: { cycle: ClearingCycle; shortfall: Shortfall }) {
   const { byCode, isLoading } = useAssetLookup();
   const asset = byCode.get(cycle.asset);
   const amount = (n: number) =>
@@ -280,8 +291,8 @@ function RefusedAlert({ cycle, shortfall }: { cycle: ClearingCycle; shortfall: S
       <AlertDescription>
         <p>
           <IdText id={shortfall.agent} /> owes {amount(shortfall.owed)} and
-          holds {amount(shortfall.held)} on reserve, so the central bank answers
-          this instruction <strong>RJCT/AM04</strong>{" "}
+          holds {amount(shortfall.held)} on reserve, so an instruction naming
+          this cut-off comes back <strong>RJCT/AM04</strong>{" "}
           and posts nothing at all. Settlement is one unit of work over the whole batch: every other
           member&rsquo;s position is undischarged too, and every payment in the
           cycle is still Cleared with the payer&rsquo;s money sitting in its own

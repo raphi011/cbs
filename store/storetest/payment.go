@@ -941,7 +941,22 @@ func RunClearingHousePayment(t *testing.T, newStore func(*testing.T) payment.Sto
 			if err := tx.PutRosterEntry(ctx, rosterEntry("AURODEFFXXX", early)); err != nil {
 				return err
 			}
-			return tx.PutCycle(ctx, cycle("cyc_1", payment.SchemeSEPACT, payment.CycleOpen, early))
+			if err := tx.PutCycle(ctx, cycle("cyc_1", payment.SchemeSEPACT, payment.CycleOpen, early)); err != nil {
+				return err
+			}
+			// What this institution has taken in and not yet handed over, which is
+			// the state a reset most has to take with it: a share that survived one
+			// would be released into a bank's queue by the next cycle to be given
+			// the same id, since the id counters restart with the rows.
+			if err := tx.AddHeldFile(ctx, payment.HeldFile{
+				CycleID: "cyc_1", Destination: auroraBIC, File: []byte("<f/>"),
+				Transactions: []payment.HeldTransaction{{Position: 0, PaymentID: "pay_1"}},
+			}); err != nil {
+				return err
+			}
+			return tx.PutHeldReturn(ctx, payment.HeldReturn{
+				PaymentID: "pay_2", ReturnedBy: auroraBIC, File: []byte("<r/>"),
+			})
 		})
 		if err := s.Reset(context.Background()); err != nil {
 			t.Fatalf("Reset: %v", err)
@@ -962,6 +977,15 @@ func RunClearingHousePayment(t *testing.T, newStore func(*testing.T) payment.Sto
 			// The open-cycle query is state too.
 			_, err = tx.GetOpenCycle(ctx, payment.SchemeSEPACT)
 			assertErrorIs(t, "open cycle after reset", err, payment.ErrCycleNotFound)
+
+			held, err := tx.ListHeldFiles(ctx, "cyc_1")
+			if err != nil {
+				return err
+			}
+			assertEqual(t, "held files after reset", len(held), 0)
+
+			_, err = tx.GetHeldReturn(ctx, "pay_2")
+			assertErrorIs(t, "held return after reset", err, payment.ErrHeldReturnNotFound)
 			return nil
 		})
 	})
@@ -1017,6 +1041,148 @@ func RunClearingHousePayment(t *testing.T, newStore func(*testing.T) payment.Sto
 			}
 			assertEqual(t, "cycles after an upsert", len(all), 1)
 			assertEqual(t, "cycle status after an upsert", all[0].Status.String(), payment.CycleSettled.String())
+			return nil
+		})
+	})
+
+	// The two tables that hold an OBLIGATION rather than a record: what this
+	// institution has taken in and not yet handed over.
+	//
+	// Their contract is unlike every other one in this suite in two ways, and both
+	// are asserted here. A share has no key its caller knows, so writing the same
+	// value twice is two obligations and not one row rewritten — the opposite of
+	// what Put means everywhere else. And the listing order is the BUILD order,
+	// carried by the store's own seq, because a share has no timestamp: it is not
+	// an event.
+	//
+	// The name says "survive their cycle" because that is the property behind the
+	// absent foreign key. A share must be readable and removable whatever became
+	// of the cycles row that names it, so the fixture never writes one.
+	t.Run("HeldFilesSurviveTheirCycleAndReleaseInBuildOrder", func(t *testing.T) {
+		s := openInstitution(t, newStore)
+
+		files := []payment.HeldFile{
+			{CycleID: "cyc_1", Destination: auroraBIC, File: []byte("<first/>"), Transactions: []payment.HeldTransaction{
+				{Position: 0, PaymentID: "pay_1"}, {Position: 2, PaymentID: "pay_3"},
+			}},
+			{CycleID: "cyc_1", Destination: verdeBIC, File: []byte("<first/>"), Transactions: []payment.HeldTransaction{
+				{Position: 1, PaymentID: "pay_2"},
+			}},
+			{CycleID: "cyc_2", Destination: auroraBIC, File: []byte("<second/>"), Transactions: []payment.HeldTransaction{
+				{Position: 0, PaymentID: "pay_4"},
+			}},
+		}
+		updatePayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+			for _, f := range files {
+				if err := tx.AddHeldFile(ctx, f); err != nil {
+					return err
+				}
+			}
+			return nil
+		})
+
+		viewPayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+			got, err := tx.ListHeldFiles(ctx, "cyc_1")
+			if err != nil {
+				return err
+			}
+			assertEqual(t, "shares held for cyc_1", len(got), 2)
+			assertOrder(t, "ListHeldFiles",
+				ids(got, func(f payment.HeldFile) string { return string(f.Destination) }),
+				string(auroraBIC), string(verdeBIC))
+			assertEqual(t, "the first share's file", string(got[0].File), "<first/>")
+			assertEqual(t, "transactions in the first share", len(got[0].Transactions), 2)
+			assertEqual(t, "the second transaction's position", got[0].Transactions[1].Position, 2)
+			assertEqual(t, "the second transaction's payment", string(got[0].Transactions[1].PaymentID), "pay_3")
+
+			// A cut-off nothing was taken into: an empty listing, not a sentinel.
+			// "No share" and "no such cycle" are the same fact to the caller.
+			none, err := tx.ListHeldFiles(ctx, "cyc_nope")
+			if err != nil {
+				return err
+			}
+			assertEqual(t, "shares held for a cycle nothing was taken into", len(none), 0)
+			return nil
+		})
+
+		// The append: the same value written again is a SECOND share. Nothing here
+		// upserts, because two files addressed to one bank in one cut-off is what a
+		// bank uploading twice before the cut-off produces.
+		updatePayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+			return tx.AddHeldFile(ctx, files[0])
+		})
+		viewPayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+			got, err := tx.ListHeldFiles(ctx, "cyc_1")
+			if err != nil {
+				return err
+			}
+			assertEqual(t, "shares held for cyc_1 after a second identical file", len(got), 3)
+			return nil
+		})
+
+		// The release: one cut-off's shares go, the other's stay, and the positions
+		// go with the share on the cascade rather than being left behind.
+		updatePayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+			return tx.DeleteHeldFiles(ctx, "cyc_1")
+		})
+		viewPayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+			released, err := tx.ListHeldFiles(ctx, "cyc_1")
+			if err != nil {
+				return err
+			}
+			assertEqual(t, "shares held for cyc_1 after its release", len(released), 0)
+
+			kept, err := tx.ListHeldFiles(ctx, "cyc_2")
+			if err != nil {
+				return err
+			}
+			assertEqual(t, "shares held for cyc_2 after cyc_1 was released", len(kept), 1)
+			assertEqual(t, "transactions still in cyc_2's share", len(kept[0].Transactions), 1)
+			return nil
+		})
+	})
+
+	t.Run("HeldReturnsAreKeyedByThePaymentTheAnswerNames", func(t *testing.T) {
+		s := openInstitution(t, newStore)
+
+		updatePayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+			return tx.PutHeldReturn(ctx, payment.HeldReturn{
+				PaymentID: "pay_1", ReturnedBy: auroraBIC, File: []byte("<rtn/>"),
+			})
+		})
+		viewPayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+			got, err := tx.GetHeldReturn(ctx, "pay_1")
+			if err != nil {
+				return err
+			}
+			assertEqual(t, "the bank that returned", string(got.ReturnedBy), string(auroraBIC))
+			assertEqual(t, "the held message", string(got.File), "<rtn/>")
+
+			_, err = tx.GetHeldReturn(ctx, "pay_nope")
+			assertErrorIs(t, "GetHeldReturn for a payment nothing is held for", err, payment.ErrHeldReturnNotFound)
+			return nil
+		})
+
+		// An upsert, unlike a share: the key is the payment, and one payment has at
+		// most one return in flight — the second hop of a conversation that has
+		// already had its first.
+		updatePayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+			return tx.PutHeldReturn(ctx, payment.HeldReturn{
+				PaymentID: "pay_1", ReturnedBy: verdeBIC, File: []byte("<rtn2/>"),
+			})
+		})
+		updatePayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+			got, err := tx.GetHeldReturn(ctx, "pay_1")
+			if err != nil {
+				return err
+			}
+			assertEqual(t, "the bank that returned, after an upsert", string(got.ReturnedBy), string(verdeBIC))
+			assertEqual(t, "the held message, after an upsert", string(got.File), "<rtn2/>")
+			return tx.DeleteHeldReturn(ctx, "pay_1")
+		})
+		viewPayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+			_, err := tx.GetHeldReturn(ctx, "pay_1")
+			assertErrorIs(t, "GetHeldReturn after the answer arrived", err, payment.ErrHeldReturnNotFound)
 			return nil
 		})
 	})

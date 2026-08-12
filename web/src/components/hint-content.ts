@@ -594,6 +594,8 @@ So none of the institutions in a chain ever sees the same file, and that fan-out
 
 It sorts **without reading any record of its own**. A clearing house that had to look a payment up to decide where to send it could not route a file about a payment it does not hold, which in a real network is most of them.
 
+The M files do not leave at once. Each waits until the cut-off carrying its transactions has settled — see [[business-day]] for the phases that put those two in that order — so the clearing house is holding a **share** per receiving bank in between, and it keeps them in its own database (\`held_files\`, and \`held_file_transactions\` for which of the uploaded file's transactions are whose). What is kept is the **submitting bank's file plus the positions in it**, not a rendered output file: a payment an operator rejects out of the open cut-off has to be cut out of the share when the rest of it settles, which a finished file could not do. And it has to be kept somewhere that outlives a process, because [[settlement-finality|reserves move]] when the cut-off settles: an institution that lost its shares in between would leave the money final and the payee's bank never told the payment exists.
+
 What is *not* batched here is the customer's half: instructions arrive one at a time, so a company handing its bank a single file carrying its whole payroll has no equivalent — that is the customer-to-bank layer, and this system does not model it.
 
 See [[download-queue]] for how a file reaches the bank it is addressed to.`,

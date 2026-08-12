@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -65,12 +66,11 @@ func main() {
 
 	nets := payment.NewNetworks(stores, clock.Now)
 
-	// The two URLs are derived here rather than configured, because the listener
-	// plan below gives the central bank the base port and the clearing house the
-	// next: a second source for those two numbers would be a second thing to keep
-	// in step. Nothing dials either of them before serve returns, and nothing has
-	// to — every institution's connection is opened lazily, on the first file it
-	// sends, which is when a business day runs.
+	// The two URLs are derived here rather than configured, because hostPlan below
+	// gives the central bank the base port and the clearing house the next: a
+	// second source for those two numbers would be a second thing to keep in step.
+	// Every institution's connection is opened lazily, on the first file it sends
+	// — which is a business day, or the sample dataset's own cut-off.
 	cfg := Config{
 		CentralBankBIC:   centralBankBIC,
 		ClearingHouseBIC: clearingHouseBIC,
@@ -83,26 +83,38 @@ func main() {
 		os.Exit(1)
 	}
 
-	// The sample dataset BEFORE the listener plan, because the plan is the set of
-	// banks and seeding is what founds them. It needs nothing listening: the seed
-	// composes both halves of every conversation it builds and uploads no file at
-	// all, so the three acts it asks a deployment for — an admission, a directory
-	// pull, and the settlement agent's address — are all synchronous and local.
+	// The two HOSTS first, and the sample dataset between them and the banks.
+	//
+	// The order is a real constraint rather than tidiness, and it runs both ways.
+	// The seed founds the banks, so a listener per bank cannot be planned before
+	// it. And the seed UPLOADS — its in-flight payments go through a real cut-off,
+	// which is what leaves the clearing house holding a share to release for each
+	// of them — so the clearing house has to be answering on its own address
+	// before Populate is called. Nothing is ever pushed at a member bank, so a
+	// bank with no listener yet is a bank nothing is waiting to reach.
+	shutdownHosts, err := serve(context.Background(), hostPlan(*basePort), dep, log)
+	if err != nil {
+		log.Error("starting the institutions' listeners", "error", err)
+		os.Exit(1)
+	}
+
 	if err := data.Populate(context.Background(), nets, dep); err != nil {
 		log.Error("seeding the sample dataset", "error", err)
 		os.Exit(1)
 	}
 
-	entities, err := plan(context.Background(), stores, nets, *basePort)
+	banks, err := bankPlan(context.Background(), stores, nets, *basePort)
 	if err != nil {
-		log.Error("planning the listeners", "error", err)
+		log.Error("planning the banks' listeners", "error", err)
 		os.Exit(1)
 	}
-
-	shutdown, err := serve(context.Background(), entities, dep, log)
+	shutdownBanks, err := serve(context.Background(), banks, dep, log)
 	if err != nil {
-		log.Error("starting the listeners", "error", err)
+		log.Error("starting the banks' listeners", "error", err)
 		os.Exit(1)
+	}
+	shutdown := func(ctx context.Context) error {
+		return errors.Join(shutdownBanks(ctx), shutdownHosts(ctx))
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

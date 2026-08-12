@@ -972,3 +972,126 @@ func TestACutOffThatNetsToNothingInstructsNobody(t *testing.T) {
 		t.Errorf("the settlement agent holds %d settlements, and nobody instructed one", len(settlements))
 	}
 }
+
+// A cut-off whose instructions this institution could not hand over is refused
+// before the reserves move.
+//
+// Settling one would be final at the settlement agent and reach no receiving
+// bank, leaving a payee unpaid with the money standing in their own bank's
+// clearing suspense and no act in this system able to move it. That is the loss
+// unhanded reports after the fact; this is the refusal that makes it
+// unreachable.
+//
+// # The state is BUILT, and that is what it costs to reach
+//
+// The seeded dataset carries its in-flight payments through a real cut-off, so
+// every one of them has a share behind it and no deployment this repository
+// builds hands over a cut-off that cannot be released. Nor does a restart any
+// more: the shares are rows in the clearing house's own database. What is left
+// is a process that ends between accepting a file's transactions into a cycle
+// and recording the share behind them — two units of work, in that order, for
+// the reason takeRecorded gives — so that is what is composed here, by dropping
+// one cut-off's shares over a cycle they are asserted to have been in first.
+//
+// It goes through CloseCycle rather than Settle because that is the door an
+// operator reaches first, and it makes the refusal at the seam that matters: the
+// cut-off has netted, the payments are Cleared, and no instruction is uploaded.
+// Settle is asked afterwards, since re-instructing is the one route out of a
+// closed-and-undischarged cycle and must not be a way around this.
+//
+// It asserts the WHOLE of what the refusal preserves, because a guard that
+// refused and left something moved would be worse than none: the cycle where the
+// cut-off had it, the payments where the cut-off had them, and the settlement
+// agent never asked.
+func TestACutOffThatCouldNotBeReleasedIsRefusedBeforeTheReservesMove(t *testing.T) {
+	ctx := context.Background()
+	s := newAPIHarness(t)
+	csm := s.dep.ClearingHouse()
+
+	cycles, err := s.nets.ClearingHouse().ListCycles(ctx)
+	if err != nil {
+		t.Fatalf("ListCycles: %v", err)
+	}
+	var target payment.ClearingCycle
+	for _, c := range cycles {
+		if c.Status == payment.CycleOpen && len(c.PaymentIDs) > 0 {
+			target = c
+			break
+		}
+	}
+	if target.ID == "" {
+		t.Fatal("the seeded dataset holds no open cycle with payments in it; this test has nothing to lose the shares of")
+	}
+	files, err := csm.ops.ListHeldFiles(ctx, target.ID)
+	if err != nil {
+		t.Fatalf("ListHeldFiles: %v", err)
+	}
+	if len(files) == 0 {
+		t.Fatalf("the clearing house held no share for %s before this test dropped them; there was nothing to lose", target.ID)
+	}
+	// ONE cut-off's shares rather than every cut-off's, which is what leaves the
+	// OTHER open cycle holding its own — a day that refused everything would say
+	// nothing about refusing this one.
+	if err := csm.ops.DropHeldFiles(ctx, target.ID); err != nil {
+		t.Fatalf("DropHeldFiles: %v", err)
+	}
+
+	settlementsBefore, err := s.nets.CentralBank().ListSettlements(ctx)
+	if err != nil {
+		t.Fatalf("ListSettlements: %v", err)
+	}
+
+	switch _, err := csm.CloseCycle(ctx, target.ID); {
+	case err == nil:
+		t.Fatalf("%s was instructed for settlement; the shares behind its payments are gone, so no receiving bank could have been told", target.ID)
+	case !errors.Is(err, payment.ErrCycleNotReleasable):
+		t.Fatalf("closing %s failed with %v, want ErrCycleNotReleasable", target.ID, err)
+	}
+
+	// And the way OUT of a closed cycle is shut too. Re-instructing is what an
+	// operator does about a cut-off the agent refused, and it must not be a way
+	// round this one.
+	switch _, err := csm.Settle(ctx, target.ID); {
+	case err == nil:
+		t.Fatalf("%s was re-instructed for settlement, and the shares behind it are still gone", target.ID)
+	case !errors.Is(err, payment.ErrCycleNotReleasable):
+		t.Fatalf("re-instructing %s failed with %v, want ErrCycleNotReleasable", target.ID, err)
+	}
+
+	// And a business day does not reach it either. It settles the OTHER cut-off
+	// the seed left open, which is the point of asserting per cycle below rather
+	// than on a total: a day that refused everything would prove nothing.
+	if _, err := s.dep.AdvanceDay(ctx); err != nil {
+		t.Fatalf("AdvanceDay: %v", err)
+	}
+
+	after, err := s.nets.ClearingHouse().GetCycle(ctx, target.ID)
+	if err != nil {
+		t.Fatalf("GetCycle: %v", err)
+	}
+	if after.Status != payment.CycleClosed {
+		t.Errorf("%s is %v after being refused, want Closed — the cut-off left it there and nothing here may move it", target.ID, after.Status)
+	}
+	for _, id := range target.PaymentIDs {
+		p, err := s.nets.ClearingHouse().GetPayment(ctx, id)
+		if err != nil {
+			t.Fatalf("GetPayment %s: %v", id, err)
+		}
+		if p.Status != payment.Cleared {
+			t.Errorf("payment %s is %v, want Cleared; a refused settlement moves no payment", id, p.Status)
+		}
+	}
+	settlementsAfter, err := s.nets.CentralBank().ListSettlements(ctx)
+	if err != nil {
+		t.Fatalf("ListSettlements: %v", err)
+	}
+	for _, st := range settlementsAfter {
+		if st.CycleID == target.ID {
+			t.Errorf("the settlement agent discharged %s; the refusal was supposed to come before the reserves", target.ID)
+		}
+	}
+	if len(settlementsAfter) <= len(settlementsBefore) {
+		t.Errorf("the settlement agent holds %d settlements and held %d; the day settled nothing at all, so refusing this one says nothing",
+			len(settlementsAfter), len(settlementsBefore))
+	}
+}

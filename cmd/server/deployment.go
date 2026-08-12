@@ -203,11 +203,9 @@ func NewDeployment(ctx context.Context, nets *payment.Networks, clock *calendar.
 	}
 	d.csm = &ClearingHouse{
 		d: d, net: nets.ClearingHouse(), ops: nets.ClearingHouse(),
-		bic:    cfg.ClearingHouseBIC,
-		host:   ebics.NewServer(),
-		cb:     ebics.NewClient(ebics.SubscriberID(cfg.ClearingHouseBIC), cfg.CentralBankURL),
-		held:   map[payment.PaymentID]heldReturn{},
-		output: map[payment.CycleID][]pendingFile{},
+		bic:  cfg.ClearingHouseBIC,
+		host: ebics.NewServer(),
+		cb:   ebics.NewClient(ebics.SubscriberID(cfg.ClearingHouseBIC), cfg.CentralBankURL),
 	}
 	d.cb.host.Enrol(ebics.SubscriberID(cfg.ClearingHouseBIC))
 
@@ -308,7 +306,7 @@ func (d *Deployment) CentralBank() *CentralBank     { return d.cb }
 // It is configured rather than discovered — the settlement agent has no roster
 // row, because it is not a member of the scheme it settles — so a caller that
 // needs to name it has nowhere else to read it from. The seed is the caller: it
-// plays every institution in one process and uploads nothing, and a settlement
+// settles its own cut-offs by playing all three institutions, and a settlement
 // instruction names the agent at one end of every leg.
 func (d *Deployment) CentralBankBIC() iso20022.BIC { return d.cfg.CentralBankBIC }
 
@@ -730,12 +728,13 @@ func (d *Deployment) member(bic iso20022.BIC) (*Bank, error) {
 // survived would deliver a file about a payment no institution holds a row for,
 // on the first day after the reset.
 //
-// The same goes for the three other things kept outside the store: each bank's
-// payment hub, the clearing house's held returns and its output files. An
-// instruction taken and not yet cut off would otherwise be uploaded after the
-// reset about a payment nobody holds, and a share held against a cycle id would
-// be released into a bank's queue by the next cycle to mint that id — the
-// sequences restart with the rows.
+// The same goes for the one other thing kept outside the store: each bank's
+// payment hub. An instruction taken and not yet cut off would otherwise be
+// uploaded after the reset about a payment nobody holds. The clearing house's
+// held files and held returns need no line here, because they are rows and go
+// with the rest — and that matters more than it saves: a share held against a
+// cycle id would be released into a bank's queue by the next cycle to mint that
+// id, since the sequences restart with the rows.
 //
 // # Every institution is EMPTIED and none is replaced
 //
@@ -759,8 +758,6 @@ func (d *Deployment) Reset(ctx context.Context) error {
 	d.csm.host.Reset()
 	d.cb.host.Reset()
 	d.cb.host.Enrol(ebics.SubscriberID(d.cfg.ClearingHouseBIC))
-	d.csm.held = map[payment.PaymentID]heldReturn{}
-	d.csm.output = map[payment.CycleID][]pendingFile{}
 	d.journal.take()
 
 	if err := d.nets.Stores().Reset(ctx); err != nil {

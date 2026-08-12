@@ -262,8 +262,9 @@ func (s *surface) handleGetCycle(r *http.Request) (api.ClearingCycleDTO, error) 
 // 200 and the closed cycle, because that is a state the system is really in when
 // this is written: Closed, with net positions on it. What is NOT in the response
 // is the settlement — the central bank answers later, at another actor, and a
-// caller that wants to know reads the cycle again. A cycle that is Closed with no
-// settlement against it is an instruction the central bank refused, and
+// caller that wants to know reads the cycle again. A cycle that is Closed with
+// no settlement against it is one no agent discharged — refused, or never
+// instructed, which the error on this response is what distinguishes — and
 // POST /cycles/{cid}/settle below is what the operator does about it.
 func (s *surface) handleCloseCycle(r *http.Request) (api.ClearingCycleDTO, error) {
 	c, err := s.inst.CloseCycle(r.Context(), payment.CycleID(r.PathValue("cid")))
@@ -315,6 +316,11 @@ func (s *surface) handleCloseCycle(r *http.Request) (api.ClearingCycleDTO, error
 // later, at another actor, and a caller that wants to know reads the cycle
 // again. A cycle that is not Closed — still open, or already settled — is 422
 // and no message is sent at all.
+//
+// So is one this clearing house could not release, and that 422 is the useful
+// one: settling a batch whose output files it does not hold would be final at
+// the agent and reach no receiving bank. See cmd/server's csm.unhandable, which
+// is where the refusal is argued.
 func (s *surface) handleSettleCycle(r *http.Request) (api.ClearingCycleDTO, error) {
 	c, err := s.inst.Settle(r.Context(), payment.CycleID(r.PathValue("cid")))
 	if err != nil {

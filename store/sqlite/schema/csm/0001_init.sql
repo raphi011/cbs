@@ -1,6 +1,6 @@
 -- csm/0001_init: the clearing house's whole world, in one migration.
 --
--- Seven tables, and the shortest of the three files by a wide margin. What is
+-- Ten tables, and the shortest of the three files by a wide margin. What is
 -- absent is the substance of it: THE CLEARING HOUSE HAS NO LEDGER. No books, no
 -- accounts, no transactions, no entries, no deposit register, no products, no
 -- lending. It holds no money and posts nothing, so it has nowhere to post.
@@ -13,12 +13,14 @@
 -- not a policy violation, it is a syntax error against a table that does not
 -- exist.
 --
--- WHAT IT DOES HOLD is a routing table and a batch. roster_entries says who is
--- a member and in which assets, which is what lets it refuse to clear for
--- somebody who is not; cycles and cycle_payments are the batch it accumulates
--- between cut-offs; payments is its own copy of each payment it carries. That
--- is a clearing house: it knows where to send a message and which payments are
--- in the current window.
+-- WHAT IT DOES HOLD is a routing table, a batch, and what it owes. roster_entries
+-- says who is a member and in which assets, which is what lets it refuse to
+-- clear for somebody who is not; cycles and cycle_payments are the batch it
+-- accumulates between cut-offs; payments is its own copy of each payment it
+-- carries; held_files and held_returns are the instructions it has taken in and
+-- not yet handed over. That is a clearing house: it knows where to send a
+-- message, which payments are in the current window, and what it still owes
+-- whom.
 --
 -- WHERE A COMMENT HAS TO GO
 --
@@ -403,26 +405,16 @@ CREATE TABLE cycles (
     -- schema, which is that agent's own row pointing at what it settled.
     --
     -- THE OUTPUT FILES THIS CYCLE IS HOLDING ARE NOT HERE EITHER, and that one
-    -- IS a defect rather than a boundary.
+    -- is a pointer rather than an absence: they are in held_files, two tables
+    -- down.
     --
     -- Between a cut-off and its settlement this institution has sorted every
-    -- submitted file by creditor agent and is holding each receiving bank's
-    -- share, releasing nothing until the cycle is final. Those shares are
-    -- POSITIONS in the submitters' documents, in memory, keyed by cycle — so
-    -- that a payment an operator rejects out of an open cycle is cut out of the
-    -- share when the rest of it settles, which a rendered file could not do.
-    --
-    -- A restart between the two loses them: the reserves have moved and no
-    -- receiving bank is ever handed the instructions it has to apply. Nothing
-    -- recovers that. The same is true of a pacs.004 held between its upload to
-    -- the settlement agent and the answer coming back.
-    --
-    -- It is written here rather than fixed because the fix is this table's
-    -- neighbour — a held_files table in this institution's own database — and
-    -- not a workaround anywhere else. What makes it survivable meanwhile is that
-    -- no deployment here outlives a process by design: the ephemeral store is
-    -- the default and a restart against a file resumes a system whose queues are
-    -- empty anyway.
+    -- submitted file by receiving agent and is holding each bank's share,
+    -- releasing nothing until the cycle is final. There are M shares per cycle
+    -- and each is a whole file, so no column on this row could hold them; and
+    -- what is held is not the file that will travel, because a payment an
+    -- operator rejects out of an open cycle has to be cut out of the share when
+    -- the rest of it settles.
     seq           INTEGER NOT NULL
 ) STRICT;
 
@@ -449,6 +441,133 @@ CREATE TABLE cycle_payments (
     position   INTEGER NOT NULL,
     payment_id TEXT NOT NULL,
     PRIMARY KEY (cycle_id, position)
+) STRICT;
+
+-- ---------------------------------------------------------------------------
+-- What this institution is holding and has not handed over
+-- ---------------------------------------------------------------------------
+
+CREATE TABLE held_files (
+    -- ONE RECEIVING BANK's share of an uploaded instruction file, built when the
+    -- file is taken in and released when the cut-off carrying it settles. It is
+    -- the settle-before-release ruling made into a table: a share exists from
+    -- ingestion and reaches nobody until the settlement agent has discharged the
+    -- batch.
+    --
+    -- Nothing in the other two schemas is like it. A bank holds no share of
+    -- anybody's file and the settlement agent has no payments at all; sorting one
+    -- submitted file into M addressed ones is the act no member could perform for
+    -- itself, and this is where the M wait in between.
+    --
+    -- THE ROW IS AN OBLIGATION, and that is what makes it a table rather than a
+    -- map. Reserves move at settlement, and a receiving bank never handed its
+    -- instructions holds the money in clearing suspense with no act in this
+    -- system able to move it. A process that ended between the two cost exactly
+    -- that, for a whole batch at a time.
+    --
+    -- There is NO foreign key to cycles, even though the parent is in this same
+    -- database and the constraint would therefore be writable. It is
+    -- payments.cycle_id's reason from the other side: this row is what this
+    -- institution owes a bank, and it must be readable and removable whatever
+    -- became of the batch row that names it.
+    cycle_id    TEXT NOT NULL,
+    -- Build order, and shares are released in it. Allocated MAX(seq)+1 over the
+    -- whole table by the canonical rule (ledgers.seq in bank/0001_init.sql), so
+    -- it orders every share this institution holds rather than one cycle's. The
+    -- cycle leads the key because every read is one cut-off's.
+    seq         INTEGER NOT NULL,
+    -- The receiving bank's BIC, which is also its subscriber id: enrolment is
+    -- what creates a queue, so a destination with no enrolment has nowhere for
+    -- this share to go and the transactions were refused RC01 before a row was
+    -- ever written. No foreign key to roster_entries — a member admitted while a
+    -- share of its own is standing here would be constrained by nothing, and one
+    -- that LEAVES the roster is still owed the instructions behind reserves that
+    -- have already moved.
+    destination TEXT NOT NULL,
+    -- The SUBMITTING BANK's file, exactly as it arrived, and not the file that
+    -- will travel.
+    --
+    -- Two things follow from that. Which transactions travel is not settled until
+    -- the cut-off is, so what is kept has to be cuttable — a rendered output file
+    -- could not have a rejected payment taken back out of it. And a bare document
+    -- is not something the codec renders: iso20022.Marshal takes an ENVELOPE, so
+    -- what is stored is the whole uploaded file, header and all. That header is
+    -- the submitter's and is dropped at release, which builds this institution's
+    -- own; what is read back out of these bytes is the document.
+    --
+    -- A file addressed to three banks is stored three times, once per share. The
+    -- share is the unit that is built, cut and released, and normalising the
+    -- bytes out from under it would save space in a table whose rows live for the
+    -- length of one cut-off.
+    --
+    -- No msg_def_idr column beside it. The definition is on the stored envelope's
+    -- header AND on the document it wraps, and iso20022 refuses a file where
+    -- those two disagree, so a third copy could only ever drift from them.
+    file        BLOB NOT NULL,
+    PRIMARY KEY (cycle_id, seq)
+) STRICT;
+
+CREATE TABLE held_file_transactions (
+    -- WHICH transactions of the file above are this share's, as POSITIONS in it
+    -- rather than as copies, and which payment each position is.
+    --
+    -- Positions because two things are indexed by them — the document's own
+    -- transaction list and this institution's payments rows — and an index is
+    -- what keeps the two in step without either being rebuilt. The PAIR is what
+    -- release needs: it asks the payment id whether the cut-off really settled
+    -- it, and cuts the document by the positions that survive.
+    --
+    -- The parent FOREIGN KEY stays, under the exemption stated on subledgers in
+    -- bank/0001_init.sql and for cycle_payments' reason: the store writes both
+    -- sides within one statement sequence, so no caller can produce an orphan.
+    -- It is also what makes releasing a cut-off one DELETE. payment_id carries
+    -- none, which is the same rule from its other side — the payments row is in
+    -- this database, so the constraint could be written, and it stays out because
+    -- a share must be recordable whatever else is in the database.
+    cycle_id   TEXT NOT NULL,
+    seq        INTEGER NOT NULL,
+    position   INTEGER NOT NULL,
+    payment_id TEXT NOT NULL,
+    PRIMARY KEY (cycle_id, seq, position),
+    FOREIGN KEY (cycle_id, seq) REFERENCES held_files (cycle_id, seq) ON DELETE CASCADE
+) STRICT;
+
+CREATE TABLE held_returns (
+    -- One pacs.004 uploaded to the settlement agent and not yet answered: the
+    -- SECOND hop of a return, waiting for finality.
+    --
+    -- A return is a conversation with three participants, two of which never
+    -- address each other, so the file that makes the second bank post the leg the
+    -- returning bank does not hold has to be carried by the institution that has
+    -- seen both ends. It cannot be queued before the agent says ACSC — a bank
+    -- that had posted against a return the agent then refused would have moved a
+    -- customer's money for nothing, with no file in the flow that would ever tell
+    -- it — so it waits here.
+    --
+    -- Keyed by the PAYMENT the return names, which is the only thing the message
+    -- and the answer to it have in common: the answer quotes the payment and
+    -- nothing else. A return naming no payment is uploaded and never held,
+    -- because nothing could ever match it.
+    --
+    -- One row wide where a share is two tables, because there is nothing to cut:
+    -- a return is one settled payment coming back and it travels whole.
+    --
+    -- NO seq, and it is the one table here without one. The convention in this
+    -- file's header applies to LISTED tables; nothing lists these, because a held
+    -- return is looked up by the payment an arriving answer names, one at a time.
+    payment_id  TEXT PRIMARY KEY,
+    -- The RETURNING bank, and it is what the second hop is routed against: the
+    -- other bank is whichever of the message's two agents this one is not. Kept
+    -- rather than re-derived, because it is a fact about the connection this
+    -- institution observed and the message does not record it — re-deriving it
+    -- would mean asking which bank OUGHT to have uploaded a file whose subscriber
+    -- was seen.
+    returned_by TEXT NOT NULL,
+    -- The returning bank's file as it arrived; held_files.file carries the
+    -- argument. What differs is that the document travels UNCHANGED — it is what
+    -- that bank said and is not this institution's to rewrite — so release
+    -- rebuilds the header and nothing else.
+    file        BLOB NOT NULL
 ) STRICT;
 
 -- ---------------------------------------------------------------------------

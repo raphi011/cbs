@@ -1201,6 +1201,176 @@ func (t *tx) queryCycles(ctx context.Context, where, order string, args ...any) 
 }
 
 // ---------------------------------------------------------------------------
+// What the clearing house is holding and has not handed over
+// ---------------------------------------------------------------------------
+
+// AddHeldFile appends one receiving bank's share of an uploaded file.
+//
+// It APPENDS where every other write in this file upserts, and the seq is why:
+// a share has no key its caller knows, so the number is allocated here and the
+// child rows are keyed by it. Allocating it in a SELECT rather than inside the
+// INSERT's VALUES is what lets the same number reach the transactions — a
+// subquery evaluated by the INSERT is not a value this side can read back
+// without RETURNING.
+//
+// Both statements are the caller's unit of work, so a share and its positions
+// commit together or not at all. That is what makes the foreign key on
+// held_file_transactions writable: no caller can produce an orphan.
+func (t *tx) AddHeldFile(ctx context.Context, f payment.HeldFile) error {
+	if err := t.inShape("held_files"); err != nil {
+		return err
+	}
+	if err := t.write(); err != nil {
+		return err
+	}
+	var seq int64
+	if err := t.tx.QueryRowContext(ctx, "SELECT "+nextRowSeq("held_files")).Scan(&seq); err != nil {
+		return fmt.Errorf("sqlite: hold a file for %s in %s: %w", f.Destination, f.CycleID, err)
+	}
+	if _, err := t.tx.ExecContext(ctx,
+		"INSERT INTO held_files (cycle_id, seq, destination, file) VALUES (?, ?, ?, ?)",
+		string(f.CycleID), seq, string(f.Destination), f.File); err != nil {
+		return fmt.Errorf("sqlite: hold a file for %s in %s: %w", f.Destination, f.CycleID, err)
+	}
+	for _, h := range f.Transactions {
+		if _, err := t.tx.ExecContext(ctx,
+			"INSERT INTO held_file_transactions (cycle_id, seq, position, payment_id) VALUES (?, ?, ?, ?)",
+			string(f.CycleID), seq, int64(h.Position), string(h.PaymentID)); err != nil {
+			return fmt.Errorf("sqlite: hold %s in the file for %s in %s: %w",
+				h.PaymentID, f.Destination, f.CycleID, err)
+		}
+	}
+	return nil
+}
+
+// ListHeldFiles reads one cut-off's shares in build order.
+//
+// TWO queries rather than a join, which is the opposite of queryCycles above and
+// deliberate: the file column is a whole uploaded document, and a join would
+// repeat it once per transaction in the share. The two statements are inside one
+// transaction, so they see the same rows.
+func (t *tx) ListHeldFiles(ctx context.Context, id payment.CycleID) ([]payment.HeldFile, error) {
+	if err := t.inShape("held_files"); err != nil {
+		return nil, err
+	}
+	rows, err := t.tx.QueryContext(ctx,
+		"SELECT seq, destination, file FROM held_files WHERE cycle_id = ? ORDER BY seq", string(id))
+	if err != nil {
+		return nil, fmt.Errorf("sqlite: list the files held for %s: %w", id, err)
+	}
+	defer rows.Close()
+
+	out := make([]payment.HeldFile, 0)
+	index := make(map[int64]int)
+	for rows.Next() {
+		var (
+			seq int64
+			f   = payment.HeldFile{CycleID: id}
+		)
+		if err := rows.Scan(&seq, &f.Destination, &f.File); err != nil {
+			return nil, fmt.Errorf("sqlite: list the files held for %s: %w", id, err)
+		}
+		index[seq] = len(out)
+		out = append(out, f)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("sqlite: list the files held for %s: %w", id, err)
+	}
+
+	txs, err := t.tx.QueryContext(ctx,
+		"SELECT seq, position, payment_id FROM held_file_transactions WHERE cycle_id = ? ORDER BY seq, position",
+		string(id))
+	if err != nil {
+		return nil, fmt.Errorf("sqlite: list the transactions held for %s: %w", id, err)
+	}
+	defer txs.Close()
+
+	for txs.Next() {
+		var (
+			seq int64
+			h   payment.HeldTransaction
+		)
+		if err := txs.Scan(&seq, &h.Position, &h.PaymentID); err != nil {
+			return nil, fmt.Errorf("sqlite: list the transactions held for %s: %w", id, err)
+		}
+		at, ok := index[seq]
+		if !ok {
+			// Unreachable while the foreign key holds, and reported rather than
+			// skipped if it ever does not: a position with no share is a
+			// transaction some bank is owed and nothing would hand over.
+			return nil, fmt.Errorf("sqlite: %s is held in file %d of %s, which is not there", h.PaymentID, seq, id)
+		}
+		out[at].Transactions = append(out[at].Transactions, h)
+	}
+	return out, txs.Err()
+}
+
+// DeleteHeldFiles discards a whole cut-off's shares. The positions go with them
+// on the cascade.
+func (t *tx) DeleteHeldFiles(ctx context.Context, id payment.CycleID) error {
+	if err := t.inShape("held_files"); err != nil {
+		return err
+	}
+	if err := t.write(); err != nil {
+		return err
+	}
+	if _, err := t.tx.ExecContext(ctx, "DELETE FROM held_files WHERE cycle_id = ?", string(id)); err != nil {
+		return fmt.Errorf("sqlite: release the files held for %s: %w", id, err)
+	}
+	return nil
+}
+
+func (t *tx) PutHeldReturn(ctx context.Context, r payment.HeldReturn) error {
+	if err := t.inShape("held_returns"); err != nil {
+		return err
+	}
+	if err := t.write(); err != nil {
+		return err
+	}
+	_, err := t.tx.ExecContext(ctx, `
+		INSERT INTO held_returns (payment_id, returned_by, file)
+		VALUES (?, ?, ?)
+		ON CONFLICT (payment_id) DO UPDATE SET
+			returned_by = EXCLUDED.returned_by,
+			file        = EXCLUDED.file`,
+		string(r.PaymentID), string(r.ReturnedBy), r.File)
+	if err != nil {
+		return fmt.Errorf("sqlite: hold the return of %s: %w", r.PaymentID, err)
+	}
+	return nil
+}
+
+func (t *tx) GetHeldReturn(ctx context.Context, id payment.PaymentID) (payment.HeldReturn, error) {
+	if err := t.inShape("held_returns"); err != nil {
+		return payment.HeldReturn{}, err
+	}
+	out := payment.HeldReturn{PaymentID: id}
+	err := t.tx.QueryRowContext(ctx,
+		"SELECT returned_by, file FROM held_returns WHERE payment_id = ?", string(id)).
+		Scan(&out.ReturnedBy, &out.File)
+	if errors.Is(err, sql.ErrNoRows) {
+		return payment.HeldReturn{}, payment.ErrHeldReturnNotFound
+	}
+	if err != nil {
+		return payment.HeldReturn{}, fmt.Errorf("sqlite: read the return held for %s: %w", id, err)
+	}
+	return out, nil
+}
+
+func (t *tx) DeleteHeldReturn(ctx context.Context, id payment.PaymentID) error {
+	if err := t.inShape("held_returns"); err != nil {
+		return err
+	}
+	if err := t.write(); err != nil {
+		return err
+	}
+	if _, err := t.tx.ExecContext(ctx, "DELETE FROM held_returns WHERE payment_id = ?", string(id)); err != nil {
+		return fmt.Errorf("sqlite: drop the return held for %s: %w", id, err)
+	}
+	return nil
+}
+
+// ---------------------------------------------------------------------------
 // Settlements
 // ---------------------------------------------------------------------------
 

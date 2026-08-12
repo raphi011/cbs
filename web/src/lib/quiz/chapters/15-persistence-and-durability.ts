@@ -75,10 +75,11 @@ export const chapter: Chapter = {
         "Audit events",
         "Each account's current balance",
         "The files waiting in each subscriber's download queue",
+        "Each receiving bank's share of a file the clearing house has taken in and not yet handed over",
       ],
-      answers: [0, 1, 2, 3],
+      answers: [0, 1, 2, 3, 5],
       explanation:
-        "Everything the **domain** stores gets a table: transactions, entries, deposit accounts, [[holds]], [[snapshot|snapshots]] and [[audit-trail|audit events]]. A balance is not stored at all — it is [[derived-balance|computed from the entries]] on demand.\n\nA [[download-queue|download queue]] is not stored either, and that absence is a boundary rather than an oversight. A queue is one institution holding bytes addressed to another, which is only acceptable while those bytes are **opaque to the holder** — and a table of them is a store that institution reads. The first query anybody writes against it is a clearing house looking inside a file it is merely carrying.\n\nWhat it costs is real and is written down rather than hidden: a restart empties every queue, and with it a bank's [[payment-hub|hub]] and any output file the clearing house was holding for a settled cycle.",
+        "Everything the **domain** stores gets a table: transactions, entries, deposit accounts, [[holds]], [[snapshot|snapshots]] and [[audit-trail|audit events]]. A balance is not stored at all — it is [[derived-balance|computed from the entries]] on demand.\n\nSo does everything an institution **owes and has not yet handed over**. Between a cut-off and its settlement the clearing house is holding each receiving bank's share of every file it took in (`held_files`, with `held_file_transactions` saying which of that file's transactions are whose), and a return it has sent on for settlement waits in `held_returns` until the answer comes back. Those are obligations rather than caches: reserves move against them, so an institution that lost them would leave the money final and a payee's bank never told the payment exists.\n\nA [[download-queue|download queue]] is not stored, and that absence is a boundary rather than an oversight. A queue is one institution holding bytes addressed to another, which is only acceptable while those bytes are **opaque to the holder** — and a table of them is a store that institution reads. The first query anybody writes against it is a clearing house looking inside a file it is merely carrying.\n\nWhat that costs is real and is written down rather than hidden: a restart empties every queue, and with it a bank's [[payment-hub|hub]] of instructions waiting for its own cut-off.",
     },
     {
       kind: "mc",

@@ -276,9 +276,10 @@ func TestSchemaArgumentsReachSqliteMaster(t *testing.T) {
 			{"audit_events", "It has no foreign key to books"},
 			// The download queue, argued on the row that IS the routing table.
 			{"roster_entries", "NOR IS THE DOWNLOAD QUEUE HERE"},
-			// The one absence recorded as a DEFECT rather than a boundary: a
-			// settled cycle's output files are in memory until released.
-			{"cycles", "THE OUTPUT FILES THIS CYCLE IS HOLDING ARE NOT HERE"},
+			// An absent foreign key whose parent is in this same database, so
+			// the constraint is writable and stays out anyway: what one
+			// institution owes another must outlive the batch row naming it.
+			{"held_files", "There is NO foreign key to cycles"},
 		}},
 	} {
 		t.Run(c.shape.String(), func(t *testing.T) {

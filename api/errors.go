@@ -88,6 +88,12 @@ func errorStatus(err error) int {
 		errors.Is(err, deposit.ErrInvalidStatusTransition),
 		errors.Is(err, payment.ErrCycleNotOpen),
 		errors.Is(err, payment.ErrCycleNotClosed),
+		// The cycle is closed and its positions are netted; what stops it is that
+		// this clearing house holds no output file for a payment in it. A
+		// well-formed request refused by business state, and the same 422 the
+		// underfunded member gets — both are "ask again once the state is right",
+		// which for this one means a share that does not exist yet.
+		errors.Is(err, payment.ErrCycleNotReleasable),
 		errors.Is(err, payment.ErrInvalidStateTransition),
 		errors.Is(err, payment.ErrMandateRevoked),
 		errors.Is(err, payment.ErrMandateMismatch),

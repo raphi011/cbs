@@ -108,12 +108,16 @@ type Bank struct {
 	//
 	// # In memory, and what a restart costs
 	//
-	// Exactly what ClearingHouse.held costs, and the same shape of answer: an
-	// instruction taken and not yet cut off is gone, so the payer's money sits in
-	// this bank's clearing suspense against a payment no file will ever carry. It
-	// stays Initiated for ever, no counterparty has seen it, and there is no
-	// remedy from inside the flow — payment/recon is what makes it visible. A
-	// real hub is a database table for exactly this reason.
+	// An instruction taken and not yet cut off is gone, so the payer's money sits
+	// in this bank's clearing suspense against a payment no file will ever carry.
+	// It stays Initiated for ever, no counterparty has seen it, and there is no
+	// remedy from inside the flow — payment/recon is what makes it visible.
+	//
+	// It is the same defect the clearing house's held files and held returns had,
+	// and the answer there was a table in that institution's own database. This
+	// one is a member bank's, so it is a member bank's to fix: see
+	// docs/adr/0003, which is that ruling and names this as the case it does not
+	// close.
 	//
 	// The mutex is real work: submissions arrive on whichever HTTP goroutine took
 	// them, and a cut-off runs either on a business day's goroutine or on an
@@ -563,9 +567,10 @@ func returnReasonOf(env iso20022.Envelope) string {
 // returnPayment posts before it uploads so that a refusal BINDS. Here the reason
 // is the MESSAGE SHAPE: a camt.025 carries no amount, so a bank cannot post its
 // own leg from the answer, and the only alternative is holding the outstanding
-// request until the answer is collected. That is ClearingHouse.held's shape,
-// whose known defect is that it does not survive a restart, and a second one of
-// those is not worth a reserve credit.
+// request until the answer is collected. That is the shape the clearing house's
+// held returns have, and it costs a table in that institution's own database —
+// which is the right price for a customer's money coming back and not for a
+// reserve credit this bank can post from what it asked for.
 //
 // # The seam, and it is the same seam
 //

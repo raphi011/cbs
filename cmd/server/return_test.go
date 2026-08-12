@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"maps"
@@ -1123,41 +1124,39 @@ func TestAReturnRetriedAfterAnUnwindRepaysThePayer(t *testing.T) {
 	}
 }
 
-// TestTheClearingHousesOtherCallersLeaveTheHeldReturnsAlone turns the invariant
-// on csm.held into a measurement.
+// TestTheClearingHousesOtherCallersLeaveTheHeldReturnsAlone turns an invariant
+// about held_returns into a measurement.
 //
-// That field is the only state any actor in this package keeps between messages,
-// and it is unlocked. What makes that safe is not the field: it is that
-// relayReturn and receiveReturnStatus are reached only from handle, which runs
-// on the clearing house's own goroutine and nobody else's. The three methods on
-// this type that run on a CALLER's goroutine — closeCycle, settle and reject,
-// each reached from outside a business day — must therefore never touch it.
+// A return waiting for the settlement agent's answer is the one obligation this
+// institution carries that belongs to NO cut-off. The three methods reached from
+// outside a business day — closeCycle, settle and reject — each sweep something
+// the clearing house is holding, and none of them may sweep this: a cut-off that
+// dropped a pending return would leave the other bank never told to post its
+// leg, with the reserves about to move under a batch that has nothing to do with
+// it.
 //
 // A comment saying so is a claim nobody has to keep true. This is the same
 // answer this package gives to the analogous hole in the recorder, where
 // TestRecordingTxOverridesEveryBookScopedMethod guards "a method nobody
-// wrapped": assert the property rather than write it down. A future method that
-// read or wrote this map from a caller's goroutine would be a data race that
-// -race can only report if some test happens to provoke it concurrently; this
-// fails deterministically instead, and names the field.
+// wrapped": assert the property rather than write it down.
 //
 // It drives all three through the MESH rather than calling them directly, so
 // that what is measured is the whole of what each does — including the sends and
 // the handlers they provoke — and not a hand-picked prefix of it. A return is
-// left in flight across each so that there is something to disturb: the map is
-// non-empty at the moment the operator acts, which is the only arrangement in
-// which "left it alone" is a claim about anything.
+// left in flight across each so that there is something to disturb, which is the
+// only arrangement in which "left it alone" is a claim about anything.
 func TestTheClearingHousesOtherCallersLeaveTheHeldReturnsAlone(t *testing.T) {
 	h := newHarness(t)
 	p := h.settledPayment(t)
+	ctx := context.Background()
 
-	// A real pacs.004 is built and carried, so that the entry placed below is the
+	// A real pacs.004 is built and carried, so that the row placed below is the
 	// value this actor really holds rather than a shape invented by the test. It
-	// cannot be LEFT in flight to hold the map open: every return this deployment
-	// carries is answered, and an answer is what empties the map. So the flow is
-	// run to completion and one entry is then put back by hand — which is the
-	// honest arrangement anyway, since what is under test is the three OTHER
-	// callers and not how an entry came to be there.
+	// cannot be LEFT in flight: every return this deployment carries is answered,
+	// and an answer is what drops the row. So the flow is run to completion and
+	// one row is then put back by hand — which is the honest arrangement anyway,
+	// since what is under test is the three OTHER callers and not how a return
+	// came to be waiting.
 	env, err := h.net.ReturnMessage(p, iso20022.ReturnReasonClosedAccountNumber, "account closed",
 		payment.MessageContext{From: h.creditorBIC, To: h.cfg.ClearingHouseBIC, MsgID: "rtn-held", Now: testTime})
 	if err != nil {
@@ -1165,8 +1164,14 @@ func TestTheClearingHousesOtherCallersLeaveTheHeldReturnsAlone(t *testing.T) {
 	}
 	h.upload(t, h.creditorBIC, h.cfg.ClearingHouseBIC, env)
 	h.work(t)
-	held := heldReturn{doc: env.Document.(*iso20022.Pacs004), from: h.creditorBIC}
-	h.dep.csm.held["pay_sentinel"] = held
+	raw, err := iso20022.Marshal(env)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	held := payment.HeldReturn{PaymentID: "pay_sentinel", ReturnedBy: h.creditorBIC, File: raw}
+	if err := h.net.HoldReturn(ctx, held); err != nil {
+		t.Fatalf("HoldReturn: %v", err)
+	}
 
 	// A cut-off, a re-instruction, and an operator's rejection: the three
 	// entry points that do not arrive in a download queue.
@@ -1190,14 +1195,11 @@ func TestTheClearingHousesOtherCallersLeaveTheHeldReturnsAlone(t *testing.T) {
 	}
 	h.work(t)
 
-	got, ok := h.dep.csm.held["pay_sentinel"]
-	if !ok {
-		t.Fatal("closeCycle, settle or reject dropped a held return; only handle's two callers may touch csm.held")
+	got, err := h.net.GetHeldReturn(ctx, "pay_sentinel")
+	if err != nil {
+		t.Fatalf("closeCycle, settle or reject dropped a held return: %v", err)
 	}
-	if got != held {
-		t.Errorf("a held return was rewritten by a caller-goroutine method; csm.held is unlocked precisely because none of them touches it")
-	}
-	if n := len(h.dep.csm.held); n != 1 {
-		t.Errorf("the clearing house holds %d returns, want the 1 this test put there", n)
+	if got.ReturnedBy != held.ReturnedBy || !bytes.Equal(got.File, held.File) {
+		t.Error("a held return was rewritten by one of the three routes that run outside a business day; none of them may touch another conversation's message")
 	}
 }

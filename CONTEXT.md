@@ -160,7 +160,8 @@ _Avoid_: dead letter, error (bare), failure
 
 **Payment hub**:
 Where a bank's own instructions wait between submission and its cut-off. In
-memory, and one per bank.
+memory, and one per bank — the last obligation in this system that a restart
+takes with it.
 _Avoid_: queue, outbox, batch, pending payments
 
 **Cut-off (a bank's)**:
@@ -175,7 +176,7 @@ _Avoid_: cut-off (bare) where the other is meant
 
 **Share**:
 One receiving bank's transactions, cut out of one submitted file by creditor
-agent.
+agent. Kept as a row in the clearing house's own database until it is released.
 _Avoid_: output file (until it is released), batch, slice
 
 **Released output file**:
@@ -184,8 +185,7 @@ carrying it has settled.
 _Avoid_: relayed message, forwarded payment
 
 **Held return**:
-A `pacs.004` the clearing house keeps in memory until the settlement agent has
-answered it.
+A `pacs.004` the clearing house keeps until the settlement agent has answered it.
 _Avoid_: pending return, queued return
 
 ## Money a bank cannot pass on
