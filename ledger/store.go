@@ -24,12 +24,82 @@ type Store interface {
 	Close() error
 }
 
-// Tx is one unit of work over the ledger layer. deposit.Tx and payment.Tx embed
-// it, so a single concrete Tx spans all three layers and cross-layer operations
-// commit or roll back together.
-type Tx interface {
-	// Identity allocation. Gap-free per book; rolls back with the transaction.
+// BankStore is a BANK's ledger store: its unit of work carries the slot mapping
+// as well as the ledger, because slot_accounts is in the bank schema alone.
+//
+// Store and this are the two institutions that keep a book of accounts, and the
+// difference between them is exactly those three methods. Book takes the
+// narrower one, so the settlement agent gets a general ledger without a mapping
+// it has no table for.
+type BankStore interface {
+	Update(ctx context.Context, fn func(context.Context, BankTx) error) error
+	View(ctx context.Context, fn func(context.Context, BankTx) error) error
+	Reset(ctx context.Context) error
+	Close() error
+}
+
+// CommonTx is what EVERY institution's unit of work carries, whatever tables it
+// has: an id allocator, a clock, and the audit trail. id_sequences and
+// audit_events are in all three schemas, so nothing here can be a crossing.
+//
+// It is separate from Tx because the clearing house keeps an audit trail and has
+// no book of accounts at all. A transaction type that reached the audit through
+// the ledger would hand the clearing house a ledger to go with it, which is the
+// crossing the store split exists to refuse.
+type CommonTx interface {
+	// NextID allocates an identity. Gap-free per book; rolls back with the
+	// transaction.
 	NextID(ctx context.Context, book BookID, prefix string) (string, error)
+
+	AppendAudit(ctx context.Context, e AuditEvent) error
+	ListAudit(ctx context.Context, f AuditFilter) ([]AuditEvent, error)
+
+	Now() time.Time
+}
+
+// SlotTx is the slot mapping: which account a posting flow writes to.
+//
+// It is a BANK's and no other institution's — slot_accounts is created by the
+// bank schema alone, because a slot is a line in a chart of accounts that sells
+// products, and the settlement agent's ledger holds reserve accounts and
+// nothing that posts through a product.
+//
+// PutSlotAccount is an upsert keyed by (book, product, slot, asset) —
+// repointing a slot is the same act as pointing it, and a store that appended
+// instead would leave two answers to a question that has one.
+//
+// GetSlotAccount returns ErrSlotNotMapped for a triple with no row. It does NOT
+// fall back to the bank-wide row: the fallback is Book.SlotAccountTx's rule,
+// stated once there, and a store that also implemented it would make "this
+// product has its own line" unaskable.
+//
+// ListSlotAccounts orders by slot, then product, then asset — a stated order
+// rather than insertion, because the mapping is read as a configuration listing
+// and nothing about when a row was written belongs in it.
+type SlotTx interface {
+	PutSlotAccount(ctx context.Context, book BookID, row SlotAccount) error
+	GetSlotAccount(ctx context.Context, book BookID, product, slot string, asset AssetCode) (AccountID, error)
+	ListSlotAccounts(ctx context.Context, book BookID) ([]SlotAccount, error)
+}
+
+// BankTx is the ledger as a BANK holds it: the ledger proper plus the slot
+// mapping. It is what Book's slot methods take, since pointing a slot at an
+// account reads that account, writes the mapping row and audits the change in
+// one unit of work.
+type BankTx interface {
+	Tx
+	SlotTx
+}
+
+// Tx is one unit of work over the ledger layer. deposit.Tx and payment.BankTx
+// embed it, so a single concrete Tx spans all three layers and cross-layer
+// operations commit or roll back together.
+//
+// It is the ledger a bank and the settlement agent BOTH hold. What only a bank
+// has is beside it rather than in it: see SlotTx.
+type Tx interface {
+	CommonTx
+
 	NextSubledgerBlock(ctx context.Context, book BookID) (int, error)
 	NextAccountSeq(ctx context.Context, book BookID, typeBlock int, subledger SubledgerID) (int, error)
 
@@ -50,23 +120,6 @@ type Tx interface {
 	PutAccount(ctx context.Context, book BookID, a Account) error
 	GetAccount(ctx context.Context, book BookID, id AccountID) (Account, error)
 	ListAccounts(ctx context.Context, book BookID) ([]Account, error)
-
-	// The slot mapping: which account a posting flow writes to. PutSlotAccount
-	// is an upsert keyed by (book, product, slot, asset) — repointing a slot is
-	// the same act as pointing it, and a store that appended instead would leave
-	// two answers to a question that has one.
-	//
-	// GetSlotAccount returns ErrSlotNotMapped for a triple with no row. It does
-	// NOT fall back to the bank-wide row: the fallback is Book.SlotAccountTx's
-	// rule, stated once there, and a store that also implemented it would make
-	// "this product has its own line" unaskable.
-	//
-	// ListSlotAccounts orders by slot, then product, then asset — a stated order
-	// rather than insertion, because the mapping is read as a configuration
-	// listing and nothing about when a row was written belongs in it.
-	PutSlotAccount(ctx context.Context, book BookID, row SlotAccount) error
-	GetSlotAccount(ctx context.Context, book BookID, product, slot string, asset AssetCode) (AccountID, error)
-	ListSlotAccounts(ctx context.Context, book BookID) ([]SlotAccount, error)
 
 	// LockAccounts asks that a balance check and the posting that follows it be
 	// one serialized step, taking the accounts in a deterministic order so that
@@ -167,9 +220,4 @@ type Tx interface {
 	// from storing a zero date as NULL: NULL fails every comparison and falls
 	// out of every grouping.
 	ValueDatedSeries(ctx context.Context, book BookID, pos Position, normal Direction, from, to time.Time) (Series, error)
-
-	AppendAudit(ctx context.Context, e AuditEvent) error
-	ListAudit(ctx context.Context, f AuditFilter) ([]AuditEvent, error)
-
-	Now() time.Time
 }

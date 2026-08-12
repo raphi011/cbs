@@ -73,14 +73,12 @@ type SlotAccount struct {
 	Account AccountID
 }
 
-// MapSlot points a slot at an account, or repoints it. See MapSlotTx.
-func (s *Book) MapSlot(ctx context.Context, product string, slot Slot, asset AssetCode, account AccountID) error {
-	return s.store.Update(ctx, func(ctx context.Context, tx Tx) error {
-		return s.MapSlotTx(ctx, tx, product, slot, asset, account)
-	})
-}
-
-// MapSlotTx is MapSlot within a caller-supplied unit of work.
+// MapSlotTx points a slot at an account, or repoints it, within a
+// caller-supplied unit of work.
+//
+// There is no Update-wrapping sibling, and there cannot be one: Book holds a
+// Store whose unit of work is a ledger.Tx, and the mapping is a bank's alone.
+// A caller with a bank's transaction in hand is the only caller there is.
 //
 // The account must exist, be denominated in asset, and match the slot's Type and
 // Control. All four are checked HERE, at the write, because a mapping is
@@ -93,7 +91,7 @@ func (s *Book) MapSlot(ctx context.Context, product string, slot Slot, asset Ass
 // product-scoped balance line would strand.
 //
 // Returns ErrAccountNotFound, ErrSlotAccountMismatch and ErrSlotNotProductScoped.
-func (s *Book) MapSlotTx(ctx context.Context, tx Tx, product string, slot Slot, asset AssetCode, account AccountID) error {
+func (s *Book) MapSlotTx(ctx context.Context, tx BankTx, product string, slot Slot, asset AssetCode, account AccountID) error {
 	if err := ValidateText("slot", slot.Key); err != nil {
 		return err
 	}
@@ -138,7 +136,7 @@ func (s *Book) MapSlotTx(ctx context.Context, tx Tx, product string, slot Slot, 
 //
 // Returns ErrSlotNotMapped, which is what a chart of accounts that has not been
 // configured for this asset looks like from a posting path.
-func (s *Book) SlotAccountTx(ctx context.Context, tx Tx, product string, slot Slot, asset AssetCode) (AccountID, error) {
+func (s *Book) SlotAccountTx(ctx context.Context, tx SlotTx, product string, slot Slot, asset AssetCode) (AccountID, error) {
 	if product != "" && slot.ByProduct {
 		account, err := tx.GetSlotAccount(ctx, s.id, product, slot.Key, asset)
 		if err == nil {
@@ -158,7 +156,7 @@ func (s *Book) SlotAccountTx(ctx context.Context, tx Tx, product string, slot Sl
 // account and a subsidiary apart eventually pairs one flow's account with
 // another's subsidiary — and it is why nothing here hands back a bare AccountID
 // for a control slot.
-func (s *Book) SlotPositionTx(ctx context.Context, tx Tx, product string, slot Slot, asset AssetCode, subsidiary string) (Position, error) {
+func (s *Book) SlotPositionTx(ctx context.Context, tx SlotTx, product string, slot Slot, asset AssetCode, subsidiary string) (Position, error) {
 	account, err := s.SlotAccountTx(ctx, tx, product, slot, asset)
 	if err != nil {
 		return Position{}, err
@@ -166,14 +164,8 @@ func (s *Book) SlotPositionTx(ctx context.Context, tx Tx, product string, slot S
 	return account.For(subsidiary), nil
 }
 
-// ListSlotAccounts returns the whole mapping, ordered by slot, product and
+// ListSlotAccountsTx returns the whole mapping, ordered by slot, product and
 // asset. It is what an operator reads to see where a bank's flows post.
-func (s *Book) ListSlotAccounts(ctx context.Context) ([]SlotAccount, error) {
-	var out []SlotAccount
-	err := s.store.View(ctx, func(ctx context.Context, tx Tx) error {
-		var err error
-		out, err = tx.ListSlotAccounts(ctx, s.id)
-		return err
-	})
-	return out, err
+func (s *Book) ListSlotAccountsTx(ctx context.Context, tx SlotTx) ([]SlotAccount, error) {
+	return tx.ListSlotAccounts(ctx, s.id)
 }

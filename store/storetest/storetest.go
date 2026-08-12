@@ -85,7 +85,7 @@ const (
 //
 // newStore must return a store with no state in it; the suite calls it once per
 // subtest and closes the result.
-func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Store) {
+func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.BankStore) {
 	t.Helper()
 
 	t.Run("NextSubledgerBlockStepsBy100PerBook", func(t *testing.T) {
@@ -99,7 +99,7 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Sto
 
 		var gotA []int
 		var gotB []int
-		update(t, s, func(ctx context.Context, tx ledger.Tx) error {
+		update(t, s, func(ctx context.Context, tx ledger.BankTx) error {
 			for range 3 {
 				block, err := tx.NextSubledgerBlock(ctx, bookA)
 				if err != nil {
@@ -109,7 +109,7 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Sto
 			}
 			return nil
 		})
-		update(t, other, func(ctx context.Context, tx ledger.Tx) error {
+		update(t, other, func(ctx context.Context, tx ledger.BankTx) error {
 			block, err := tx.NextSubledgerBlock(ctx, bookB)
 			if err != nil {
 				return err
@@ -134,7 +134,7 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Sto
 		other := open(t, newStore, bookB)
 
 		var inA, inB []string
-		update(t, s, func(ctx context.Context, tx ledger.Tx) error {
+		update(t, s, func(ctx context.Context, tx ledger.BankTx) error {
 			for _, prefix := range []string{"ldg", "tx", "ent", "evt", "tx"} {
 				id, err := tx.NextID(ctx, bookA, prefix)
 				if err != nil {
@@ -146,7 +146,7 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Sto
 		})
 		// A second book numbers independently, from its own 1 — in a database of
 		// its own, which is where a second book is.
-		update(t, other, func(ctx context.Context, tx ledger.Tx) error {
+		update(t, other, func(ctx context.Context, tx ledger.BankTx) error {
 			id, err := tx.NextID(ctx, bookB, "tx")
 			if err != nil {
 				return err
@@ -174,7 +174,7 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Sto
 			{ID: "ent_20", AccountID: "200.100.002", Amount: 250, Direction: ledger.Credit},
 			{ID: "ent_9", AccountID: "200.100.003", Amount: 50, Direction: ledger.Credit},
 		}
-		update(t, s, func(ctx context.Context, tx ledger.Tx) error {
+		update(t, s, func(ctx context.Context, tx ledger.BankTx) error {
 			return tx.PutTransaction(ctx, bookA, ledger.Transaction{
 				ID: "tx_1", Status: ledger.Posted, Entries: want,
 				CreatedAt: time.Date(2025, 1, 15, 12, 0, 0, 0, time.UTC),
@@ -196,7 +196,7 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Sto
 			}
 		}
 
-		view(t, s, func(ctx context.Context, tx ledger.Tx) error {
+		view(t, s, func(ctx context.Context, tx ledger.BankTx) error {
 			one, err := tx.GetTransaction(ctx, bookA, "tx_1")
 			if err != nil {
 				return err
@@ -229,7 +229,7 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Sto
 		// on the way out would report every account as plain, and the refusal
 		// that keeps money from landing in a pool with nobody's name on it would
 		// stop firing everywhere at once.
-		update(t, s, func(ctx context.Context, tx ledger.Tx) error {
+		update(t, s, func(ctx context.Context, tx ledger.BankTx) error {
 			if err := tx.PutAccount(ctx, bookA, ledger.Account{
 				ID: "200.100.001", SubledgerID: "100", Name: "Customer Deposits",
 				Type: ledger.Liability, Asset: "EUR", Control: true,
@@ -242,7 +242,7 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Sto
 			})
 		})
 
-		view(t, s, func(ctx context.Context, tx ledger.Tx) error {
+		view(t, s, func(ctx context.Context, tx ledger.BankTx) error {
 			pooled, err := tx.GetAccount(ctx, bookA, "200.100.001")
 			if err != nil {
 				return err
@@ -276,7 +276,7 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Sto
 		// appended instead of upserting would leave two answers to a question
 		// that has one, and which of them a flow posted to would be whichever
 		// the store listed first.
-		update(t, s, func(ctx context.Context, tx ledger.Tx) error {
+		update(t, s, func(ctx context.Context, tx ledger.BankTx) error {
 			for _, row := range []ledger.SlotAccount{
 				{Slot: "deposit.principal", Asset: "EUR", Account: "200.100.001"},
 				{Slot: "deposit.principal", Asset: "BTC", Account: "200.100.002"},
@@ -292,13 +292,13 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Sto
 				Slot: "deposit.principal", Asset: "EUR", Account: "200.100.009",
 			})
 		})
-		update(t, other, func(ctx context.Context, tx ledger.Tx) error {
+		update(t, other, func(ctx context.Context, tx ledger.BankTx) error {
 			return tx.PutSlotAccount(ctx, bookB, ledger.SlotAccount{
 				Slot: "deposit.principal", Asset: "EUR", Account: "200.500.001",
 			})
 		})
 
-		view(t, s, func(ctx context.Context, tx ledger.Tx) error {
+		view(t, s, func(ctx context.Context, tx ledger.BankTx) error {
 			repointed, err := tx.GetSlotAccount(ctx, bookA, "", "deposit.principal", "EUR")
 			if err != nil {
 				return err
@@ -339,7 +339,7 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Sto
 
 		// Another institution's database answers for its own mapping and holds
 		// none of this one's.
-		view(t, other, func(ctx context.Context, tx ledger.Tx) error {
+		view(t, other, func(ctx context.Context, tx ledger.BankTx) error {
 			mine, err := tx.GetSlotAccount(ctx, bookB, "", "deposit.principal", "EUR")
 			if err != nil {
 				return err
@@ -374,7 +374,7 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Sto
 		}
 		post := func(id ledger.TransactionID, subsidiary string, amount ledger.Amount, on time.Time) {
 			t.Helper()
-			update(t, s, func(ctx context.Context, tx ledger.Tx) error {
+			update(t, s, func(ctx context.Context, tx ledger.BankTx) error {
 				return tx.PutTransaction(ctx, bookA, ledger.Transaction{
 					ID: id, Status: ledger.Posted, CreatedAt: on,
 					Entries: []ledger.Entry{
@@ -390,7 +390,7 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Sto
 		post("tx_2", "dep_2", 250, day(4))
 		post("tx_3", "dep_1", 40, day(6))
 
-		view(t, s, func(ctx context.Context, tx ledger.Tx) error {
+		view(t, s, func(ctx context.Context, tx ledger.BankTx) error {
 			// The dimension is on the entry it was written on, and only on it.
 			one, err := tx.GetTransaction(ctx, bookA, "tx_1")
 			if err != nil {
@@ -484,7 +484,7 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Sto
 		ctx := context.Background()
 		value := time.Date(2026, 3, 15, 0, 0, 0, 0, time.UTC)
 		var got ledger.Transaction
-		if err := s.Update(ctx, func(ctx context.Context, tx ledger.Tx) error {
+		if err := s.Update(ctx, func(ctx context.Context, tx ledger.BankTx) error {
 			err := tx.PutTransaction(ctx, bookA, ledger.Transaction{
 				ID:        "txn_vd_default",
 				ValueDate: value,
@@ -515,7 +515,7 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Sto
 		early := time.Date(2026, 3, 15, 0, 0, 0, 0, time.UTC)
 		late := time.Date(2026, 3, 17, 0, 0, 0, 0, time.UTC)
 		var got ledger.Transaction
-		if err := s.Update(ctx, func(ctx context.Context, tx ledger.Tx) error {
+		if err := s.Update(ctx, func(ctx context.Context, tx ledger.BankTx) error {
 			err := tx.PutTransaction(ctx, bookA, ledger.Transaction{
 				ID:        "txn_vd_split",
 				ValueDate: late,
@@ -547,7 +547,7 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Sto
 		s := open(t, newStore, bookA)
 
 		var liabilityIn100, assetIn100, liabilityIn200 []int
-		update(t, s, func(ctx context.Context, tx ledger.Tx) error {
+		update(t, s, func(ctx context.Context, tx ledger.BankTx) error {
 			for range 2 {
 				n, err := tx.NextAccountSeq(ctx, bookA, 200, "100")
 				if err != nil {
@@ -586,20 +586,20 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Sto
 		other := open(t, newStore, bookB)
 
 		const shared ledger.AccountID = "200.100.001"
-		update(t, s, func(ctx context.Context, tx ledger.Tx) error {
+		update(t, s, func(ctx context.Context, tx ledger.BankTx) error {
 			return tx.PutAccount(ctx, bookA, ledger.Account{ID: shared, Name: "Alice at A", Type: ledger.Liability})
 		})
-		update(t, other, func(ctx context.Context, tx ledger.Tx) error {
+		update(t, other, func(ctx context.Context, tx ledger.BankTx) error {
 			return tx.PutAccount(ctx, bookB, ledger.Account{ID: shared, Name: "Bob at B", Type: ledger.Liability})
 		})
 
 		var inA, inB ledger.Account
-		view(t, s, func(ctx context.Context, tx ledger.Tx) error {
+		view(t, s, func(ctx context.Context, tx ledger.BankTx) error {
 			var err error
 			inA, err = tx.GetAccount(ctx, bookA, shared)
 			return err
 		})
-		view(t, other, func(ctx context.Context, tx ledger.Tx) error {
+		view(t, other, func(ctx context.Context, tx ledger.BankTx) error {
 			var err error
 			inB, err = tx.GetAccount(ctx, bookB, shared)
 			return err
@@ -610,7 +610,7 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Sto
 
 		// Listing one book must not show the other book's rows.
 		var listed []ledger.Account
-		view(t, s, func(ctx context.Context, tx ledger.Tx) error {
+		view(t, s, func(ctx context.Context, tx ledger.BankTx) error {
 			var err error
 			listed, err = tx.ListAccounts(ctx, bookA)
 			return err
@@ -624,14 +624,14 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Sto
 	t.Run("AccountRoundTripsItsAsset", func(t *testing.T) {
 		s := open(t, newStore, bookA)
 
-		update(t, s, func(ctx context.Context, tx ledger.Tx) error {
+		update(t, s, func(ctx context.Context, tx ledger.BankTx) error {
 			return tx.PutAccount(ctx, bookA, ledger.Account{
 				ID: "100.custody.001", SubledgerID: "custody", Name: "Custody",
 				Type: ledger.Asset, Asset: "BTC",
 			})
 		})
 
-		view(t, s, func(ctx context.Context, tx ledger.Tx) error {
+		view(t, s, func(ctx context.Context, tx ledger.BankTx) error {
 			got, err := tx.GetAccount(ctx, bookA, "100.custody.001")
 			if err != nil {
 				return err
@@ -658,7 +658,7 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Sto
 		// into a 500, and turns a typo'd account ID in PostTransaction into an
 		// internal error instead of ledger.ErrAccountNotFound.
 		early := time.Date(2025, 1, 15, 12, 0, 0, 0, time.UTC)
-		update(t, s, func(ctx context.Context, tx ledger.Tx) error {
+		update(t, s, func(ctx context.Context, tx ledger.BankTx) error {
 			if err := tx.PutLedger(ctx, bookA, ledger.Ledger{ID: "ldg_1", Name: "GL", CreatedAt: early}); err != nil {
 				return err
 			}
@@ -672,7 +672,7 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Sto
 		})
 
 		// Unknown IDs, in a book that does have rows of every kind.
-		view(t, s, func(ctx context.Context, tx ledger.Tx) error {
+		view(t, s, func(ctx context.Context, tx ledger.BankTx) error {
 			_, err := tx.GetLedger(ctx, bookA, "ldg_nope")
 			assertErrorIs(t, "GetLedger on an unknown ledger", err, ledger.ErrLedgerNotFound)
 
@@ -694,7 +694,7 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Sto
 		// a second bank's database answering with the first bank's rows, which is
 		// what the whole split is for.
 		other := open(t, newStore, bookB)
-		view(t, other, func(ctx context.Context, tx ledger.Tx) error {
+		view(t, other, func(ctx context.Context, tx ledger.BankTx) error {
 			_, err := tx.GetLedger(ctx, bookB, "ldg_1")
 			assertErrorIs(t, "GetLedger across books", err, ledger.ErrLedgerNotFound)
 
@@ -715,7 +715,7 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Sto
 		// And in an entirely empty book, where the tables hold nothing at all.
 		// It is a third STORE for the reason above, and a book of its own.
 		empty := open(t, newStore, "book-empty")
-		view(t, empty, func(ctx context.Context, tx ledger.Tx) error {
+		view(t, empty, func(ctx context.Context, tx ledger.BankTx) error {
 			_, err := tx.GetLedger(ctx, "book-empty", "ldg_1")
 			assertErrorIs(t, "GetLedger in an empty book", err, ledger.ErrLedgerNotFound)
 
@@ -749,7 +749,7 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Sto
 		// subledgers(book_id, ledger_id) turns the first write below into a
 		// constraint violation, and no other fixture in this suite writes a dangling
 		// LedgerID.
-		update(t, s, func(ctx context.Context, tx ledger.Tx) error {
+		update(t, s, func(ctx context.Context, tx ledger.BankTx) error {
 			// A subledger under a ledger that does not exist.
 			if err := tx.PutSubledger(ctx, bookA, ledger.Subledger{
 				ID: "100", LedgerID: "ldg_nope", Name: "orphan", CreatedAt: early,
@@ -781,7 +781,7 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Sto
 		// The orphans are readable, and the aggregate over an account that was
 		// never created still adds up — a balance is a sum over entries, not a
 		// join to a chart of accounts.
-		view(t, s, func(ctx context.Context, tx ledger.Tx) error {
+		view(t, s, func(ctx context.Context, tx ledger.BankTx) error {
 			sl, err := tx.GetSubledger(ctx, bookA, "100")
 			if err != nil {
 				return err
@@ -822,7 +822,7 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Sto
 		//     insertion order genuinely disagree, and
 		//   - the row inserted FIRST carrying the LATEST CreatedAt, so an
 		//     implementation that orders by sequence alone fails too.
-		update(t, s, func(ctx context.Context, tx ledger.Tx) error {
+		update(t, s, func(ctx context.Context, tx ledger.BankTx) error {
 			for _, l := range []ledger.Ledger{
 				{ID: "ldg_10", Name: "latest, inserted first", CreatedAt: late},
 				{ID: "ldg_8", Name: "first", CreatedAt: early},
@@ -887,7 +887,7 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Sto
 		var subledgers []ledger.Subledger
 		var accounts []ledger.Account
 		var transactions, forAccount []ledger.Transaction
-		view(t, s, func(ctx context.Context, tx ledger.Tx) error {
+		view(t, s, func(ctx context.Context, tx ledger.BankTx) error {
 			var err error
 			if ledgers, err = tx.ListLedgers(ctx, bookA); err != nil {
 				return err
@@ -932,7 +932,7 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Sto
 		// store/sqlite: re-putting a LEDGER with its sequence rewritten moved it
 		// to the end of its listing and every case in this file still passed,
 		// because only accounts were re-put here.
-		update(t, s, func(ctx context.Context, tx ledger.Tx) error {
+		update(t, s, func(ctx context.Context, tx ledger.BankTx) error {
 			if err := tx.PutAccount(ctx, bookA, ledger.Account{
 				ID: "200.100.008", SubledgerID: "100", Type: ledger.Liability, Name: "renamed", CreatedAt: early,
 			}); err != nil {
@@ -947,7 +947,7 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Sto
 				ID: "100", LedgerID: "ldg_8", Name: "renamed", CreatedAt: early,
 			})
 		})
-		view(t, s, func(ctx context.Context, tx ledger.Tx) error {
+		view(t, s, func(ctx context.Context, tx ledger.BankTx) error {
 			reordered, err := tx.ListAccounts(ctx, bookA)
 			if err != nil {
 				return err
@@ -975,19 +975,19 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Sto
 	t.Run("DuplicateIdempotencyKeyRejected", func(t *testing.T) {
 		s := open(t, newStore, bookA)
 
-		update(t, s, func(ctx context.Context, tx ledger.Tx) error {
+		update(t, s, func(ctx context.Context, tx ledger.BankTx) error {
 			return tx.PutTransaction(ctx, bookA, transaction("tx_1", "key-1"))
 		})
 
 		// A second, different transaction claiming the same key is refused by
 		// the store itself, not just by a caller's pre-check.
-		err := s.Update(context.Background(), func(ctx context.Context, tx ledger.Tx) error {
+		err := s.Update(context.Background(), func(ctx context.Context, tx ledger.BankTx) error {
 			return tx.PutTransaction(ctx, bookA, transaction("tx_2", "key-1"))
 		})
 		assertErrorIs(t, "second put with the same key", err, ledger.ErrDuplicateIdempotencyKey)
 
 		var found ledger.Transaction
-		view(t, s, func(ctx context.Context, tx ledger.Tx) error {
+		view(t, s, func(ctx context.Context, tx ledger.BankTx) error {
 			var err error
 			found, err = tx.GetTransactionByIdempotencyKey(ctx, bookA, "key-1")
 			return err
@@ -998,7 +998,7 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Sto
 		// another bank's database, and the index that enforces this is that
 		// database's own.
 		other := open(t, newStore, bookB)
-		update(t, other, func(ctx context.Context, tx ledger.Tx) error {
+		update(t, other, func(ctx context.Context, tx ledger.BankTx) error {
 			return tx.PutTransaction(ctx, bookB, transaction("tx_9", "key-1"))
 		})
 	})
@@ -1010,14 +1010,14 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Sto
 		// that only ever adds to its idempotency index keeps resolving a key the
 		// transaction no longer carries — and then refuses the next transaction that
 		// legitimately claims it.
-		update(t, s, func(ctx context.Context, tx ledger.Tx) error {
+		update(t, s, func(ctx context.Context, tx ledger.BankTx) error {
 			return tx.PutTransaction(ctx, bookA, transaction("tx_1", "key-1"))
 		})
-		update(t, s, func(ctx context.Context, tx ledger.Tx) error {
+		update(t, s, func(ctx context.Context, tx ledger.BankTx) error {
 			return tx.PutTransaction(ctx, bookA, transaction("tx_1", "key-2"))
 		})
 
-		view(t, s, func(ctx context.Context, tx ledger.Tx) error {
+		view(t, s, func(ctx context.Context, tx ledger.BankTx) error {
 			_, err := tx.GetTransactionByIdempotencyKey(ctx, bookA, "key-1")
 			assertErrorIs(t, "lookup by the key that was replaced", err, ledger.ErrTransactionNotFound)
 
@@ -1031,10 +1031,10 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Sto
 		})
 
 		// The released key is free for a different transaction to claim.
-		update(t, s, func(ctx context.Context, tx ledger.Tx) error {
+		update(t, s, func(ctx context.Context, tx ledger.BankTx) error {
 			return tx.PutTransaction(ctx, bookA, transaction("tx_2", "key-1"))
 		})
-		view(t, s, func(ctx context.Context, tx ledger.Tx) error {
+		view(t, s, func(ctx context.Context, tx ledger.BankTx) error {
 			got, err := tx.GetTransactionByIdempotencyKey(ctx, bookA, "key-1")
 			if err != nil {
 				return err
@@ -1050,10 +1050,10 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Sto
 		})
 
 		// Dropping a key entirely releases it too.
-		update(t, s, func(ctx context.Context, tx ledger.Tx) error {
+		update(t, s, func(ctx context.Context, tx ledger.BankTx) error {
 			return tx.PutTransaction(ctx, bookA, transaction("tx_2", ""))
 		})
-		view(t, s, func(ctx context.Context, tx ledger.Tx) error {
+		view(t, s, func(ctx context.Context, tx ledger.BankTx) error {
 			_, err := tx.GetTransactionByIdempotencyKey(ctx, bookA, "key-1")
 			assertErrorIs(t, "lookup by a key that was cleared", err, ledger.ErrTransactionNotFound)
 			return nil
@@ -1071,11 +1071,11 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Sto
 		// back the failed STATEMENT and leaves the transaction usable; a database
 		// that aborted the whole transaction would need a savepoint here. This
 		// subtest is what says the promise is kept either way.
-		update(t, s, func(ctx context.Context, tx ledger.Tx) error {
+		update(t, s, func(ctx context.Context, tx ledger.BankTx) error {
 			return tx.PutTransaction(ctx, bookA, transaction("tx_1", "key-1"))
 		})
 
-		err := s.Update(context.Background(), func(ctx context.Context, tx ledger.Tx) error {
+		err := s.Update(context.Background(), func(ctx context.Context, tx ledger.BankTx) error {
 			dup := tx.PutTransaction(ctx, bookA, transaction("tx_2", "key-1"))
 			if !errors.Is(dup, ledger.ErrDuplicateIdempotencyKey) {
 				return fmt.Errorf("storetest: duplicate put returned %v, want ErrDuplicateIdempotencyKey", dup)
@@ -1101,7 +1101,7 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Sto
 
 		// And all of it committed: the sentinel cost the caller one statement,
 		// not the unit of work.
-		view(t, s, func(ctx context.Context, tx ledger.Tx) error {
+		view(t, s, func(ctx context.Context, tx ledger.BankTx) error {
 			ledgers, err := tx.ListLedgers(ctx, bookA)
 			if err != nil {
 				return err
@@ -1175,7 +1175,7 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Sto
 			t.Fatal("storetest: the whole corpus was rejected by the domain; nothing was tested")
 		}
 
-		update(t, s, func(ctx context.Context, tx ledger.Tx) error {
+		update(t, s, func(ctx context.Context, tx ledger.BankTx) error {
 			for _, sm := range samples {
 				if err := tx.PutLedger(ctx, bookA, ledger.Ledger{
 					ID: ledger.LedgerID("ldg_" + sm.id), Name: sm.text, CreatedAt: early,
@@ -1208,7 +1208,7 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Sto
 			return nil
 		})
 
-		view(t, s, func(ctx context.Context, tx ledger.Tx) error {
+		view(t, s, func(ctx context.Context, tx ledger.BankTx) error {
 			for _, sm := range samples {
 				l, err := tx.GetLedger(ctx, bookA, ledger.LedgerID("ldg_"+sm.id))
 				if err != nil {
@@ -1240,7 +1240,7 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Sto
 
 		// An empty key is an absent key, not an identity: it must never
 		// deduplicate, however many transactions carry it.
-		update(t, s, func(ctx context.Context, tx ledger.Tx) error {
+		update(t, s, func(ctx context.Context, tx ledger.BankTx) error {
 			for _, id := range []ledger.TransactionID{"tx_1", "tx_2", "tx_3"} {
 				if err := tx.PutTransaction(ctx, bookA, transaction(id, "")); err != nil {
 					return err
@@ -1251,7 +1251,7 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Sto
 
 		var all []ledger.Transaction
 		var lookupErr error
-		view(t, s, func(ctx context.Context, tx ledger.Tx) error {
+		view(t, s, func(ctx context.Context, tx ledger.BankTx) error {
 			var err error
 			if all, err = tx.ListTransactions(ctx, bookA); err != nil {
 				return err
@@ -1268,7 +1268,7 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Sto
 		s := open(t, newStore, bookA)
 
 		const cash ledger.AccountID = "100.100.001"
-		update(t, s, func(ctx context.Context, tx ledger.Tx) error {
+		update(t, s, func(ctx context.Context, tx ledger.BankTx) error {
 			return tx.PutTransaction(ctx, bookA, ledger.Transaction{
 				ID:        "tx_1",
 				Status:    ledger.Posted,
@@ -1282,13 +1282,13 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Sto
 
 		// Marking the original Reversed must NOT change the balance. The status
 		// is informational; nothing has moved yet.
-		update(t, s, func(ctx context.Context, tx ledger.Tx) error {
+		update(t, s, func(ctx context.Context, tx ledger.BankTx) error {
 			return tx.MarkReversed(ctx, bookA, "tx_1")
 		})
 		assertEqual(t, "balance after MarkReversed", balance(t, s, cash), ledger.Amount(10_000))
 
 		// The reversal's own mirrored entries are what cancel the original.
-		update(t, s, func(ctx context.Context, tx ledger.Tx) error {
+		update(t, s, func(ctx context.Context, tx ledger.BankTx) error {
 			return tx.PutTransaction(ctx, bookA, ledger.Transaction{
 				ID:         "tx_2",
 				Status:     ledger.Posted,
@@ -1303,7 +1303,7 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Sto
 
 		// Both transactions remain visible: the audit trail is never rewritten.
 		var all []ledger.Transaction
-		view(t, s, func(ctx context.Context, tx ledger.Tx) error {
+		view(t, s, func(ctx context.Context, tx ledger.BankTx) error {
 			var err error
 			all, err = tx.ListTransactionsForPosition(ctx, bookA, ledger.AccountID(cash).Total())
 			return err
@@ -1316,7 +1316,7 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Sto
 
 		day := func(d int) time.Time { return time.Date(2026, 4, d, 0, 0, 0, 0, time.UTC) }
 
-		update(t, s, func(ctx context.Context, tx ledger.Tx) error {
+		update(t, s, func(ctx context.Context, tx ledger.BankTx) error {
 			// Three debits on three consecutive days, one carrying a time of day.
 			for i, when := range []time.Time{
 				day(10),
@@ -1349,7 +1349,7 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Sto
 		}
 		for _, c := range cases {
 			var got ledger.Amount
-			view(t, s, func(ctx context.Context, tx ledger.Tx) error {
+			view(t, s, func(ctx context.Context, tx ledger.BankTx) error {
 				var err error
 				got, err = tx.ValueDateBalance(ctx, bookA, ledger.AccountID("900.001.001").Total(), ledger.Debit, c.before)
 				return err
@@ -1362,7 +1362,7 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Sto
 		s := open(t, newStore, bookA)
 
 		var got ledger.Amount
-		view(t, s, func(ctx context.Context, tx ledger.Tx) error {
+		view(t, s, func(ctx context.Context, tx ledger.BankTx) error {
 			var err error
 			got, err = tx.ValueDateBalance(ctx, bookA, ledger.AccountID("999.999.001").Total(), ledger.Debit,
 				time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC))
@@ -1386,7 +1386,7 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Sto
 	t.Run("ValueDateBalanceExcludesZeroValueDateEntries", func(t *testing.T) {
 		s := open(t, newStore, bookA)
 
-		update(t, s, func(ctx context.Context, tx ledger.Tx) error {
+		update(t, s, func(ctx context.Context, tx ledger.BankTx) error {
 			return tx.PutTransaction(ctx, bookA, ledger.Transaction{
 				ID:        "txn_vdb_zero",
 				Status:    ledger.Posted,
@@ -1401,7 +1401,7 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Sto
 		})
 
 		var got ledger.Amount
-		view(t, s, func(ctx context.Context, tx ledger.Tx) error {
+		view(t, s, func(ctx context.Context, tx ledger.BankTx) error {
 			var err error
 			// A bound far in the future would catch this entry were a zero
 			// ValueDate treated as "before everything", which is what the naive
@@ -1425,7 +1425,7 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Sto
 		originalValue := time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC)
 		before := ledger.NextDay(originalValue) // a bound after the original's day
 
-		update(t, s, func(ctx context.Context, tx ledger.Tx) error {
+		update(t, s, func(ctx context.Context, tx ledger.BankTx) error {
 			return tx.PutTransaction(ctx, bookA, ledger.Transaction{
 				ID:        "txn_vdb_rev_orig",
 				Status:    ledger.Posted,
@@ -1438,7 +1438,7 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Sto
 		})
 
 		var gross ledger.Amount
-		view(t, s, func(ctx context.Context, tx ledger.Tx) error {
+		view(t, s, func(ctx context.Context, tx ledger.BankTx) error {
 			var err error
 			gross, err = tx.ValueDateBalance(ctx, bookA, ledger.AccountID(cash).Total(), ledger.Debit, before)
 			return err
@@ -1448,7 +1448,7 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Sto
 		// Mark the original Reversed, then post the reversal's own mirrored
 		// entry, value-dated onto the same day as the leg it corrects — what
 		// ReverseTransactionTx actually does.
-		update(t, s, func(ctx context.Context, tx ledger.Tx) error {
+		update(t, s, func(ctx context.Context, tx ledger.BankTx) error {
 			if err := tx.MarkReversed(ctx, bookA, "txn_vdb_rev_orig"); err != nil {
 				return err
 			}
@@ -1465,7 +1465,7 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Sto
 		})
 
 		var netted ledger.Amount
-		view(t, s, func(ctx context.Context, tx ledger.Tx) error {
+		view(t, s, func(ctx context.Context, tx ledger.BankTx) error {
 			var err error
 			netted, err = tx.ValueDateBalance(ctx, bookA, ledger.AccountID(cash).Total(), ledger.Debit, before)
 			return err
@@ -1481,7 +1481,7 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Sto
 		// The window is [4th, 9th): the 1st is opening; the 4th, 5th and 7th
 		// are movements; the 9th is outside it (to is exclusive).
 		var got ledger.Series
-		view(t, s, func(ctx context.Context, tx ledger.Tx) error {
+		view(t, s, func(ctx context.Context, tx ledger.BankTx) error {
 			var err error
 			got, err = tx.ValueDatedSeries(ctx, bookA, ledger.AccountID("901.001.001").Total(), ledger.Debit, day(4), day(9))
 			return err
@@ -1515,7 +1515,7 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Sto
 
 		// The credit side of the same postings, read with Credit as normal.
 		var got ledger.Series
-		view(t, s, func(ctx context.Context, tx ledger.Tx) error {
+		view(t, s, func(ctx context.Context, tx ledger.BankTx) error {
 			var err error
 			got, err = tx.ValueDatedSeries(ctx, bookA, ledger.AccountID("901.001.002").Total(), ledger.Credit, day(4), day(9))
 			return err
@@ -1528,7 +1528,7 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Sto
 
 		// And read against the wrong normal, everything inverts — including
 		// the 7th, which stays 0 either way (there is no negative zero).
-		view(t, s, func(ctx context.Context, tx ledger.Tx) error {
+		view(t, s, func(ctx context.Context, tx ledger.BankTx) error {
 			var err error
 			got, err = tx.ValueDatedSeries(ctx, bookA, ledger.AccountID("901.001.002").Total(), ledger.Debit, day(4), day(9))
 			return err
@@ -1549,7 +1549,7 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Sto
 		// this window, so Movements is genuinely empty — unlike the 7th
 		// above, which is a movement that happens to net to zero.
 		var got ledger.Series
-		view(t, s, func(ctx context.Context, tx ledger.Tx) error {
+		view(t, s, func(ctx context.Context, tx ledger.BankTx) error {
 			var err error
 			got, err = tx.ValueDatedSeries(ctx, bookA, ledger.AccountID("901.001.001").Total(), ledger.Debit, day(8), day(9))
 			return err
@@ -1579,7 +1579,7 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Sto
 		// Same shape as the fixture's own postings, into the same accounts, but
 		// with the value date deliberately left zero on both the transaction
 		// and its entries.
-		update(t, s, func(ctx context.Context, tx ledger.Tx) error {
+		update(t, s, func(ctx context.Context, tx ledger.BankTx) error {
 			return tx.PutTransaction(ctx, bookA, ledger.Transaction{
 				ID:     "txn_vds_zero",
 				Status: ledger.Posted,
@@ -1596,7 +1596,7 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Sto
 		// movements it contains must be exactly the three the fixture seeds,
 		// and Opening must not have absorbed the 700 either.
 		var got ledger.Series
-		view(t, s, func(ctx context.Context, tx ledger.Tx) error {
+		view(t, s, func(ctx context.Context, tx ledger.BankTx) error {
 			var err error
 			got, err = tx.ValueDatedSeries(ctx, bookA, ledger.AccountID("901.001.001").Total(), ledger.Debit, day(4), day(9))
 			return err
@@ -1608,7 +1608,7 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Sto
 
 		// And from the beginning of time, where the year-1 bucket would be in
 		// range rather than merely before the window.
-		view(t, s, func(ctx context.Context, tx ledger.Tx) error {
+		view(t, s, func(ctx context.Context, tx ledger.BankTx) error {
 			var err error
 			got, err = tx.ValueDatedSeries(ctx, bookA, ledger.AccountID("901.001.001").Total(), ledger.Debit, time.Time{}, day(9))
 			return err
@@ -1630,7 +1630,7 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Sto
 		postValueDatedSeriesFixture(t, s, day)
 
 		var got ledger.Series
-		view(t, s, func(ctx context.Context, tx ledger.Tx) error {
+		view(t, s, func(ctx context.Context, tx ledger.BankTx) error {
 			var err error
 			got, err = tx.ValueDatedSeries(ctx, bookA, ledger.AccountID("999.999.001").Total(), ledger.Debit, day(1), day(9))
 			return err
@@ -1644,28 +1644,28 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Sto
 	t.Run("MarkReversedIsConditional", func(t *testing.T) {
 		s := open(t, newStore, bookA)
 
-		update(t, s, func(ctx context.Context, tx ledger.Tx) error {
+		update(t, s, func(ctx context.Context, tx ledger.BankTx) error {
 			return tx.PutTransaction(ctx, bookA, transaction("tx_1", ""))
 		})
 
-		update(t, s, func(ctx context.Context, tx ledger.Tx) error {
+		update(t, s, func(ctx context.Context, tx ledger.BankTx) error {
 			return tx.MarkReversed(ctx, bookA, "tx_1")
 		})
 
 		// Posted -> Reversed happens at most once, so two racing reversals
 		// cannot both win.
-		second := s.Update(context.Background(), func(ctx context.Context, tx ledger.Tx) error {
+		second := s.Update(context.Background(), func(ctx context.Context, tx ledger.BankTx) error {
 			return tx.MarkReversed(ctx, bookA, "tx_1")
 		})
 		assertErrorIs(t, "second MarkReversed", second, ledger.ErrTransactionAlreadyReversed)
 
-		missing := s.Update(context.Background(), func(ctx context.Context, tx ledger.Tx) error {
+		missing := s.Update(context.Background(), func(ctx context.Context, tx ledger.BankTx) error {
 			return tx.MarkReversed(ctx, bookA, "tx_nope")
 		})
 		assertErrorIs(t, "MarkReversed on an unknown transaction", missing, ledger.ErrTransactionNotFound)
 
 		var got ledger.Transaction
-		view(t, s, func(ctx context.Context, tx ledger.Tx) error {
+		view(t, s, func(ctx context.Context, tx ledger.BankTx) error {
 			var err error
 			got, err = tx.GetTransaction(ctx, bookA, "tx_1")
 			return err
@@ -1678,7 +1678,7 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Sto
 
 		// The clock is frozen, so OccurredAt ties on every event: Seq, assigned
 		// by the store, is the only thing that can order the log.
-		update(t, s, func(ctx context.Context, tx ledger.Tx) error {
+		update(t, s, func(ctx context.Context, tx ledger.BankTx) error {
 			for _, id := range []string{"evt_1", "evt_2", "evt_3", "evt_4"} {
 				// Seq 999 is deliberately wrong; the store must overwrite it.
 				if err := tx.AppendAudit(ctx, ledger.AuditEvent{
@@ -1706,7 +1706,7 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Sto
 
 		// Every event is this store's own book, because a store answers for one and
 		// refuses the rest — which is what the refusal below asserts.
-		update(t, s, func(ctx context.Context, tx ledger.Tx) error {
+		update(t, s, func(ctx context.Context, tx ledger.BankTx) error {
 			for _, e := range []ledger.AuditEvent{
 				{ID: "evt_1", BookID: bookA, Scope: ledger.ScopeLedger, Type: ledger.EventLedgerCreated, EntityID: "ldg_1"},
 				{ID: "evt_2", BookID: bookA, Scope: ledger.ScopeLedger, Type: ledger.EventAccountCreated, EntityID: "200.100.001"},
@@ -1772,7 +1772,7 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Sto
 	t.Run("AuditLimitKeepsNewestBelowBefore", func(t *testing.T) {
 		s := open(t, newStore, bookA)
 
-		update(t, s, func(ctx context.Context, tx ledger.Tx) error {
+		update(t, s, func(ctx context.Context, tx ledger.BankTx) error {
 			for _, id := range []string{"evt_1", "evt_2", "evt_3", "evt_4", "evt_5"} {
 				if err := tx.AppendAudit(ctx, ledger.AuditEvent{
 					ID: id, BookID: bookA, Scope: ledger.ScopeLedger, Type: ledger.EventLedgerCreated, EntityID: id,
@@ -1821,7 +1821,7 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Sto
 		// scope's events are what the filter selects. Two of these were book-b's
 		// and book-c's; bookC exists for this case alone and now names nothing,
 		// which is why it is gone from the constants above.
-		update(t, s, func(ctx context.Context, tx ledger.Tx) error {
+		update(t, s, func(ctx context.Context, tx ledger.BankTx) error {
 			for round := range 3 {
 				for _, e := range []ledger.AuditEvent{
 					{BookID: bookA, Scope: ledger.ScopeLedger, Type: ledger.EventAccountCreated},
@@ -1886,7 +1886,7 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Sto
 	t.Run("ResetClearsEverything", func(t *testing.T) {
 		s := open(t, newStore, bookA)
 
-		update(t, s, func(ctx context.Context, tx ledger.Tx) error {
+		update(t, s, func(ctx context.Context, tx ledger.BankTx) error {
 			if _, err := tx.NextID(ctx, bookA, "ldg"); err != nil {
 				return err
 			}
@@ -1915,7 +1915,7 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Sto
 			t.Fatalf("Reset: %v", err)
 		}
 
-		view(t, s, func(ctx context.Context, tx ledger.Tx) error {
+		view(t, s, func(ctx context.Context, tx ledger.BankTx) error {
 			ledgers, err := tx.ListLedgers(ctx, bookA)
 			if err != nil {
 				return err
@@ -1951,7 +1951,7 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Sto
 		// The idempotency key is free again, and every counter restarts.
 		var id string
 		var block, seq int
-		update(t, s, func(ctx context.Context, tx ledger.Tx) error {
+		update(t, s, func(ctx context.Context, tx ledger.BankTx) error {
 			var err error
 			if id, err = tx.NextID(ctx, bookA, "ldg"); err != nil {
 				return err
@@ -1973,7 +1973,7 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Sto
 		s := open(t, newStore, bookA)
 
 		boom := errors.New("storetest: deliberate failure")
-		err := s.Update(context.Background(), func(ctx context.Context, tx ledger.Tx) error {
+		err := s.Update(context.Background(), func(ctx context.Context, tx ledger.BankTx) error {
 			if _, err := tx.NextID(ctx, bookA, "ldg"); err != nil {
 				return err
 			}
@@ -2001,7 +2001,7 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Sto
 
 		// Nothing the failed unit of work wrote may survive it — including the
 		// audit event, which must never outlive the operation it describes.
-		view(t, s, func(ctx context.Context, tx ledger.Tx) error {
+		view(t, s, func(ctx context.Context, tx ledger.BankTx) error {
 			ledgers, err := tx.ListLedgers(ctx, bookA)
 			if err != nil {
 				return err
@@ -2032,7 +2032,7 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Sto
 		// are gap-free rather than merely unique.
 		var id string
 		var block, seq int
-		update(t, s, func(ctx context.Context, tx ledger.Tx) error {
+		update(t, s, func(ctx context.Context, tx ledger.BankTx) error {
 			var err error
 			if id, err = tx.NextID(ctx, bookA, "ldg"); err != nil {
 				return err
@@ -2048,7 +2048,7 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Sto
 		assertEqual(t, "account seq after rollback", seq, 1)
 
 		// The idempotency key the rolled-back transaction claimed is free.
-		update(t, s, func(ctx context.Context, tx ledger.Tx) error {
+		update(t, s, func(ctx context.Context, tx ledger.BankTx) error {
 			return tx.PutTransaction(ctx, bookA, transaction("tx_1", "key-1"))
 		})
 	})
@@ -2107,7 +2107,7 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Sto
 			go func() {
 				defer done.Done()
 				start.Wait()
-				errs[i] = s.Update(context.Background(), func(ctx context.Context, tx ledger.Tx) error {
+				errs[i] = s.Update(context.Background(), func(ctx context.Context, tx ledger.BankTx) error {
 					id, err := tx.NextID(ctx, bookA, "race")
 					if err != nil {
 						return err
@@ -2155,7 +2155,7 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Sto
 		// would still be 1 if every loser had written and then been rolled back
 		// by something else.
 		var held []ledger.Account
-		view(t, s, func(ctx context.Context, tx ledger.Tx) error {
+		view(t, s, func(ctx context.Context, tx ledger.BankTx) error {
 			var err error
 			held, err = tx.ListAccounts(ctx, bookA)
 			return err
@@ -2176,7 +2176,7 @@ var errTaken = errors.New("storetest: the name is already claimed")
 // ---------------------------------------------------------------------------
 
 // open builds a fresh store for one subtest and closes it when the subtest ends.
-func open(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Store, book ledger.BookID) ledger.Store {
+func open(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.BankStore, book ledger.BookID) ledger.BankStore {
 	t.Helper()
 	s := newStore(t, book)
 	t.Cleanup(func() {
@@ -2188,7 +2188,7 @@ func open(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Store, b
 }
 
 // update runs a unit of work that is expected to succeed.
-func update(t *testing.T, s ledger.Store, fn func(context.Context, ledger.Tx) error) {
+func update(t *testing.T, s ledger.BankStore, fn func(context.Context, ledger.BankTx) error) {
 	t.Helper()
 	if err := s.Update(context.Background(), fn); err != nil {
 		t.Fatalf("Update: %v", err)
@@ -2196,7 +2196,7 @@ func update(t *testing.T, s ledger.Store, fn func(context.Context, ledger.Tx) er
 }
 
 // view runs a read-only unit of work that is expected to succeed.
-func view(t *testing.T, s ledger.Store, fn func(context.Context, ledger.Tx) error) {
+func view(t *testing.T, s ledger.BankStore, fn func(context.Context, ledger.BankTx) error) {
 	t.Helper()
 	if err := s.View(context.Background(), fn); err != nil {
 		t.Fatalf("View: %v", err)
@@ -2204,10 +2204,10 @@ func view(t *testing.T, s ledger.Store, fn func(context.Context, ledger.Tx) erro
 }
 
 // balance reads one account's book balance, in the Debit-normal direction.
-func balance(t *testing.T, s ledger.Store, id ledger.AccountID) ledger.Amount {
+func balance(t *testing.T, s ledger.BankStore, id ledger.AccountID) ledger.Amount {
 	t.Helper()
 	var out ledger.Amount
-	view(t, s, func(ctx context.Context, tx ledger.Tx) error {
+	view(t, s, func(ctx context.Context, tx ledger.BankTx) error {
 		var err error
 		out, err = tx.BookBalance(ctx, bookA, ledger.AccountID(id).Total(), ledger.Debit)
 		return err
@@ -2216,10 +2216,10 @@ func balance(t *testing.T, s ledger.Store, id ledger.AccountID) ledger.Amount {
 }
 
 // audit reads the audit log through a filter.
-func audit(t *testing.T, s ledger.Store, f ledger.AuditFilter) []ledger.AuditEvent {
+func audit(t *testing.T, s ledger.BankStore, f ledger.AuditFilter) []ledger.AuditEvent {
 	t.Helper()
 	var out []ledger.AuditEvent
-	view(t, s, func(ctx context.Context, tx ledger.Tx) error {
+	view(t, s, func(ctx context.Context, tx ledger.BankTx) error {
 		var err error
 		out, err = tx.ListAudit(ctx, f)
 		return err
@@ -2230,9 +2230,9 @@ func audit(t *testing.T, s ledger.Store, f ledger.AuditFilter) []ledger.AuditEve
 // listAudit is audit without the assertion, for the one case that is about the
 // ERROR rather than about the page: a filter naming another institution's book
 // must be refused, and audit above would fail the test on the way past.
-func listAudit(s ledger.Store, f ledger.AuditFilter) ([]ledger.AuditEvent, error) {
+func listAudit(s ledger.BankStore, f ledger.AuditFilter) ([]ledger.AuditEvent, error) {
 	var out []ledger.AuditEvent
-	err := s.View(context.Background(), func(ctx context.Context, tx ledger.Tx) error {
+	err := s.View(context.Background(), func(ctx context.Context, tx ledger.BankTx) error {
 		var err error
 		out, err = tx.ListAudit(ctx, f)
 		return err
@@ -2273,7 +2273,7 @@ func transaction(id ledger.TransactionID, key string) ledger.Transaction {
 //     than filtered out.
 //   - the 9th:  400, acct1 debited — outside every window used below (to is
 //     exclusive), so it never appears in Opening or Movements.
-func postValueDatedSeriesFixture(t *testing.T, s ledger.Store, day func(int) time.Time) {
+func postValueDatedSeriesFixture(t *testing.T, s ledger.BankStore, day func(int) time.Time) {
 	t.Helper()
 	const (
 		acct1 ledger.AccountID = "901.001.001"
@@ -2293,7 +2293,7 @@ func postValueDatedSeriesFixture(t *testing.T, s ledger.Store, day func(int) tim
 		{"g", day(7), 300, acct2},
 		{"d", day(9), 400, acct1},
 	}
-	update(t, s, func(ctx context.Context, tx ledger.Tx) error {
+	update(t, s, func(ctx context.Context, tx ledger.BankTx) error {
 		for _, p := range posts {
 			credit := acct2
 			if p.debit == acct2 {

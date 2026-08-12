@@ -717,6 +717,25 @@ func (s *Store) Reset(ctx context.Context) error {
 // The four other shapes of the same store
 // ---------------------------------------------------------------------------
 
+// BankLedger returns this store as a ledger.BankStore — the ledger plus the slot
+// mapping, which is a bank's alone.
+//
+// The bare *Store is the narrower ledger.Store, which is what the settlement
+// agent's ledger is.
+func (s *Store) BankLedger() ledger.BankStore { return bankLedgerStore{s} }
+
+type bankLedgerStore struct{ *Store }
+
+var _ ledger.BankStore = bankLedgerStore{}
+
+func (b bankLedgerStore) Update(ctx context.Context, fn func(context.Context, ledger.BankTx) error) error {
+	return b.Store.update(ctx, func(ctx context.Context, t *tx) error { return fn(ctx, t) })
+}
+
+func (b bankLedgerStore) View(ctx context.Context, fn func(context.Context, ledger.BankTx) error) error {
+	return b.Store.view(ctx, func(ctx context.Context, t *tx) error { return fn(ctx, t) })
+}
+
 // Deposit returns this store as a deposit.Store.
 //
 // It is an adapter rather than a second implementation because Go allows one

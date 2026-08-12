@@ -2271,7 +2271,7 @@ type Tx interface {
 	ListThings(ctx context.Context, f Filter) error
 }
 `)
-	w := walkTxChain(root, module, "probe")
+	w := walkTxChain(root, module, "probe.Tx")
 	assertRefused(t, w, "embeds ledger.BookID")
 	assertNoCandidate(t, w, "ListThings")
 }
@@ -2296,7 +2296,7 @@ type Tx interface {
 	ViaArray(ctx context.Context, fs [2]Filter) error
 }
 `)
-	w := walkTxChain(root, module, "probe")
+	w := walkTxChain(root, module, "probe.Tx")
 	// A fixed array is named as one rather than called a slice: the refusal
 	// quotes the word back at whoever has to act on it.
 	for _, want := range []string{"pointer", "slice", "map", "array"} {
@@ -2331,7 +2331,7 @@ type Tx interface {
 	Nested(ctx context.Context, o Outer) error
 }
 `)
-	w := walkTxChain(root, module, "probe")
+	w := walkTxChain(root, module, "probe.Tx")
 	assertRefused(t, w, "carries a ledger.BookID inside it")
 	assertNoCandidate(t, w, "Nested")
 }
@@ -2363,7 +2363,7 @@ type Tx interface {
 	Promoted(ctx context.Context, o Outer) error
 }
 `)
-	w := walkTxChain(root, module, "probe")
+	w := walkTxChain(root, module, "probe.Tx")
 	assertRefused(t, w, "carries a ledger.BookID")
 	assertNoCandidate(t, w, "Promoted")
 }
@@ -2393,7 +2393,7 @@ type Tx interface {
 	Hidden(ctx context.Context, o Outer) error
 }
 `)
-	w := walkTxChain(root, module, "probe")
+	w := walkTxChain(root, module, "probe.Tx")
 	if len(w.refusals) != 0 {
 		t.Errorf("the parser refused a book behind an unexported field: %v.\n"+
 			"It cannot be named from package main, so there is no decision to force.", w.refusals)
@@ -2412,7 +2412,7 @@ type Tx interface {
 	NotBookScoped(ctx context.Context, id string) error
 }
 `)
-	w := walkTxChain(root, module, "probe")
+	w := walkTxChain(root, module, "probe.Tx")
 	if len(w.refusals) != 0 {
 		t.Fatalf("the probe module refused an ordinary shape: %v", w.refusals)
 	}
@@ -2533,8 +2533,9 @@ type chainWalk struct {
 	refusals []string
 	dirs     []string // every package the chain reached, in visit order
 
-	cache map[string]*pkgAST
-	seen  map[string]bool
+	cache   map[string]*pkgAST
+	seen    map[string]bool // one interface, by dir and name
+	visited map[string]bool // one package, so dirs holds each once
 }
 
 // txBookCandidates is every method reachable through payment.Tx whose second
@@ -2591,7 +2592,7 @@ func txBookCandidates(t *testing.T) []bookMethod {
 // failures.
 func realChainWalk(t *testing.T) *chainWalk {
 	t.Helper()
-	w := walkTxChain(repoRoot(t), modulePath(t), "payment")
+	w := walkTxChain(repoRoot(t), modulePath(t), "payment.Tx")
 	for _, r := range w.refusals {
 		t.Error(r)
 	}
@@ -2623,15 +2624,30 @@ func bookScopedTxMethods(t *testing.T) []bookMethod {
 	return out
 }
 
-// walkTxChain follows the Tx interface embedding chain from one entry package.
-func walkTxChain(root, module, entry string) *chainWalk {
+// walkTxChain follows the transaction interfaces' embedding chain from one or
+// more entry points, each written "package.Interface".
+//
+// It takes SEVERAL entries because there is no longer one transaction type: an
+// institution has its own, and what the recorder has to cover is the union. A
+// capability two institutions share — the ledger, the payment rows, the four
+// every institution needs — is reached down two chains and walked once, which is
+// what keeps the duplicate check below meaningful.
+func walkTxChain(root, module string, entries ...string) *chainWalk {
 	w := &chainWalk{
-		root:   root,
-		module: module,
-		cache:  map[string]*pkgAST{},
-		seen:   map[string]bool{},
+		root:    root,
+		module:  module,
+		cache:   map[string]*pkgAST{},
+		seen:    map[string]bool{},
+		visited: map[string]bool{},
 	}
-	w.walk(filepath.Join(root, entry))
+	for _, entry := range entries {
+		pkg, name, ok := strings.Cut(entry, ".")
+		if !ok {
+			w.refusef("entry %q is not written package.Interface", entry)
+			continue
+		}
+		w.walk(filepath.Join(root, pkg), name)
+	}
 
 	// Names are unique across the chain — Go rejects an interface that embeds
 	// two methods of one name — so a duplicate here means the walk visited
@@ -2650,51 +2666,64 @@ func (w *chainWalk) refusef(format string, args ...any) {
 	w.refusals = append(w.refusals, fmt.Sprintf(format, args...))
 }
 
-func (w *chainWalk) walk(dir string) {
-	if w.seen[dir] {
+// walk reads one interface and recurses into everything it embeds.
+//
+// An embedded interface is named either bare — a capability declared beside its
+// user, ledger.Tx embedding CommonTx — or qualified, ledger.SlotTx from deposit.
+// Both are followed; anything else is REFUSED rather than skipped, for the
+// reason the parser refuses a book it cannot read.
+func (w *chainWalk) walk(dir, name string) {
+	key := dir + "." + name
+	if w.seen[key] {
 		return // ledger.Tx is reached through product and through lending
 	}
-	w.seen[dir] = true
-	w.dirs = append(w.dirs, dir)
+	w.seen[key] = true
 
 	pkg := w.loadPackage(dir)
-	if pkg.iface == nil {
-		w.refusef("no `type Tx interface` found in %s", dir)
+	if !w.visited[dir] {
+		w.visited[dir] = true
+		w.dirs = append(w.dirs, dir)
+	}
+	iface, ok := pkg.ifaces[name]
+	if !ok {
+		w.refusef("no `type %s interface` found in %s", name, dir)
 		return
 	}
-	for _, f := range pkg.iface.Methods.List {
-		// An embedded interface has no name. Recurse into the package that
-		// declares it, resolving the qualifier through the importing file's own
-		// import block rather than assuming the alias is the directory.
+	for _, f := range iface.typ.Methods.List {
+		// An embedded interface has no name. Recurse into whatever declares it,
+		// resolving a qualifier through the importing file's own import block
+		// rather than assuming the alias is the directory.
 		if len(f.Names) == 0 {
-			sel, ok := f.Type.(*ast.SelectorExpr)
-			if !ok {
-				w.refusef("%s/Tx embeds %s, which this walk does not understand", dir, exprString(f.Type))
-				continue
+			switch embedded := f.Type.(type) {
+			case *ast.Ident:
+				w.walk(dir, embedded.Name)
+			case *ast.SelectorExpr:
+				qualifier, ok := embedded.X.(*ast.Ident)
+				if !ok {
+					w.refusef("%s/%s embeds %s, which this walk does not understand", dir, name, exprString(f.Type))
+					continue
+				}
+				path, ok := iface.imports[qualifier.Name]
+				if !ok {
+					w.refusef("%s/%s embeds %s but the file imports no %s", dir, name, exprString(f.Type), qualifier.Name)
+					continue
+				}
+				rel, inModule := strings.CutPrefix(path, w.module+"/")
+				if !inModule {
+					w.refusef("%s/%s embeds %s, which is outside this module", dir, name, path)
+					continue
+				}
+				w.walk(filepath.Join(w.root, rel), embedded.Sel.Name)
+			default:
+				w.refusef("%s/%s embeds %s, which this walk does not understand", dir, name, exprString(f.Type))
 			}
-			qualifier, ok := sel.X.(*ast.Ident)
-			if !ok || sel.Sel.Name != "Tx" {
-				w.refusef("%s/Tx embeds %s, which is not a package's Tx", dir, exprString(f.Type))
-				continue
-			}
-			path, ok := pkg.ifaceImports[qualifier.Name]
-			if !ok {
-				w.refusef("%s/Tx embeds %s.Tx but the file imports no %s", dir, qualifier.Name, qualifier.Name)
-				continue
-			}
-			rel, inModule := strings.CutPrefix(path, w.module+"/")
-			if !inModule {
-				w.refusef("%s/Tx embeds %s, which is outside this module", dir, path)
-				continue
-			}
-			w.walk(filepath.Join(w.root, rel))
 			continue
 		}
 		fn, ok := f.Type.(*ast.FuncType)
 		if !ok {
 			continue
 		}
-		if m := w.classify(pkg, f.Names[0].Name, fn); m.Carry != noBook {
+		if m := w.classify(pkg, iface.imports, f.Names[0].Name, fn); m.Carry != noBook {
 			w.methods = append(w.methods, m)
 		}
 	}
@@ -2716,10 +2745,10 @@ func (w *chainWalk) walk(dir string) {
 // evidence. Waving it through here is what would turn that registry into a rule
 // nobody consults, and the next PutX(ctx, book, x) of this shape would be
 // accepted silently.
-func (w *chainWalk) classify(pkg *pkgAST, name string, fn *ast.FuncType) bookMethod {
+func (w *chainWalk) classify(pkg *pkgAST, imports map[string]string, name string, fn *ast.FuncType) bookMethod {
 	found := bookMethod{Pkg: filepath.Base(pkg.dir), Name: name}
 	for i, p := range flatParams(fn) {
-		ref := typeRef{expr: p.typ, imports: pkg.ifaceImports, pkg: pkg}
+		ref := typeRef{expr: p.typ, imports: imports, pkg: pkg}
 		carry, field := w.carrierOf(ref, fmt.Sprintf("%s.Tx.%s argument %d (%s)", filepath.Base(pkg.dir), name, i, p.name))
 		if carry == noBook {
 			continue
@@ -2977,15 +3006,22 @@ type parsedFile struct {
 	imports map[string]string
 }
 
-// pkgAST is one package as this walk needs it: its Tx interface, the imports of
-// the file that declares it, every struct type it declares, and its files.
+// ifaceDecl is one interface type declaration, with the imports of the file that
+// declares it — which is what resolves a qualifier in an embedded interface or in
+// a method's arguments.
+type ifaceDecl struct {
+	typ     *ast.InterfaceType
+	imports map[string]string
+}
+
+// pkgAST is one package as this walk needs it: every interface it declares, every
+// struct type it declares, and its files.
 type pkgAST struct {
-	dir          string
-	path         string
-	iface        *ast.InterfaceType
-	ifaceImports map[string]string
-	structs      map[string]structDecl
-	files        []parsedFile
+	dir     string
+	path    string
+	ifaces  map[string]ifaceDecl
+	structs map[string]structDecl
+	files   []parsedFile
 }
 
 // loadPackage parses every non-test file in a package directory once.
@@ -3001,7 +3037,12 @@ func (w *chainWalk) loadPackage(dir string) *pkgAST {
 		return p
 	}
 	rel := strings.TrimPrefix(filepath.ToSlash(strings.TrimPrefix(dir, w.root)), "/")
-	pkg := &pkgAST{dir: dir, path: w.module + "/" + rel, structs: map[string]structDecl{}}
+	pkg := &pkgAST{
+		dir:     dir,
+		path:    w.module + "/" + rel,
+		ifaces:  map[string]ifaceDecl{},
+		structs: map[string]structDecl{},
+	}
 
 	paths, err := filepath.Glob(filepath.Join(dir, "*.go"))
 	if err != nil {
@@ -3030,9 +3071,7 @@ func (w *chainWalk) loadPackage(dir string) *pkgAST {
 				}
 				switch typ := ts.Type.(type) {
 				case *ast.InterfaceType:
-					if ts.Name.Name == "Tx" {
-						pkg.iface, pkg.ifaceImports = typ, imports
-					}
+					pkg.ifaces[ts.Name.Name] = ifaceDecl{typ: typ, imports: imports}
 				case *ast.StructType:
 					pkg.structs[ts.Name.Name] = structDecl{typ: typ, imports: imports, pkg: pkg}
 				}

@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	. "github.com/raphi011/cbs/ledger"
+	"github.com/raphi011/cbs/store/testenv"
 )
 
 // The slots these tests map. Real ones are declared in the layer that owns the
@@ -16,17 +17,31 @@ var (
 	incomeSlot    = Slot{Key: "test.income", Type: Revenue, ByProduct: true}
 )
 
-func mapSlot(t *testing.T, book *Book, product string, slot Slot, account AccountID) error {
+// slotBook is testBook with the store's BANK view beside it. The mapping is a
+// bank's alone, so it is not on the ledger.Store a Book holds — see
+// ledger.BankStore.
+type slotBook struct {
+	*Book
+	store BankStore
+}
+
+func newSlotBook(t *testing.T) slotBook {
 	t.Helper()
-	return book.Store().Update(context.Background(), func(ctx context.Context, tx Tx) error {
+	store := testenv.New(t, testClock)
+	return slotBook{Book: NewBook(store, "bank", testClock), store: store.BankLedger()}
+}
+
+func mapSlot(t *testing.T, book slotBook, product string, slot Slot, account AccountID) error {
+	t.Helper()
+	return book.store.Update(context.Background(), func(ctx context.Context, tx BankTx) error {
 		return book.MapSlotTx(ctx, tx, product, slot, testAsset, account)
 	})
 }
 
-func slotAccount(t *testing.T, book *Book, product string, slot Slot) (AccountID, error) {
+func slotAccount(t *testing.T, book slotBook, product string, slot Slot) (AccountID, error) {
 	t.Helper()
 	var out AccountID
-	err := book.Store().View(context.Background(), func(ctx context.Context, tx Tx) error {
+	err := book.store.View(context.Background(), func(ctx context.Context, tx BankTx) error {
 		var err error
 		out, err = book.SlotAccountTx(ctx, tx, product, slot, testAsset)
 		return err
@@ -39,8 +54,8 @@ func slotAccount(t *testing.T, book *Book, product string, slot Slot) (AccountID
 // an operator who repoints a slot moves where the flow posts without either of
 // them being rebuilt.
 func TestASlotResolvesToTheAccountItWasPointedAt(t *testing.T) {
-	book := testBook(t)
-	deposits, _ := pooledChart(t, book)
+	book := newSlotBook(t)
+	deposits, _ := pooledChart(t, book.Book)
 
 	if _, err := slotAccount(t, book, "", principalSlot); !errors.Is(err, ErrSlotNotMapped) {
 		t.Fatalf("an unmapped slot resolved to %v, want ErrSlotNotMapped", err)
@@ -58,8 +73,8 @@ func TestASlotResolvesToTheAccountItWasPointedAt(t *testing.T) {
 // refused at every posting from then on, none of which names the configuration
 // change that caused it.
 func TestMapSlotRefusesAnAccountTheSlotCannotUse(t *testing.T) {
-	book := testBook(t)
-	deposits, vault := pooledChart(t, book)
+	book := newSlotBook(t)
+	deposits, vault := pooledChart(t, book.Book)
 
 	// Right type, wrong pooling: Vault Cash is an Asset AND plain, so this
 	// fails the type test first — the case worth having is the one that differs
@@ -67,7 +82,7 @@ func TestMapSlotRefusesAnAccountTheSlotCannotUse(t *testing.T) {
 	if err := mapSlot(t, book, "", principalSlot, vault.ID); !errors.Is(err, ErrSlotAccountMismatch) {
 		t.Errorf("mapping a plain Asset to a control Liability slot: %v, want ErrSlotAccountMismatch", err)
 	}
-	plainLiability := plainAccount(t, book, "Clearing Suspense", Liability)
+	plainLiability := plainAccount(t, book.Book, "Clearing Suspense", Liability)
 	if err := mapSlot(t, book, "", principalSlot, plainLiability.ID); !errors.Is(err, ErrSlotAccountMismatch) {
 		t.Errorf("mapping a plain account to a control slot: %v, want ErrSlotAccountMismatch", err)
 	}
@@ -88,9 +103,9 @@ func TestMapSlotRefusesAnAccountTheSlotCannotUse(t *testing.T) {
 // it has none. One row per exception rather than a copy of the whole mapping per
 // product.
 func TestAProductOverridesOneSlotAndInheritsTheRest(t *testing.T) {
-	book := testBook(t)
-	income := plainAccount(t, book, "Interest Income", Revenue)
-	savingsIncome := plainAccount(t, book, "Interest Income: Savings", Revenue)
+	book := newSlotBook(t)
+	income := plainAccount(t, book.Book, "Interest Income", Revenue)
+	savingsIncome := plainAccount(t, book.Book, "Interest Income: Savings", Revenue)
 
 	assertNoError(t, mapSlot(t, book, "", incomeSlot, income.ID))
 	assertNoError(t, mapSlot(t, book, "prd_savings", incomeSlot, savingsIncome.ID))
@@ -110,11 +125,11 @@ func TestAProductOverridesOneSlotAndInheritsTheRest(t *testing.T) {
 // the balance anybody read would be the second half only, and moving the first
 // half is a reclassification journal this system does not have.
 func TestAProductMayNotOverrideALineThatHoldsABalance(t *testing.T) {
-	book := testBook(t)
-	deposits, _ := pooledChart(t, book)
+	book := newSlotBook(t)
+	deposits, _ := pooledChart(t, book.Book)
 	assertNoError(t, mapSlot(t, book, "", principalSlot, deposits.ID))
 
-	other := createControlAccount(t, book, deposits.SubledgerID, "Savings Deposits", Liability)
+	other := createControlAccount(t, book.Book, deposits.SubledgerID, "Savings Deposits", Liability)
 	if err := mapSlot(t, book, "prd_savings", principalSlot, other.ID); !errors.Is(err, ErrSlotNotProductScoped) {
 		t.Fatalf("a product-scoped balance line: %v, want ErrSlotNotProductScoped", err)
 	}

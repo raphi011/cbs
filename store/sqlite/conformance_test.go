@@ -73,7 +73,7 @@ func newStore(t *testing.T) *sqlite.Store {
 // could plausibly get wrong belongs in storetest rather than here, because those
 // are the cases all three shapes have to pass.
 func TestConformance(t *testing.T) {
-	storetest.RunLedger(t, func(t *testing.T, b ledger.BookID) ledger.Store { return newBank(t, b) })
+	storetest.RunLedger(t, func(t *testing.T, b ledger.BookID) ledger.BankStore { return newBank(t, b).BankLedger() })
 	storetest.RunDeposit(t, func(t *testing.T, b ledger.BookID) deposit.Store { return newBank(t, b).Deposit() })
 	storetest.RunProduct(t, func(t *testing.T, b ledger.BookID) product.Store { return newBank(t, b).Product() })
 	storetest.RunPayment(t, func(t *testing.T, b ledger.BookID) payment.Store { return newBank(t, b).Payment() })

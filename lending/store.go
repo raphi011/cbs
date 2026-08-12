@@ -27,6 +27,11 @@ type Store interface {
 type Tx interface {
 	ledger.Tx
 
+	// The slot mapping, for the reason deposit.Tx carries it: a facility's
+	// principal, receivable and income lines are resolved through it on every
+	// draw and every accrual.
+	ledger.SlotTx
+
 	PutFacility(ctx context.Context, book ledger.BookID, f Facility) error
 	GetFacility(ctx context.Context, book ledger.BookID, id FacilityID) (Facility, error)
 	ListFacilities(ctx context.Context, book ledger.BookID) ([]Facility, error)

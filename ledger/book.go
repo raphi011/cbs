@@ -109,7 +109,7 @@ func (s *Book) now() time.Time { return s.clock() }
 //
 // payload is marshalled now, not held by reference, so later mutation of the
 // entity cannot rewrite history. The event's Seq is assigned by the store.
-func (s *Book) appendAuditTx(ctx context.Context, tx Tx, scope Scope, eventType, entityID string, payload any) error {
+func (s *Book) appendAuditTx(ctx context.Context, tx CommonTx, scope Scope, eventType, entityID string, payload any) error {
 	raw, err := json.Marshal(payload)
 	if err != nil {
 		return fmt.Errorf("audit %s: marshal payload: %w", eventType, err)

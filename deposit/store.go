@@ -26,6 +26,11 @@ type Store interface {
 type Tx interface {
 	product.Tx
 
+	// The slot mapping, which the ledger keeps beside its own tables because
+	// only a bank has one. Register opens an account's lines through it — see
+	// Register.principalPosition — so a deposit unit of work has to carry it.
+	ledger.SlotTx
+
 	// Named with a Deposit prefix because ledger.Tx, embedded above, already has
 	// PutAccount/GetAccount/ListAccounts for GL accounts. Go rejects an interface
 	// carrying two methods of the same name and different signatures, so the
