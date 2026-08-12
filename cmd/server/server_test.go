@@ -1198,7 +1198,7 @@ func TestResetSurvivesAClientDisconnect(t *testing.T) {
 // clear followed by a rebuild and neither half is inside the other's unit of work, so
 // two overlapping resets interleave: the second clears over the first's half-built
 // scenario and the first finishes writing on top, leaving several copies of some
-// entities and none of others. Measured in docs/notes/cmd-server.md.
+// entities and none of others.
 func TestConcurrentResetsLeaveExactlyOneDataset(t *testing.T) {
 	baseline := func(ctx context.Context, nets *payment.Networks, msh seed.Deployment) error {
 		existing, err := nets.Stores().Banks(ctx)
@@ -2197,8 +2197,7 @@ func TestChargeOverdraftInterestEndpoint(t *testing.T) {
 	// The accrual window opens when the ACCOUNT is opened, not on the first end-of-day,
 	// so both runs below accrue. The value-dated recompute is what makes the first day
 	// count: an increment that took its first run as the baseline would drop a day of
-	// interest on every account ever priced. The arithmetic is in
-	// docs/notes/cmd-server.md.
+	// interest on every account ever priced.
 	assertStatus(t, bankSurface(h, pid), "POST", "/end-of-day", `{"date":"2025-01-16"}`, http.StatusNoContent)
 	assertStatus(t, bankSurface(h, pid), "POST", "/end-of-day", `{"date":"2025-01-17"}`, http.StatusNoContent)
 
@@ -3143,7 +3142,7 @@ func mistype(address string) string {
 //
 // The balance assertions are the half that caught a live money bug: three of the five
 // refusals were answered 422 with the payer ALREADY DEBITED, and the status codes
-// alone were green throughout. See docs/notes/cmd-server.md.
+// alone were green throughout.
 //
 // Four of the five are followed by assertAliceUntouched. The ErrAmbiguousAddress case
 // at the end is NOT: it runs after the happy case, so the opening balance the helper
@@ -3297,7 +3296,6 @@ func TestPaymentAddressingRefusalsAre422(t *testing.T) {
 // that kind at all.
 //
 // Deleting each guard flips its case from 422 to 500, and the control is unaffected.
-// The mutation results are in docs/notes/cmd-server.md.
 func TestPostPaymentRefusesEachWayAnAddressFails(t *testing.T) {
 	h := newServer(t, nil)
 	a := provisionMember(t, h, "BNKADEFFXXX", "Bank A")

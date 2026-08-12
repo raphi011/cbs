@@ -591,8 +591,8 @@ func TestARefusedSettlementLeavesTheCycleClosedAndThePaymentsCleared(t *testing.
 // Three relations survive: the INSTRUCTION crosses first; the agent's pacs.002 crosses
 // before the clearing house's; and the PAYEE's BANK's camt.053 crosses before the ACSC
 // addressed to that same bank. The last is the load-bearing one and is not a chain
-// argument — see docs/notes/cmd-server.md, which records what forces it, what it
-// buys, and how to falsify it.
+// argument: it is what lets the payee's bank's creditor legs draw on a suspense the
+// camt.053 has already credited.
 func TestTheMessagesACutOffPutsOnTheWire(t *testing.T) {
 	h := newHarness(t)
 	h.submitCreditTransfer(t)

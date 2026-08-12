@@ -69,8 +69,7 @@ func TestAReturnIsExecutedByTheCentralBank(t *testing.T) {
 // That is why centralBank.advise sends the statements before it answers: the payer's
 // bank's camt.053 CREDITS the clearing suspense its refund then draws on. Reversed,
 // that bank pays its customer out of a suspense the return has not credited — which
-// commits, suspense being a Liability the ledger does not guard. See
-// docs/notes/cmd-server.md for the falsification.
+// commits, suspense being a Liability the ledger does not guard.
 func TestTheMessagesAReturnPutsOnTheWire(t *testing.T) {
 	h := newHarness(t)
 	p := h.settledPayment(t)
@@ -864,8 +863,6 @@ func TestARefusedReturnUnwindsTheReturningBanksLeg(t *testing.T) {
 //   - the returning bank's CLEARING SUSPENSE is back to zero. It is the account that
 //     would hold the difference if exactly one half happened, and an amount stranded
 //     there is stranded for ever: nothing sweeps it.
-//
-// The measured defect it pins is in docs/notes/cmd-server.md.
 func TestAReturnRetriedAfterAnUnwindRepaysThePayer(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()

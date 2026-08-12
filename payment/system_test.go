@@ -732,9 +732,9 @@ func TestASettlementStoreFailureDoesNotRouteMoneyToUnclaimedBalances(t *testing.
 // The diversion makes "the payee's bank was paid" and "the payee was paid" two
 // different facts, so the account credited is RECORDED at settlement rather than
 // re-derived at return. It cannot be re-derived: an account open at settlement and
-// closed afterwards looks identical today to one closed at settlement. The three
-// things that go wrong without it, and why no ledger guard catches any of them, are
-// measured in docs/notes/payment.md.
+// closed afterwards looks identical today to one closed at settlement. What goes
+// wrong without the record is what the assertions below check, and no ledger guard
+// catches any of it: every posting involved is individually balanced.
 func TestReturningAPaymentThatSettledIntoUnclaimedBalancesReleasesTheLiability(t *testing.T) {
 	ctx := context.Background()
 	sys := testNetwork(t)
@@ -1852,7 +1852,7 @@ func TestABankRefusesAnAcknowledgementOfAnotherAdmission(t *testing.T) {
 // would refuse; both are STATES this act would write: an account MOVED under the
 // admission's own reference, and NOTHING RECORDED, where the loop rightly skips an
 // asset the bank does not operate in and an acknowledgement in which EVERY asset is
-// skipped burns the bank's AdmissionRef. Both are measured in docs/notes/payment.md.
+// skipped burns the bank's AdmissionRef.
 //
 // The extension cases are asserted beside them, because the fix is a comparison and
 // not a prohibition: a re-drive and a second currency both quote accounts the bank
@@ -1953,7 +1953,7 @@ func TestABankRefusesAnAcknowledgementThatWouldLeaveItWrong(t *testing.T) {
 // RosterEntry.AdmissionRef compares equal to any other empty one. So an
 // acknowledgement carrying no reference defeats both guards, from opposite ends —
 // the reset, the overwrite it reopens, and the clearing house seeing two institutions
-// on one BIC are the three probes in docs/notes/payment.md.
+// on one BIC.
 //
 // The acts are separately callable and run against two databases, so
 // checkAcknowledgement runs in both.
@@ -2027,8 +2027,8 @@ func TestAnAcknowledgementQuotingNoAdmissionIsRefusedByBothActs(t *testing.T) {
 //
 // An acknowledgement naming NO account is the shape that looks harmless — the row it
 // writes has nothing in it — and measured it burns the bank's AdmissionRef and
-// refuses the true acknowledgement for ever after. See docs/notes/payment.md. So each
-// case ends by driving the real acknowledgement through.
+// refuses the true acknowledgement for ever after. So each case ends by driving the
+// real acknowledgement through.
 //
 // Every row names the error it expects: "some error came back" would be satisfied by
 // a refusal for an unrelated reason and would hide the guard going missing. The owner

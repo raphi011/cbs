@@ -551,8 +551,9 @@ func TestSettlementMessageTakesItsScaleFromTheAsset(t *testing.T) {
 // A test at math.MaxInt64 proves nothing: it is orders of magnitude past every
 // candidate threshold, so it passes whatever the real bound is. A number in prose
 // needs a test that would fail if the number were wrong, which means testing the pair
-// astride it. Where 9,223,372,036,854,775 comes from, and why the third case is a
-// legal seventeen-digit amount this codec refuses anyway, is in docs/notes/payment.md.
+// astride it. 9,223,372,036,854,775 is math.MaxInt64 / 1000, which is where the
+// validator's padding into minor units overflows int64. The seventeen-digit case is a
+// separate limit and the codec's own, not the standard's.
 func TestSettlementMessageAmountBound(t *testing.T) {
 	settle := func(minor ledger.Amount) error {
 		_, err := SettlementMessage([]SettlementLeg{
