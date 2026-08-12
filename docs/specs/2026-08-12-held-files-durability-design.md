@@ -158,6 +158,20 @@ fixture now rejects a credit transfer (`SCT-021`), where the submitter IS the
 payer's bank and the reversal is real. The dataset gained a payment; the rejected
 collection's mandate story is unchanged, since `SDD-011` still uses it.
 
+The seed's `reject` narrowed with it, from both banks to the SUBMITTER only. A
+payment the seed carries through a real cut-off exists at the counterparty's
+bank only once a share has been released to it, so rejecting at both is
+rejecting one copy that is not there yet. Its one caller is a `submit`-built
+push, which is the case where the submitter is the payer's bank.
+
+**A cycle is opened AFTER the clock moves.** `AdvanceDay` opened the next day's
+cycles before advancing, so each was stamped with the day that had just ended
+rather than the one it would accept payments on — invisible until the seed
+started leaving a real open cycle behind for the demo to submit into.
+`TestTheCycleADayOpensNamesTheDayItWillClear` is the assertion. A clock that
+could not be moved leaves them on the day that just ran, which is still the day
+they will accumulate on.
+
 **`Cleared` left the dataset.** It was the status of the five payments in the
 dead cycles. Nothing but a settlement moves a `Cleared` payment, so shipping one
 is shipping a payment an operator has to rescue; it is still reachable in a
@@ -200,6 +214,15 @@ with no share behind them. The other order fails silently.
 **The lock went.** `outputMu` existed because a business day and an HTTP request
 both reached the map. A store transaction orders them now, and `ClearingHouse`
 has no state at all.
+
+**`unhandable` runs BEFORE the legs are counted.** A cut-off in which every
+position cancels sends no instruction and is discharged by the clearing house
+itself, and everything a settlement releases is released on that path too. A
+guard placed after the empty-leg return therefore let the one batch nobody could
+be handed through the two operator doors — the one whose payments have no share
+behind them and nets to nothing — while the day's sweep refused it. An empty
+instruction is not the same thing as nothing owed.
+`TestACutOffThatNetsToNothingAndCannotBeReleasedIsRefusedToo` is the assertion.
 
 **Two tests inverted rather than moved.**
 `TestACutOffThatCouldNotBeReleasedIsRefusedBeforeTheReservesMove` used to model a
@@ -277,6 +300,21 @@ only reachable failure was an unknown id.
 declares a `Hosts` interface of two methods and `sqlite.Set` satisfies it
 structurally. Both halves meet in the composition root and nowhere below it.
 
+**A share is discharged ONE at a time, and only after its own hand-over.** The
+seam this phase created is the point: handing a share over writes `ebics_queue`
+and discharging it writes `held_files`, and no statement may do both, because
+the domain must not be able to name a queue. So the release is two units of work
+per share and the only thing between them is their order. Dropping a cut-off's
+shares together — read, release all, delete all — discharges the ones whose
+queueing failed, which destroys an obligation against reserves that have already
+moved: exactly the loss `held_files` exists to prevent, arriving through a failed
+hand-over instead of a dead process. `payment.HeldFile` therefore carries the
+`Seq` that names one, `DeleteHeldFiles` became `DeleteHeldFile`, and
+`TestAShareThatCouldNotBeHandedOverIsStillHeld` asserts both halves: the share
+that could not be queued stays, and the share that was handed over does not —
+one left behind would be released again by a redelivered answer, and a bank
+handed the same instructions twice credits the same customer twice.
+
 **The restart test gained a sibling and lost a step.**
 `TestACutOffSettledAfterARestartStillReachesEveryReceivingBank` no longer calls
 `Settle` by hand — the `pacs.009` is in the settlement agent's work list and the
@@ -335,5 +373,10 @@ a correct answer and gained a bank's hub as the wrong one; `CONTEXT.md` gained a
 *Order log* entry and its *Enrolment* entry now says it is the only thing a host
 keeps outside its database. The absence argued on `roster_entries` became a
 pointer to `ebics_queue` two sections down, and
-`TestSchemaArgumentsReachSqliteMaster` gained three cases against the new
-statements.
+`TestSchemaArgumentsReachSqliteMaster` gained four cases against the new
+statements and lost the two that pinned the absences they replace. It is still
+three cases, one per shape; what changed is what each shape asserts.
+
+The two web views the 422 reaches moved with them: the central bank page's
+refusal alert now names a shortfall, since a cut-off the agent refused is the
+only refusal that route still reports, and the cycle page reads the same way.

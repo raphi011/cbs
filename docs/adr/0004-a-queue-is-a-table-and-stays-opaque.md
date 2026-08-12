@@ -91,6 +91,18 @@ cannot move money twice — the clearing house records a payment before it does
 anything else with a file, and each of the settlement agent's three acts carries
 an idempotency key of its own.
 
+**A held file is discharged one share at a time, and only after its own
+hand-over.** Releasing a settled cut-off writes both tables — `ebics_queue` at
+the receiving bank's end, `held_files` at the clearing house's — and by the
+decision above no statement can write both. So the release is two units of work
+per share, and the order they run in is the whole of what makes it safe: queue
+first, discharge second. A share whose queueing failed stays, because it is still
+owed to the bank it names against reserves that have already moved; a share that
+was queued must go, because one left behind is released again by a redelivered
+answer and a bank handed the same instructions twice credits the same customer
+twice. Discharging a cut-off's shares together satisfies neither. See
+`payment.DropHeldFile`.
+
 **A download is still not a receipt.** The queue row is deleted in the same
 transaction that reads it, so a client that dies after the response is written
 has lost the files. Real EBICS downloads in three phases and the client's receipt

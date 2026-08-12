@@ -9,32 +9,26 @@ import "context"
 //
 // This package carries bytes and imports nothing from the rest of this
 // repository, which is what lets a clearing house hold a file addressed to a
-// member bank without being able to read it. A port declared HERE keeps that
-// true: the implementation names this package and this package names no
-// implementation, so the dependency runs one way and the institution hosting a
-// queue reaches it through nothing but Server.
+// member bank without being able to read it. A port declared HERE keeps the
+// dependency running one way: the institution hosting a queue reaches it through
+// nothing but Server.
 //
 // # A queue is a table, and that is not the holder reading somebody else's mail
 //
-// The objection to storing a queue is about READERS rather than about bytes: an
-// institution able to query the files it is carrying is one query away from
-// looking inside a payment it is only a hop for. What answers it is that no
-// institution can write that query. The vocabulary below is subscribers, order
-// ids, order types and opaque payloads, and nothing on any institution's own
-// interface reaches these rows at all.
+// The objection to storing a queue is about READERS rather than bytes: an
+// institution able to query the files it carries is one query away from looking
+// inside a payment it is only a hop for. What answers it is that no institution
+// can write that query — the vocabulary below is subscribers, order ids, order
+// types and opaque payloads. A file in a receiving bank's queue is an obligation
+// the reserves have moved against, so it must outlive the process holding it.
+// See docs/adr/0004, which is the ruling and the home of this argument.
 //
-// A file released into a receiving bank's queue is an obligation the reserves
-// have already moved against, which is why it must survive the process holding
-// it. Real store-and-forward transports keep their queues on disk for the same
-// reason.
+// # One unit of work per act
 //
-// # It is one unit of work per act
-//
-// Every method on Server that touches these rows opens its own transaction.
-// Nothing here shares one with an institution's own work, and it must not: a
-// file is put on a connection OUTSIDE the unit of work that decided to send it,
-// so that a rollback cannot leave a queue holding a file about a payment no
-// institution recorded.
+// Every method on Server that touches these rows opens its own transaction,
+// never one shared with an institution's own work: a file is put on a connection
+// OUTSIDE the unit of work that decided to send it, so a rollback cannot leave a
+// queue holding a file about a payment no institution recorded.
 type Store interface {
 	Update(ctx context.Context, fn func(context.Context, Tx) error) error
 	View(ctx context.Context, fn func(context.Context, Tx) error) error

@@ -1045,19 +1045,21 @@ func RunClearingHousePayment(t *testing.T, newStore func(*testing.T) payment.Sto
 		})
 	})
 
-	// The two tables that hold an OBLIGATION rather than a record: what this
-	// institution has taken in and not yet handed over.
+	// What this institution has taken in and not yet handed over: the two things
+	// it stores that are an OBLIGATION rather than a record.
 	//
-	// Their contract is unlike every other one in this suite in two ways, and both
-	// are asserted here. A share has no key its caller knows, so writing the same
-	// value twice is two obligations and not one row rewritten — the opposite of
-	// what Put means everywhere else. And the listing order is the BUILD order,
-	// carried by the store's own seq, because a share has no timestamp: it is not
-	// an event.
+	// Their contract is unlike every other one in this suite in three ways, and
+	// all three are asserted here. A share has no key its caller knows, so
+	// writing the same value twice is two obligations and not one rewritten —
+	// the opposite of what Put means everywhere else. The listing order is the
+	// BUILD order, because a share has no timestamp: it is not an event. And a
+	// share is discharged ONE at a time, named by the Seq the listing gives it,
+	// because the bank it is addressed to is handed it one at a time and the
+	// hand-over can fail.
 	//
-	// The name says "survive their cycle" because that is the property behind the
-	// absent foreign key. A share must be readable and removable whatever became
-	// of the cycles row that names it, so the fixture never writes one.
+	// The name says "survive their cycle" because a share must be readable and
+	// removable whatever became of the cut-off that names it, so the fixture
+	// never writes one.
 	t.Run("HeldFilesSurviveTheirCycleAndReleaseInBuildOrder", func(t *testing.T) {
 		s := openInstitution(t, newStore)
 
@@ -1120,23 +1122,42 @@ func RunClearingHousePayment(t *testing.T, newStore func(*testing.T) payment.Sto
 			return nil
 		})
 
-		// The release: one cut-off's shares go, the other's stay, and the positions
-		// go with the share on the cascade rather than being left behind.
-		updatePayment(t, s, func(ctx context.Context, tx payment.Tx) error {
-			return tx.DeleteHeldFiles(ctx, "cyc_1")
-		})
+		// The release: the ONE share named goes, its neighbours in the same cut-off
+		// stay, and the positions go with it rather than being left behind. A
+		// discharge that took the cut-off's would take shares no bank has been
+		// handed — see payment.DropHeldFile.
+		var first payment.HeldFile
 		viewPayment(t, s, func(ctx context.Context, tx payment.Tx) error {
-			released, err := tx.ListHeldFiles(ctx, "cyc_1")
+			held, err := tx.ListHeldFiles(ctx, "cyc_1")
 			if err != nil {
 				return err
 			}
-			assertEqual(t, "shares held for cyc_1 after its release", len(released), 0)
+			first = held[0]
+			return nil
+		})
+		updatePayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+			return tx.DeleteHeldFile(ctx, "cyc_1", first.Seq)
+		})
+		viewPayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+			left, err := tx.ListHeldFiles(ctx, "cyc_1")
+			if err != nil {
+				return err
+			}
+			assertEqual(t, "shares held for cyc_1 after one was discharged", len(left), 2)
+			for _, f := range left {
+				if f.Seq == first.Seq {
+					t.Errorf("share %d of cyc_1 is still held after being discharged", first.Seq)
+				}
+			}
+			// The one that remains is whole: a discharge takes one share's
+			// positions and no other's.
+			assertEqual(t, "transactions still in cyc_1's second share", len(left[0].Transactions), 1)
 
 			kept, err := tx.ListHeldFiles(ctx, "cyc_2")
 			if err != nil {
 				return err
 			}
-			assertEqual(t, "shares held for cyc_2 after cyc_1 was released", len(kept), 1)
+			assertEqual(t, "shares held for cyc_2 after one of cyc_1's was discharged", len(kept), 1)
 			assertEqual(t, "transactions still in cyc_2's share", len(kept[0].Transactions), 1)
 			return nil
 		})

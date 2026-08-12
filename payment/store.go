@@ -251,12 +251,15 @@ type Tx interface {
 	// conflict with, and two identical shares are two obligations to the same
 	// bank rather than one recorded twice.
 	//
-	// DeleteHeldFiles takes the whole cut-off's, because that is how they are
-	// released: one settlement hands over every share it was carrying, and a
-	// share left behind is a file some bank is handed a second time.
+	// DeleteHeldFile takes ONE share and names it by the N above, which
+	// ListHeldFiles reports for exactly this reason. A share is discharged when
+	// the bank it is addressed to has been handed it, and the hand-over is a
+	// write to another table that this transaction may not touch — so the two
+	// happen one share at a time and in that order. Deleting a cut-off's shares
+	// together would discharge the ones that never left.
 	AddHeldFile(ctx context.Context, f HeldFile) error
 	ListHeldFiles(ctx context.Context, id CycleID) ([]HeldFile, error)
-	DeleteHeldFiles(ctx context.Context, id CycleID) error
+	DeleteHeldFile(ctx context.Context, id CycleID, seq int64) error
 
 	PutHeldReturn(ctx context.Context, r HeldReturn) error
 	GetHeldReturn(ctx context.Context, id PaymentID) (HeldReturn, error)

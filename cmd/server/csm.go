@@ -569,15 +569,12 @@ func (c *ClearingHouse) refuse(ctx context.Context, p payment.Payment,
 // The header is replaced outright: it says who is handing this to whom, and that
 // is this hop's rather than the submitting bank's.
 //
-// # The shares are dropped LAST
+// # Each share is dropped after ITS OWN hand-over
 //
-// Read, released, and only then deleted, so that a process ending between the
-// settlement and the hand-over leaves the obligations standing in the database
-// instead of consuming them. What they are handed INTO is a row as well, so the
-// obligation is durable on both sides of the moment it changes hands. Deleting
-// is not optional either: a share left behind would be released again by a
-// redelivered ACSC, and a bank handed the same instructions twice credits the
-// same customer twice.
+// Read, released, and only then deleted, one share at a time, so that a share
+// this institution could not hand over is still holding the obligation
+// afterwards and one it did hand over is not. payment.DropHeldFile is where
+// both halves of that are argued.
 //
 // A file that could not be queued is joined rather than returned, for the reason
 // a day carries on past one failure: a destination this institution could not
@@ -607,7 +604,10 @@ func (c *ClearingHouse) releaseFiles(ctx context.Context, cycle payment.CycleID,
 				inAFile[h.PaymentID] = true
 			}
 		}
+		// A share with nothing left in it is owed to nobody, and dropping it is
+		// the whole of what releasing it means.
 		if len(idx) == 0 {
+			errs = append(errs, c.drop(ctx, f))
 			continue
 		}
 		part, err := shareOf(f.File, idx)
@@ -616,7 +616,7 @@ func (c *ClearingHouse) releaseFiles(ctx context.Context, cycle payment.CycleID,
 				c.bic, cycle, f.Destination, err))
 			continue
 		}
-		errs = append(errs, c.enqueue(ctx, f.Destination, iso20022.Envelope{
+		if err := c.enqueue(ctx, f.Destination, iso20022.Envelope{
 			AppHdr: iso20022.AppHdr{
 				Fr:        iso20022.NewAgent(c.bic),
 				To:        iso20022.NewAgent(f.Destination),
@@ -625,14 +625,26 @@ func (c *ClearingHouse) releaseFiles(ctx context.Context, cycle payment.CycleID,
 				CreDt:     iso20022.ISODateTime{Time: c.d.now()},
 			},
 			Document: part,
-		}))
+		}); err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		errs = append(errs, c.drop(ctx, f))
 	}
 	errs = append(errs, c.unhanded(cycle, settled, inAFile)...)
-	if err := c.ops.DropHeldFiles(ctx, cycle); err != nil {
-		errs = append(errs, fmt.Errorf("server: %s released the files it was holding for %s and could not discard them: %w",
-			c.bic, cycle, err))
-	}
 	return errors.Join(errs...)
+}
+
+// drop discharges one share this institution is no longer holding anything for.
+//
+// Only ever after the hand-over, and never for a share the hand-over failed on:
+// see payment.DropHeldFile, which is where that order is argued.
+func (c *ClearingHouse) drop(ctx context.Context, f payment.HeldFile) error {
+	if err := c.ops.DropHeldFile(ctx, f.CycleID, f.Seq); err != nil {
+		return fmt.Errorf("server: %s handed %s its share of %s and could not discard it: %w",
+			c.bic, f.Destination, f.CycleID, err)
+	}
+	return nil
 }
 
 // shareOf cuts one destination's transactions out of a held file.
@@ -1179,15 +1191,17 @@ func (c *ClearingHouse) instructSettlement(ctx context.Context, closed payment.C
 		return fmt.Errorf("server: %s closed %s and holds no %q scheme to settle it in: %w",
 			c.bic, closed.ID, closed.Scheme, payment.ErrSchemeNotFound)
 	}
+	// BEFORE the legs are counted, because a cut-off with no leg is still
+	// discharged: settleUninstructed does it, and everything a settlement
+	// releases is released then too. An empty instruction is not the same thing
+	// as nothing owed, and both paths end in a payee whose bank has to be handed
+	// something.
+	if err := c.unhandable(ctx, closed); err != nil {
+		return err
+	}
 	legs := c.settlementLegs(closed, scheme.Asset())
 	if len(legs) == 0 {
 		return nil
-	}
-	// AFTER the legs and before the upload. A cut-off that instructs nothing is
-	// settleUninstructed's, and it runs this same check for itself; what is
-	// refused here is the batch that would really move reserves.
-	if err := c.unhandable(ctx, closed); err != nil {
-		return err
 	}
 	env, err := payment.SettlementMessage(legs, c.d.messageContext(c.bic, c.d.cfg.CentralBankBIC))
 	if err != nil {
@@ -1199,29 +1213,19 @@ func (c *ClearingHouse) instructSettlement(ctx context.Context, closed payment.C
 // unhandable refuses a cut-off this institution could not release, and it is
 // unhanded's guard: the same question, asked while the answer is still free.
 //
-// # What it reads
+// A share per receiving bank is built when a file is worked (takeRecorded), so
+// "is there a share covering every payment in this cycle" is answerable here and
+// nowhere else. A payment missing from every share is one whose receiving bank
+// will never be handed the instruction it has to apply, and what leaves one
+// missing is a payment put into a cycle without a file being worked — a
+// composed fixture, or a process ending between takeRecorded's two writes.
 //
-// A share per receiving bank is built when a file is worked (takeRecorded) and
-// released when the cycle carrying it settles. So "is there a share covering
-// every payment in this cycle" is answerable here and nowhere else, and a
-// payment missing from every share is one whose receiving bank will never be
-// handed the instruction it has to apply.
-//
-// What produces that state is a payment put into a cycle without a file being
-// worked, which is what a fixture or a test reaches by composing what the
-// transport would have carried, and what a process ending between the two writes
-// (see takeRecorded). A restart no longer does: the shares are rows in this
-// institution's own database, so this is now the guard on a defect that should
-// not occur, which is where a guard belongs.
-//
-// # Why it is worth a refusal rather than a report
-//
-// Because of what the two cost. Settling anyway is final at the settlement
-// agent, and the loss is a payee whose bank was never told the payment exists,
-// with the money standing in that bank's clearing suspense and no act in this
-// system able to move it. Refusing leaves the cycle Closed and its payments
-// Cleared, which is where the cut-off already had them: nothing is lost, and an
-// operator has something to act on.
+// The refusal is worth more than a report because of what the two cost.
+// Settling anyway is final at the settlement agent, and the loss is a payee
+// whose bank was never told the payment exists, with the money standing in that
+// bank's clearing suspense and no act in this system able to move it. Refusing
+// leaves the cycle Closed and its payments Cleared, which is where the cut-off
+// already had them: nothing is lost, and an operator has something to act on.
 //
 // It names every payment rather than the first, because a batch is fixed as a
 // batch — an operator told about one of four would fix that one and press the
@@ -1493,10 +1497,9 @@ func (c *ClearingHouse) tellSettled(ctx context.Context, id payment.CycleID, ori
 // A row is otherwise dropped only when an answer REACHES the drop, and two
 // things can stop it: a return the settlement agent could not process is never
 // answered at all, and an answer this handler cannot act on returns above the
-// drop. Both leak one row apiece and both are recorded rather than swept — and
-// now that they are rows rather than map entries, both outlive the process that
-// leaked them, which makes the leak an operator's to find rather than a restart's
-// to hide.
+// drop. Both leak one row apiece and both are recorded rather than swept. A
+// leaked row outlives the process that leaked it, which is what makes the leak
+// an operator's to find.
 func (c *ClearingHouse) receiveReturnStatus(ctx context.Context, from iso20022.BIC, doc *iso20022.Pacs002) error {
 	orig, reports := payment.ReadStatus(doc)
 	for _, r := range reports {

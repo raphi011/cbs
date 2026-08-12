@@ -374,7 +374,7 @@ type csmOps interface {
 	// payments have no share behind them, before the reserves move.
 	HoldFile(ctx context.Context, f payment.HeldFile) error
 	ListHeldFiles(ctx context.Context, id payment.CycleID) ([]payment.HeldFile, error)
-	DropHeldFiles(ctx context.Context, id payment.CycleID) error
+	DropHeldFile(ctx context.Context, id payment.CycleID, seq int64) error
 
 	HoldReturn(ctx context.Context, r payment.HeldReturn) error
 	GetHeldReturn(ctx context.Context, id payment.PaymentID) (payment.HeldReturn, error)

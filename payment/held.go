@@ -42,6 +42,12 @@ type HeldFile struct {
 	// CycleID is the cut-off whose settlement releases this share.
 	CycleID CycleID
 
+	// Seq is which share of that cut-off this is, in build order, and it is what
+	// names one for discharge. The store allocates it; a caller building a share
+	// leaves it zero, and only what ListHeldFiles reports carries a meaningful
+	// one. See DropHeldFile for why a share has to be nameable at all.
+	Seq int64
+
 	// Destination is the receiving bank, which is also the subscriber whose
 	// download queue the share is put in.
 	Destination iso20022.BIC
@@ -128,24 +134,34 @@ func (s *Network) ListHeldFiles(ctx context.Context, id CycleID) ([]HeldFile, er
 	return out, err
 }
 
-// DropHeldFiles discards a cut-off's shares once they have been handed over.
+// DropHeldFile discards ONE share, once the bank it is addressed to has been
+// handed it.
 //
-// AFTER the release rather than as part of reading it, so that a process ending
-// between the settlement and the hand-over leaves the obligations standing in
-// the database rather than consuming them. What they are handed INTO is a row as
-// well — a download queue is the transport's table in this same institution's
-// database — so the obligation is durable on both sides of the moment it changes
-// hands.
+// # One at a time, and after the hand-over
 //
-// It runs whatever became of the individual queues, which is the same answer the
-// release itself gives: a share that could not be enqueued is a fault the day's
-// report carries, and nothing in this system retries one.
-func (s *Network) DropHeldFiles(ctx context.Context, id CycleID) error {
+// What a share is handed INTO is a row as well — a download queue is the
+// transport's table in this same institution's database — so an obligation
+// changing hands is two writes, and no statement may make both: the domain
+// cannot name a queue. What stands between them is therefore the order they run
+// in. Reading, releasing and only then discharging leaves a process that ended
+// in between holding the obligation rather than having consumed it.
+//
+// The same order is what makes a FAILED hand-over safe, and it is why this
+// takes one share rather than a cut-off's. A share that could not be queued is
+// still owed to the bank it names, against reserves that have already moved —
+// discharging it with its neighbours would destroy exactly what these rows
+// exist to keep. It stays, and the day's report carries the fault.
+//
+// Discharging is not optional either, for the failure on the other side: a
+// share still standing after its bank has been handed it is released a second
+// time by a redelivered answer, and a bank handed the same instructions twice
+// credits the same customer twice.
+func (s *Network) DropHeldFile(ctx context.Context, id CycleID, seq int64) error {
 	if err := s.clearingHouse(); err != nil {
 		return err
 	}
 	return s.store.Update(ctx, func(ctx context.Context, tx Tx) error {
-		return tx.DeleteHeldFiles(ctx, id)
+		return tx.DeleteHeldFile(ctx, id, seq)
 	})
 }
 

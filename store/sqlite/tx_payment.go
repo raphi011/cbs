@@ -1263,14 +1263,11 @@ func (t *tx) ListHeldFiles(ctx context.Context, id payment.CycleID) ([]payment.H
 	out := make([]payment.HeldFile, 0)
 	index := make(map[int64]int)
 	for rows.Next() {
-		var (
-			seq int64
-			f   = payment.HeldFile{CycleID: id}
-		)
-		if err := rows.Scan(&seq, &f.Destination, &f.File); err != nil {
+		f := payment.HeldFile{CycleID: id}
+		if err := rows.Scan(&f.Seq, &f.Destination, &f.File); err != nil {
 			return nil, fmt.Errorf("sqlite: list the files held for %s: %w", id, err)
 		}
-		index[seq] = len(out)
+		index[f.Seq] = len(out)
 		out = append(out, f)
 	}
 	if err := rows.Err(); err != nil {
@@ -1305,17 +1302,18 @@ func (t *tx) ListHeldFiles(ctx context.Context, id payment.CycleID) ([]payment.H
 	return out, txs.Err()
 }
 
-// DeleteHeldFiles discards a whole cut-off's shares. The positions go with them
-// on the cascade.
-func (t *tx) DeleteHeldFiles(ctx context.Context, id payment.CycleID) error {
+// DeleteHeldFile discards one share of a cut-off. The positions go with it on
+// the cascade.
+func (t *tx) DeleteHeldFile(ctx context.Context, id payment.CycleID, seq int64) error {
 	if err := t.inShape("held_files"); err != nil {
 		return err
 	}
 	if err := t.write(); err != nil {
 		return err
 	}
-	if _, err := t.tx.ExecContext(ctx, "DELETE FROM held_files WHERE cycle_id = ?", string(id)); err != nil {
-		return fmt.Errorf("sqlite: release the files held for %s: %w", id, err)
+	if _, err := t.tx.ExecContext(ctx,
+		"DELETE FROM held_files WHERE cycle_id = ? AND seq = ?", string(id), seq); err != nil {
+		return fmt.Errorf("sqlite: release the file held as %d of %s: %w", seq, id, err)
 	}
 	return nil
 }

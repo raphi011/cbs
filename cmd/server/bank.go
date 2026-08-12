@@ -113,9 +113,9 @@ type Bank struct {
 	// It stays Initiated for ever, no counterparty has seen it, and there is no
 	// remedy from inside the flow — payment/recon is what makes it visible.
 	//
-	// It is the same defect the clearing house's held files and held returns had,
-	// and the answer there was a table in that institution's own database. This
-	// one is a member bank's, so it is a member bank's to fix: see
+	// It is the same defect the clearing house's held files and held returns
+	// carry, and the answer to it is a table in the institution's own database.
+	// This obligation is a member bank's, so it is a member bank's to fix: see
 	// docs/adr/0003, which is that ruling and names this as the case it does not
 	// close.
 	//

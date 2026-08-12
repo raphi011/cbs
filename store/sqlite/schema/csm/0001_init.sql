@@ -1,9 +1,10 @@
 -- csm/0001_init: the clearing house's whole world, in one migration.
 --
--- Twelve tables, and the shortest of the three files by a wide margin. What is
--- absent is the substance of it: THE CLEARING HOUSE HAS NO LEDGER. No books, no
--- accounts, no transactions, no entries, no deposit register, no products, no
--- lending. It holds no money and posts nothing, so it has nowhere to post.
+-- Twelve tables, and a member bank's file is more than twice the length of this
+-- one. What is absent is the substance of it: THE CLEARING HOUSE HAS NO LEDGER.
+-- No books, no accounts, no transactions, no entries, no deposit register, no
+-- products, no lending. It holds no money and posts nothing, so it has nowhere
+-- to post.
 --
 -- One database holding every table makes that claim invisible: every
 -- institution's payment.Network reaches every book, and the only thing asserting
@@ -469,6 +470,12 @@ CREATE TABLE held_files (
     -- whole table by the canonical rule (ledgers.seq in bank/0001_init.sql), so
     -- it orders every share this institution holds rather than one cycle's. The
     -- cycle leads the key because every read is one cut-off's.
+    --
+    -- It is also what NAMES one share for discharge, which is why the reader
+    -- gets it back. A share is removed when the bank it is addressed to has been
+    -- handed it, and that hand-over is a write to ebics_queue that the same
+    -- statement may not make — so one that could not be queued is still owed,
+    -- and removing a cut-off's together would discharge it anyway.
     seq         INTEGER NOT NULL,
     -- The receiving bank's BIC, which is also its subscriber id: enrolment is
     -- what creates a queue, so a destination with no enrolment has nowhere for
@@ -514,7 +521,7 @@ CREATE TABLE held_file_transactions (
     -- The parent FOREIGN KEY stays, under the exemption stated on subledgers in
     -- bank/0001_init.sql and for cycle_payments' reason: the store writes both
     -- sides within one statement sequence, so no caller can produce an orphan.
-    -- It is also what makes releasing a cut-off one DELETE. payment_id carries
+    -- It is also what makes releasing one share one DELETE. payment_id carries
     -- none, which is the same rule from its other side — the payments row is in
     -- this database, so the constraint could be written, and it stays out because
     -- a share must be recordable whatever else is in the database.

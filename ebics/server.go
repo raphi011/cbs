@@ -114,6 +114,19 @@ func (s *Server) Upload(ctx context.Context, sub SubscriberID, t OrderType, payl
 		return "", refuse(UnsupportedOrderType, "%s is not an upload here", t)
 	}
 
+	return s.mint(ctx, func(ctx context.Context, tx Tx, seq int, id OrderID) error {
+		return tx.AddOrder(ctx, seq, Order{ID: id, Subscriber: sub, Type: t, Payload: payload})
+	})
+}
+
+// mint allocates this host's next order id and writes the row it names, in one
+// unit of work.
+//
+// An arriving order and a released file are the same act from the counter's
+// side, which is why they share one: an id has to be unique at the host that
+// minted it whatever produced it, or a HAC answer would be about somebody else's
+// file.
+func (s *Server) mint(ctx context.Context, write func(context.Context, Tx, int, OrderID) error) (OrderID, error) {
 	var id OrderID
 	err := s.store.Update(ctx, func(ctx context.Context, tx Tx) error {
 		seq, err := tx.NextOrderSeq(ctx)
@@ -121,7 +134,7 @@ func (s *Server) Upload(ctx context.Context, sub SubscriberID, t OrderType, payl
 			return err
 		}
 		id = mintOrderID(seq)
-		return tx.AddOrder(ctx, seq, Order{ID: id, Subscriber: sub, Type: t, Payload: payload})
+		return write(ctx, tx, seq, id)
 	})
 	if err != nil {
 		return "", internal(err)
@@ -224,19 +237,9 @@ func (s *Server) Enqueue(ctx context.Context, sub SubscriberID, t OrderType, pay
 		return "", refuse(UnsupportedOrderType, "%s selects files, it does not name one", t)
 	}
 
-	var id OrderID
-	err := s.store.Update(ctx, func(ctx context.Context, tx Tx) error {
-		seq, err := tx.NextOrderSeq(ctx)
-		if err != nil {
-			return err
-		}
-		id = mintOrderID(seq)
+	return s.mint(ctx, func(ctx context.Context, tx Tx, seq int, id OrderID) error {
 		return tx.AddQueuedFile(ctx, seq, sub, File{OrderID: id, OrderType: t, Payload: payload})
 	})
-	if err != nil {
-		return "", internal(err)
-	}
-	return id, nil
 }
 
 // Pending is every order that has arrived and not yet been answered, oldest

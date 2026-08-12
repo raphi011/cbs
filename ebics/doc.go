@@ -50,11 +50,8 @@
 // somewhere this package does not name. Nothing here is lost when a process ends:
 // a file released into a receiving bank's queue is an obligation with money
 // already moved against it, and an order log a restart emptied would answer HAC
-// about nothing.
-//
-// The bytes stay OPAQUE for all that, which is the property worth keeping rather
-// than the absence of a table. Store's vocabulary is subscribers, order ids,
-// order types and payloads, and there is nothing in it that can name a payment.
+// about nothing. The bytes stay opaque for all that — see Store, which carries
+// the argument.
 //
 // # One queue is ordered, two queues are not
 //
