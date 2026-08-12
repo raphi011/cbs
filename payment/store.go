@@ -100,6 +100,23 @@ type Stores interface {
 	Close() error
 }
 
+// PaymentRowsTx is a party's own copy of the payments it is on.
+//
+// Two institutions keep one and they keep DIFFERENT COLUMNS: a bank's row
+// carries the legs it posted and no cut-off, the clearing house's carries the
+// cut-off it was cleared in and no legs. The settlement agent has no payments
+// table at all — it discharges cut-offs, and a cut-off names no payment.
+//
+// So the methods are shared and the row is not, which is the one place in this
+// system where a type cannot say the whole truth: see store/sqlite's Shape, whose
+// paymentLegs and paymentCycle decide the column list.
+type PaymentRowsTx interface {
+	PutPayment(ctx context.Context, p Payment) error
+	GetPayment(ctx context.Context, id PaymentID) (Payment, error)
+	GetPaymentByEndToEndID(ctx context.Context, endToEndID string) (Payment, error)
+	ListPayments(ctx context.Context) ([]Payment, error)
+}
+
 // Tx embeds deposit.Tx — and, through it, ledger.Tx — plus lending.Tx, so one
 // concrete transaction spans every layer a participant drives. That is what
 // lets Bank.RunEndOfDay accrue an overdraft and a loan in a single unit
@@ -225,10 +242,7 @@ type Tx interface {
 	GetDirectoryEntry(ctx context.Context, issuer iban.Issuer) (DirectoryEntry, error)
 	ListDirectoryEntries(ctx context.Context) ([]DirectoryEntry, error)
 
-	PutPayment(ctx context.Context, p Payment) error
-	GetPayment(ctx context.Context, id PaymentID) (Payment, error)
-	GetPaymentByEndToEndID(ctx context.Context, endToEndID string) (Payment, error)
-	ListPayments(ctx context.Context) ([]Payment, error)
+	PaymentRowsTx
 
 	PutMandate(ctx context.Context, m Mandate) error
 	GetMandate(ctx context.Context, id MandateID) (Mandate, error)
