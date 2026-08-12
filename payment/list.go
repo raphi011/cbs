@@ -242,19 +242,18 @@ func (s *ClearingHouseNetwork) ListPayments(ctx context.Context) ([]Payment, err
 // schema, which argues the absent column): the row set is this institution's by
 // construction.
 //
-// It is a refusal on the other two institutions rather than an empty list,
-// because a clearing house listing mandates is not an institution with none — it
-// is an act that is not its. The `csm` shape has no mandates table at all.
+// The other two institutions cannot ask at all: this is a method on
+// BankNetwork, over a store whose transaction is the only one of the three
+// declaring ListMandates. A clearing house listing mandates is not an
+// institution with none — it is an act that is not its, and neither its schema
+// nor its type has anywhere to answer from.
 //
-// # By construction, and not yet
+// # By construction, and it is the store that makes it so
 //
-// The construction is the store split, and the store split is the wiring this
-// task has not reached: until testenv and the composition root open one database
-// per entity, every network still shares one, and this listing returns whatever
-// mandates that shared store holds. That is a transitional gap and it is named
-// here rather than papered over with a per-row probe of this bank's own register,
-// which would be a workaround the next step deletes. What closes it is
-// store/testenv opening N+2 stores, not another guard here.
+// One database per institution is what makes "this bank's own mandates" the
+// whole of what this listing can return: the rows it reads are the only mandate
+// rows in the database it reads them from. There is no filter here and there is
+// nothing for one to do.
 func (s *BankNetwork) ListMandates(ctx context.Context) ([]Mandate, error) {
 	if _, err := s.self(); err != nil {
 		return nil, err
