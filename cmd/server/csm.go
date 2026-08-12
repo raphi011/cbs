@@ -591,16 +591,27 @@ func (c *ClearingHouse) refuse(ctx context.Context, p payment.Payment,
 // A file that could not be queued is joined rather than returned, for the reason
 // a day carries on past one failure: a destination this institution could not
 // reach must not stop the others being handed their share.
-func (c *ClearingHouse) releaseFiles(cycle payment.CycleID, settled map[payment.PaymentID]bool) error {
+func (c *ClearingHouse) releaseFiles(cycle payment.CycleID, settled []payment.Payment) error {
 	files := c.output[cycle]
 	delete(c.output, cycle)
+
+	final := make(map[payment.PaymentID]bool, len(settled))
+	for _, p := range settled {
+		final[p.ID] = true
+	}
+	// Which of them a file was built for, whatever became of the queueing. A
+	// share this institution could not enqueue is reported as that, once, by the
+	// error below; counting it here as well would report one lost file twice and
+	// send its reader looking for a second fault.
+	inAFile := make(map[payment.PaymentID]bool, len(settled))
 
 	var errs []error
 	for _, f := range files {
 		idx := make([]int, 0, len(f.idx))
 		for i, id := range f.ids {
-			if settled[id] {
+			if final[id] {
 				idx = append(idx, f.idx[i])
+				inAFile[id] = true
 			}
 		}
 		if len(idx) == 0 {
@@ -617,7 +628,52 @@ func (c *ClearingHouse) releaseFiles(cycle payment.CycleID, settled map[payment.
 			Document: f.part(idx),
 		}))
 	}
-	return errors.Join(errs...)
+	return errors.Join(append(errs, c.unhanded(cycle, settled, inAFile)...)...)
+}
+
+// unhanded is every payment this cut-off settled that no receiving bank was
+// handed a file for.
+//
+// # Why the case exists at all
+//
+// A share is built when a FILE is worked (takeRecorded) and released when the
+// cycle carrying it settles. Anything that puts a payment in a cycle without
+// working a file therefore settles it with no share behind it — the seed, which
+// plays every institution and uploads nothing, and a restart, which empties the
+// map the shares are held in. Both end the same way: reserves have moved, and
+// the bank that has to act on the instruction is never told it exists.
+//
+// # Why it has to be said out loud
+//
+// Because it is otherwise indistinguishable from a cut-off with nothing to
+// release, which is an ordinary day — a cycle that took nothing in has no share
+// either, and settleUninstructed drives exactly that case. Silence there is
+// correct and silence here is a payee who is never paid, so the difference has
+// to be drawn from the payments rather than from the shares.
+//
+// Nothing is retried and nothing is unwound. The money is final at the
+// settlement agent, this institution cannot rebuild a file it never held, and a
+// day that stopped here would leave the rest of the batch unreported. What is
+// owed to the reader is the exact loss, per payment, in the day's report;
+// payment/recon is what finds it later in the books.
+func (c *ClearingHouse) unhanded(cycle payment.CycleID, settled []payment.Payment, inAFile map[payment.PaymentID]bool) []error {
+	var errs []error
+	for _, p := range settled {
+		if inAFile[p.ID] {
+			continue
+		}
+		scheme, ok := c.ops.Scheme(p.Scheme)
+		if !ok {
+			errs = append(errs, fmt.Errorf("server: %s settled %s in cycle %s and holds no %q scheme to say which bank was owed the instruction: %w",
+				c.bic, p.ID, cycle, p.Scheme, payment.ErrSchemeNotFound))
+			continue
+		}
+		errs = append(errs, fmt.Errorf(
+			"server: %s settled %s in cycle %s and built no file for %s, which is the bank that has to apply it: "+
+				"the reserves behind it are final and that bank has not been told the payment exists",
+			c.bic, p.ID, cycle, receiverOf(scheme, p.DebtorDetails.Agent, p.CreditorDetails.Agent)))
+	}
+	return errs
 }
 
 // relayReturn uploads a return to the SETTLEMENT AGENT, and keeps a copy for the
@@ -1251,18 +1307,19 @@ func (c *ClearingHouse) tellSettled(ctx context.Context, id payment.CycleID, ori
 	if err != nil {
 		return fmt.Errorf("server: %s was told %s settled and cannot record it: %w", c.bic, id, err)
 	}
-	final := make(map[payment.PaymentID]bool, len(settled))
-	for _, p := range settled {
-		final[p.ID] = true
-	}
-	if err := c.releaseFiles(id, final); err != nil {
-		return err
-	}
+	// The files first, and what could not be released does NOT stop the advices.
+	//
+	// They are two different banks' news about the same batch. A share this
+	// institution could not hand over is a fault the day's report has to carry,
+	// and a submitting bank still waiting for the answer to its instruction is a
+	// second fault — one that would be caused here, by returning early, on every
+	// payment in the cycle including the ones that were released cleanly.
+	released := c.releaseFiles(id, settled)
 	for _, p := range settled {
 		scheme, ok := c.ops.Scheme(p.Scheme)
 		if !ok {
-			return fmt.Errorf("server: %s was told %s settled and holds no %q scheme to say who submitted %s: %w",
-				c.bic, id, p.Scheme, p.ID, payment.ErrSchemeNotFound)
+			return errors.Join(released, fmt.Errorf("server: %s was told %s settled and holds no %q scheme to say who submitted %s: %w",
+				c.bic, id, p.Scheme, p.ID, payment.ErrSchemeNotFound))
 		}
 		c.d.journal.outcome(TransactionOutcome{DecidedBy: c.bic, Payment: p.ID, Status: r.Status})
 		if err := c.forward(submitterOf(scheme, p.DebtorDetails.Agent, p.CreditorDetails.Agent), orig,
@@ -1271,10 +1328,10 @@ func (c *ClearingHouse) tellSettled(ctx context.Context, id payment.CycleID, ori
 				TxID:       string(p.ID),
 				Status:     r.Status,
 			}); err != nil {
-			return err
+			return errors.Join(released, err)
 		}
 	}
-	return nil
+	return released
 }
 
 // receiveReturnStatus is the clearing house acting on the settlement agent's

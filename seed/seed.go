@@ -921,8 +921,8 @@ func (b *builder) build() {
 	b.initSCT(verde, bella, nord, niklas, 6_000, "SCT-011", "Shared dinner")
 	must(b.csm().CloseCycle(b.ctx, sct2.ID))
 
-	// --- Phase E: an open SDD cycle with an accepted and a rejected payment --
-	must(b.csm().OpenCycle(b.ctx, payment.SchemeSEPADD))
+	// --- Phase E: a second closed SDD cycle, with a rejected payment ---------
+	sdd2 := must(b.csm().OpenCycle(b.ctx, payment.SchemeSEPADD))
 	b.initSDD(soleil, chloe, nord, nora, 5_000, m1.ID, "SDD-010", "Monthly subscription")
 	reject := b.initSDD(verde, bruno, aurora, aaron, 3_000, m2.ID, "SDD-011", "Disputed charge")
 	// An operator-initiated rejection carries no more specific reason code
@@ -934,9 +934,10 @@ func (b *builder) build() {
 	// reverses the leg it posted. There is no method that does both, so nobody
 	// plays the clearing house and the payer's bank without saying so.
 	b.reject(reject.ID, iso20022.StatusReasonNotSpecifiedAgentGenerated, "Insufficient mandate coverage")
+	must(b.csm().CloseCycle(b.ctx, sdd2.ID))
 
-	// --- Phase F: an open SCT cycle with an accepted payment ----------------
-	must(b.csm().OpenCycle(b.ctx, payment.SchemeSEPACT))
+	// --- Phase F: a third SCT cycle, closed at the end of the build ---------
+	sct3 := must(b.csm().OpenCycle(b.ctx, payment.SchemeSEPACT))
 	b.initSCT(aurora, alice, verde, bella, 7_000, "SCT-020", "Birthday gift")
 
 	// --- Lending: credit facilities across the network ---------------------
@@ -944,6 +945,46 @@ func (b *builder) build() {
 
 	// --- General-ledger primitives showcase on Aurora ----------------------
 	b.glShowcase(aurora, aaron)
+
+	// --- Every cycle this scenario opened is closed, and two empty ones wait -
+	//
+	// SCT-030 joins Phase F's cycle from inside the lending showcase, so that one
+	// can only be closed once everything above has run. Closing it here is what
+	// makes this the last act of the build.
+	//
+	// # Why no cycle may be left OPEN
+	//
+	// An open cycle is the one the next business day closes, nets, settles — and
+	// then releases the receiving banks' files for. This process builds no files:
+	// it plays every institution itself and hands the clearing house rows, so the
+	// clearing house holds no share to release for anything seeded into a cycle.
+	// A payment left Accepted would therefore be settled by the first advance
+	// against reserves that really move, and the bank that has to credit the payee
+	// would never be told the payment exists. See ClearingHouse.unhanded, which is
+	// what says so out loud, and payment/recon's partiesHoldTheirCopy, which finds
+	// it in the books afterwards.
+	//
+	// A CLOSED cycle is safe for the reason Phase D already relies on: a business
+	// day closes open cycles and settles the closed ones that net to nothing, and
+	// neither of these does either. Their payments stay Cleared, their payers'
+	// money stays in clearing suspense, and every book agrees about why — which is
+	// a payment in flight, and is exactly what it looks like.
+	//
+	// So the seed's in-flight payments are Cleared and never Accepted. Accepted is
+	// the one status this dataset cannot hold at the clearing house without
+	// leaving a payment the running system would settle and could not deliver. The
+	// SUBMITTING banks' own copies still read Accepted — the ACSC reached them —
+	// so the status is on the screens, in the place a bank would see it.
+	//
+	// # And why two empty ones are opened
+	//
+	// A day validates its files against the open cut-off window BEFORE it opens
+	// tomorrow's (see Deployment.AdvanceDay's ordering), so a deployment handed no
+	// open cycle refuses every payment in the first day's files with TM01. Two
+	// empty cycles, one per scheme, are what a day would have left behind.
+	must(b.csm().CloseCycle(b.ctx, sct3.ID))
+	must(b.csm().OpenCycle(b.ctx, payment.SchemeSEPACT))
+	must(b.csm().OpenCycle(b.ctx, payment.SchemeSEPADD))
 }
 
 // lendingShowcase exercises every state a credit facility can be in: a
@@ -1047,9 +1088,10 @@ func (b *builder) lendingShowcase(aurora, verde, nord *payment.Bank, alice, brun
 	// 30-day span, or the repricing's twenty-day offset, changes Bruno's
 	// final number.
 	//
-	// It joins the SCT cycle Phase F left open (only one may be open per
-	// scheme at a time) rather than opening a second one, which is also why it
-	// stays Accepted like SCT-020 rather than Settled.
+	// It joins the SCT cycle Phase F opened (only one may be open per scheme at
+	// a time) rather than opening a second one, which is also why it ends
+	// Cleared like SCT-020 rather than Settled: the build's closing act closes
+	// that cycle, and nothing settles it.
 	check(verde.RunEndOfDay(ctx, b.clock.Now()))
 
 	brunoBalance := must(verde.Deposit.GetBalance(ctx, bruno.ID))

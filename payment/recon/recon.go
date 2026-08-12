@@ -343,6 +343,13 @@ type snapshot struct {
 	// payment.Networks.schemes — so the registry is the only place to ask, and
 	// the clearing house's network is the one this harness asks through.
 	assetOf func(payment.SchemeID) (ledger.AssetCode, bool)
+
+	// schemeOf is the same registry read one step earlier, for the one question
+	// an asset cannot answer: which of a payment's two banks INSTRUCTED it. A
+	// push is submitted by the payer's bank and a pull by the payee's, so
+	// "the receiving bank" is a fact about the scheme's direction and about
+	// nothing on the payment itself.
+	schemeOf func(payment.SchemeID) (payment.Scheme, bool)
 }
 
 func take(ctx context.Context, nets *payment.Networks) (*snapshot, error) {
@@ -362,6 +369,7 @@ func take(ctx context.Context, nets *payment.Networks) (*snapshot, error) {
 			}
 			return sc.Asset(), true
 		},
+		schemeOf: ch.Scheme,
 	}
 
 	bics, err := stores.Banks(ctx)
@@ -833,6 +841,7 @@ func (s *snapshot) partiesHoldTheirCopy(rep *Report) {
 		if parties[0] == parties[1] {
 			parties = parties[:1]
 		}
+		receiver, uncredited := receiverOf(s, p)
 		for _, bic := range parties {
 			view, deployed := s.banks[bic]
 			if !deployed {
@@ -858,8 +867,50 @@ func (s *snapshot) partiesHoldTheirCopy(rep *Report) {
 					"payment %s is under scheme %s on this bank's copy and %s on the clearing house's",
 					p.ID, own.Scheme, p.Scheme)
 			}
+			// A settled payment whose RECEIVING bank has not moved off Initiated.
+			//
+			// The two copies are allowed to disagree about the status and mostly
+			// do — see the doc above — but not in this direction and not from
+			// here. Settled means the reserves behind this payment are final and
+			// the receiving bank has been handed the instruction it has to act
+			// on; a copy still at Initiated is a bank that was handed nothing,
+			// and it will stay that way, because release happens once.
+			//
+			// This is the arm that has to exist for suspenseIsExplained not to
+			// be fooled. That check reads an unreconciled suspense as explained
+			// when a payment is still in flight, which is exactly what this state
+			// looks like from inside one bank — so without this the position is
+			// explained for ever by a payment nothing will ever move.
+			//
+			// Asked of the RECEIVING bank alone, which the scheme's direction
+			// picks. The submitter's copy reaches Settled from the ACSC it is
+			// sent, and a submitter stuck at Initiated is a different fault, in a
+			// different message, with a different remedy.
+			if p.Status == payment.Settled && own.Status == payment.Initiated && bic == receiver {
+				rep.breakf(string(bic), "payment %s settled at the clearing house and this bank still holds it as Initiated; "+
+					"it was never handed the instruction, so %s", p.ID, uncredited)
+			}
 		}
 	}
+}
+
+// receiverOf is the bank a released file is addressed to, and what it was never
+// able to do with the instruction it did not get.
+//
+// The direction decides both. On a PUSH the receiver is the payee's bank: it
+// never credits its customer, and the money the settlement moved sits in its
+// clearing suspense. On a PULL it is the payer's bank: the collection has been
+// settled against a debit that bank never took, so the shortfall is its own.
+//
+// A scheme this deployment does not hold answers as a push, which is the common
+// case and the one a missing registry entry is least likely to mislead about.
+func receiverOf(s *snapshot, p payment.Payment) (iso20022.BIC, string) {
+	if scheme, ok := s.schemeOf(p.Scheme); ok && scheme.Direction() == payment.Pull {
+		return p.DebtorDetails.Agent,
+			"its payer was never debited and the collection settled against money it never took"
+	}
+	return p.CreditorDetails.Agent,
+		"its payee is uncredited and the amount is stranded in clearing suspense"
 }
 
 // admissionWroteItsThreeRows holds one admission's three rows against each
