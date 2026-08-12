@@ -39,8 +39,13 @@ type BankStore interface {
 }
 
 // CommonTx is what EVERY institution's unit of work carries, whatever tables it
-// has: an id allocator, a clock, and the audit trail. id_sequences and
-// audit_events are in all three schemas, so nothing here can be a crossing.
+// has: an id allocator and the audit trail. id_sequences and audit_events are in
+// all three schemas, so nothing here can be a crossing.
+//
+// It carries no clock. The instant an event happened is the DEPLOYMENT's answer
+// and every layer already holds it; a second one reachable through the store
+// would let a caller stamp a row from the store's clock and the row beside it
+// from its own.
 //
 // It is separate from Tx because the clearing house keeps an audit trail and has
 // no book of accounts at all. A transaction type that reached the audit through
@@ -53,8 +58,6 @@ type CommonTx interface {
 
 	AppendAudit(ctx context.Context, e AuditEvent) error
 	ListAudit(ctx context.Context, f AuditFilter) ([]AuditEvent, error)
-
-	Now() time.Time
 }
 
 // SlotTx is the slot mapping: which account a posting flow writes to.

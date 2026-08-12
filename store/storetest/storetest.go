@@ -1682,14 +1682,15 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Ban
 	t.Run("AuditOrderedBySeq", func(t *testing.T) {
 		s := open(t, newStore, bookA)
 
-		// The clock is frozen, so OccurredAt ties on every event: Seq, assigned
-		// by the store, is the only thing that can order the log.
+		// One instant for all four, so OccurredAt ties on every event: Seq,
+		// assigned by the store, is the only thing that can order the log.
+		at := time.Date(2025, 1, 15, 12, 0, 0, 0, time.UTC)
 		update(t, s, func(ctx context.Context, tx ledger.BankTx) error {
 			for _, id := range []string{"evt_1", "evt_2", "evt_3", "evt_4"} {
 				// Seq 999 is deliberately wrong; the store must overwrite it.
 				if err := tx.AppendAudit(ctx, ledger.AuditEvent{
 					Seq: 999, ID: id, BookID: bookA, Scope: ledger.ScopeLedger,
-					Type: ledger.EventLedgerCreated, EntityID: id, OccurredAt: tx.Now(),
+					Type: ledger.EventLedgerCreated, EntityID: id, OccurredAt: at,
 				}); err != nil {
 					return err
 				}

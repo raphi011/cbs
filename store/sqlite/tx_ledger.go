@@ -33,9 +33,6 @@ type tx struct {
 // compile-time check that tx satisfies the interface it is written against.
 var _ ledger.Tx = (*tx)(nil)
 
-// Now returns the store's current time.
-func (t *tx) Now() time.Time { return t.store.clock() }
-
 // write reports whether this transaction may mutate. The SQLite transaction is
 // opened read-only as well, but failing here first means the answer is a named
 // sentinel rather than a driver error whose text is the driver's to change.

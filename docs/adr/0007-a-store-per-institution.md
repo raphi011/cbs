@@ -64,12 +64,12 @@ settlement agent and each answers for a constant.
 
 **A crossing is a build failure.** `PutCycle` on a `BankTx`, `PutBank` on a
 `CsmTx`, `PutPayment` or `GetDepositAccount` on a `CentralBankTx`: each fails to
-compile. Reach from one store goes 108 methods to **74 / 30 / 46**, measured.
+compile. Reach from one store goes 108 methods to **73 / 29 / 45**, measured.
 
 **The implementation did not split.** One `tx` struct, one store body, one set of
-statements, three interfaces over them — 123 methods on `*tx` where there were
-124, the one lost being `inShape` itself. `CLAUDE.md`'s "nothing cross-checks the
-SQL" is an argument for less SQL, not more.
+statements, three interfaces over them, and one method fewer on `*tx` than
+before: `inShape` itself. `CLAUDE.md`'s "nothing cross-checks the SQL" is an
+argument for less SQL, not more.
 
 **`Network` shed what only some institutions have.** The core keeps the clock,
 the identity, the schemes and the audit trail. A payment's row is not that — the
