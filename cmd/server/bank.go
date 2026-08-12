@@ -16,66 +16,59 @@ import (
 )
 
 // A Bank is one member bank: its own book, its own address, the two connections
-// it dials out on, and everything it does with what it collects.
-//
-// It satisfies bank.Institution, which api/bank declares; see Deployment for why
-// that is structural and what it buys.
+// it dials out on, and everything it does with what it collects. It satisfies
+// bank.Institution, which api/bank declares; see Deployment for why that is
+// structural and what it buys.
 //
 // bic is the whole of its identity. A bank's ParticipantID IS its BIC (see
-// payment.AsBank), so the conversion is total and lossless and this type keeps
-// one value rather than two that could disagree.
+// payment.AsBank), so the conversion is total and lossless and this type keeps one
+// value rather than two that could disagree.
 //
 // # The three roles one bank plays
 //
 // A credit transfer touches this type three times, and they are three different
 // banks in the same code: the PAYER's bank submits (submit), which is the only
 // half that moves money at initiation; the PAYEE's bank collects the pacs.008
-// (receiveCreditTransfer) and answers yes or no; and the PAYER's bank collects
-// the answer (receiveStatus), giving the money back if it was no.
+// (receiveCreditTransfer) and answers yes or no; and the PAYER's bank collects the
+// answer (receiveStatus), giving the money back if it was no. Which one is running
+// is decided entirely by which bank's queue the file was in, and that is what
+// makes "who may know what, and when" a question with an answer here.
 //
-// Which one is running is decided entirely by which bank's queue the file was
-// in. That is what makes "who may know what, and when" a question with an answer
-// here.
-//
-// A direct debit is the same three with the banks swapped and the money moving
-// at a different moment. The PAYEE's bank submits, because a collection is the
-// payee asking for what it is owed — and its submission moves NOTHING, because
-// the account being collected from is at the other bank. The PAYER's bank
-// collects the pacs.003, and that is the half that moves money and the only
-// moment either the account or the funds behind it are in view, so AM04 comes
-// from there and could come from nowhere else.
-//
-// So "the submitting bank posts" is a fact about a PUSH. The rule that covers
-// both is that the DEBTOR's bank posts the debtor leg, and the direction decides
-// whether that is the bank submitting or the bank answering.
+// A direct debit is the same three with the banks swapped and the money moving at
+// a different moment. The PAYEE's bank submits, because a collection is the payee
+// asking for what it is owed — and its submission moves NOTHING, the account being
+// collected from being at the other bank. The PAYER's bank collects the pacs.003,
+// and that is the half that moves money and the only moment either the account or
+// the funds behind it are in view, so AM04 comes from there and could come from
+// nowhere else. So "the submitting bank posts" is a fact about a PUSH; the rule
+// that covers both is that the DEBTOR's bank posts the debtor leg, and the
+// direction decides whether that is the bank submitting or the bank answering.
 //
 // # A fourth and fifth role, played after the payment is final
 //
 // A RETURN is asked for by the bank that received the original instruction — the
-// payee's bank on a push, the payer's on a pull — which is the one role here
-// that is neither submitting nor answering. Its half MOVES MONEY: this bank
-// posts its own customer leg BEFORE it composes the pacs.004, and that ordering
-// is the whole of why a refusal binds. See returnPayment.
-//
-// The reserve reversal is central-bank money and no member bank may move it. A
-// return's CUSTOMER legs are not reserves: each belongs to the bank whose
-// customer it moves.
+// payee's bank on a push, the payer's on a pull — which is the one role here that
+// is neither submitting nor answering. Its half MOVES MONEY: this bank posts its
+// own customer leg BEFORE it composes the pacs.004, and that ordering is the whole
+// of why a refusal binds (see returnPayment). The reserve reversal is central-bank
+// money and no member bank may move it; a return's CUSTOMER legs are not reserves,
+// each belonging to the bank whose customer it moves.
 //
 // The OTHER bank plays the fifth role: it collects the pacs.004 after finality
 // (receiveReturn) and posts the leg the returning bank does not hold. It cannot
-// refuse, because the reserves have already moved. So the two roles are one
-// rule: a bank can refuse a leg only if it posts it before it uploads. A REFUSED
-// return brings the fourth role back for one more act — the leg is unwound
+// refuse, because the reserves have already moved. So the two roles are one rule:
+// a bank can refuse a leg only if it posts it before it uploads. A REFUSED return
+// brings the fourth role back for one more act — the leg is unwound
 // (receiveReturnStatus).
 //
 // # A sixth role, and the second that answers nothing
 //
-// At a cut-off — and on a return, which is a cut-off of one payment as far as
-// the reserves are concerned — a member is TOLD what its reserve account did, in
-// a camt.053, and books its own mirror leg from it (receiveStatement). It
-// produces no pacs.002, because a statement is not an instruction. It is the
-// only role in which this bank posts without any customer of its own being
-// involved: what moves is its own position at the central bank.
+// At a cut-off — and on a return, which is a cut-off of one payment as far as the
+// reserves are concerned — a member is TOLD what its reserve account did, in a
+// camt.053, and books its own mirror leg from it (receiveStatement). It produces
+// no pacs.002, because a statement is not an instruction, and it is the only role
+// in which this bank posts without any customer of its own being involved: what
+// moves is its own position at the central bank.
 type Bank struct {
 	d *Deployment
 
@@ -96,28 +89,25 @@ type Bank struct {
 	csm *ebics.Client
 	cb  *ebics.Client
 
-	// hub is the instructions this bank has taken and not yet put in a file, in
-	// the order its customers handed them in. It is the payment hub, and it is
-	// what makes this network BULK: a submission does not travel, it waits, and
-	// the cut-off is what turns a morning's worth of them into one file per
-	// scheme.
+	// hub is the instructions this bank has taken and not yet put in a file, in the
+	// order its customers handed them in. It is the payment hub, and it is what
+	// makes this network BULK: a submission does not travel, it waits, and the
+	// cut-off is what turns a morning's worth of them into one file per scheme.
 	//
-	// Payment IDS and not payments. A file is built out of the rows as they
-	// stand at the cut-off, so what this holds is a list of what to look up
-	// rather than a second copy of what the store already has.
+	// Payment IDS and not payments. A file is built out of the rows as they stand
+	// at the cut-off, so what this holds is a list of what to look up rather than a
+	// second copy of what the store already has.
 	//
 	// # In memory, and what a restart costs
 	//
-	// An instruction taken and not yet cut off is gone, so the payer's money sits
-	// in this bank's clearing suspense against a payment no file will ever carry.
-	// It stays Initiated for ever, no counterparty has seen it, and there is no
-	// remedy from inside the flow — payment/recon is what makes it visible.
-	//
-	// It is the same defect the clearing house's held files and held returns
-	// carry, and the answer to it is a table in the institution's own database.
-	// This obligation is a member bank's, so it is a member bank's to fix: see
-	// docs/adr/0003, which is that ruling and names this as the case it does not
-	// close.
+	// An instruction taken and not yet cut off is gone, so the payer's money sits in
+	// this bank's clearing suspense against a payment no file will ever carry. It
+	// stays Initiated for ever, no counterparty has seen it, and there is no remedy
+	// from inside the flow — payment/recon is what makes it visible. It is the same
+	// defect the clearing house's held files and held returns carry, and the answer
+	// is a table in the institution's own database; this obligation is a member
+	// bank's, so see docs/adr/0003, which is that ruling and names this as the case
+	// it does not close.
 	//
 	// The mutex is real work: submissions arrive on whichever HTTP goroutine took
 	// them, and a cut-off runs either on a business day's goroutine or on an
@@ -138,12 +128,10 @@ func (b *Bank) Submit(ctx context.Context, req payment.InitiatePaymentRequest) (
 }
 
 // Pending is what this bank's hub is holding: the instructions it has taken and
-// will put in its next file, oldest first.
-//
-// It is the customer-visible half of accumulation. Without it a payer whose
-// submission was answered 202 has no way to tell an instruction waiting for a
-// cut-off from one the clearing house has lost, and both look like a payment
-// that is Initiated and going nowhere.
+// will put in its next file, oldest first. It is the customer-visible half of
+// accumulation — without it a payer whose submission was answered 202 has no way
+// to tell an instruction waiting for a cut-off from one the clearing house has
+// lost, both looking like a payment that is Initiated and going nowhere.
 func (b *Bank) Pending(ctx context.Context) ([]payment.Payment, error) {
 	b.hubMu.Lock()
 	ids := slices.Clone(b.hub)
@@ -155,7 +143,7 @@ func (b *Bank) Pending(ctx context.Context) ([]payment.Payment, error) {
 // per scheme, uploaded to the clearing house, and the order ids come back.
 //
 // The day engine reaches the same cut-off on every settlement day (see the bank
-// cut-off phase in beforeClock); this is the operator asking for one out of turn, which is
+// cut-off phase in beforeClock); this is the operator asking for one out of turn,
 // the same relationship POST /cycles/{cid}/close has with the clearing house's.
 func (b *Bank) Cutoff(ctx context.Context) ([]ebics.OrderID, error) {
 	ids, problems := b.cutoff(ctx)
@@ -177,18 +165,15 @@ func (b *Bank) RefreshDirectory(ctx context.Context) ([]payment.DirectoryEntry, 
 	return b.d.RefreshDirectory(ctx, b.bic)
 }
 
-// runEndOfDay is this bank's own end of day: overdraft interest accrued,
-// facility interest accrued, arrears recomputed, in one unit of work.
+// runEndOfDay is this bank's own end of day: overdraft interest accrued, facility
+// interest accrued, arrears recomputed, in one unit of work.
 //
 // It runs on EVERY date the deployment advances through, settlement day or not.
 // Interest accrues over a weekend — which is the entire reason day-count
 // conventions exist — and a bank that only accrued on days the scheme cleared
-// would understate a Friday balance by three days every week.
-//
-// It is the bank's own act rather than the scheme's, so it is not a phase of
-// clearing and takes no notice of membership. POST /end-of-day on this bank's
-// own port is the same call, which is what makes the day engine a caller of the
-// ordinary API rather than a second way to do the same thing.
+// would understate a Friday balance by three days every week. It is the bank's own
+// act rather than the scheme's, so it is not a phase of clearing and takes no
+// notice of membership; POST /end-of-day on this bank's own port is the same call.
 //
 // The DATE is the day being closed and is passed in, because the clock has not
 // moved yet when this runs: accruing against tomorrow would date every day's
@@ -210,22 +195,19 @@ func (b *Bank) runEndOfDay(ctx context.Context, date time.Time) error {
 // Uploading
 // ---------------------------------------------------------------------------
 
-// upload marshals an envelope and puts it on one of this bank's two
-// connections.
+// upload marshals an envelope and puts it on one of this bank's two connections.
 //
-// The split is where the domain stops. Structs never cross an institution
-// boundary — if two institutions exchanged a *Pacs008 the message format would
-// be decoration on a function call, malformed input would stop being a reachable
-// failure mode, and the FF01 path would be untestable — so this is the only
-// place a document becomes bytes.
+// The split is where the domain stops. Structs never cross an institution boundary
+// — if two institutions exchanged a *Pacs008 the message format would be
+// decoration on a function call, malformed input would stop being a reachable
+// failure mode, and the FF01 path would be untestable — so this is the only place
+// a document becomes bytes.
 //
 // What comes back from the host is TECHNICAL: an order id means the file arrived
-// and nothing more. What the receiver makes of the payments inside it comes back
-// on a later download, which is the seam this transport exists to make visible.
-//
-// A failure means the file did NOT arrive and this bank still holds it. The
-// upload has never been inside anybody's unit of work, so the posting that
-// preceded it stands and the caller is told which half happened.
+// and nothing more, and what the receiver makes of the payments inside it comes
+// back on a later download. A failure means the file did NOT arrive and this bank
+// still holds it; the upload has never been inside anybody's unit of work, so the
+// posting that preceded it stands and the caller is told which half happened.
 func (b *Bank) upload(ctx context.Context, to iso20022.BIC, c *ebics.Client, env iso20022.Envelope) (ebics.OrderID, error) {
 	t, err := orderTypeOf(env.Document)
 	if err != nil {
@@ -248,25 +230,20 @@ func (b *Bank) upload(ctx context.Context, to iso20022.BIC, c *ebics.Client, env
 // WHICH customer depends on the scheme. For a push it is the payer instructing
 // their bank, and this half moves their money into the bank's clearing suspense.
 // For a pull it is the payee instructing theirs, and this half moves nothing at
-// all — the account the money will come out of belongs to another bank's
-// customer, and this bank has never seen it.
+// all — the account the money will come out of belongs to another bank's customer,
+// and this bank has never seen it.
 //
-// # Nothing is sent, and that is what a bulk network is
-//
-// The instruction joins the queue and waits for a cut-off. It is the one door in
-// this package that ends without a file on a connection, and the reason is the
-// one this whole transport is for: a member bank does not talk to a clearing
-// house a payment at a time, it accumulates and uploads.
+// Nothing is sent, and that is what a bulk network is: the instruction joins the
+// queue and waits for a cut-off. It is the one door in this package that ends
+// without a file on a connection.
 //
 // There is ONE failure mode. A refused instruction moved nothing —
 // payment.TakeInstruction posts the debtor leg and proves the payment can be put
 // in a file in one unit of work, so an instruction this bank could never send is
-// refused before its payer is debited. The half-happened outcome — a committed
-// leg behind a file that would not go out — belongs to the cut-off, which is
-// where the file is.
+// refused before its payer is debited. The half-happened outcome — a committed leg
+// behind a file that would not go out — belongs to the cut-off, which is where the
+// file is.
 func (b *Bank) submit(ctx context.Context, req payment.InitiatePaymentRequest) (payment.Payment, error) {
-	// Everything below is this bank's work, and is recorded as this bank's. See
-	// withActor.
 	ctx = withActor(ctx, b.bic)
 
 	p, err := b.ops.TakeInstruction(ctx, req)
@@ -280,11 +257,9 @@ func (b *Bank) submit(ctx context.Context, req payment.InitiatePaymentRequest) (
 }
 
 // queued is what the hub is holding, EMPTIED: the ids come out and the hub is
-// left ready for the next batch.
-//
-// Emptying under the lock is what stops one cut-off and a submission arriving
-// together from putting the same instruction in two files. A group that could
-// not be uploaded goes back in — see cutoff.
+// left ready for the next batch. Emptying under the lock is what stops one cut-off
+// and a submission arriving together from putting the same instruction in two
+// files. A group that could not be uploaded goes back in — see cutoff.
 func (b *Bank) queued() []payment.PaymentID {
 	b.hubMu.Lock()
 	defer b.hubMu.Unlock()
@@ -293,15 +268,13 @@ func (b *Bank) queued() []payment.PaymentID {
 	return ids
 }
 
-// requeue puts instructions back at the FRONT of the hub, so a file that could
-// not be uploaded is retried at the next cut-off ahead of whatever arrived while
-// it was being tried. A hub is a queue, and a retry does not go to the back of
-// one.
+// requeue puts instructions back at the FRONT of the hub, so a file that could not
+// be uploaded is retried at the next cut-off ahead of whatever arrived while it
+// was being tried. A hub is a queue, and a retry does not go to the back of one.
 //
 // It is called ONCE per cut-off, with every instruction that cut-off could not
-// send, in the order it took them. Called per failed file it would put the
-// second file's instructions ahead of the first's, and the hub's order is what
-// batched promises to build the next files out of.
+// send, in the order it took them. Called per failed file it would put the second
+// file's instructions ahead of the first's.
 func (b *Bank) requeue(ids []payment.PaymentID) {
 	if len(ids) == 0 {
 		return
@@ -312,19 +285,17 @@ func (b *Bank) requeue(ids []payment.PaymentID) {
 }
 
 // clearHub throws away everything this bank has taken and not yet cut off.
-//
 // Reset's, and only Reset's: the instructions name payments whose rows are being
 // deleted, and a hub that survived one would upload a file about a payment no
-// institution holds. Nothing in the domain discards a hub — an instruction a
-// bank has accepted is owed an outcome.
+// institution holds. Nothing in the domain discards a hub — an instruction a bank
+// has accepted is owed an outcome.
 func (b *Bank) clearHub() {
 	b.hubMu.Lock()
 	defer b.hubMu.Unlock()
 	b.hub = nil
 }
 
-// pending reads the rows behind a list of queued ids, in the order they were
-// taken.
+// pending reads the rows behind a list of queued ids, in the order they were taken.
 func (b *Bank) pending(ctx context.Context, ids []payment.PaymentID) ([]payment.Payment, error) {
 	ctx = withActor(ctx, b.bic)
 
@@ -342,24 +313,21 @@ func (b *Bank) pending(ctx context.Context, ids []payment.PaymentID) ([]payment.
 // cutoff is this bank reaching its cut-off: the hub is emptied into one file per
 // batch, and each file is uploaded to the clearing house.
 //
-// # What a batch is
-//
-// One SCHEME and one SETTLEMENT DATE, because both are elements of the file's
-// own group header and a file asserts one of each. The scheme decides the
+// A batch is one SCHEME and one SETTLEMENT DATE, because both are elements of the
+// file's own group header and a file asserts one of each. The scheme decides the
 // message definition and the asset; IntrBkSttlmDt is the day the whole file
 // settles on, and payment's groupSettlementDate refuses a file that would assert
-// two. Instructions taken on a Friday and on the Saturday behind it have
-// different value dates and are therefore different files, cut off together on
-// the Monday — which is what a weekend does to a bulk hub and is worth being
-// able to see.
+// two. Instructions taken on a Friday and on the Saturday behind it have different
+// value dates and are therefore different files, cut off together on the Monday —
+// which is what a weekend does to a bulk hub and is worth being able to see.
 //
 // # A file that will not go out is KEPT
 //
 // The instructions go back in the hub and the next cut-off tries again. That is
 // the property this transport made reachable for the first time: an upload can
-// genuinely fail, and the uploading institution still holds its file. Nothing
-// was posted here to unwind — the debtor legs committed at submission and are
-// exactly as valid a moment later — so retrying is the whole remedy.
+// genuinely fail, and the uploading institution still holds its file. Nothing was
+// posted here to unwind — the debtor legs committed at submission and are exactly
+// as valid a moment later — so retrying is the whole remedy.
 //
 // A file that will not BUILD is kept too, and it is a defect rather than an
 // outcome: every instruction in the hub was proved renderable at submission, so
@@ -409,14 +377,14 @@ func (b *Bank) cutoff(ctx context.Context) ([]ebics.OrderID, []Problem) {
 	return orders, problems
 }
 
-// batched groups a hub's instructions into the files they will travel in: one
-// per scheme and settlement date, in the order the instructions were taken. See
-// cutoff for why those two.
+// batched groups a hub's instructions into the files they will travel in: one per
+// scheme and settlement date, in the order the instructions were taken. See cutoff
+// for why those two.
 //
 // The date is keyed by its INSTANT rather than by the time.Time, because a
-// time.Time carries a location and a monotonic reading that a map key would
-// compare and payment's groupSettlementDate would not — so two payments that
-// agree about the moment they settle would land in two files.
+// time.Time carries a location and a monotonic reading that a map key would compare
+// and payment's groupSettlementDate would not — so two payments that agree about
+// the moment they settle would land in two files.
 func batched(ps []payment.Payment) [][]payment.Payment {
 	type key struct {
 		scheme payment.SchemeID
@@ -447,62 +415,54 @@ func idsOf(ps []payment.Payment) []payment.PaymentID {
 }
 
 // returnPayment is a bank sending a settled payment back: the R-transaction's
-// first hop.
-//
-// It is submit's counterpart for a payment that is already final: this bank's
-// own half posts, and then the file hands the rest of the work to another
-// institution.
+// first hop. It is submit's counterpart for a payment that is already final —
+// this bank's own half posts, and then the file hands the rest of the work to
+// another institution.
 //
 // # It posts BEFORE it uploads, and that is the return's one rule
 //
-// This bank posts the leg it owns — the clawback if it is the creditor's bank,
-// the refund if it is the payer's — and payment.PostReturnLegTx decides which
-// from the payment rather than from anything this method passes it. The reserve
-// reversal is not among them.
+// This bank posts the leg it owns — the clawback if it is the creditor's bank, the
+// refund if it is the payer's — and payment.PostReturnLegTx decides which from the
+// payment rather than from anything this method passes it. The reserve reversal is
+// not among them.
 //
 // The ordering is what makes a refusal BIND. On a push this bank holds the
 // clawback, so a payee who has already spent the money stops the return dead:
 // nothing is posted, no pacs.004 is composed, and the caller is told AM04 about
-// this bank's OWN customer. A check that was not a posting could be outrun by
-// that customer between the check and the upload. On a pull this bank holds the
-// refund, which is unconditional, so the forced leg is the other bank's.
+// this bank's OWN customer. A check that was not a posting could be outrun by that
+// customer between the check and the upload. On a pull this bank holds the refund,
+// which is unconditional, so the forced leg is the other bank's.
 //
 // # The message is built first, and the seam is between the posting and the upload
 //
-// Building it can fail — an amount whose asset has no scale, a payment carrying
-// no agent to name — and a build that failed AFTER the leg was posted would
-// leave this bank's customer moved for a return that never left the building. So
-// the message is composed first, and the reason the leg is described by is read
-// back off it: both banks then derive that description from the same bytes
-// rather than from two renderings of one intent.
+// Building it can fail — an amount whose asset has no scale, a payment carrying no
+// agent to name — and a build that failed AFTER the leg was posted would leave
+// this bank's customer moved for a return that never left the building. So the
+// message is composed first, and the reason the leg is described by is read back
+// off it: both banks then derive that description from the same bytes rather than
+// from two renderings of one intent.
 //
-// What remains is a posting that COMMITTED and an upload that failed, leaving
-// this bank's money in its clearing suspense against a return nobody will
-// answer. That is returned as an error naming both halves, so the operator can
-// see which one happened.
-//
-// The remedy is to ASK AGAIN. The payment is still Settled — only the SECOND leg
-// sets Returned — and payment.PostReturnLegTx makes a redelivered first leg a
-// no-op, so the retry rebuilds the message and uploads it with nothing
-// double-posted.
+// What remains is a posting that COMMITTED and an upload that failed, leaving this
+// bank's money in its clearing suspense against a return nobody will answer. That
+// is returned as an error naming both halves. The remedy is to ASK AGAIN: the
+// payment is still Settled — only the SECOND leg sets Returned — and
+// payment.PostReturnLegTx makes a redelivered first leg a no-op, so the retry
+// rebuilds the message and uploads it with nothing double-posted.
 //
 // # The guard, and why it is here rather than on the connection
 //
-// A payment that is not Settled cannot be returned — PostReturnLegTx says so —
-// and this bank refuses it BEFORE the message exists. The guard is repeated here
-// so that the caller is told WHAT the payment is instead of merely that the
-// transition was illegal. That sentinel carries the empty code in payment's
-// reasonTable, so an institution that collected one could only record it as a
-// problem — a return uploaded for an unsettled payment would be answered by
-// NOBODY, and the operator who asked would hear nothing. Refusals that CAN be
-// answered are left to travel; see CentralBank.receiveReturn.
+// A payment that is not Settled cannot be returned — PostReturnLegTx says so — and
+// this bank refuses it BEFORE the message exists, so that the caller is told WHAT
+// the payment is instead of merely that the transition was illegal. That sentinel
+// carries the empty code in payment's reasonTable, so an institution that collected
+// one could only record it as a problem: a return uploaded for an unsettled payment
+// would be answered by NOBODY, and the operator who asked would hear nothing.
+// Refusals that CAN be answered are left to travel; see CentralBank.receiveReturn.
 //
 // The payment is read here rather than taken from Deployment.Return: the read is
-// what makes the judgement this bank's own, where refusing on the router's
-// snapshot would be refusing on hearsay.
+// what makes the judgement this bank's own, where refusing on the router's snapshot
+// would be refusing on hearsay.
 func (b *Bank) returnPayment(ctx context.Context, id payment.PaymentID, reason iso20022.ReturnReason, text string) error {
-	// Everything below is this bank's work, and is recorded as this bank's. See
-	// withActor.
 	ctx = withActor(ctx, b.bic)
 
 	p, err := b.ops.GetPayment(ctx, id)
@@ -531,8 +491,8 @@ func (b *Bank) returnPayment(ctx context.Context, id payment.PaymentID, reason i
 	return nil
 }
 
-// returnReasonOf is what a return is described as in a bank's own ledger, read
-// off the message that bank is about to upload.
+// returnReasonOf is what a return is described as in a bank's own ledger, read off
+// the message that bank is about to upload.
 //
 // Off the MESSAGE and not off the code and text the caller gave, so that the
 // returning bank's leg and the other bank's carry the same words: the other bank
@@ -540,13 +500,11 @@ func (b *Bank) returnPayment(ctx context.Context, id payment.PaymentID, reason i
 // things that can drift. payment.ReturnReason is the single reading, and
 // receiveReturn reaches it through payment.ReadReturn.
 //
-// The type assertion cannot fail: ReturnMessage builds a pacs.004 and this is
-// called on what it returned. It is written as a comma-ok rather than a bare
-// assertion because the alternative is a panic, and the fallback is not a guess:
-// "returned" is the word payment.ReturnReason itself uses when a return carries
-// no reason at all, so the two banks would still describe the leg identically.
-// A leg described vaguely is a worse statement; a panicking process is a worse
-// bank.
+// The type assertion cannot fail — ReturnMessage builds a pacs.004 and this is
+// called on what it returned — and is written as a comma-ok because the
+// alternative is a panic. The fallback is not a guess: "returned" is the word
+// payment.ReturnReason itself uses when a return carries no reason at all, so the
+// two banks would still describe the leg identically.
 func returnReasonOf(env iso20022.Envelope) string {
 	doc, ok := env.Document.(*iso20022.Pacs004)
 	if !ok || len(doc.PmtRtr.TxInf) == 0 {
@@ -556,11 +514,10 @@ func returnReasonOf(env iso20022.Envelope) string {
 }
 
 // lodge is a bank moving its own vault cash onto reserve: the asking half of a
-// lodgement, and the file that asks.
-//
-// It is submit's and returnPayment's shape — this bank's own posting, then a
-// file handing the rest to another institution. What differs is the subject:
-// submit carries a customer's money and this carries the bank's own.
+// lodgement, and the file that asks. It is submit's and returnPayment's shape —
+// this bank's own posting, then a file handing the rest to another institution —
+// and what differs is the subject: submit carries a customer's money and this
+// carries the bank's own.
 //
 // # Why the bank posts first, and why that is not returnPayment's reason
 //
@@ -576,16 +533,13 @@ func returnReasonOf(env iso20022.Envelope) string {
 //
 // A posting that COMMITTED and an upload that failed leaves this bank's reserve
 // mirror raised against a lodgement the central bank was never asked to make. It
-// is returned as an error naming both halves rather than swallowed.
-//
-// The remedy is NOT to ask again, which is the difference from returnPayment's
-// seam. payment.LodgeReservesTx keys its posting on the message id, and a retry
-// through this method takes a NEW id — so asking again lodges a second time
-// rather than completing the first. payment/recon is the instrument for a break
-// that never became a file.
+// is returned as an error naming both halves rather than swallowed. The remedy is
+// NOT to ask again, which is the difference from returnPayment's seam:
+// payment.LodgeReservesTx keys its posting on the message id and a retry through
+// this method takes a NEW id, so asking again lodges a second time rather than
+// completing the first. payment/recon is the instrument for a break that never
+// became a file.
 func (b *Bank) lodge(ctx context.Context, asset ledger.AssetCode, amount ledger.Amount) (payment.LodgementInstruction, error) {
-	// Everything below is this bank's work, and is recorded as this bank's. See
-	// withActor.
 	ctx = withActor(ctx, b.bic)
 
 	to := b.d.cfg.CentralBankBIC
