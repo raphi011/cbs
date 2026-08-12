@@ -13,20 +13,11 @@ import (
 // What a bulk network does that a message-per-payment network cannot: hold
 // instructions until a cut-off, carry a file of many, sort one file into
 // several, and answer a file with one report per transaction.
-//
-// Every test here is about a COUNT — how many files crossed, how many
-// transactions each carried, how many reports came back — because that is the
-// whole of what changes when a batch of one becomes a batch. The flows
-// themselves are sct_test.go's and sdd_test.go's and are unchanged.
 
 const pacs008 = "pacs.008.001.08"
 
 // smallTransfer is the harness's credit transfer at half the usual amount, so
 // that three of them fit inside one payer's funding.
-//
-// Three rather than two, because two cannot distinguish a file built in the
-// hub's order from one built in reverse: a batch has to be longer than its own
-// symmetry before the order of it is an assertion.
 func (h *harness) smallTransfer(t *testing.T, reference string) payment.InitiatePaymentRequest {
 	t.Helper()
 	req := h.creditTransferToAccount(t, h.creditorAcct, reference)
@@ -101,12 +92,8 @@ func TestACutOffPutsAMorningsInstructionsInOneFile(t *testing.T) {
 	}
 }
 
-// One file per SCHEME, because the scheme decides the message definition and the
-// asset every amount in the file is denominated in.
-//
-// The two-asset fixture is what makes this observable from ONE bank: a euro
-// credit transfer and a dollar one are both pushes submitted by the payer's
-// bank, so both are in the same hub, and nothing but the scheme separates them.
+// One file per SCHEME, because the scheme decides the message definition and
+// the asset every amount in the file is denominated in.
 func TestACutOffBuildsOneFilePerScheme(t *testing.T) {
 	h := newHarnessWithTwoAssets(t)
 
@@ -135,11 +122,6 @@ func TestACutOffBuildsOneFilePerScheme(t *testing.T) {
 }
 
 // The fan-out: one file in, one file per receiving bank out.
-//
-// This is what a clearing house is FOR, and it is the act no member could
-// perform for itself — a submitting bank addresses its payees and has no way to
-// reach any bank but this one, so somebody has to sort the morning's file by
-// creditor agent. A two-bank network cannot tell sorting from forwarding.
 func TestTheClearingHouseSortsAFileByCreditorAgent(t *testing.T) {
 	h := newHarness(t)
 	third, carla := h.aThirdBank(t)
@@ -176,10 +158,9 @@ func TestTheClearingHouseSortsAFileByCreditorAgent(t *testing.T) {
 		if got := body.CdtTrfTxInf[0].RmtInf.Ustrd; got != want.reference {
 			t.Errorf("%s was handed %q; the sort sent it another bank's payment", want.to, got)
 		}
-		// The COUNT is re-asserted for the file that was actually sent. The
-		// clearing house is this file's sender, and a receiving bank holds a sender
-		// to its own count — a share of two claiming NbOfTxs=2 is a file the
-		// receiver refuses.
+		// The COUNT is re-asserted for the file that was actually sent. The clearing
+		// house is this file's sender, and a receiving bank holds a sender to its own
+		// count — a share of two claiming NbOfTxs=2 is a file the receiver refuses.
 		if body.GrpHdr.NbOfTxs != "1" {
 			t.Errorf("%s was handed a share of one asserting NbOfTxs=%q", want.to, body.GrpHdr.NbOfTxs)
 		}
@@ -192,27 +173,6 @@ func TestTheClearingHouseSortsAFileByCreditorAgent(t *testing.T) {
 }
 
 // A file whose transactions did not all go the same way comes back PART.
-//
-// payment's groupStatusOf has always computed it and needs a mixed file to
-// describe. The institution that builds one is the CLEARING HOUSE: it is the
-// only one left that judges an instruction before it settles, so it is the only
-// one whose answer can carry two different verdicts about one upload. A
-// receiving bank's objection now arrives after finality and travels as a
-// pacs.004, which has no group status at all.
-//
-// # The mixed file, and why it takes three banks and two assets to build one
-//
-// A payer cannot address a payment to a bank the scheme does not reach: its own
-// bank routes from its copy of the roster and refuses an unknown allocation at
-// the door (payment.ErrBankCodeUnknown). So the refusal has to be about
-// something the ROSTER holds and the DIRECTORY does not, and there is exactly
-// one such fact — which ASSETS a member clears in.
-//
-// Banco Tercero is admitted for euro. It is in everybody's directory, so a
-// dollar payment addressed to its customer is composed, uploaded and carried as
-// far as the clearing house, which holds the roster and is the first institution
-// in the chain able to say that this member does not clear dollars. RC01 — "the
-// BIC does not identify a reachable participant" — is the code, and it is exact.
 func TestAMixedFileIsAnsweredPART(t *testing.T) {
 	h := newHarnessWithTwoAssets(t)
 	_, carla := h.aThirdBank(t)
@@ -266,23 +226,12 @@ func TestAMixedFileIsAnsweredPART(t *testing.T) {
 }
 
 // A bulk collection settles whole and is RETURNED per transaction, which is the
-// pull's half of what a batch answer means after task 8.
-//
-// Two collections in one file, one payable and one not, and the refusal is the
-// PAYER's bank's own: it is the only institution that can see the account being
-// collected from, and it sees it only once both collections have settled. So a
-// mixed pacs.003 proves something no rejection could — that a file settles as a
-// unit and comes apart into per-transaction outcomes at the bank that executes
-// it, one applied and one sent back.
+// pull's half of what a batch answer means.
 func TestABulkCollectionIsReturnedPerTransaction(t *testing.T) {
 	h := newHarnessWithASecondDepositor(t)
 
 	payable := h.submitDirectDebit(t)
-	// A second collection for more than the payer has left. The first takes
-	// harnessAmount out of an account holding harnessFunding, so a collection for
-	// what remains plus a little overdraws it once the first has posted — while
-	// staying inside what the payer's BANK can settle, which is the other
-	// customer's money as well. See newHarnessWithASecondDepositor.
+	// A second collection for more than the payer has left.
 	over := h.directDebitRequest(t)
 	over.Amount = harnessFunding - harnessAmount + 1
 	over.Description = "subscription 8"
@@ -362,19 +311,6 @@ func TestAFileOfManyReachesFinality(t *testing.T) {
 }
 
 // Two files that could not go out come back in the order the hub took them.
-//
-// A cut-off builds one file per scheme and settlement date, and a file that will
-// not go out is KEPT — the instructions return to the FRONT of the hub, ahead of
-// whatever arrived while the upload was being tried. With more than one file
-// failing, "the front" has an order of its own, and it is the order the
-// instructions were taken in: the next cut-off builds its files out of the hub
-// as it stands, so a hub that came back reversed sends the second morning's
-// batch first.
-//
-// The connection is what fails here, and it is the one failure this transport
-// made expressible: the payer's bank holds a file it cannot deliver, with
-// nothing posted to unwind. Two SCHEMES rather than two days, because a scheme
-// is what makes two files out of one hub in a single cut-off.
 func TestTwoFilesThatCouldNotGoOutComeBackInTheOrderTheyWereTaken(t *testing.T) {
 	h := newHarnessWithTwoAssets(t)
 

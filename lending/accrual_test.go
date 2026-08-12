@@ -10,11 +10,7 @@ import (
 	"github.com/raphi011/cbs/lending"
 )
 
-// loanRate and loanDayCount are the terms disbursedLoan opens at. They are
-// constants here rather than fields read back off the facility, because a
-// facility no longer carries either: they live in its FacilityTerms timeline,
-// and a test that wants the rate a figure was derived at is better off stating
-// it than resolving it.
+// loanRate and loanDayCount are the terms disbursedLoan opens at.
 const (
 	loanRate     interest.Rate     = 60_000 // 6%
 	loanDayCount interest.DayCount = interest.ACT365
@@ -56,19 +52,11 @@ func day(y int, m time.Month, d int) time.Time {
 
 // drawdown is the day disbursedLoan's money reaches the borrower: the test
 // portfolio's clock reads 15 January and never moves, so the loan is opened and
-// disbursed on the same day. That is also the day its recompute window opens —
-// the window opens at ORIGINATION now, and here the two coincide.
+// disbursed on the same day.
 var drawdown = day(2025, time.January, 15)
 
 // postTo posts a movement onto one of a facility's GL accounts against a
 // throwaway counterparty, value-dated as given.
-//
-// It stands in for a posting that reached the ledger without passing through
-// this layer — a repayment keyed in late and backdated to the day it took
-// effect, an advance value-dated forward — which is the only way to produce the
-// case the recompute exists for. deposit's test package has the same helper for
-// the same reason; the two are not shared because neither package imports the
-// other.
 func postTo(t *testing.T, book *ledger.Book, sub ledger.SubledgerID, pos ledger.Position, asset ledger.AssetCode, amount ledger.Amount, dir ledger.Direction, value time.Time) {
 	t.Helper()
 	ctx := context.Background()
@@ -118,9 +106,8 @@ func facility(t *testing.T, p *lending.Portfolio, id lending.FacilityID) lending
 
 // accountNamed finds one of the bank's own accounts by the name the lending
 // layer creates it under, walking the book because those accounts are
-// materialised lazily and no caller is handed their ID.
-// chartSize is how many rows the whole chart of accounts holds. It is what a
-// test asserts on when the claim is that a borrower does not add one.
+// materialised lazily and no caller is handed their ID. chartSize is how many
+// rows the whole chart of accounts holds.
 func chartSize(t *testing.T, book *ledger.Book) int {
 	t.Helper()
 	ctx := context.Background()
@@ -397,10 +384,7 @@ func TestChargeInterest_CapitalizesAndBillsTheCycle(t *testing.T) {
 // TestChargeInterest_NegativeResidueStaysInStepWithTheLedger covers the other
 // side of the rounding from TestChargeInterest_CapitalizesAndBillsTheCycle: a
 // cycle whose fractional accrual is ABOVE half a minor unit, so Minor() rounds
-// UP and charging it leaves the record negative rather than positive. The
-// invariant under test is the same either way — Minor() of the residue is
-// still 0, so the GL and the record stay in step — but a clamp-to-zero
-// "cleanup" of the residue would only be caught by exercising this branch too.
+// UP and charging it leaves the record negative rather than positive.
 func TestChargeInterest_NegativeResidueStaysInStepWithTheLedger(t *testing.T) {
 	ctx := context.Background()
 	p, book, _, customer := newTestPortfolio(t)
@@ -414,11 +398,11 @@ func TestChargeInterest_NegativeResidueStaysInStepWithTheLedger(t *testing.T) {
 		t.Fatalf("Draw: %v", err)
 	}
 
-	// One day at 20% ACT/365: 100,000 × 200,000 × 1 / 365 = 20,000,000,000 /
-	// 365 = 54,794,520 (integer division truncates the remaining .5479... of
-	// a micro-minor-unit away) — i.e. 54.794520 minor units, a fraction ABOVE
-	// one half, unlike the 30-day, 18%-rate cycle in the capitalization test
-	// above (which lands on 0.45204, below one half).
+	// One day at 20% ACT/365: 100,000 × 200,000 × 1 / 365 = 20,000,000,000 / 365 =
+	// 54,794,520 (integer division truncates the remaining .5479... of a
+	// micro-minor-unit away) — i.e. 54.794520 minor units, a fraction ABOVE one
+	// half, unlike the 30-day, 18%-rate cycle in the capitalization test above
+	// (which lands on 0.45204, below one half).
 	if err := p.Accrue(ctx, line.ID, day(2025, time.January, 16)); err != nil {
 		t.Fatalf("Accrue: %v", err)
 	}
@@ -449,10 +433,10 @@ func TestChargeInterest_NegativeResidueStaysInStepWithTheLedger(t *testing.T) {
 		t.Errorf("residue rounds to %d, want 0", after.Accrued.Minor())
 	}
 
-	// The GL receivable must still equal Minor() of the (now negative) record
-	// — 0 — which is the whole point: the invariant holds on both sides of
-	// the rounding threshold, not just the one the capitalization test above
-	// happens to land on.
+	// The GL receivable must still equal Minor() of the (now negative) record — 0
+	// — which is the whole point: the invariant holds on both sides of the
+	// rounding threshold, not just the one the capitalization test above happens
+	// to land on.
 	receivable, err := book.BookBalance(ctx, positions(t, p, after.ID).Receivable)
 	if err != nil {
 		t.Fatalf("BookBalance: %v", err)
@@ -521,10 +505,7 @@ func TestChargeInterest_NothingAccruedBillsNothing(t *testing.T) {
 // TestChargeInterest_ADrawnLineWithNoInterestStillBillsACycle covers the third
 // outcome, between the two the name "charge interest" suggests: a line that is
 // drawn but whose accrual has not yet reached a whole minor unit posts NOTHING
-// and still bills a cycle. It is reachable by drawing and charging before the
-// first end-of-day, and it is why a bare transaction cannot describe the
-// result — a caller seeing no transaction would report that nothing happened
-// while the schedule below it gained a row.
+// and still bills a cycle.
 func TestChargeInterest_ADrawnLineWithNoInterestStillBillsACycle(t *testing.T) {
 	ctx := context.Background()
 	p, book, _, customer := newTestPortfolio(t)
@@ -585,12 +566,7 @@ func TestChargeInterest_ADrawnLineWithNoInterestStillBillsACycle(t *testing.T) {
 	}
 }
 
-// TestChargeInterest_RefusesACycleAlreadyBilled pins idempotency. Unlike
-// accrual, which LastAccrualDate makes a no-op on a re-run, billing appends a
-// row and capitalizes the receivable — so a retried request (a proxy retry, a
-// double-submitted form) would otherwise leave the borrower owing two minimum
-// payments for one cycle and drifting into arrears from an infrastructure
-// event.
+// TestChargeInterest_RefusesACycleAlreadyBilled pins idempotency.
 func TestChargeInterest_RefusesACycleAlreadyBilled(t *testing.T) {
 	ctx := context.Background()
 	p, _, _, customer := newTestPortfolio(t)
@@ -682,13 +658,9 @@ func TestAccrue_CorrectsABackdatedRepayment(t *testing.T) {
 		t.Errorf("accrued after the backdated repayment = %d, want less than %d", got.Accrued, ten.Accrued)
 	}
 
-	// "Less than before" is not enough on its own: the whole window is
-	// re-derived at the balance each day actually carried, and only a recompute
-	// reaches this figure.
-	//
-	//	days 1-2   at 1_000_000  2 × 164_383_561 =   328_767_122
-	//	days 3-11  at   500_000  9 ×  82_191_780 =   739_726_020
-	//	                                         = 1_068_493_142 -> 1068 cents
+	// "Less than before" is not enough on its own: the whole window is re-derived
+	// at the balance each day actually carried, and only a recompute reaches this
+	// figure.
 	if got.Accrued != 1_068_493_142 {
 		t.Errorf("accrued after the backdated repayment = %d, want 1068493142", got.Accrued)
 	}
@@ -731,8 +703,7 @@ func TestAccrue_IgnoresAForwardValueDatedAdvance(t *testing.T) {
 
 // TestAccrue_CorrectionRefundsToPrincipal covers the case the receivable cannot
 // absorb: interest the borrower has already paid, which a backdated repayment
-// then shows was never owed. It is credited to principal — they owe less — and
-// that is what makes the following day accrue on a smaller basis.
+// then shows was never owed.
 func TestAccrue_CorrectionRefundsToPrincipal(t *testing.T) {
 	ctx := context.Background()
 	p, book, sub, loan, customer := disbursedLoanIn(t)
@@ -780,13 +751,7 @@ func TestAccrue_CorrectionRefundsToPrincipal(t *testing.T) {
 }
 
 // TestAccrue_CorrectionClampsToWhatTheFacilityOwes is the far end of the same
-// case. Principal is an Asset too, so a correction bigger than everything still
-// outstanding cannot go there either: the borrower has overpaid the bank
-// outright. It must clamp rather than refuse — a refusal inside an end-of-day
-// batch takes the whole book's run down — and what is left over is a debt the
-// bank owes a customer, so it lands in the interest-refunds-payable account. It
-// must not simply be dropped, which leaves income overstated by money the bank
-// is not owed and no account anywhere recording the obligation.
+// case.
 func TestAccrue_CorrectionClampsToWhatTheFacilityOwes(t *testing.T) {
 	ctx := context.Background()
 	p, book, sub, loan, customer := disbursedLoanIn(t)
@@ -829,10 +794,7 @@ func TestAccrue_CorrectionClampsToWhatTheFacilityOwes(t *testing.T) {
 	}
 
 	// The whole 4932 the borrower paid and never owed is now a debt the bank
-	// records against itself, and income is back to nothing earned. It is
-	// recorded UNDER THIS FACILITY on the bank's one refunds-payable line — a
-	// balance pooled with no subsidiary could not say which borrower is owed the
-	// 4932, and it is the subsidiary that makes the pool answerable.
+	// records against itself, and income is back to nothing earned.
 	payable := accountNamed(t, book, "Interest Refunds Payable (EUR)")
 	owed := positions(t, p, loan.ID).Payable
 	if owed.Account != payable {
@@ -875,13 +837,7 @@ func TestAccrue_RefundFeedsTheFollowingDaysBasis(t *testing.T) {
 		t.Fatalf("principal after the correction = %d, want less than 100000", drawnAfterCorrection)
 	}
 
-	// Day 32 is the run that absorbs the correction's own value date. The
-	// refund is value-dated day 31, and a movement value-dated on a day is in
-	// force for the day ENDING on it (ledger.Series and interest.AccrueSeries
-	// are both explicit about this), so day 31 — already accrued at the old
-	// basis — is re-derived here too. That is ordinary behaviour for any
-	// posting made after a day's end-of-day, not something the correction does
-	// specially, and it is why the clean single-day comparison is day 33.
+	// Day 32 is the run that absorbs the correction's own value date.
 	if err := p.Accrue(ctx, loan.ID, drawdown.AddDate(0, 0, 32)); err != nil {
 		t.Fatalf("Accrue day 32: %v", err)
 	}

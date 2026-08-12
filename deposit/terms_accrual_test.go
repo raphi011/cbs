@@ -2,11 +2,6 @@ package deposit_test
 
 // Effective-dated overdraft terms, from the accrual's side: what a timeline of
 // terms rows buys that mutable columns on the account could not.
-//
-// Every figure in this file is derived with expectedFromTimeline — a day-by-day
-// sum stated by the test — rather than copied out of what the implementation
-// prints. See its doc comment in register_test.go, where the helpers these
-// tests share also live.
 
 import (
 	"context"
@@ -19,14 +14,7 @@ import (
 )
 
 // Back-value across a repricing trues up. Priced at R1 from day 0, repriced to
-// R2 effective day 30. On day 45 a transaction lands value-dated day 10: the
-// next run re-derives days 10-30 AT R1, with the new balance in place, and
-// posts the delta.
-//
-// Nothing happened before this change, because the window started at day 30 and
-// the days the posting takes effect over are behind it — a line the customer
-// cannot see and did not agree to. This test is the reason effective-dated
-// terms exist.
+// R2 effective day 30.
 func TestBackValueAcrossARepricingTruesUp(t *testing.T) {
 	ctx := context.Background()
 
@@ -69,17 +57,7 @@ func TestBackValueAcrossARepricingTruesUp(t *testing.T) {
 	assertNoError(t, reg.AccrueOverdraft(ctx, acct.ID, day(46)))
 
 	// Days 1-9 on 1,000 at R1; days 10-29 on 2,000 at R1 — the stretch that was
-	// silently never corrected; days 30-46 on 2,000 at R2. Both boundaries read
-	// straight off the dates above, because a day is named by the date its span
-	// ends on and both the value date and the effective date are on that axis:
-	//
-	//	 9 × 100_000 × 120_000 / 365 =  9 × 32_876_712 =   295_890_408
-	//	20 × 200_000 × 120_000 / 365 = 20 × 65_753_424 = 1_315_068_480
-	//	17 × 200_000 × 180_000 / 365 = 17 × 98_630_136 = 1_676_712_312
-	//	                                                 3_287_671_200
-	//
-	// Truncation is per day, not per span-group, which is why this is computed
-	// rather than written down: Accrue divides once per call.
+	// silently never corrected; days 30-46 on 2,000 at R2.
 	want := expectedFromTimeline(day(0), 46, interest.ACT365,
 		func(n int) ledger.Amount {
 			if n < 10 {
@@ -175,11 +153,6 @@ func TestWholeLifeAccrualEqualsTheSumOfItsPeriods(t *testing.T) {
 }
 
 // A backdated terms row posts a delta and rewrites nothing.
-//
-// The rate change is entered on the 45th and takes effect on the 30th. The next
-// run re-derives days 30-44 at the new rate and posts the difference — and that
-// is all it does: no earlier accrual is amended, no posting is reversed, and
-// the timeline gains a row rather than losing one.
 func TestABackdatedTermsRowPostsADeltaAndRewritesNothing(t *testing.T) {
 	ctx := context.Background()
 
@@ -235,11 +208,7 @@ func TestABackdatedTermsRowPostsADeltaAndRewritesNothing(t *testing.T) {
 	assertNoError(t, err)
 	assertEqual(t, "receivable after a retroactive repricing", receivable, want.Minor())
 
-	// Nothing was rewritten. Two repricings were entered and the log holds two
-	// events for this account; the timeline holds three rows — the opening one
-	// from OpenAccount, R1 on day 0... except that R1 landed on the SAME day as
-	// the opening row and therefore replaced it. Two rows, and the audit log is
-	// the record of how many times someone changed them.
+	// Nothing was rewritten.
 	events, err := reg.GetAuditLog(ctx)
 	assertNoError(t, err)
 	var termsSet int
@@ -323,10 +292,6 @@ func TestAFutureDatedTermsRowIsInertUntilItsDate(t *testing.T) {
 }
 
 // An account unpriced then priced accrues only afterwards.
-//
-// The previous model could not express this at all: Rate was per-account, so
-// pricing it would have re-derived the free year at the new rate or, with the
-// window reset, thrown that year away.
 func TestAnAccountUnpricedThenPricedAccruesOnlyAfterwards(t *testing.T) {
 	ctx := context.Background()
 
@@ -364,15 +329,9 @@ func TestAnAccountUnpricedThenPricedAccruesOnlyAfterwards(t *testing.T) {
 	assertNoError(t, reg.AccrueOverdraft(ctx, acct.ID, day(400)))
 
 	// Days 365-400 only — the whole 400-day life is stated, and the free year
-	// falls out at zero rather than being excluded by hand, because that is
-	// what the code does: every day is re-derived on every run, and days 1-364
+	// falls out at zero rather than being excluded by hand, because that is what
+	// the code does: every day is re-derived on every run, and days 1-364
 	// contribute nothing because the row in force on them carries a zero rate.
-	//
-	// The priced stretch is 36 days, not 35: a day is named by the date its
-	// span ends on, so the row effective day 365 prices day 365 — the span
-	// [364, 365) — and the last day accrued is day 400.
-	//
-	//	36 × 100_000 × 120_000 / 365 = 36 × 32_876_712 = 1_183_561_632
 	want := expectedFromTimeline(day(0), 400, interest.ACT365,
 		func(int) ledger.Amount { return drawn },
 		func(n int) interest.Rate {
@@ -435,8 +394,7 @@ func TestRerunningEndOfDayForTheSameDatePostsNothing(t *testing.T) {
 
 // A never-priced account reads no series. Every row in its timeline carries a
 // zero rate, so the run is skipped BEFORE any store read rather than merely
-// producing zero. Asserted on the store, because "the balance did not move"
-// would pass even if the loop ran.
+// producing zero.
 func TestANeverPricedAccountReadsNoSeries(t *testing.T) {
 	ctx := context.Background()
 
@@ -465,8 +423,7 @@ func TestANeverPricedAccountReadsNoSeries(t *testing.T) {
 // The guard still holds: an unadvanced window is refused BEFORE a series is
 // read, per interest.Recompute's documented precondition — "a caller that
 // recomputes an empty window over a non-zero prior state is told to give the
-// whole record back". The precondition survives this change and this is what
-// pins that neither layer has started violating it.
+// whole record back".
 func TestAnUnadvancedWindowIsRefusedBeforeReadingASeries(t *testing.T) {
 	ctx := context.Background()
 	origin := time.Date(2025, time.January, 1, 0, 0, 0, 0, time.UTC)
@@ -505,27 +462,6 @@ func TestAnUnadvancedWindowIsRefusedBeforeReadingASeries(t *testing.T) {
 // The advancement guard resolves its day count on `date` — meaning on the ROW
 // in force on the day being accrued, not on the row the recompute window opens
 // at.
-//
-// There is no single DayCount to ask any more: it is a terms field, one per
-// row, and the conventions genuinely disagree about whether a window advanced.
-// Under Thirty360 the 31st collapses onto the 30th, so Days(30th, 31st) is zero
-// while ACT365 says one — a run on the 31st is a no-op under one convention and
-// a real day under the other.
-//
-// Three cases, because the first two only pin half the claim. They hold the
-// timeline to a SINGLE row, so they discriminate which CONVENTION the guard
-// applies but not which row supplies it — with only those two, taking the day
-// count from rows[0] instead of from the accrual date's row passes. The third
-// gives one account two rows differing in nothing but their convention, so the
-// row choice is the only thing that can move the figure.
-//
-// Only one direction of that third case is observable, which is worth knowing
-// before someone adds its mirror image expecting symmetry. When the guard
-// wrongly REFUSES a run the day is never accrued and the difference shows; when
-// it wrongly ALLOWS one, the per-day closure resolves the row the guard should
-// have used and prices that span at zero days anyway, so the delta is zero and
-// the mistake hides. The guard's row choice matters exactly where a real day
-// would otherwise be silently dropped.
 func TestTheAdvancementGuardResolvesItsDayCountOnTheAccrualDate(t *testing.T) {
 	ctx := context.Background()
 	jan1 := time.Date(2025, time.January, 1, 0, 0, 0, 0, time.UTC)
@@ -576,18 +512,8 @@ func TestTheAdvancementGuardResolvesItsDayCountOnTheAccrualDate(t *testing.T) {
 		t.Errorf("ACT365 accrued %d on the 31st, want a real day", moved)
 	}
 
-	// Two rows, same limit and same rate, differing ONLY in convention:
-	// Thirty360 from 1 January, ACT365 from the 31st. The window opens on the
-	// Thirty360 row and the day being accrued belongs to the ACT365 one, so the
-	// two candidate readings of the guard disagree about whether the 31st is a
-	// day at all:
-	//
-	//	rows[0]        Thirty360  Days(30th, 31st) = 0  -> the run is refused
-	//	termsAt(date)  ACT365     Days(30th, 31st) = 1  -> the run happens
-	//
-	// A convention change mid-life is a sharp fixture rather than a common
-	// product event; it is the cleanest way to make the row choice the only
-	// variable, since everything else about the two rows is identical.
+	// Two rows, same limit and same rate, differing ONLY in convention: Thirty360
+	// from 1 January, ACT365 from the 31st.
 	reg, acct, clock := open(interest.Thirty360)
 	_, err := setTerms(ctx, reg, acct.ID, 500_000, rate, 0, interest.ACT365, the31st)
 	assertNoError(t, err)
@@ -603,17 +529,6 @@ func TestTheAdvancementGuardResolvesItsDayCountOnTheAccrualDate(t *testing.T) {
 // Thirty360, terms effective on a 31st: the row is in force from the 31st and
 // the first money it moves is on 1 February, because the 31st accrues nothing
 // under the convention.
-//
-// The two are different claims and the name says the second, which is the one a
-// customer could notice. The row IS in force on the 31st — that day's span,
-// [30th, 31st), resolves to it — but 30/360-US collapses the 31st onto the 30th
-// so the span is worth zero days. The first day it prices for money is the one
-// named 1 February, the span [31st, 1 Feb).
-//
-// That follows from the convention rather than from effective-dated terms, and
-// it is pinned rather than asserted away: it is surprising enough that someone
-// will read it as a bug, and a test saying "this is correct and here is why" is
-// cheaper than the investigation.
 func TestUnderThirty360ATermsRowEffectiveOnA31stFirstChargesOnThe1st(t *testing.T) {
 	ctx := context.Background()
 	clock := &mutableClock{at: time.Date(2025, time.January, 1, 0, 0, 0, 0, time.UTC)}
@@ -644,15 +559,7 @@ func TestUnderThirty360ATermsRowEffectiveOnA31stFirstChargesOnThe1st(t *testing.
 	throughFeb1, err := reg.GetAccount(ctx, acct.ID)
 	assertNoError(t, err)
 
-	// Two spans were added, worth one 30/360 day between them:
-	//
-	//	[30th, 31st)  the day named the 31st   — new rate, Days = 0, accrues 0
-	//	[31st, 1 Feb) the day named 1 February — new rate, Days = 1
-	//
-	// So the whole movement is the second span, at the NEW rate, and it is the
-	// same figure under either day the terms might have been resolved on —
-	// which is exactly why this test pins the convention rather than
-	// discriminating between two of them.
+	// Two spans were added, worth one 30/360 day between them.
 	want := interest.Accrue(100_000, 240_000, interest.Thirty360, the31st, feb1)
 	assertEqual(t, "one 30/360 day, charged at the new rate",
 		throughFeb1.Accrued-through30.Accrued, want)
@@ -663,12 +570,7 @@ func TestUnderThirty360ATermsRowEffectiveOnA31stFirstChargesOnThe1st(t *testing.
 }
 
 // A retroactive rate CUT across a long history drives a large negative delta
-// through the refund path. Its bounds hold — the credit to the receivable is
-// clamped by what the receivable holds, and the rest is refunded in cash rather
-// than driving an Asset balance negative, which the ledger would refuse inside
-// an end-of-day batch and take the whole book's run down with it — but this
-// change widens the input range from one terms window to the account's whole
-// life, so the test says so.
+// through the refund path.
 func TestARetroactiveRateCutRefundsWithoutDrivingTheReceivableNegative(t *testing.T) {
 	ctx := context.Background()
 
@@ -723,11 +625,9 @@ func TestARetroactiveRateCutRefundsWithoutDrivingTheReceivableNegative(t *testin
 	clock.set(day(366))
 	assertNoError(t, reg.AccrueOverdraft(ctx, acct.ID, day(366)))
 
-	// The whole life re-derived at 2%. The capitalisation is value-dated day
-	// 365, so days 1-364 are on the principal alone and days 365-366 include
-	// the capitalised charge. That is also why capitalisation compounds a day
-	// early — ChargeOverdraftInterestTx's own doc says so and calls
-	// value-dating to the next day the fix.
+	// The whole life re-derived at 2%. The capitalisation is value-dated day 365,
+	// so days 1-364 are on the principal alone and days 365-366 include the
+	// capitalised charge.
 	atCheap := expectedFromTimeline(day(0), 366, interest.ACT365,
 		func(n int) ledger.Amount {
 			if n < 365 {

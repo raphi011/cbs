@@ -16,19 +16,9 @@ import (
 	"github.com/raphi011/cbs/payment"
 )
 
-// The payment half of tx — the same type again, which is what lets one
-// BEGIN … COMMIT post across every participant's book and the central bank's and
-// record the network's own rows beside them.
-//
-// The honest example is seed.builder.settle, which is the one caller that
-// legitimately plays all three institutions at once — because the seed is not an
-// institution — and which needs exactly this to do it.
-//
-// Almost every entity here is network-scoped: a payment belongs to no single
-// bank, so unlike the ledger and deposit tables these are keyed by id alone and
-// take no BookID. The exception is the settlement advice at the bottom — a
-// member bank's own record of a cut-off it was told about — which carries a
-// book_id like a ledger or deposit row, because it belongs to that bank.
+// The payment half of tx — the same type again, which is what lets one BEGIN …
+// COMMIT post across every participant's book and the central bank's and record
+// the network's own rows beside them.
 
 // compile-time checks that tx satisfies all three institutions' interfaces. It
 // is one value and one body of SQL; which of the three a caller may name is
@@ -42,36 +32,13 @@ var (
 // ---------------------------------------------------------------------------
 // The three rows admission writes
 // ---------------------------------------------------------------------------
-//
-// One table per institution, plus a child table wherever a row holds something
-// per asset. They are separate tables and not one wide one because each has a
-// single writer and each lives in a different database — see the schema, which
-// is where that argument is written down in full.
 
 // PutBank stores a bank and the set of internal accounts it holds per asset.
-// Its Ledger and Deposit fields are simply not written: they are live handles
-// over this very store, not data, and there is no column that could hold a
-// *ledger.Book. The Network rebinds them on the way out; storetest's
-// BankRoundTripsAndDropsLiveHandles is what says a bank must come back with them
-// dropped and with Status intact.
-//
-// The child rows are deleted and rewritten rather than upserted. An upsert alone
-// would leave behind a row for an asset the bank no longer holds, and a stale row
-// here is not cosmetic: settlement would resolve an account the bank has given
-// up.
 func (t *tx) PutBank(ctx context.Context, b payment.Bank) error {
 	if err := t.write(); err != nil {
 		return err
 	}
-	// bic and book_id are NOT written, and there are no columns for them. A bank's
-	// id IS its BIC and IS its book (see payment.AsBank and the banks statement in
-	// the schema), so the two fields on the record are derivations of the primary
-	// key rather than data — scanBank fills them back in.
-	//
-	// A record whose BIC or BookID disagrees with its id is silently normalised
-	// rather than refused, which is the same stance PutBank has always taken on
-	// the live handles it drops: this is a serialiser, and the place that refuses
-	// an inconsistent bank is FoundBankTx, which is the only thing that mints one.
+	// bic and book_id are NOT written, and there are no columns for them.
 	_, err := t.tx.ExecContext(ctx, `
 		INSERT INTO banks
 			(id, name, customer_subledger, product_id, admission_ref, country, bank_code, created_at, seq)
@@ -97,10 +64,6 @@ func (t *tx) PutBank(ctx context.Context, b payment.Bank) error {
 	// Sorted, because `seq` is an insertion order and Go's map iteration order is
 	// deliberately random: inserting straight from the map gave a bank's asset
 	// rows an arbitrary sequence, different on every write of the same data.
-	// Nothing reads that order today — the rows fold back into a map — but `seq`
-	// means real, load-bearing ordering everywhere else in this schema, and a
-	// column that means one thing here and nothing there is how the next reader
-	// gets it wrong.
 	for _, asset := range slices.Sorted(maps.Keys(b.Assets)) {
 		accts := b.Assets[asset]
 		if _, err := t.tx.ExecContext(ctx, `
@@ -128,9 +91,7 @@ func scanBank(row interface{ Scan(...any) error }) (payment.Bank, error) {
 		return payment.Bank{}, err
 	}
 	// Both derived from the key, because both ARE the key: a bank is its own book
-	// and its id is its address. See PutBank, which writes neither, and
-	// storetest's BankRoundTripsAndDropsLiveHandles, which is what says a bank
-	// must come back carrying them.
+	// and its id is its address.
 	b.BIC = iso20022.BIC(b.ID)
 	b.BookID = ledger.BookID(b.ID)
 	b.CreatedAt = createdAt.Time
@@ -139,12 +100,6 @@ func scanBank(row interface{ Scan(...any) error }) (payment.Bank, error) {
 
 // bankAssets reads the internal accounts of one bank, or of every bank when id
 // is empty.
-//
-// Listing takes the second form deliberately: one query keyed by bank id,
-// folded into the records afterwards, rather than a query per row. A join
-// would work too, but it would flatten the bank row once per asset and
-// have to be de-duplicated on the way back — the same shape the cycle and
-// settlement readers use, and not worth it for a child table this small.
 func (t *tx) bankAssets(ctx context.Context, id payment.ParticipantID) (map[payment.ParticipantID]map[ledger.AssetCode]payment.BankAccounts, error) {
 	query := "SELECT bank_id, asset, suspense, reserve, unclaimed, returns_receivable, vault_cash, settlement FROM bank_assets"
 	args := []any{}
@@ -229,10 +184,6 @@ func (t *tx) ListBanks(ctx context.Context) ([]payment.Bank, error) {
 
 // PutSettlementMember stores the central bank's own record of one member and
 // the account it holds for that member per asset.
-//
-// The child rows are deleted and rewritten for the reason PutBank's are: an
-// account left behind for an asset the member has given up is one a cut-off
-// would still post to.
 func (t *tx) PutSettlementMember(ctx context.Context, m payment.SettlementMember) error {
 	if err := t.write(); err != nil {
 		return err
@@ -361,12 +312,6 @@ func (t *tx) ListSettlementMembers(ctx context.Context) ([]payment.SettlementMem
 
 // NextBankCodeSerial counts one country's allocations, from a counter named
 // after that country beside the book's shared "id" counter in the same table.
-//
-// One counter PER COUNTRY, and that is what makes the allocation rule below
-// produce a readable code. A shared counter would still hand out unique numbers
-// and the codes would have holes in them saying how much unrelated work the
-// agent had done in between — the same argument NextAddressSerial makes about an
-// account number, and for the same reason: a bank code is a number people quote.
 func (t *tx) NextBankCodeSerial(ctx context.Context, book ledger.BookID, country iban.Country) (uint64, error) {
 	n, err := t.nextSeq(ctx, book, "bank_code:"+string(country))
 	if err != nil {
@@ -379,13 +324,9 @@ func (t *tx) PutBankCode(ctx context.Context, a payment.BankCodeAllocation) erro
 	if err := t.write(); err != nil {
 		return err
 	}
-	// An upsert like every other Put here, and the key it upserts on is
-	// (country, code) — so re-writing an allocation to the SAME bank is a no-op
-	// and moving one to another bank would silently succeed. What forbids that
-	// is the act: payment's OpenSettlementAccountTx reads the row before it
-	// writes and refuses a code held by anybody else (ErrBankCodeTaken). The
-	// store holds the key; a code is never reassigned is a domain rule, and this
-	// is the same division every other row in this file keeps.
+	// An upsert like every other Put here, and the key it upserts on is (country,
+	// code) — so re-writing an allocation to the SAME bank is a no-op and moving
+	// one to another bank would silently succeed.
 	_, err := t.tx.ExecContext(ctx, `
 		INSERT INTO bank_codes (country, code, bic, allocated_at, seq)
 		VALUES (?, ?, ?, ?, `+nextRowSeq("bank_codes")+`)
@@ -427,12 +368,6 @@ func (t *tx) GetBankCode(ctx context.Context, issuer iban.Issuer) (payment.BankC
 
 // GetBankCodeForBIC answers the other question this register is asked: what has
 // this institution already been allocated in this country.
-//
-// There is no unique index behind it — the schema argues why at the bic column —
-// so a second row would be invisible here rather than refused. It cannot exist:
-// the act reads this before it allocates. LIMIT 1 on the seq is what makes the
-// answer at least DETERMINISTIC if one ever did, rather than whichever row the
-// query planner reached first.
 func (t *tx) GetBankCodeForBIC(ctx context.Context, country iban.Country, bic iso20022.BIC) (payment.BankCodeAllocation, error) {
 	a, err := scanBankCode(t.tx.QueryRowContext(ctx, `
 		SELECT country, code, bic, allocated_at FROM bank_codes
@@ -466,14 +401,6 @@ func (t *tx) ListBankCodes(ctx context.Context) ([]payment.BankCodeAllocation, e
 }
 
 // PutRosterEntry stores the clearing house's routing row for one member.
-//
-// The assets are a child table like the other two rows', but they are an
-// ordered LIST rather than a map: the clearing house holds no account per
-// asset, so there is nothing to key them by. They are written with an explicit
-// position, which is what lets a caller's order survive and what keeps a
-// repeated asset from being a row this store refuses and the Go type allows —
-// see roster_entry_assets in the schema, and storetest's
-// RosterEntryAssetsAreAnOrderedList.
 func (t *tx) PutRosterEntry(ctx context.Context, e payment.RosterEntry) error {
 	if err := t.write(); err != nil {
 		return err
@@ -494,12 +421,7 @@ func (t *tx) PutRosterEntry(ctx context.Context, e payment.RosterEntry) error {
 	if _, err := t.tx.ExecContext(ctx, "DELETE FROM roster_entry_assets WHERE bic = ?", string(e.BIC)); err != nil {
 		return fmt.Errorf("sqlite: put roster entry %s: %w", e.BIC, err)
 	}
-	// NOT sorted, and this is the one child table here that is not. The other
-	// two are maps, whose iteration order is random and therefore has to be
-	// imposed; this is a slice the caller ordered, and the position column is
-	// what carries that order back. Sorting here would silently reorder data,
-	// and de-duplicating would silently drop it — both are decisions for
-	// whoever reads the message the list came from.
+	// NOT sorted, and this is the one child table here that is not.
 	for i, asset := range e.Assets {
 		if _, err := t.tx.ExecContext(ctx, `
 			INSERT INTO roster_entry_assets (bic, position, asset) VALUES (?, ?, ?)`,
@@ -571,12 +493,8 @@ func (t *tx) GetRosterEntry(ctx context.Context, bic iso20022.BIC) (payment.Rost
 	return e, nil
 }
 
-// GetRosterEntryByIssuer answers which member is published under one allocation.
-//
-// There is no index behind it and no UNIQUE either — the schema argues both at
-// the bank_code column — so this is a scan of a table with one row per member.
-// ORDER BY seq is what makes the answer deterministic if a duplicate ever
-// existed, which the act that writes these rows is what prevents.
+// GetRosterEntryByIssuer answers which member is published under one
+// allocation.
 func (t *tx) GetRosterEntryByIssuer(ctx context.Context, issuer iban.Issuer) (payment.RosterEntry, error) {
 	e, err := scanRosterEntry(t.tx.QueryRowContext(ctx, `
 		SELECT bic, country, bank_code, admission_ref, admitted_at FROM roster_entries
@@ -633,16 +551,6 @@ func (t *tx) ListRosterEntries(ctx context.Context) ([]payment.RosterEntry, erro
 
 // ReplaceRoutingDirectory takes delivery of a snapshot: every row goes, and the
 // list replaces it.
-//
-// The DELETE is the method. Every other writer in this file upserts one row an
-// institution decided about, and merging is right for those; a subscriber that
-// merged would end up holding the union of every snapshot it ever pulled, and a
-// member that had left the roster would still be routable from a directory
-// nobody could correct. See routing_directory in the bank schema.
-//
-// seq restarts at 1 because the table is empty when the loop begins, so the
-// stored order is the order the caller was given — the roster's own publication
-// order — rather than an accumulation across refreshes.
 func (t *tx) ReplaceRoutingDirectory(ctx context.Context, entries []payment.DirectoryEntry) error {
 	if err := t.write(); err != nil {
 		return err
@@ -715,19 +623,8 @@ func (t *tx) ListDirectoryEntries(ctx context.Context) ([]payment.DirectoryEntry
 // Payments
 // ---------------------------------------------------------------------------
 
-// A payment row is not the same set of columns in every shape, and it is the one
-// place in this store where two schemas hold one table differently.
-//
-// The bank keeps the LEGS — what it posted in its own book — and no cycle id,
-// because a bank never sees a cut-off. The clearing house keeps the CYCLE id and
-// no legs, because it posts nothing and holds no book of accounts. Each argument
-// is written out inside the payments statement of the schema it belongs to; what
-// is here is the mechanism that keeps the Go side agreeing with both.
-//
-// The column list, the bound values and the scan targets are built from one
-// description in the same order, rather than being three parallel literals a
-// reader has to line up by eye. Three literals is what this was, and a column
-// added to the middle of one of them is a silently transposed row.
+// A payment row is not the same set of columns in every shape, and it is the
+// one place in this store where two schemas hold one table differently.
 const paymentSharedColumns = `id, scheme,
 	debtor_account, debtor_identifier_scheme, debtor_identifier_value,
 	creditor_account, creditor_identifier_scheme, creditor_identifier_value,
@@ -779,12 +676,6 @@ func (t *tx) paymentValues(p payment.Payment, metadata any) []any {
 }
 
 // paymentTargets is the scan targets for this store's shape, in the same order.
-//
-// A field this shape has no column for is left at its zero value, and that is
-// the point rather than data loss: a bank's copy of a payment HAS no cycle, so
-// reading one back with an empty CycleID is the truth about that row. Anything
-// above the store that needed the other institution's half has to ask for it,
-// which in this system means a message.
 func (t *tx) paymentTargets(p *payment.Payment, status *int64, booking, value, createdAt *nullTime, metadata *[]byte) []any {
 	targets := []any{
 		&p.ID, &p.Scheme,
@@ -877,10 +768,7 @@ func (t *tx) GetPayment(ctx context.Context, id payment.PaymentID) (payment.Paym
 	return p, nil
 }
 
-// GetPaymentByEndToEndID matches exactly — no prefix, no case folding. An empty
-// end-to-end id is never an identity, the same rule the ledger applies to an
-// empty idempotency key, so it is not even looked up: two payments with no
-// client reference must not deduplicate against each other.
+// GetPaymentByEndToEndID matches exactly — no prefix, no case folding.
 func (t *tx) GetPaymentByEndToEndID(ctx context.Context, endToEndID string) (payment.Payment, error) {
 	if endToEndID == "" {
 		return payment.Payment{}, payment.ErrPaymentNotFound
@@ -930,7 +818,7 @@ func (t *tx) PutMandate(ctx context.Context, m payment.Mandate) error {
 	// The values and the placeholders are counted from ONE list, which is not
 	// tidiness: a hand-written "?,?,?…" here was one short for a whole task and
 	// nothing noticed, because the case that would have caught it wrote a mandate
-	// through a path that never reached this statement. See paymentSharedColumns.
+	// through a path that never reached this statement.
 	vals := []any{
 		string(m.ID),
 		string(m.DebtorAgent), string(m.Debtor.Account), string(m.Debtor.Identifier.Scheme), m.Debtor.Identifier.Value,
@@ -1051,13 +939,9 @@ func (t *tx) GetCycle(ctx context.Context, id payment.CycleID) (payment.Clearing
 	return out[0], nil
 }
 
-// GetOpenCycle returns the open cycle for a scheme. The domain keeps at most one
-// open per scheme; the earliest wins if that invariant is ever broken, which is
-// payment.CsmTx's documented answer rather than this query's accident.
-//
-// The scheme and the status are each bound twice rather than once: a positional
-// placeholder cannot be reused, so the argument is passed again for the
-// subquery.
+// GetOpenCycle returns the open cycle for a scheme. The domain keeps at most
+// one open per scheme; the earliest wins if that invariant is ever broken,
+// which is payment.CsmTx's documented answer rather than this query's accident.
 func (t *tx) GetOpenCycle(ctx context.Context, scheme payment.SchemeID) (payment.ClearingCycle, error) {
 	out, err := t.queryCycles(ctx,
 		"WHERE c.scheme = ? AND c.status = ? AND c.id = (SELECT id FROM cycles WHERE scheme = ? AND status = ? ORDER BY opened_at ASC NULLS FIRST, seq LIMIT 1)",
@@ -1124,17 +1008,6 @@ func (t *tx) queryCycles(ctx context.Context, where, order string, args ...any) 
 // ---------------------------------------------------------------------------
 
 // AddHeldFile appends one receiving bank's share of an uploaded file.
-//
-// It APPENDS where every other write in this file upserts, and the seq is why:
-// a share has no key its caller knows, so the number is allocated here and the
-// child rows are keyed by it. Allocating it in a SELECT rather than inside the
-// INSERT's VALUES is what lets the same number reach the transactions — a
-// subquery evaluated by the INSERT is not a value this side can read back
-// without RETURNING.
-//
-// Both statements are the caller's unit of work, so a share and its positions
-// commit together or not at all. That is what makes the foreign key on
-// held_file_transactions writable: no caller can produce an orphan.
 func (t *tx) AddHeldFile(ctx context.Context, f payment.HeldFile) error {
 	if err := t.write(); err != nil {
 		return err
@@ -1160,11 +1033,6 @@ func (t *tx) AddHeldFile(ctx context.Context, f payment.HeldFile) error {
 }
 
 // ListHeldFiles reads one cut-off's shares in build order.
-//
-// TWO queries rather than a join, which is the opposite of queryCycles above and
-// deliberate: the file column is a whole uploaded document, and a join would
-// repeat it once per transaction in the share. The two statements are inside one
-// transaction, so they see the same rows.
 func (t *tx) ListHeldFiles(ctx context.Context, id payment.CycleID) ([]payment.HeldFile, error) {
 	rows, err := t.tx.QueryContext(ctx,
 		"SELECT seq, destination, file FROM held_files WHERE cycle_id = ? ORDER BY seq", string(id))
@@ -1316,12 +1184,7 @@ func (t *tx) GetSettlement(ctx context.Context, id payment.SettlementID) (paymen
 	return out[0], nil
 }
 
-// GetSettlementByCycle answers "have I already discharged this cut-off". There
-// is no unique index behind it — one cycle settles once because SettleCycleTx
-// refuses a second, and adding one would be a second answer to that question by
-// a layer that cannot say why. It orders so that a database which somehow held
-// two would answer with the FIRST rather than with whichever the planner
-// returned, because the first is the one whose posting stands.
+// GetSettlementByCycle answers "have I already discharged this cut-off".
 func (t *tx) GetSettlementByCycle(ctx context.Context, id payment.CycleID) (payment.Settlement, error) {
 	out, err := t.querySettlements(ctx, "WHERE s.cycle_id = ?", "s.seq", string(id))
 	if err != nil {
@@ -1338,10 +1201,6 @@ func (t *tx) ListSettlements(ctx context.Context) ([]payment.Settlement, error) 
 }
 
 // querySettlements reads settlements joined to their net positions.
-//
-// The positions map is always non-nil for a settlement that exists: a row set
-// cannot tell an empty map from an absent one, and every settlement the domain
-// writes carries positions.
 func (t *tx) querySettlements(ctx context.Context, where, order string, args ...any) ([]payment.Settlement, error) {
 	query := "SELECT s.id, s.cycle_id, s.asset, s.settlement_tx, s.value_date, s.settled_at, sp.bic, sp.amount " +
 		"FROM settlements s LEFT JOIN settlement_positions sp ON sp.settlement_id = s.id " + where
@@ -1385,10 +1244,6 @@ func (t *tx) querySettlements(ctx context.Context, where, order string, args ...
 // ---------------------------------------------------------------------------
 // Settlement advices
 // ---------------------------------------------------------------------------
-//
-// The one payment-layer table that IS book-scoped, so these three are the only
-// methods in this file that take a BookID — and the only ones that have to
-// ensureBook, because settlement_advices.book_id is a real foreign key.
 
 const settlementAdviceColumns = `book_id, reference, asset, movement, closing_balance,
 	status, mirror_tx, advised_at, posted_at`
@@ -1481,10 +1336,7 @@ func (t *tx) ListSettlementAdvices(ctx context.Context, book ledger.BookID) ([]p
 // Net positions
 // ---------------------------------------------------------------------------
 
-// marshalPositions encodes a net-position map for a json_valid column. A nil map
-// is NULL and an empty one is {}: an open cycle carries an empty map and the API
-// renders the two differently, so the distinction has to survive the round trip.
-// A string and not a []byte, for jsonParam's reason.
+// marshalPositions encodes a net-position map for a json_valid column.
 func marshalPositions(m map[iso20022.BIC]ledger.Amount) (any, error) {
 	if m == nil {
 		return nil, nil

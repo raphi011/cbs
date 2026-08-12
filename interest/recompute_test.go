@@ -8,13 +8,8 @@ import (
 	"github.com/raphi011/cbs/ledger"
 )
 
-// TestRecomputeWalksTheWindowDayByDay is the property the whole engine rests on.
-//
-// Interest over an N-day span is not the sum of its N single days, because
-// Accrue divides once per call. Recompute must reproduce the day-by-day figure —
-// the one every receivable in every book was actually built up from — not the
-// cheaper one-call-over-the-window figure. The two constants here are the
-// example the day-walk's own doc comment cites.
+// TestRecomputeWalksTheWindowDayByDay is the property the whole engine rests
+// on.
 func TestRecomputeWalksTheWindowDayByDay(t *testing.T) {
 	from, to := day(2026, time.January, 1), day(2026, time.January, 31)
 	rate, dc := interest.Rate(180_000), interest.ACT365 // 18%
@@ -41,10 +36,8 @@ func TestRecomputeWalksTheWindowDayByDay(t *testing.T) {
 }
 
 // TestRecomputePostsTheChangeInTheRoundedValue pins the rule that keeps the
-// record and the receivable in step: the delta is the change in Minor(), not the
-// rounding of the change. Here a second day's accrual leaves the sub-unit
-// remainder below the next boundary, so nothing is owed in minor units yet even
-// though gross moved.
+// record and the receivable in step: the delta is the change in Minor(), not
+// the rounding of the change.
 func TestRecomputePostsTheChangeInTheRoundedValue(t *testing.T) {
 	from := day(2026, time.January, 1)
 	// A rate low enough that a day earns well under half a minor unit.
@@ -73,13 +66,8 @@ func TestRecomputePostsTheChangeInTheRoundedValue(t *testing.T) {
 	}
 }
 
-// TestRecomputeTruesUpABackdatedMovement is the case the gross field exists for.
-//
-// The first run accrues over a window with nothing in it. A repayment then
-// arrives value-dated INSIDE that window, so the second run re-derives the same
-// days on the smaller balance, gross falls, and the delta is negative — interest
-// that was charged and is not owed. An incremental engine has no way to express
-// this.
+// TestRecomputeTruesUpABackdatedMovement is the case the gross field exists
+// for.
 func TestRecomputeTruesUpABackdatedMovement(t *testing.T) {
 	from, to := day(2026, time.January, 1), day(2026, time.January, 31)
 	daily := flat(interest.Rate(180_000), interest.ACT365)
@@ -149,12 +137,6 @@ func TestRecomputeKeepsSettledInterestOffTheRecord(t *testing.T) {
 // TestRecomputeOnAnUnadvancedWindowGivesTheRecordBack pins the precondition
 // Recompute documents rather than enforces, so that anyone who removes a
 // caller's guard finds out here.
-//
-// An empty window accrues a gross of zero, and the returned Accrued is
-// prior.Accrued + gross - prior.Gross — so recomputing a window that has not
-// advanced hands the whole record back as a correction. It is not a no-op, and it
-// is why both product layers refuse when Days(LastAccrualDate, date) <= 0 before
-// reading a series at all.
 func TestRecomputeOnAnUnadvancedWindowGivesTheRecordBack(t *testing.T) {
 	d := day(2026, time.January, 10)
 	prior := interest.State{Accrued: 5_000_000, Gross: 5_000_000}

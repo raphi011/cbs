@@ -8,13 +8,6 @@ import (
 )
 
 // A bank checking its own books over HTTP.
-//
-// The domain's own suite is where the instrument is calibrated: payment's
-// reconcile_test.go damages one thing at a time behind the bank's back and holds
-// the run to naming it. Nothing here repeats that. What these tests are for is
-// the surface — that the four routes are one bank's and no other operator's,
-// that the run is a POST because it writes, and that the two grades of answer the
-// domain draws survive the wire.
 
 // TestABankReconcilesItsOwnBooksOverHTTP is the control, and it is the shape an
 // operator console renders: reserve, the newest statement, and nothing wrong.
@@ -65,11 +58,6 @@ func TestABankReconcilesItsOwnBooksOverHTTP(t *testing.T) {
 }
 
 // TestTheRunIsAnActAndLeavesTheTrailToProveIt is why the run is a POST.
-//
-// Reconcile appends to this bank's own audit log in the same unit of work as the
-// read, so a run is a thing that happened and not a question that was asked. A
-// GET here would be a lie about the method, and the event below is what makes
-// that claim checkable from outside the domain.
 func TestTheRunIsAnActAndLeavesTheTrailToProveIt(t *testing.T) {
 	h := newServer(t, nil)
 	settledCycle(t, h)
@@ -91,11 +79,6 @@ func TestTheRunIsAnActAndLeavesTheTrailToProveIt(t *testing.T) {
 // TestAnUnclaimedBalanceIsReportedWithItsDeadline drives the whole of the case
 // the account exists for: a payee whose account closes between their bank's
 // acceptance and the cut-off.
-//
-// It is the stronger of the two ageing answers and the reason is a fact about the
-// postings rather than about this route — every credit into unclaimed balances is
-// one payment's diverted leg and carries its id, so the report says which payment,
-// under which scheme, and that this bank may send it back.
 func TestAnUnclaimedBalanceIsReportedWithItsDeadline(t *testing.T) {
 	h := newServer(t, nil)
 	a := provisionMember(t, h, "BNKADEFFXXX", "Bank A")
@@ -154,11 +137,6 @@ func TestAnUnclaimedBalanceIsReportedWithItsDeadline(t *testing.T) {
 
 // TestAClearingSuspenseIsAgedWithNoDeadlineOnIt is the contrast, out of a
 // payment that has cleared and not yet settled.
-//
-// No rulebook puts a clock on a clearing suspense — what discharges it is a
-// conversation — so the report ages it and judges nothing, and the netted mirror
-// leg that will discharge it names no payment, which is why a lot here can come
-// back without one.
 func TestAClearingSuspenseIsAgedWithNoDeadlineOnIt(t *testing.T) {
 	h := newServer(t, nil)
 	a, b, _ := threeBanks(t, h)
@@ -184,11 +162,6 @@ func TestAClearingSuspenseIsAgedWithNoDeadlineOnIt(t *testing.T) {
 
 // TestEveryReportNamesTheAssetItIsAbout pins the one refusal these routes make
 // themselves.
-//
-// A bank holds one reserve, one clearing suspense and one unclaimed-balances
-// account per asset. A report with no asset named would have to add one money to
-// another, and defaulting to EUR would answer confidently about an asset the
-// caller did not ask about.
 func TestEveryReportNamesTheAssetItIsAbout(t *testing.T) {
 	h := newServer(t, nil)
 	settledCycle(t, h)
@@ -205,12 +178,6 @@ func TestEveryReportNamesTheAssetItIsAbout(t *testing.T) {
 }
 
 // TestOnlyABankChecksItsOwnBooks is the surface half of the whole task.
-//
-// These four reports read one database and the statements that arrived at it,
-// which is what makes them a bank's own act. The instrument that holds every
-// institution's books against each other is payment/recon, and it is a test
-// harness rather than a route precisely because no institution may perform it —
-// so there is no version of any of these on the other two operators' ports.
 func TestOnlyABankChecksItsOwnBooks(t *testing.T) {
 	h := newServer(t, nil)
 	settledCycle(t, h)

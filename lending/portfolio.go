@@ -12,43 +12,19 @@ import (
 )
 
 // loansSubledgerName is where facilities' principal and receivable lines are
-// filed. Its own folder, not the customer-deposit one: that folder holds what
-// the bank owes its customers, and an Asset in it would be summed with the
-// wrong sign by anything that totals a folder.
+// filed.
 const loansSubledgerName = "Loans and Advances"
 
 // incomeSubledgerName and interestIncomeName mirror the deposit layer's. The
 // two are deliberately not shared: lending does not import deposit, and a
-// shared constant would be the first thread of exactly that dependency. Both
-// OPEN the same account, whichever layer gets there first, so a bank ends up
-// with one interest-income account per asset however its interest was earned —
-// and the mapping then holds two rows pointing at it, one per slot, which is
-// where a reader can see that the two layers agree.
+// shared constant would be the first thread of exactly that dependency.
 const incomeSubledgerName = "Income"
 
 // payablesSubledgerName is where the bank's own obligations to borrowers are
-// filed. Its own folder rather than Income or Loans and Advances, for the reason
-// loansSubledgerName gives: a Liability in either would be totalled as revenue
-// or as an asset.
+// filed.
 const payablesSubledgerName = "Payables"
 
-// The four slots this layer posts to. Three of them are CONTROL accounts and
-// carry the facility on every entry, so a bank lending to ten thousand borrowers
-// has three chart-of-accounts rows for them rather than thirty thousand.
-//
-// The refunds payable is one of the three, and it is the line that most looks
-// like it should not be. A balance pooled with NO subsidiary cannot say who is owed
-// what, and a discharge against it is unbounded — able to pay one borrower out
-// of another's money and still balance, a Liability never being caught by the
-// sufficiency check. Both objections are about the pooling and not about the
-// account: the subsidiary is on every entry, and Book.checkSufficientBalance reads
-// a Position, so what stops the unbounded discharge is the dimension.
-//
-// The income slot is ByProduct and none of the other three is, for the reason
-// ledger.Slot.ByProduct gives. This layer has no product to resolve one with —
-// a facility's terms are its own timeline, not a catalogue entry — so it always
-// asks for the bank-wide row; the field is what the slot ACCEPTS, not what this
-// caller passes.
+// The four slots this layer posts to.
 var (
 	principalSlot  = ledger.Slot{Key: "lending.principal", Type: ledger.Asset, Control: true}
 	receivableSlot = ledger.Slot{Key: "lending.interest_receivable", Type: ledger.Asset, Control: true}
@@ -57,10 +33,7 @@ var (
 )
 
 // The names the first facility in an asset opens those four lines under: the
-// bootstrap, and not the resolution. The income line resolves to the same
-// account deposit's does, because both are ensured by name here and the names
-// agree — which is now a row in the mapping rather than a coincidence between
-// two packages that cannot import each other.
+// bootstrap, and not the resolution.
 func loanPrincipalName(asset ledger.AssetCode) string {
 	return "Loan Principal (" + string(asset) + ")"
 }
@@ -79,37 +52,18 @@ func interestIncomeName(asset ledger.AssetCode) string {
 
 // Portfolio is the lending layer over a general ledger. It manages credit
 // facilities, their schedules, their interest and their arrears.
-//
-// It has the same shape as deposit.Register: it owns no state of its own, keeps
-// only the store handle, the ledger.Book it composes with, the BookID both are
-// scoped to, and its clock. See the package doc for units of work and for why
-// an arranged overdraft is not managed here.
 type Portfolio struct {
 	store  Store
 	gl     *ledger.Book
 	bookID ledger.BookID
 	clock  func() time.Time
 
-	// customers is the subledger this portfolio hangs its own folders off. It
-	// files nothing in it — a facility is not a customer deposit — and reads it
-	// only for the ledger it belongs to, so that a bank ends up with one Loans
-	// and Advances folder however many facilities it writes.
-	//
-	// It is CONSTRUCTOR state for the reason deposit.Register's is: as a
-	// per-call argument, one caller naming a different tree would give the bank
-	// a second set of control lines, each holding part of the loan book.
+	// customers is the subledger this portfolio hangs its own folders off.
 	customers ledger.SubledgerID
 }
 
 // NewPortfolio creates a lending portfolio over the given store, layered on the
 // given general ledger.
-//
-// id must be book.ID(): the portfolio's rows and the book's rows are scoped by
-// the same BookID, which is what lets one Tx read both. Share the clock with
-// the backing ledger.Book so audit timestamps line up across layers.
-//
-// customers is the subledger whose ledger this portfolio files its own folders
-// under; see the field.
 func NewPortfolio(store Store, book *ledger.Book, id ledger.BookID, clock func() time.Time, customers ledger.SubledgerID) *Portfolio {
 	return &Portfolio{store: store, gl: book, bookID: id, clock: clock, customers: customers}
 }
@@ -125,8 +79,6 @@ func (p *Portfolio) now() time.Time { return p.clock() }
 
 // appendAuditTx records an immutable lending-scope event through the
 // transaction, so an audit event never outlives an operation that rolled back.
-// The payload is marshalled now rather than held by reference, so later
-// mutation of the facility cannot rewrite history.
 func (p *Portfolio) appendAuditTx(ctx context.Context, tx Tx, eventType, entityID string, payload any) error {
 	raw, err := json.Marshal(payload)
 	if err != nil {
@@ -153,29 +105,6 @@ func (p *Portfolio) appendAuditTx(ctx context.Context, tx Tx, eventType, entityI
 
 // OpenTermLoan opens a term loan: a fixed principal, disbursed once, amortized
 // over termMonths instalments.
-//
-// It records the facility as Pending, adding nothing to the chart of accounts
-// unless it is the first facility in its asset. It does NOT generate the schedule and does not move any money: the
-// first due date is not known until the money is paid out, and a schedule for
-// money that was never disbursed is a plan to repay nothing.
-//
-// principal is the committed amount; rate is the annual rate; dc is the
-// day-count convention interest accrues under. The last two are written as the
-// facility's OPENING TERMS ROW rather than onto the facility itself — terms are
-// effective-dated, and this is the row in force from origination onwards. Use
-// SetFacilityTerms to reprice afterwards.
-//
-// termMonths is bounded at MaxTermMonths as well as below at 1. The term is an
-// ALLOCATION: BuildSchedule writes one instalment row per month, so an
-// unbounded term is an unbounded allocation driven by a request field —
-// {"termMonths": 100000000} would try to build a hundred million rows and take
-// the process down past where recoverPanic can turn it into a 500. Fifty years
-// is longer than any amortizing retail loan (a Japanese multi-generation
-// mortgage tops out near it), so nothing real is refused.
-//
-// Returns ErrInvalidAmount, ErrInvalidRate, ErrInvalidTerm, and any error from
-// the ledger — ledger.ErrSubledgerNotFound, or ledger.ErrAssetNotFound if the
-// asset is not one the system knows.
 func (p *Portfolio) OpenTermLoan(ctx context.Context, name string, asset ledger.AssetCode, principal ledger.Amount, rate interest.Rate, dc interest.DayCount, method AmortMethod, termMonths int) (Facility, error) {
 	var out Facility
 	err := p.store.Update(ctx, func(ctx context.Context, tx Tx) error {
@@ -203,17 +132,6 @@ func (p *Portfolio) OpenTermLoanTx(ctx context.Context, tx Tx, name string, asse
 
 // OpenRevolvingLine opens a revolving credit line: a commitment that may be
 // drawn and repaid repeatedly.
-//
-// minPayment is the share of drawn principal added to each billing cycle's
-// minimum payment, on top of the interest charged that cycle. It is a
-// dimensionless Fraction rather than a Rate, because it is not per annum.
-//
-// rate and dc become the line's opening terms row, exactly as in OpenTermLoan;
-// SetFacilityTerms reprices it afterwards, and a line may be repriced freely
-// because it has no generated schedule to diverge from.
-//
-// A line has no maturity and no up-front schedule; its instalments are its
-// billing cycles, appended by ChargeInterest.
 func (p *Portfolio) OpenRevolvingLine(ctx context.Context, name string, asset ledger.AssetCode, limit ledger.Amount, rate interest.Rate, dc interest.DayCount, minPayment interest.Fraction) (Facility, error) {
 	var out Facility
 	err := p.store.Update(ctx, func(ctx context.Context, tx Tx) error {
@@ -237,10 +155,6 @@ func (p *Portfolio) OpenRevolvingLineTx(ctx context.Context, tx Tx, name string,
 
 // openTx is the shared body of both openers: validate, ensure the asset's chart
 // lines, write the facility and its opening terms row, record the event.
-//
-// rate and dc are parameters rather than fields on f because they are not fields
-// on a Facility at all: they are what the facility's first FacilityTerms row
-// carries.
 func (p *Portfolio) openTx(ctx context.Context, tx Tx, f Facility, rate interest.Rate, dc interest.DayCount) (Facility, error) {
 	if err := ledger.ValidateText("name", f.Name); err != nil {
 		return Facility{}, err
@@ -252,10 +166,8 @@ func (p *Portfolio) openTx(ctx context.Context, tx Tx, f Facility, rate interest
 		return Facility{}, err
 	}
 
-	// The first facility in an asset puts that asset's four lines in the chart
-	// of accounts; the ten thousandth adds nothing to it. This is also where an
-	// unknown asset code is refused, because every ensure below falls through to
-	// a create when the line is absent and a create validates it.
+	// The first facility in an asset puts that asset's four lines in the chart of
+	// accounts; the ten thousandth adds nothing to it.
 	if err := p.ensureChartTx(ctx, tx, f.Asset); err != nil {
 		return Facility{}, err
 	}
@@ -276,9 +188,7 @@ func (p *Portfolio) openTx(ctx context.Context, tx Tx, f Facility, rate interest
 
 	// Every facility gets a terms row from origination, so the recompute window
 	// starts uniform across both credit layers and the timeline answers for every
-	// day the facility has existed. Days before the first advance accrue zero
-	// anyway, because drawn is zero across them, so no "first advance opens the
-	// window" state is needed.
+	// day the facility has existed.
 	opening := FacilityTerms{
 		FacilityID:    f.ID,
 		EffectiveFrom: ledger.DayStart(f.OpenedAt),
@@ -301,25 +211,6 @@ func (p *Portfolio) openTx(ctx context.Context, tx Tx, f Facility, rate interest
 // ---------------------------------------------------------------------------
 
 // Disburse pays out a term loan's principal in full and generates its schedule.
-//
-//	Dr  Loan principal (Asset)      1_000_000
-//	  Cr counterparty                 1_000_000
-//
-// counterparty is any position in the facility's asset — a customer's current
-// account, which is a subsidiary under a control account, or the vault for a cash
-// advance, which is a plain account named with Total(). This layer does not know
-// what a deposit account is, so a disbursement that must also respect one's
-// status is orchestrated a layer up, through the same Tx.
-//
-// firstDue is the due date of the first instalment; the rest follow monthly,
-// clamped to the end of the month. Accrual starts from the disbursement date:
-// money not yet paid out earns nothing.
-//
-// Returns ErrFacilityNotFound, ErrFacilityClosed, ErrWrongFacilityKind for a
-// revolving line, ErrAlreadyDisbursed for a second call while principal is
-// still outstanding, and any ledger error — notably
-// ledger.ErrUnbalancedTransaction if the counterparty is in a different
-// asset, which is how a cross-asset disbursement is caught.
 func (p *Portfolio) Disburse(ctx context.Context, id FacilityID, counterparty ledger.Position, firstDue time.Time, description string) (ledger.Transaction, error) {
 	var out ledger.Transaction
 	err := p.store.Update(ctx, func(ctx context.Context, tx Tx) error {
@@ -356,11 +247,7 @@ func (p *Portfolio) DisburseTx(ctx context.Context, tx Tx, id FacilityID, counte
 	}
 
 	// The schedule is generated from the rate in force ON THE DISBURSEMENT DAY,
-	// resolved from the timeline rather than read off the facility. That is the
-	// moment the plan is pinned to, and a term loan repriced BEFORE disbursement
-	// is disbursed on the newer rate — see SetFacilityTerms, which refuses the
-	// repricing once a schedule exists precisely because the two could then
-	// diverge.
+	// resolved from the timeline rather than read off the facility.
 	terms, err := tx.GetFacilityTermsAsOf(ctx, p.bookID, f.ID, ledger.DayStart(p.now()))
 	if err != nil {
 		return ledger.Transaction{}, err
@@ -376,10 +263,7 @@ func (p *Portfolio) DisburseTx(ctx context.Context, tx Tx, id FacilityID, counte
 	f.Status = Active
 	// Disbursement does not open the accrual window: the window opens at
 	// origination and never moves, so there is no boundary for a day to fall
-	// between and no span for a clamp to skip. A re-disbursement therefore cannot
-	// reopen the window behind a span already charged, and the span between a full
-	// repayment and a re-disbursement is charged like any other: it was drawn, so
-	// it was owed.
+	// between and no span for a clamp to skip.
 	if n := len(schedule); n > 0 {
 		f.MaturityAt = schedule[n-1].DueDate
 	}
@@ -400,9 +284,6 @@ func (p *Portfolio) DisburseTx(ctx context.Context, tx Tx, id FacilityID, counte
 // Draw advances part of a revolving line's commitment. It may be called
 // repeatedly — that is what revolving means — as long as drawn principal stays
 // within the commitment.
-//
-// Returns ErrFacilityNotFound, ErrFacilityClosed, ErrWrongFacilityKind for a
-// term loan, ErrInvalidAmount, and ErrLimitExceeded.
 func (p *Portfolio) Draw(ctx context.Context, id FacilityID, counterparty ledger.Position, amount ledger.Amount, description string) (ledger.Transaction, error) {
 	var out ledger.Transaction
 	err := p.store.Update(ctx, func(ctx context.Context, tx Tx) error {
@@ -487,90 +368,6 @@ func (p *Portfolio) advanceTx(ctx context.Context, tx Tx, f Facility, counterpar
 // ---------------------------------------------------------------------------
 
 // SetFacilityTerms reprices a facility from a given day.
-//
-// It appends a row to the facility's terms timeline rather than overwriting
-// anything, so the rate that was in force on any past day stays resolvable and
-// the next recompute re-derives each day at its own. effectiveFrom may be
-// backdated or future-dated: a backdated row is picked up by the next run the
-// same way a backdated posting is, and the difference is posted as ordinary
-// delta interest, while a future-dated row is inert until the runs reach it.
-//
-// A ZERO effectiveFrom means today on the PORTFOLIO'S clock, the same mapping
-// deposit.SetOverdraftTerms makes and for the same reason: it follows
-// ledger.Book.PostTransaction's zero-BookingDate precedent, and it has to be
-// the injected clock rather than the wall clock because api and seed run on a
-// frozen one — a wall-clock day would be a future-dated row nothing those runs
-// ever price at. Leaving the zero unmapped would be worse still: it truncates
-// to 0001-01-01, sorts first in the timeline, and becomes the day accrual opens
-// its recompute window at, which is two millennia of days walked per facility
-// per nightly run.
-//
-// The risk in the first of those is real and is not hidden: a retroactive
-// repricing MOVES INTEREST THAT HAS ALREADY BEEN CHARGED TO A BORROWER, and the
-// audit log is the only control on it. Every call appends an
-// EventFacilityTermsSet event carrying the row, effective date and entry date
-// alike.
-//
-// The value returned is the row that was WRITTEN, which is not necessarily the
-// row in force now — a future-dated repricing returns terms nothing is being
-// priced at yet. Use GetFacilityWithTerms for the row in force today.
-//
-// # Why a disbursed term loan is refused
-//
-// A term loan's instalment schedule is generated once, at disbursement, from
-// the rate in force then, and stored as rows. If accrual followed the timeline
-// and the schedule did not, a repricing would make the plan and the actual
-// accrual diverge — beyond the ordinary plan-versus-actual divergence this
-// package already teaches, which 30/360 exists to keep small — and the final
-// instalment would silently absorb the difference. Nobody would notice until
-// maturity.
-//
-// So this returns ErrScheduleWouldDiverge for a term loan that has a generated
-// schedule, and allows repricing freely on a revolving line (which has none)
-// and on an undisbursed term loan (which has none yet). Refusing is better than
-// documenting a divergence nobody would see; regenerating a schedule against
-// repayments already posted against it needs versioned schedule rows and
-// open-item allocation, and is its own topic.
-//
-// The first guard is on the SCHEDULE rather than on status or on drawn
-// principal, which is what keeps a revolving line repriceable after its first
-// billing cycle has appended instalment rows: a line's instalments are cycles
-// already billed — statements of what WAS charged — not a plan a repricing could
-// put out of step. Keying on Kind first is what draws that line.
-//
-// # Why a term loan may not be repriced into the FUTURE either
-//
-// "It has no schedule yet" is not enough on its own. DisburseTx pins the
-// schedule to the row in force ON THE DISBURSEMENT DAY, so a row effective after
-// that day is one the schedule cannot see and the accrual will reach anyway:
-//
-//	open at 6% -> reprice to 24% effective day 30 (no schedule yet, so allowed)
-//	-> disburse on day 0 -> the schedule is pinned at 6%, and on day 30 the
-//	accrual steps to 24% with no instalment reflecting it
-//
-// That is exactly the divergence this error exists to make unreachable, arrived
-// at through the gap between the two guards, and it is worse than the case above
-// because the loan then has a schedule and can no longer be repriced back. So a
-// term loan additionally refuses a repricing effective AFTER the day it is
-// entered. A revolving line keeps future-dating — scheduled repricing for free —
-// because it has no schedule for a later row to get ahead of.
-//
-// The invariant that buys is: when DisburseTx pins the schedule, no row exists
-// effective after the disbursement day, so termsAt resolves to the schedule's own
-// rate for that day and EVERY day after it, for as long as the loan cannot be
-// repriced again. It rests on the clock moving forward — a row entered today and
-// effective no later than today is effective no later than any subsequent
-// disbursement day — which is why the check lives here, at entry, where the
-// mistake is, rather than at disbursement, where refusing would leave a facility
-// that can never be disbursed at all.
-//
-// A term loan repriced before disbursement, effective on or before the day it is
-// entered, is still allowed and still changes the schedule generated later. That
-// is right and may still surprise someone reading only the origination record;
-// both rows are in the audit log.
-//
-// Returns ErrFacilityNotFound, ErrFacilityClosed, ErrInvalidRate and
-// ErrScheduleWouldDiverge.
 func (p *Portfolio) SetFacilityTerms(ctx context.Context, id FacilityID, rate interest.Rate, dc interest.DayCount, effectiveFrom time.Time) (FacilityTerms, error) {
 	var out FacilityTerms
 	err := p.store.Update(ctx, func(ctx context.Context, tx Tx) error {
@@ -601,10 +398,9 @@ func (p *Portfolio) SetFacilityTermsTx(ctx context.Context, tx Tx, id FacilityID
 		if err != nil {
 			return FacilityTerms{}, err
 		}
-		// Two ways a term loan's plan and its accrual can come apart, and both
-		// are refused: a schedule that already exists, and a row that would be
-		// effective past the day a schedule is pinned at. See the doc comment —
-		// the second is the one reachable only through the gap between them.
+		// Two ways a term loan's plan and its accrual can come apart, and both are
+		// refused: a schedule that already exists, and a row that would be effective
+		// past the day a schedule is pinned at.
 		if len(schedule) > 0 {
 			return FacilityTerms{}, ErrScheduleWouldDiverge
 		}
@@ -661,8 +457,6 @@ func (p *Portfolio) ListFacilities(ctx context.Context) ([]Facility, error) {
 // FacilityTermsHistory returns a facility's whole terms timeline, oldest first.
 // It is the point of making terms effective-dated: the history is inspectable
 // rather than merely recoverable by replaying the audit log.
-//
-// Returns ErrFacilityNotFound.
 func (p *Portfolio) FacilityTermsHistory(ctx context.Context, id FacilityID) ([]FacilityTerms, error) {
 	var out []FacilityTerms
 	err := p.store.View(ctx, func(ctx context.Context, tx Tx) error {
@@ -734,11 +528,6 @@ func (p *Portfolio) Schedule(ctx context.Context, id FacilityID) ([]Installment,
 }
 
 // Drawn is the outstanding principal on a facility.
-//
-// It is DERIVED — the book balance of the principal account — rather than
-// stored on the facility, for the same reason no balance is stored anywhere
-// else in this system: a second copy of a number is a second thing that can be
-// wrong. Returns ErrFacilityNotFound.
 func (p *Portfolio) Drawn(ctx context.Context, id FacilityID) (ledger.Amount, error) {
 	var out ledger.Amount
 	err := p.store.View(ctx, func(ctx context.Context, tx Tx) error {
@@ -753,11 +542,6 @@ func (p *Portfolio) Drawn(ctx context.Context, id FacilityID) (ledger.Amount, er
 }
 
 // drawnTx is Drawn against a facility the caller has already loaded.
-//
-// These three helpers name WHICH of a facility's positions answers a question;
-// the ledger decides how to sign it. Passing ledger.Debit directly would be an
-// assertion about an account type made from outside the layer that owns it, and
-// would be silently sign-flipped by any change to AccountType.NormalBalance().
 func (p *Portfolio) drawnTx(ctx context.Context, tx Tx, f Facility) (ledger.Amount, error) {
 	at, err := p.accountsTx(ctx, tx, f)
 	if err != nil {
@@ -767,17 +551,7 @@ func (p *Portfolio) drawnTx(ctx context.Context, tx Tx, f Facility) (ledger.Amou
 }
 
 // drawnSeriesTx is the value-dated history of what the borrower owed over
-// [from, to]. Like drawnTx it reads the principal position; unlike drawnTx it
-// returns each day's own figure rather than today's, which is what lets the
-// accrual re-derive a past day with a posting that only reached the ledger after
-// it.
-//
-// ONE facility's series and not the pool's: the control account nets every other
-// borrower's principal into it, and interest charged on that would be interest
-// on the whole loan book.
-//
-// The window bounds are snapped by SeriesTx, in the ledger, alongside the store
-// contract that requires them.
+// [from, to].
 func (p *Portfolio) drawnSeriesTx(ctx context.Context, tx Tx, f Facility, from, to time.Time) (ledger.Series, error) {
 	at, err := p.accountsTx(ctx, tx, f)
 	if err != nil {
@@ -796,13 +570,8 @@ func (p *Portfolio) receivableTx(ctx context.Context, tx Tx, f Facility) (ledger
 	return p.gl.BookBalanceTx(ctx, tx, at.Receivable)
 }
 
-// FacilityPositions is where one facility's money is: what it has drawn, what it
-// owes in interest, and what the bank owes it back. All three are positions
-// under a control account, and all three carry the same subsidiary — the facility
-// itself, which is what a subsidiary ledger keyed on the borrower means here.
-//
-// Exported for a layer above that renders or posts to them; Positions is the
-// read. Nothing on the facility record points at any of them.
+// FacilityPositions is where one facility's money is: what it has drawn, what
+// it owes in interest, and what the bank owes it back.
 type FacilityPositions struct {
 	Principal  ledger.Position
 	Receivable ledger.Position
@@ -826,11 +595,8 @@ func (p *Portfolio) Positions(ctx context.Context, id FacilityID) (FacilityPosit
 
 // accountsTx resolves all three from the slot mapping. openTx mapped them when
 // the first facility in the asset was opened, so ErrSlotNotMapped here is a
-// chart that has been tampered with rather than a first use — which is why these
-// RESOLVE and only openTx ensures.
-//
-// The three together rather than one at a time, because every caller that wants
-// one of them is one line from wanting another.
+// chart that has been tampered with rather than a first use — which is why
+// these RESOLVE and only openTx ensures.
 func (p *Portfolio) accountsTx(ctx context.Context, tx Tx, f Facility) (FacilityPositions, error) {
 	subsidiary := string(f.ID)
 	principal, err := p.gl.SlotPositionTx(ctx, tx, "", principalSlot, f.Asset, subsidiary)
@@ -857,13 +623,8 @@ func (p *Portfolio) ledgerIDTx(ctx context.Context, tx Tx) (ledger.LedgerID, err
 	return sub.LedgerID, nil
 }
 
-// ensureChartTx opens the four lines an asset's facilities post to and maps this
-// layer's slots onto them, on the first facility opened in that asset. Three are
-// control accounts and one — the income line — is the bank's own, so it pools
-// nobody.
-//
-// It returns once the principal slot answers, so the ten thousandth facility in
-// an asset costs one lookup and writes nothing.
+// ensureChartTx opens the four lines an asset's facilities post to and maps
+// this layer's slots onto them, on the first facility opened in that asset.
 func (p *Portfolio) ensureChartTx(ctx context.Context, tx Tx, asset ledger.AssetCode) error {
 	switch _, err := p.gl.SlotAccountTx(ctx, tx, "", principalSlot, asset); {
 	case err == nil:

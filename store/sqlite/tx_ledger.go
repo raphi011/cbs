@@ -12,13 +12,6 @@ import (
 )
 
 // tx is one unit of work: one SQLite transaction on one pooled connection.
-//
-// ONE value implements every transaction interface in this system — ledger.Tx
-// and ledger.BankTx, deposit.Tx, product.Tx, lending.Tx, ebics.Tx, and all three
-// of payment.BankTx, payment.CsmTx and payment.CentralBankTx. Which of them a
-// caller may NAME is decided by the store it was handed (see BankStore and the
-// two beside it); what it is handed is always this, so a bank's deposit write
-// and the GL posting under it are one BEGIN … COMMIT.
 type tx struct {
 	store    *store
 	tx       *sql.Tx
@@ -46,16 +39,6 @@ func (t *tx) write() error {
 // own reports whether this store answers for the given book, and it is called
 // FIRST in every method that takes one — before the read-only check, before the
 // books row is ensured, before any statement runs.
-//
-// The ordering is the whole value of it. A foreign book otherwise produces a
-// silent not-found: the statement runs, matches nothing, and the caller gets an
-// empty listing or a "ledger not found" several layers away from the institution
-// that had no business asking. Putting the guard after anything at all leaves a
-// path on which that still happens — after write(), a View still sweeps another
-// institution's book; after ensureBook, the store has already INSERTED a row for
-// it, which is a foreign book being created rather than refused.
-//
-// See ErrNotThisStoresBook for what this catches and what stays the recorder's.
 func (t *tx) own(book ledger.BookID) error {
 	if book == t.store.book {
 		return nil
@@ -65,9 +48,7 @@ func (t *tx) own(book ledger.BookID) error {
 }
 
 // ensureBook creates the books row every book-scoped table's foreign key points
-// at. Books are not an entity the domain creates — a BookID is simply a name a
-// participant is written under — so the row appears the first time something is
-// written under it.
+// at.
 func (t *tx) ensureBook(ctx context.Context, book ledger.BookID) error {
 	if err := t.own(book); err != nil {
 		return err
@@ -85,29 +66,11 @@ func (t *tx) ensureBook(ctx context.Context, book ledger.BookID) error {
 }
 
 // nextRowSeq is the expression every INSERT uses for its `seq` column.
-//
-// SQLite's only automatic counter rides on an INTEGER PRIMARY KEY, and seq is
-// not the key on any book-scoped table, so the allocation is explicit — and
-// explicit is what the schema wanted anyway: MAX+1 inside the writing
-// transaction rolls back with it, where a sequence deliberately would not. See
-// ledgers.seq, where the argument is recorded.
-//
-// It goes in the VALUES list and never in the ON CONFLICT branch, which is what
-// keeps an upsert from moving an edited row to the end of its listing.
-//
-// MAX+1 is safe without further thought because SQLite admits one writer: two
-// transactions cannot both be allocating. It is also why Reset needs no
-// RESTART IDENTITY — the counter is derived from the rows, so emptying the table
-// restarts it.
 func nextRowSeq(table string) string {
 	return "(SELECT COALESCE(MAX(seq), 0) + 1 FROM " + table + ")"
 }
 
 // placeholders renders "?, ?, ?" for an IN list.
-//
-// SQLite has no array type, so an IN list is built to fit the argument count.
-// Every caller here builds it from a slice it owns rather than from anything a
-// request supplied.
 func placeholders(n int) string {
 	return strings.TrimSuffix(strings.Repeat("?, ", n), ", ")
 }
@@ -117,11 +80,6 @@ func placeholders(n int) string {
 // ---------------------------------------------------------------------------
 
 // nextSeq allocates the next value of one counter, gap-free.
-//
-// The counter is an ordinary row, so the allocation rolls back with the caller's
-// transaction. It is also the serialization point several comments in the schema
-// point at: writing it makes this transaction the database's writer, so a second
-// allocator waits here.
 func (t *tx) nextSeq(ctx context.Context, book ledger.BookID, name string) (int64, error) {
 	if err := t.own(book); err != nil {
 		return 0, err
@@ -141,12 +99,6 @@ func (t *tx) nextSeq(ctx context.Context, book ledger.BookID, name string) (int6
 }
 
 // NextID issues the next ID with the given prefix.
-//
-// One counter is shared by ALL prefixes within a book — the counter is named
-// "id", not named after the prefix — so ldg_1, tx_2 and ent_3 interleave and the
-// number doubles as a creation order. storetest's NextIDSharesOneCounterPerBook
-// is what says so: a store keying its counter by (book, prefix) would still hand
-// out unique ids, and nothing else would notice.
 func (t *tx) NextID(ctx context.Context, book ledger.BookID, prefix string) (string, error) {
 	if err := t.own(book); err != nil {
 		return "", err
@@ -469,48 +421,6 @@ func (t *tx) ListAccounts(ctx context.Context, book ledger.BookID) ([]ledger.Acc
 }
 
 // LockAccounts is a no-op.
-//
-// ledger.Store asks that after this returns, the balance check and the posting
-// that depends on it are one serialized step. Here that is a property of the
-// unit of work rather than something to buy: SQLite admits one writer, so the
-// exclusion a SELECT … FOR UPDATE would arrange is already in force for the
-// whole transaction.
-//
-// SQLite admits one writer, and a transaction that read at one snapshot and then
-// tries to write after somebody else has committed is REFUSED rather than
-// allowed through — so a check-then-post pair either sees a consistent snapshot
-// and commits, or is turned away and re-run by Store.Update with fresh reads.
-// That is what FOR UPDATE was emulating with locks, arrived at by detecting the
-// conflict rather than by preventing it.
-//
-// # A write-taking version was written and measured at zero
-//
-// The plausible port is a statement that changes nothing and makes this
-// transaction the writer from here on — UPDATE accounts SET seq = seq WHERE …
-// so that the balance is read under the write lock. It was implemented and
-// raced against this no-op through ledger.Book.PostTransactionTx on a WAL FILE,
-// two withdrawals of 600 against 1000, with the winner holding its transaction
-// open for 0, 50ms, 300ms and 2.5s; three runs of each.
-//
-// The outcomes are identical, at every hold. One winner and a balance of 400 in
-// every run; the loser reaches ErrInsufficientBalance while the hold is inside
-// the retry budget and surfaces SQLITE_BUSY once it is past it, with and without
-// the write alike. The only thing that changed was WHICH statement named the
-// lock error — "lock accounts" instead of "next id".
-//
-// It buys nothing because the loser is refused at its first write whichever
-// statement that is, and the retry re-reads either way. So the statement is not
-// written: a lock that changes no outcome is a cost and a claim, and the claim
-// would be false.
-//
-// # What this is not
-//
-// The ephemeral store cannot see any of this. storetest's
-// ConcurrentPostingsCannotBothSpendTheSameBalance passes ten runs out of ten
-// with this method emptied, because on memdb a retry's read BLOCKS until the
-// winner commits and the loser therefore reaches the domain guard however the
-// method behaves. The suite is not what holds this; the measurement above is,
-// and it had to open a file to be worth anything.
 func (t *tx) LockAccounts(ctx context.Context, book ledger.BookID, ids []ledger.AccountID) error {
 	if err := t.own(book); err != nil {
 		return err
@@ -534,24 +444,6 @@ const transactionColumns = `
 
 // PutTransaction stores a transaction, its ordered entries and its idempotency
 // claim.
-//
-// There is no check-then-insert. The partial unique index on
-// (book_id, idempotency_key) is the check, and SQLITE_CONSTRAINT_UNIQUE becomes
-// ledger.ErrDuplicateIdempotencyKey: two concurrent postings with the same key
-// cannot both pass a SELECT that found nothing, because there is no such SELECT.
-//
-// # No savepoint, and none is needed
-//
-// One statement and no savepoint: SQLite rolls back the failed STATEMENT and
-// leaves the transaction usable, so a caller who catches the sentinel can carry
-// on. A database that aborted the whole transaction on any error would need one.
-//
-// The cost the rule was really about does reappear one level up, at the unit of
-// work — see isTransient and Store.inUpdate, where a retry pays it.
-//
-// The upsert branch rewrites idempotency_key, so re-putting a transaction under
-// a new key frees the old one: the key lives in the row, not in an index that
-// could outlive it.
 func (t *tx) PutTransaction(ctx context.Context, book ledger.BookID, txn ledger.Transaction) error {
 	if err := t.own(book); err != nil {
 		return err
@@ -668,12 +560,7 @@ func (t *tx) ListTransactions(ctx context.Context, book ledger.BookID) ([]ledger
 
 // ListTransactionsForPosition returns every transaction with a leg on the
 // position — with ALL of its legs, not only the matching ones, which is why the
-// position predicate is an EXISTS rather than a join condition. Over a control
-// account that means one subsidiary's statement carries the other side of each of
-// its own transactions, and none of another subsidiary's.
-//
-// The EXISTS names the entries alias `x` rather than `e`, so subsidiaryClause,
-// which is written against `e`, cannot be used here.
+// position predicate is an EXISTS rather than a join condition.
 func (t *tx) ListTransactionsForPosition(ctx context.Context, book ledger.BookID, pos ledger.Position) ([]ledger.Transaction, error) {
 	if err := t.own(book); err != nil {
 		return nil, err
@@ -754,11 +641,6 @@ func (t *tx) queryTransactions(ctx context.Context, query string, args ...any) (
 }
 
 // MarkReversed flips a transaction from Posted to Reversed, or fails.
-//
-// The UPDATE carries its own precondition, so two concurrent reversals of the
-// same transaction cannot both find it Posted and both win: whichever runs
-// second affects zero rows. The follow-up SELECT only decides which error to
-// report; it is not part of the decision.
 func (t *tx) MarkReversed(ctx context.Context, book ledger.BookID, id ledger.TransactionID) error {
 	if err := t.own(book); err != nil {
 		return err
@@ -792,20 +674,9 @@ func (t *tx) MarkReversed(ctx context.Context, book ledger.BookID, id ledger.Tra
 	return ledger.ErrTransactionAlreadyReversed
 }
 
-// subsidiaryClause is the subsidiary half of a position's entry predicate, and the
-// one place in this store where "an empty Subsidiary means the whole account"
-// is written down.
-//
-// An empty one adds NO predicate rather than `subsidiary_id = ”`, so a control
-// account's own balance is the identical aggregate with the subsidiary dropped.
-// That is what makes Σ(detail) == control a property of these three queries
-// instead of a figure to reconcile. It is unambiguous because
-// ledger.Book.PostTransactionTx leaves no account holding qualified and
-// unqualified legs at once.
-//
-// It is a fragment rather than a whole predicate because the two value-dated
-// callers need it BEFORE their date bounds, and a helper that returned the
-// whole WHERE clause would have to know about those too.
+// subsidiaryClause is the subsidiary half of a position's entry predicate, and
+// the one place in this store where "an empty Subsidiary means the whole
+// account" is written down.
 func subsidiaryClause(pos ledger.Position) (string, []any) {
 	if pos.Subsidiary == "" {
 		return "", nil
@@ -815,15 +686,6 @@ func subsidiaryClause(pos ledger.Position) (string, []any) {
 
 // BookBalance aggregates a position's entries in SQL rather than replaying them
 // in Go: entries in the account's normal direction add, the rest subtract.
-//
-// ALL transactions count, Reversed ones included. The Reversed status is
-// informational — a reversal posts its own mirrored entries, and those are what
-// cancel the original. Filtering reversed transactions out here would
-// double-count the correction.
-//
-// Like every aggregate, a position with no entries is zero, including an
-// account that does not exist and a subsidiary that never had a posting; callers
-// wanting ErrAccountNotFound read the account first.
 func (t *tx) BookBalance(ctx context.Context, book ledger.BookID, pos ledger.Position, normal ledger.Direction) (ledger.Amount, error) {
 	if err := t.own(book); err != nil {
 		return 0, err
@@ -843,12 +705,6 @@ func (t *tx) BookBalance(ctx context.Context, book ledger.BookID, pos ledger.Pos
 
 // SubsidiaryBalances groups a control account's entries by subsidiary. See
 // ledger.Tx for the contract.
-//
-// HAVING rather than a filter in Go: a subsidiary whose entries net to zero is a
-// customer who has repaid, and a listing of what a bank owes should not carry a
-// row of nothing. The empty subsidiary cannot appear on a control account —
-// PostTransactionTx refuses an unqualified entry against one — so no predicate
-// excludes it here.
 func (t *tx) SubsidiaryBalances(ctx context.Context, book ledger.BookID, account ledger.AccountID, normal ledger.Direction) ([]ledger.SubsidiaryBalance, error) {
 	if err := t.own(book); err != nil {
 		return nil, err
@@ -881,17 +737,6 @@ func (t *tx) SubsidiaryBalances(ctx context.Context, book ledger.BookID, account
 
 // ValueDateBalance is BookBalance restricted to entries whose value date falls
 // strictly before the bound. See ledger.Tx for the contract.
-//
-// A zero ValueDate is stored as NULL (see nullTime), and NULL < ? is unknown
-// rather than true, so such an entry is excluded here without a separate
-// IS NOT NULL check. That is deliberate rather than incidental — ledger.Tx makes
-// the exclusion part of the contract, and storetest's
-// ValueDateBalanceExcludesZeroValueDateEntries is what pins it, because reading
-// this query it looks like something the SQL happens to do.
-//
-// The bound is formatted rather than passed as a nullTime, because it is a
-// COMPARAND and not a stored value: a zero bound must compare as the earliest
-// instant, and NULL would make the predicate unknown for every row.
 func (t *tx) ValueDateBalance(ctx context.Context, book ledger.BookID, pos ledger.Position, normal ledger.Direction, before time.Time) (ledger.Amount, error) {
 	if err := t.own(book); err != nil {
 		return 0, err
@@ -913,17 +758,6 @@ func (t *tx) ValueDateBalance(ctx context.Context, book ledger.BookID, pos ledge
 
 // ValueDatedSeries buckets an account's entries by value date in SQL. See
 // ledger.Tx for the contract.
-//
-// The day is the first ten characters of the stored timestamp, and that is the
-// whole of the date arithmetic: the column is already UTC and fixed-width by
-// store/sqlite/time.go, so its first ten characters ARE its UTC day. It is the
-// same property the schema chose TEXT timestamps for, used a second time.
-//
-// A zero ValueDate is stored as NULL, and substr(NULL) is NULL, so such an entry
-// falls out of every group rather than landing in one for year 1. That is the
-// same exclusion ValueDateBalance makes, arrived at the same free way, and
-// storetest's ValueDatedSeriesExcludesZeroValueDateEntries pins it separately
-// because the buckets are built by different code from the balance.
 func (t *tx) ValueDatedSeries(ctx context.Context, book ledger.BookID, pos ledger.Position, normal ledger.Direction, from, to time.Time) (ledger.Series, error) {
 	if err := t.own(book); err != nil {
 		return ledger.Series{}, err

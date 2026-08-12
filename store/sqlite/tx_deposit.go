@@ -16,9 +16,6 @@ import (
 // The deposit half of tx. It is the same type that implements ledger.Tx, and
 // that is the whole point: a capture's hold write and its GL posting are two
 // statements in one SQLite transaction, so they commit or roll back together.
-//
-// The method names carry a Deposit prefix where ledger.Tx already claimed the
-// bare one (PutAccount, GetAccount, ListAccounts); see deposit.Tx for why.
 
 // compile-time check that tx satisfies the deposit interface too.
 var _ deposit.Tx = (*tx)(nil)
@@ -29,10 +26,6 @@ var _ deposit.Tx = (*tx)(nil)
 
 // NextAddressSerial draws from a counter named "iban", beside the book's shared
 // "id" counter in the same table and allocated the same way.
-//
-// The counter has no table of its own and needs none: it is only meaningful
-// where there are accounts to address, and it is on deposit.Tx, so only a
-// bank's unit of work can name it.
 func (t *tx) NextAddressSerial(ctx context.Context, book ledger.BookID) (uint64, error) {
 	n, err := t.nextSeq(ctx, book, "iban")
 	if err != nil {
@@ -170,16 +163,6 @@ func (t *tx) ListDepositAccounts(ctx context.Context, book ledger.BookID) ([]dep
 }
 
 // hydrateIdentifiers fills Identifiers on the accounts given, in ONE query.
-//
-// One query and not one per account: the multi-asset rework found exactly this
-// N+1 in two listing endpoints, and a bank with a page of customers would
-// reintroduce it here.
-//
-// No collation qualifier. A database whose default collation ignored punctuation
-// at the first level would sort SE89-AURORA-1001 and SE89AURORA0999 by where it
-// had been created; SQLite's default is BINARY, which IS byte order, so the
-// qualifier would be a no-op. storetest orders these ascending by (scheme,
-// value) and two identifiers written out of order are what checks it.
 func (t *tx) hydrateIdentifiers(ctx context.Context, book ledger.BookID, accounts []deposit.Account) error {
 	if err := t.own(book); err != nil {
 		return err
@@ -223,35 +206,7 @@ func (t *tx) hydrateIdentifiers(ctx context.Context, book ledger.BookID, account
 }
 
 // ListDepositAccountsByIdentifier returns every account in the book holding
-// this (scheme, value) pair. EXISTS rather than a JOIN, so that an account with
-// the pair recorded twice — which nothing here prevents; see
-// deposit_account_identifiers in the schema — still surfaces once and not twice.
-//
-// The scheme matches exactly and the VALUE matches under the scheme's own
-// comparison rule, which for an IBAN means separators removed and case folded
-// on both sides: a register stores DE20999000010000000001 and a customer types
-// DE20 9990 0001 0000 0000 01 off their statement, and those are one address.
-// See deposit.Identifier.MatchValue, which is where the rule and its reasons
-// live.
-//
-// upper() as well as replace(), because iban.Compact folds case and this has to
-// reach the same answer. The bind parameter arrives folded already — it is
-// MatchValue's output — so the column is the side that needs it, and a row this
-// bank did not mint is the only way one gets here unfolded.
-//
-// The predicate is chosen in Go from the scheme rather than written as a CASE,
-// because only the IBAN arm may normalise anything: an identifier scheme whose
-// values legitimately contain hyphens, or whose case is significant, would have
-// two addresses silently merged. This SQL is the third place the rule is
-// written — the other two are iban.Compact and iso20022.IBAN — and it is the one
-// the compiler cannot check, so it is pinned by
-// storetest/ListDepositAccountsByIdentifierMatchesAnIBANThroughItsSeparators,
-// which fails if this SQL and deposit.Identifier.MatchValue disagree.
-//
-// For the IBAN arm it gives up the VALUE column of the (book_id, scheme, value)
-// index, which is the honest cost of comparing a derived form; the
-// (book_id, scheme) prefix still applies. See the index in the schema, where the
-// alternatives and the reason neither was taken are recorded.
+// this (scheme, value) pair.
 func (t *tx) ListDepositAccountsByIdentifier(ctx context.Context, book ledger.BookID, ident deposit.Identifier) ([]deposit.Account, error) {
 	if err := t.own(book); err != nil {
 		return nil, err
@@ -378,12 +333,6 @@ func (t *tx) ListHoldsForAccount(ctx context.Context, book ledger.BookID, id dep
 
 // ActiveHoldTotal sums the holds that currently reduce an account's available
 // balance: still Active, and not past their expiry as at now.
-//
-// NULL expires_at is a hold that never expires — Go's zero time.Time, which
-// nullTime writes as NULL — and it is admitted by an explicit IS NULL rather
-// than by the comparison, which would be unknown for exactly those rows. Expiry is strictly before now, so a hold
-// expiring exactly at now still counts. Like BookBalance this is an aggregate:
-// an unknown account is 0, not an error.
 func (t *tx) ActiveHoldTotal(ctx context.Context, book ledger.BookID, id deposit.AccountID, now time.Time) (ledger.Amount, error) {
 	if err := t.own(book); err != nil {
 		return 0, err
@@ -405,9 +354,7 @@ func (t *tx) ActiveHoldTotal(ctx context.Context, book ledger.BookID, id deposit
 // ---------------------------------------------------------------------------
 
 // PutSnapshot upserts a snapshot under (account, business date): a second
-// snapshot for the same date replaces the first. The date key is derived with
-// deposit.SnapshotDateKey, which is also what GetSnapshot is handed, so the two
-// agree by construction.
+// snapshot for the same date replaces the first.
 func (t *tx) PutSnapshot(ctx context.Context, book ledger.BookID, s deposit.Snapshot) error {
 	if err := t.own(book); err != nil {
 		return err
@@ -499,10 +446,7 @@ func (t *tx) ListSnapshotsForAccount(ctx context.Context, book ledger.BookID, id
 // Effective-dated overdraft terms
 // ---------------------------------------------------------------------------
 
-// PutOverdraftTerms upserts under (account, effective day). The day key is
-// derived with deposit.TermsDayKey — the same function GetOverdraftTermsAsOf
-// compares against — so the write and the as-of read cannot disagree about which
-// day a repricing landed in. Nothing here truncates a date; see that function.
+// PutOverdraftTerms upserts under (account, effective day).
 func (t *tx) PutOverdraftTerms(ctx context.Context, book ledger.BookID, row deposit.OverdraftTerms) error {
 	if err := t.own(book); err != nil {
 		return err
@@ -563,10 +507,7 @@ func scanOverdraftTerms(row interface{ Scan(...any) error }) (deposit.OverdraftT
 		&rate, &unarranged, &dayCount, &created); err != nil {
 		return deposit.OverdraftTerms{}, err
 	}
-	// The overlay is reconstructed only when all three columns are present. The
-	// mixed state cannot be written through deposit.OverdraftTerms.Validate, and
-	// treating a partial row as an overlay would price an account from half a
-	// price rather than failing where it can be seen.
+	// The overlay is reconstructed only when all three columns are present.
 	if rate.Valid && unarranged.Valid && dayCount.Valid {
 		out.Pricing = &product.OverdraftPricing{
 			Rate:           interest.Rate(rate.Int64),
@@ -606,11 +547,7 @@ func (t *tx) ListOverdraftTermsForAccount(ctx context.Context, book ledger.BookI
 	return out, rows.Err()
 }
 
-// GetOverdraftTermsAsOf is the row in force on a day. It compares day_key
-// rather than effective_from so that the bound is a DAY on both sides — the
-// caller's instant is truncated by deposit.TermsDayKey in Go, and the column it
-// is compared against was written the same way, so no timestamp arithmetic
-// happens in the database at all.
+// GetOverdraftTermsAsOf is the row in force on a day.
 func (t *tx) GetOverdraftTermsAsOf(ctx context.Context, book ledger.BookID, id deposit.AccountID, day time.Time) (deposit.OverdraftTerms, error) {
 	if err := t.own(book); err != nil {
 		return deposit.OverdraftTerms{}, err

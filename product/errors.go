@@ -15,25 +15,14 @@ var (
 	ErrVersionNotFound = errors.New("no published product version in force on that day")
 
 	// ErrProductRetired is returned when a retired product is used to open or
-	// migrate an account. It never stops RESOLUTION: the accounts already sold
-	// from a withdrawn product keep pricing against its last version for as
-	// long as they live, and a bank that could not express that would have to
-	// keep dead products on sale.
+	// migrate an account.
 	ErrProductRetired = errors.New("product is retired")
 
 	// ErrVersionPublished is returned when a published version is written to.
-	// A published version is the configuration a past calculation used, so
-	// editing one is editing history — which is the whole thing this package
-	// exists to prevent.
 	ErrVersionPublished = errors.New("product version is published and cannot be changed")
 
 	// ErrRetroactivePublish is returned when a version would be published
 	// effective before today.
-	//
-	// It would reprice every account bound to the product retroactively, moving
-	// interest that has already been charged to customers, with the audit log as
-	// the only control on it. Retroactivity stays where its blast radius is one
-	// customer: the per-account pricing overlay. See the design doc.
 	ErrRetroactivePublish = errors.New("a product version cannot be published effective in the past")
 
 	// ErrHashMismatch is returned when a version's stored hash does not match
@@ -52,12 +41,5 @@ var (
 	ErrInvalidRate = errors.New("invalid product pricing")
 
 	// ErrNameRequired is returned for a product with no name.
-	//
-	// ledger.ValidateText deliberately accepts the empty string — required-ness
-	// is a domain rule, kept separate from the one text rule every field shares
-	// (ledger/text.go). Here the domain rule is that a catalogue entry without a
-	// name is not a product: the header row exists precisely so a product has a
-	// name before it has a price, and an unnamed one would be a price nobody can
-	// ask for by name.
 	ErrNameRequired = errors.New("product name is required")
 )

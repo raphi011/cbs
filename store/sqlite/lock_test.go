@@ -15,25 +15,6 @@ import (
 
 // Two postings that cannot both spend the same balance, driven through
 // ledger.Book on a FILE.
-//
-// storetest has this case and it runs on the ephemeral store, where it cannot
-// fail for the reason it is about: on memdb a retry's read blocks until the
-// winner commits, so the loser reaches the domain guard whatever the store does
-// underneath — measured, ten runs out of ten with tx.LockAccounts emptied. Under
-// WAL a reader runs past an uncommitted writer, so the loser can re-read a stale
-// balance and pass the domain's check on it, and only converges once an attempt
-// begins after the commit.
-//
-// So this is the same case on the configuration that can fail it, and it is the
-// only test in the repository that drives the real posting path — GetAccount,
-// LockAccounts, the balance check, NextID, PutTransaction — against a file. The
-// synthetic pair in sqlite_test.go pins the retry and its budget on one table;
-// this pins that the composition still lands on the domain's own refusal.
-//
-// The hold is what makes the winner keep its transaction open past the loser's
-// first attempt. It is far shorter than the retry budget, deliberately: what is
-// asserted here is that the loser is refused for the DOMAIN's reason, and the
-// budget's own limit is TestTheRetryBudgetOutlastsASlowWriter's subject.
 func TestConcurrentPostingsOnAFileReachTheDomainGuard(t *testing.T) {
 	ctx := context.Background()
 	s, err := sqlite.OpenBank(ctx, testenv.BankBook, filepath.Join(t.TempDir(), "postings.db"), frozen)
@@ -116,9 +97,7 @@ func TestConcurrentPostingsOnAFileReachTheDomainGuard(t *testing.T) {
 
 // fundedChart builds a minimal chart of accounts and funds the cash account,
 // returning the Asset account under test and an Equity counterparty. Equity is
-// not balance-checked, so it can absorb any leg the test needs. It is
-// storetest's helper, which is unexported there and small enough to have here
-// rather than to widen that package's surface for one caller.
+// not balance-checked, so it can absorb any leg the test needs.
 func fundedChart(t *testing.T, book *ledger.Book, amount ledger.Amount) (cash, equity ledger.AccountID) {
 	t.Helper()
 	ctx := context.Background()

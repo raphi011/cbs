@@ -5,21 +5,11 @@ import (
 	"time"
 )
 
-// testTime is this package's fixture instant. It is the same instant
-// sample009 and testdata/pacs009.xml already use — see pacs009_test.go — given
-// a name here because this is the first test in the package that needs one
-// without also needing an Envelope built around it. A second, different
-// instant in the golden set would be noise; this one keeps the set to one.
+// testTime is this package's fixture instant.
 var testTime = time.Date(2026, 8, 1, 10, 30, 0, 0, time.UTC)
 
 // TestCamt053GoldenRoundTrip is the statement's round trip through the codec,
 // against a committed sample.
-//
-// It is the FIRST camt message in this package, and the first message here whose
-// account is addressed by the Othr arm of AccountIdentification4Choice rather
-// than by IBAN — a reserve account at a central bank has no IBAN, because it is
-// not a payment address. See GenericAccountIdentification, whose doc said
-// nothing in this system produced one until now.
 func TestCamt053GoldenRoundTrip(t *testing.T) {
 	env := assertGoldenRoundTrip(t, "camt053.xml")
 
@@ -47,11 +37,6 @@ func TestCamt053GoldenRoundTrip(t *testing.T) {
 
 // TestCamt053RefusesAStatementWithNoBalance pins the element that makes this
 // message worth choosing over a camt.054.
-//
-// A notification carries entries and no balance, so it can drive a posting and
-// can never detect a wrong one. A statement carries both. A Bal-less statement
-// would be a camt.054 wearing a camt.053's name, and this package refuses to
-// build or to parse one.
 func TestCamt053RefusesAStatementWithNoBalance(t *testing.T) {
 	doc := &Camt053{BkToCstmrStmt: BankToCustomerStatement{
 		GrpHdr: StatementGroupHeader{MsgId: "msg_1", CreDtTm: ISODateTime{Time: testTime}},

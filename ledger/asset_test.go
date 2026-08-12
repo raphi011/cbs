@@ -34,9 +34,7 @@ func TestLookupAssetUnknownCode(t *testing.T) {
 }
 
 // The cap exists because Amount is an int64: at 18 decimal places it would hold
-// 9.2 whole units. With the list in code there is no runtime registration to
-// refuse a bad scale, so the list itself is what has to respect the bound —
-// this is the check that a future entry cannot quietly break it.
+// 9.2 whole units.
 func TestKnownAssetsRespectMaxScale(t *testing.T) {
 	assets := ledger.Assets()
 	if len(assets) == 0 {
@@ -126,12 +124,6 @@ func TestCreateAccountRejectsUnknownAsset(t *testing.T) {
 
 // newAccountIn creates an account named name, of type typ, denominated in
 // asset, in subledger sl.
-//
-// The subledger is a parameter rather than one created per call because the
-// per-asset rule is a property of a transaction, not of where its accounts are
-// filed: a trade posted against four accounts in four different subledgers is
-// not a shape any book actually has, and proving the rule only there would
-// leave the real one — one chart, several assets — untested.
 func newAccountIn(t *testing.T, book *ledger.Book, sl ledger.Subledger, name string, asset ledger.AssetCode, typ ledger.AccountType) ledger.Account {
 	t.Helper()
 
@@ -163,10 +155,10 @@ func TestPostRejectsCrossAssetTransfer(t *testing.T) {
 	if !errors.Is(err, ledger.ErrUnbalancedAsset) {
 		t.Fatalf("cross-asset PostTransaction error = %v, want ErrUnbalancedAsset", err)
 	}
-	// EUR specifically, not "either of the two". validateBalance walks its
-	// assets in first-appearance order precisely so the message is
-	// deterministic, and the EUR leg is first here; an assertion that passed
-	// on either code would not notice if that ordering were lost.
+	// EUR specifically, not "either of the two". validateBalance walks its assets
+	// in first-appearance order precisely so the message is deterministic, and the
+	// EUR leg is first here; an assertion that passed on either code would not
+	// notice if that ordering were lost.
 	if !strings.Contains(err.Error(), "EUR") {
 		t.Errorf("error %q does not name EUR, the first unbalanced asset", err)
 	}

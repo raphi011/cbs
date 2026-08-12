@@ -25,27 +25,17 @@ var (
 	// checked rather than typed — see the package doc.
 	ErrInvalidChoice = errors.New("iso20022: exactly one member of a choice must be set")
 
-	// ErrElementNotAllowed is returned when an element is set that the ISO
-	// schema does not merely leave optional for this particular message, but
-	// does not define at all. It is the mirror image of ErrMissingElement:
-	// where that sentinel means an element the wire format requires never
-	// arrived, this one means an element the wire format has no room for was
-	// supplied anyway. pacs.008's SeqTp is this package's first case — a
-	// field legal in pacs.003's PaymentTypeInformation27 and absent from
-	// pacs.008's own PaymentTypeInformation28 entirely, because a struct
-	// shared between the two messages cannot express "this field exists only
-	// for one of my two users" through Go's type system alone.
+	// ErrElementNotAllowed is returned when an element is set that the ISO schema
+	// does not merely leave optional for this particular message, but does not
+	// define at all.
 	ErrElementNotAllowed = errors.New("iso20022: element not allowed for this message")
 
 	// ErrBICFormat is returned by BIC.Validate for a value that is not a
 	// structurally valid ISO 9362 business identifier code.
 	ErrBICFormat = errors.New("iso20022: malformed BIC")
 
-	// ErrIBANPattern is returned by IBAN.Validate for a value that does not
-	// match the schema's IBAN2007Identifier pattern.
-	//
-	// The pattern, not the check digit: this package deliberately does not
-	// verify ISO 7064 mod-97. See the IBAN type.
+	// ErrIBANPattern is returned by IBAN.Validate for a value that does not match
+	// the schema's IBAN2007Identifier pattern.
 	ErrIBANPattern = errors.New("iso20022: IBAN does not match the ISO 20022 pattern")
 
 	// ErrAmountScale is returned when a decimal amount carries more fraction

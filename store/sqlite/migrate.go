@@ -14,35 +14,6 @@ var schemaFS embed.FS
 
 // migrate applies every embedded migration for one SHAPE that has not run yet,
 // each in its own transaction, in filename order.
-//
-// # One migration per shape, which is where CLAUDE.md's rule went
-//
-// One migration per schema, edited in place, because no database is deployed:
-// every database this repository meets is ephemeral or a throwaway file, both of
-// which migrate from empty, so there is no history for anyone to replay and a
-// second file would be ceremony. There are three schemas because there are three
-// kinds of database, not because anything was layered on top of anything.
-//
-// So a shape names a DIRECTORY and the files in it are that shape's history.
-// Each still has exactly one, and each is still edited in place.
-//
-// # No advisory lock, and none is needed
-//
-// No advisory lock: SQLite admits one writer at a time, so a second migrator
-// waits at the first statement and then finds the applied row already there.
-//
-// # Keyed on filename, with no checksum
-//
-// A migration that is edited after it has run stays applied and the edit is
-// never seen. While each shape has one migration the difference is invisible.
-//
-// The filename is the key and the shape's directory is NOT part of it, which is
-// safe only because no database is ever migrated as two shapes. A store is
-// opened for one shape and keeps it; there is no path that would apply
-// bank/0001_init.sql and then find csm/0001_init.sql already recorded. If a
-// shape ever had to be layered onto an existing database that rule would have to
-// come back as a composite key, and it would come back as a data migration
-// rather than as a change here.
 func migrate(ctx context.Context, db *sql.DB, shape Shape) error {
 	if _, err := db.ExecContext(ctx, `
 		CREATE TABLE IF NOT EXISTS schema_migrations (

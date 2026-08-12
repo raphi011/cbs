@@ -9,48 +9,6 @@ import (
 )
 
 // Repay applies a payment to a facility, interest before principal.
-//
-//	Dr  counterparty                          19_333
-//	  Cr Accrued interest receivable (Asset)     4_932
-//	  Cr Loan principal (Asset)                  14_401
-//
-// # Interest means what accrued, not what the schedule projected
-//
-// The schedule's Interest column for that instalment is €50.00 — one twelfth of
-// 6% on €10,000. Thirty days of ACT/365 accrual is €49.32. Allocating against
-// the schedule would credit €50.00 of interest income that had not been earned;
-// allocating against the accrual leaves the principal portion to absorb the
-// difference, which is what real systems do. The schedule is a plan for due
-// dates and amounts, not a statement of fact.
-//
-// This is exactly why the 30/360 convention exists: under it a calendar month
-// accrues precisely a twelfth, and plan and actual agree to the cent.
-//
-// # Two allocations, one payment
-//
-// The LEDGER allocation is by component — receivable first, then principal —
-// because those are two accounts and the payment has to say how much of it
-// belongs to each.
-//
-// The SCHEDULE allocation is by instalment, oldest first, filling each one's
-// interest then its principal until the payment runs out. That is separate
-// bookkeeping about which instalments are satisfied, and it is what arrears
-// reads. Keeping them separate is what lets a revolving line — whose interest
-// is capitalized into principal each cycle, so nothing is left in the
-// receivable — still have its minimum payments marked paid.
-//
-// Arrears are recomputed from the updated schedule before this returns, so a
-// borrower who has just caught up is current immediately rather than at the
-// next end-of-day. Recomputing is cheap and total — see ArrearsFor — which is
-// what makes doing it at both moments consistent rather than duplicated.
-//
-// counterparty is any position in the facility's asset. This layer does not
-// know what a deposit account is, so a repayment that must also respect one's
-// status and available balance is orchestrated a layer up, calling
-// deposit.CheckWithdrawalTx and RepayTx through the same Tx.
-//
-// Returns ErrFacilityNotFound, ErrFacilityClosed, ErrInvalidAmount for a
-// non-positive amount or one exceeding what is owed, and ErrNothingOutstanding.
 func (p *Portfolio) Repay(ctx context.Context, id FacilityID, counterparty ledger.Position, amount ledger.Amount, date time.Time, description string) (ledger.Transaction, error) {
 	var out ledger.Transaction
 	err := p.store.Update(ctx, func(ctx context.Context, tx Tx) error {
@@ -131,10 +89,8 @@ func (p *Portfolio) RepayTx(ctx context.Context, tx Tx, id FacilityID, counterpa
 		return ledger.Transaction{}, err
 	}
 	// Arrears are a pure function of the schedule, and the schedule has just
-	// changed — so recompute now rather than leaving a borrower who has caught
-	// up showing yesterday's bucket until the next end-of-day. It runs in this
-	// same unit of work, on the facility record this method has already
-	// written, so the recompute cannot survive a repayment that rolls back.
+	// changed — so recompute now rather than leaving a borrower who has caught up
+	// showing yesterday's bucket until the next end-of-day.
 	if _, err := p.recomputeArrearsFacilityTx(ctx, tx, f, date); err != nil {
 		return ledger.Transaction{}, err
 	}
@@ -152,11 +108,6 @@ func (p *Portfolio) RepayTx(ctx context.Context, tx Tx, id FacilityID, counterpa
 
 // applyToScheduleTx marks instalments satisfied, oldest first, filling each
 // one's interest then its principal until the payment runs out.
-//
-// This is bookkeeping about the plan, not about the ledger — the money has
-// already been posted by component. It is what arrears reads, which is why an
-// unallocated payment would leave a facility permanently delinquent even though
-// its balance was falling.
 func (p *Portfolio) applyToScheduleTx(ctx context.Context, tx Tx, f Facility, amount ledger.Amount) error {
 	schedule, err := tx.ListInstallments(ctx, p.bookID, f.ID)
 	if err != nil {
@@ -192,17 +143,6 @@ func (p *Portfolio) applyToScheduleTx(ctx context.Context, tx Tx, f Facility, am
 
 // OutstandingOf is what a facility owes, from the two figures it is made of:
 // drawn principal plus the receivable.
-//
-// A NEGATIVE receivable contributes nothing. It arises from a backdated
-// correction that overshot — the bank owes the borrower interest back — and
-// that debt runs the other way, so netting it in here would report a smaller
-// loan rather than an obligation. What discharges it is RefundInterest.
-//
-// It takes the figures rather than reading them because its two callers hold
-// them already and hold them differently: Outstanding below reads inside its own
-// unit of work, and the wire renderer is handed them by a caller that resolved
-// a whole listing at once. A rule with two arithmetics is a rule that can differ
-// by route.
 func OutstandingOf(drawn, receivable ledger.Amount) ledger.Amount {
 	if receivable < 0 {
 		receivable = 0
@@ -230,22 +170,7 @@ func (p *Portfolio) Outstanding(ctx context.Context, id FacilityID) (ledger.Amou
 
 // Close ends a facility. It refuses one that still owes anything — drawn
 // principal OR accrued interest — which is the same rule deposit.CloseTx
-// applies to an account's balance and its own interest receivable. A closed
-// facility that still had a balance would be money owed to a bank by a contract
-// the bank says is over, and a stranded receivable would be recognized income
-// no one can ever collect.
-//
-// The interest test is the receivable's own book balance, not Accrued.Minor(),
-// for the same reason deposit.CloseTx tests its receivable that way: a
-// capitalization or repayment residue is bounded by half a minor unit and
-// Minor() of it rounds to zero, except at an EXACT half, where Minor() rounds
-// away from zero to ±1 even though the receivable itself is already cleared.
-// Testing the record there would lock a fully-settled facility shut forever.
-//
-// Closed is terminal — no further drawing, no further repayment, and no further
-// accrual.
-//
-// Returns ErrFacilityNotFound and ErrFacilityNotEmpty.
+// applies to an account's balance and its own interest receivable.
 func (p *Portfolio) Close(ctx context.Context, id FacilityID) error {
 	return p.store.Update(ctx, func(ctx context.Context, tx Tx) error {
 		return p.CloseTx(ctx, tx, id)

@@ -13,10 +13,8 @@ func date(y int, m time.Month, d int) time.Time {
 
 func day(t time.Time) string { return t.Format("2006-01-02") }
 
-// TestTheSixHolidaysAcrossADecade walks every year from 2020 to 2030 and asserts
-// that each of the six closing days is named and shut. The two movable ones are
-// derived from Easter, which its own suite pins to known dates, so a computus
-// that drifted would fail there and be caught here as well.
+// TestTheSixHolidaysAcrossADecade walks every year from 2020 to 2030 and
+// asserts that each of the six closing days is named and shut.
 func TestTheSixHolidaysAcrossADecade(t *testing.T) {
 	for year := 2020; year <= 2030; year++ {
 		easter := calendar.Easter(year)

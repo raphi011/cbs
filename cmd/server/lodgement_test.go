@@ -13,12 +13,6 @@ import (
 
 // lodgementFails is a settlement agent whose domain act refuses everything with
 // one error, and is otherwise the real one.
-//
-// It embeds settlementOps rather than implementing it, so a method added to that
-// interface reaches these tests without touching them — and so the ONE method
-// under test is the only one that is not the real implementation. Everything
-// receiveLodgement does before and after the act is therefore genuine: the reader,
-// the message id, the send.
 type lodgementFails struct {
 	settlementOps
 	err error
@@ -30,12 +24,6 @@ func (o lodgementFails) ReceiveLodgement(context.Context, payment.LodgementInstr
 
 // lodgementFor runs the lodging bank's own half for real and hands back the
 // camt.050 it would have sent.
-//
-// The leg is COMMITTED by the time this returns, which is the premise both tests
-// below rest on and the reason neither can be written against a hand-built
-// message: payment.LodgeReservesTx posts Debit Reserve / Credit Vault Cash before
-// the request exists, so what the agent's answer is about is money that has
-// already moved in the member's book.
 func lodgementFor(t *testing.T, h *harness, amount ledger.Amount, msgID string) (iso20022.AppHdr, *iso20022.Camt050) {
 	t.Helper()
 	ctx := context.Background()
@@ -60,24 +48,6 @@ func lodgementFor(t *testing.T, h *harness, amount ledger.Amount, msgID string) 
 // TestAStoreFailureAtTheAgentIsNotARefusal is the money test on this branch's
 // newest conversation, and the defect it pins was live until a whole-branch
 // review found it.
-//
-// receiveLodgement answered EVERY non-duplicate error with a refusing camt.025.
-// That is safe for a request whose sender has posted nothing, and a lodging
-// member has already committed its leg. So a store failure at the agent — a retry budget
-// exhausted under contention, a cancelled context, an I/O error — came back to
-// the member as a JUDGEMENT about its request, and the member's reserve mirror
-// stayed raised against an agent whose book never moved. Nothing retries and
-// nothing can unwind it, because the amount is not on the receipt.
-//
-// What is asserted is the discrimination and not the mirror: both outcomes leave
-// the mirror overstated, and saying otherwise would be the overclaim this
-// package's log keeps recording. The difference this test is about is that a dead
-// letter is a visible break an operator can re-drive, and a refusal is a break
-// dressed as a completed conversation.
-//
-// The error is deliberately one no table classifies. A sentinel would prove
-// nothing here — the question is what happens to an error the agent has never
-// heard of, which is what a store failure is.
 func TestAStoreFailureAtTheAgentIsNotARefusal(t *testing.T) {
 	h := newHarness(t)
 	hdr, doc := lodgementFor(t, h, 40_000, "lodge-store-failure")
@@ -101,9 +71,7 @@ func TestAStoreFailureAtTheAgentIsNotARefusal(t *testing.T) {
 		t.Errorf("the reported problem does not carry the cause: %v", err)
 	}
 	// The tap records a file when it CROSSES, so a receipt sitting in a queue is
-	// not on it until somebody collects. The camt.050 was never uploaded — this
-	// test calls the handler directly — so carrying the day here would deliver a
-	// receipt and nothing else.
+	// not on it until somebody collects.
 	h.work(t)
 	if sent := h.messagesFrom(mark); len(sent) != 0 {
 		t.Errorf("a store failure put %d messages on the wire, want none; "+
@@ -111,23 +79,9 @@ func TestAStoreFailureAtTheAgentIsNotARefusal(t *testing.T) {
 	}
 }
 
-// TestALodgementRefusalIsAJudgement is the other side of the same discrimination,
-// and it is what stops the fix for the test above from being "never answer".
-//
-// Every sentinel in lodgementRefusals is a judgement the agent made about the
-// request — a member it holds no account for, an asset it holds none in for that
-// member, an account number that is not the one it holds, an amount that is not
-// an amount. Each of those the member can act on, and refusing to a counterparty
-// is completed work rather than a defect.
-//
-// It also pins the LIST against payment.ReceiveLodgementTx's "What it refuses"
-// section. The two are a pair maintained by hand, and a sentinel added there and
-// not here would silently become a line in the day's report.
-//
-// Each is wrapped before it is returned, because that is how the domain returns
-// them — with the BIC and the account the refusal is about, which is the prose the
-// receipt carries as its Desc. An identity check would pass here and fail in
-// production.
+// TestALodgementRefusalIsAJudgement is the other side of the same
+// discrimination, and it is what stops the fix for the test above from being
+// "never answer".
 func TestALodgementRefusalIsAJudgement(t *testing.T) {
 	for _, sentinel := range lodgementRefusals {
 		t.Run(sentinel.Error(), func(t *testing.T) {

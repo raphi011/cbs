@@ -18,23 +18,10 @@ import (
 func frozen() time.Time { return time.Unix(0, 0).UTC() }
 
 // testBook is the book the stores below answer for.
-//
-// A bank's book is its BIC in production and this is not one, deliberately: none
-// of the cases in this file is about an institution. They are about the driver,
-// the pragmas, the retry loop and the schema dump, and dressing their fixtures
-// up as a member bank would suggest the value carried meaning here. The one
-// thing it must be is CONSISTENT with the store, because a store answers for
-// exactly one book and refuses the rest — see ErrNotThisStoresBook.
 const testBook ledger.BookID = "bank"
 
 // newStore opens an ephemeral BANK store of its own, migrated and empty, closed
 // and deleted when the test ends.
-//
-// The bank shape is the default here because it is the widest — every table any
-// shape has except the clearing house's roster and cycles and the central bank's
-// member register — so a case about the driver rather than about an institution
-// has the most to reach for. The three cases that ARE about a shape say which
-// one; see newShapeStore.
 func newStore(t *testing.T) *store {
 	t.Helper()
 	return newShapeStore(t, Bank, testBook)
@@ -42,10 +29,6 @@ func newStore(t *testing.T) *store {
 
 // newShapeStore opens an ephemeral store of a named shape, for the cases that
 // are about the schema rather than about the store.
-//
-// It reaches past the three constructors to the body they share, because these
-// cases are about the DRIVER — the retry, the pragmas, what sqlite_master holds —
-// and an institution is not what any of them is measuring.
 func newShapeStore(t *testing.T, shape Shape, book ledger.BookID) *store {
 	t.Helper()
 	s, err := open(context.Background(), shape, book, "", frozen)
@@ -61,12 +44,6 @@ func newShapeStore(t *testing.T, shape Shape, book ledger.BookID) *store {
 }
 
 // Foreign keys are enforced.
-//
-// This is the test the package doc calls the reason the pragmas ride in the DSN.
-// SQLite ignores REFERENCES unless foreign_keys is on, per connection, and it is
-// off by default — so dropping it from the DSN changes NO other test outcome
-// anywhere in this repository. Twenty-two REFERENCES clauses would become
-// decoration and every suite would stay green.
 func TestForeignKeysAreEnforced(t *testing.T) {
 	s := newStore(t)
 	ctx := context.Background()
@@ -107,11 +84,6 @@ func TestForeignKeysAreEnforced(t *testing.T) {
 }
 
 // The pragma reaches every connection in the pool, not just the first.
-//
-// A pragma issued as a statement after Open configures exactly one connection
-// and then looks like it worked. This asks several connections at once — held
-// open simultaneously, so the pool has to produce distinct ones rather than
-// handing the same warm connection back each time.
 func TestPragmasReachEveryPooledConnection(t *testing.T) {
 	s := newStore(t)
 	ctx := context.Background()
@@ -139,36 +111,13 @@ func TestPragmasReachEveryPooledConnection(t *testing.T) {
 
 // Each shape holds exactly the unique indexes its sentinel mapping can tell
 // apart, and for the clearing house that number is ZERO.
-//
-// The sentinel mapping depends on it. SQLite names no index in a constraint
-// error, so a unique conflict is identified by the extended code alone
-// (SQLITE_CONSTRAINT_UNIQUE) — which is exactly as targeted as an index name,
-// and only while the idempotency index is the only unique index in the database
-// the conflict came from. Add a second and the mapping silently starts answering
-// ErrDuplicateIdempotencyKey to an unrelated collision.
-//
-// It is PER SHAPE, and the interesting number is the csm's. The clearing house
-// keeps no book of accounts, so it has no transactions table and therefore no
-// idempotency index — which means SQLITE_CONSTRAINT_UNIQUE is UNRAISABLE in that
-// database. Worth asserting rather than leaving implied: a unique index added
-// there would have no mapping at all, and the first conflict on it would surface
-// as a driver string.
-//
-// sqlite_autoindex_* entries are excluded: those are the indexes SQLite creates
-// for PRIMARY KEY and UNIQUE column constraints, they raise
-// SQLITE_CONSTRAINT_PRIMARYKEY rather than …_UNIQUE, and they are not what the
-// mapping is about.
 func TestExactlyOneUniqueIndexPerShapeThatHasABook(t *testing.T) {
 	for _, c := range []struct {
 		shape Shape
 		book  ledger.BookID
 		want  []string
 	}{
-		// An equality, not a bound. "At most one" was what could be asserted
-		// before the schema was translated; now the one index is there, and
-		// naming it is what makes this fail if it is ever RENAMED or dropped as
-		// well as if a second one appears. A dropped index would leave the
-		// mapping answering ErrDuplicateIdempotencyKey to nothing at all.
+		// An equality, not a bound.
 		{Bank, testBook, []string{"transactions_idempotency_key_idx"}},
 		{CentralBank, payment.CentralBankBook, []string{"transactions_idempotency_key_idx"}},
 		// Nil rather than empty, because that is what a nil slice scans to
@@ -208,25 +157,6 @@ func TestExactlyOneUniqueIndexPerShapeThatHasABook(t *testing.T) {
 }
 
 // The arguments in the schema reach a schema dump.
-//
-// This is the property CLAUDE.md protects — the reasoning is recorded in the
-// database, because a missing constraint is invisible in a schema dump. It holds
-// only for comments inside a statement's parentheses: one moved above its
-// statement is dropped silently, so it is worth a test rather than a convention
-// nobody checks.
-//
-// What is asserted is not that comments exist. It is that the arguments about
-// what the schema does NOT do are in the database, one of each kind the ruling
-// distinguishes: an absent constraint on a table, an absent one recorded on an
-// index's column list, and a COMMENT ON COLUMN's successor. Any of them moved
-// back to column 0 fails this and nothing else in the repository.
-//
-// One case per SHAPE, because there are three schema files and a comment that
-// slid to column 0 in one of them is invisible to a check on another. The csm's
-// two are the ones worth naming: it is the shape with no book of accounts, so
-// its arguments are all about tables the other two do not have or foreign keys
-// that cross into another institution's database — the class of argument that
-// has no column to hang on and would otherwise live nowhere.
 func TestSchemaArgumentsReachSqliteMaster(t *testing.T) {
 	for _, c := range []struct {
 		shape Shape
@@ -282,10 +212,9 @@ func TestSchemaArgumentsReachSqliteMaster(t *testing.T) {
 			// The audit log's absent foreign key, argued in the shape that has
 			// no books table at all.
 			{"audit_events", "It has no foreign key to books"},
-			// An argument for why something IS here, which a dump needs as much
-			// as an absence: bytes addressed to another institution may sit in
-			// this one's database because nothing this institution can call
-			// reaches them.
+			// An argument for why something IS here, which a dump needs as much as an
+			// absence: bytes addressed to another institution may sit in this one's
+			// database because nothing this institution can call reaches them.
 			{"ebics_queue", "WHY THE BYTES MAY SIT IN THIS INSTITUTION'S DATABASE AT ALL"},
 			// An absent foreign key whose parent IS in this database, on the one
 			// table where a member leaving the roster must not take its unread
@@ -315,43 +244,14 @@ func TestSchemaArgumentsReachSqliteMaster(t *testing.T) {
 }
 
 // A listing's order is chronological for instants inside one second.
-//
-// timeLayout claims two things are load-bearing — UTC always, and nine
-// fractional digits always, INCLUDING when they are all zero — because a string
-// comparison is only a chronological comparison while every value has the same
-// width and the same zone. Nothing else in this repository can fail on either:
-// every suite runs on a frozen clock at one whole second in UTC, so no second
-// instant is ever compared against it and no offset is ever written.
-//
-// Both halves were watched failing, and one of them not where the comment this
-// replaces said it would:
-//
-//   - timeLayout changed to time.RFC3339Nano, which is what a reader reaches
-//     for: the whole suite stays green and this fails, because a WHOLE SECOND
-//     renders with no fraction at all and 'Z' is a larger byte than '.', so
-//     "…:00Z" sorts after "…:00.045Z" and the earliest row comes out last.
-//     Trailing zeros among values that all have a fraction are NOT the hazard:
-//     ".45" already sorts before ".5". The fixture below therefore carries a
-//     whole second, which is the pair that decides it.
-//   - the .UTC() dropped from formatTime: the row written at +02:00 renders
-//     with a later hour for the same instant and sorts last.
 func TestOrderingIsChronologicalWithinOneSecond(t *testing.T) {
 	s := newStore(t)
 	ctx := context.Background()
 
 	base := time.Date(2027, 7, 15, 10, 0, 0, 0, time.UTC)
-	// Deliberately out of chronological order on insert, so the listing has to
-	// do the ordering, and each of the two hazards is carried by the row that
-	// exposes it.
-	//
-	// ldg_1 is a WHOLE SECOND, which a variable-width layout renders with no
-	// fraction at all, and it is the earliest — so a layout that drops the zeros
-	// sends the first row to the end.
-	//
-	// ldg_2 is written in a +02:00 zone and is the SECOND earliest, so its digits
-	// read 12:00 where every other row reads 10:00 — a store that does not
-	// normalise to UTC sends it to the end too. Putting the offset on a row that
-	// belongs last would prove nothing, because a broken sort would agree.
+	// Deliberately out of chronological order on insert, so the listing has to do
+	// the ordering, and each of the two hazards is carried by the row that exposes
+	// it.
 	rows := []struct {
 		id string
 		at time.Time
@@ -395,21 +295,6 @@ func TestOrderingIsChronologicalWithinOneSecond(t *testing.T) {
 
 // A read-then-write race is refused by the domain's own guard, not by a lock
 // error, because Update retries the unit of work.
-//
-// busy_timeout does not cover a transaction that holds a read and needs to
-// upgrade — it cannot succeed by waiting — so without a retry the loser gets
-// SQLITE_BUSY where what it is owed is the domain's refusal. With isTransient
-// stubbed to false this fails five runs out of five.
-//
-// What it pins is the retry, not its BACKOFF: on the ephemeral store a retry's
-// read blocks until the winner commits, so removing the delay changes nothing
-// here (measured, five runs, no failures). The delay is pinned by
-// TestTheRetryBudgetOutlastsASlowWriter, which opens a file for that reason.
-//
-// What the retry buys is the LOSER'S REASON. The winner count is right either
-// way, which is precisely why this needs its own test: storetest's
-// RunConcurrentTxRaces asserts that every loser failed with the documented
-// sentinel, and a lock error is not it.
 func TestUpdateRetriesUntilTheDomainGuardDecides(t *testing.T) {
 	s := newStore(t)
 	ctx := context.Background()
@@ -486,29 +371,6 @@ func TestUpdateRetriesUntilTheDomainGuardDecides(t *testing.T) {
 }
 
 // The retry budget outlasts a slow writer.
-//
-// The case above races two units of work that both commit at once, which the
-// budget covers however small it is. This one makes the winner HOLD its write
-// lock well past the old budget before committing, which is the shape that
-// exposed the size as load-bearing rather than arbitrary.
-//
-// Why holding matters: a reader does not block on a writer, so a retry that
-// starts before the winner commits re-reads the stale value, passes the domain's
-// check on it, and fails at the write again. The loop converges only once an
-// attempt begins AFTER the commit. With the previous budget of about 15ms and a
-// 20ms hold, the loser exhausted every attempt and surfaced SQLITE_BUSY —
-// twenty runs out of twenty — where what the caller was owed is the domain's
-// refusal.
-//
-// It runs against a FILE and not against the ephemeral store, and that is the
-// point rather than an accident. On memdb the retry's SELECT blocks until the
-// winner commits, so the loser reaches the domain guard whatever the budget is
-// and this case cannot fail — measured: it passes on memdb with the old budget.
-// Only WAL lets a reader past an uncommitted writer, so only a file can show
-// whether the budget is big enough.
-//
-// The hold is far longer than any single statement here and far shorter than the
-// budget, so this fails if the budget is cut and passes if it is kept.
 func TestTheRetryBudgetOutlastsASlowWriter(t *testing.T) {
 	ctx := context.Background()
 	s, err := open(ctx, Bank, testBook, filepath.Join(t.TempDir(), "budget.db"), frozen)
@@ -593,11 +455,6 @@ func TestTheRetryBudgetOutlastsASlowWriter(t *testing.T) {
 }
 
 // An ephemeral store keeps its rows for its whole lifetime.
-//
-// The hazard this guards is the one that made ":memory:" unusable: a store whose
-// rows depend on which pooled connection answers, so that it forgets between two
-// calls with nothing in either error to say so. This writes, forces the pool to
-// churn every connection, and reads back.
 func TestAnEphemeralStoreDoesNotForget(t *testing.T) {
 	s := newStore(t)
 	ctx := context.Background()

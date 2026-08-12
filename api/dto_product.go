@@ -17,10 +17,7 @@ type ProductDTO struct {
 	ID   string `json:"id"`
 	Name string `json:"name"`
 	Kind string `json:"kind"`
-	// Retired takes the product off sale. It does NOT unprice the accounts
-	// already sold from it, which keep resolving against its versions for as
-	// long as they live — so a client must not hide a retired product from an
-	// account that is on it, only from the list it offers.
+	// Retired takes the product off sale.
 	Retired   bool      `json:"retired"`
 	CreatedAt time.Time `json:"createdAt"`
 }
@@ -36,14 +33,6 @@ func ToProductDTO(p product.Product) ProductDTO {
 }
 
 // ProductVersionDTO is one row of a product's effective-dated timeline.
-//
-// It carries the publication state explicitly rather than leaving a client to
-// infer it from a zero timestamp, and carries the hash because a client showing
-// an operator "this is what was published" should be able to show what it is
-// pinned to. A draft has neither: publishing is what stamps both.
-//
-// effectiveFrom is the day the version starts pricing and createdAt is when it
-// was drafted — the booking-date/value-date distinction applied to a price.
 type ProductVersionDTO struct {
 	ProductID      string     `json:"productId"`
 	EffectiveFrom  time.Time  `json:"effectiveFrom"`
@@ -84,12 +73,6 @@ type CreateProductRequest struct {
 }
 
 // DraftVersionRequest is a price for one effective day, unpublished.
-//
-// effectiveFrom may point into the past — only PUBLICATION is forward-only, and
-// refusing a backdated draft would only mean the refusal arrived at a less
-// useful moment. There is no limit field, and the absence is the design: a limit
-// is an underwriting decision about one customer, so product.OverdraftPricing
-// cannot express one.
 type DraftVersionRequest struct {
 	EffectiveFrom  time.Time `json:"effectiveFrom"`
 	Rate           int64     `json:"rate"`

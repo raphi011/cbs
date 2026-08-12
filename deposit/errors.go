@@ -22,34 +22,21 @@ var (
 	// the given account and date.
 	ErrSnapshotNotFound = errors.New("snapshot not found")
 
-	// ErrTermsNotFound is returned when no overdraft terms are in force on a
-	// day. Every account gets an opening terms row at OpenAccount, so the only
-	// way to miss is to ask about a day before the account existed.
-	//
-	// It is deliberately absent from api.errorStatus's 404 list and so reaches
-	// the client as a 500. That is the choice, not an oversight: an account with
-	// no opening row is internally inconsistent state rather than a missing
-	// resource, and a 404 would read as "no such account" — worth saying because
-	// ListAccountsWithTerms resolves terms for every account in the book, so one
-	// account missing its opening row fails the whole listing rather than a row
-	// of it.
+	// ErrTermsNotFound is returned when no overdraft terms are in force on a day.
+	// Every account gets an opening terms row at OpenAccount, so the only way to
+	// miss is to ask about a day before the account existed.
 	ErrTermsNotFound = errors.New("no overdraft terms in force on that day")
 
 	// ErrProductRequired is returned for a terms row that names no product.
-	//
-	// Every deposit account is opened FROM a product, so a row without one
-	// could not resolve a floating pricing: there would be nothing to float to.
-	// Refusing it is what keeps Resolve from needing a case for a state the
-	// model should not be able to reach.
 	ErrProductRequired = errors.New("overdraft terms must name a product")
 
 	// ErrInvalidAmount is returned when a hold amount is zero or negative.
 	ErrInvalidAmount = errors.New("amount must be positive")
 
 	// ErrInvalidRate is returned when an interest rate is negative, or when an
-	// unarranged rate is set on an account that has no arranged rate — an
-	// account that accrues nothing inside its limit but something beyond it is
-	// not a product, it is a mistake.
+	// unarranged rate is set on an account that has no arranged rate — an account
+	// that accrues nothing inside its limit but something beyond it is not a
+	// product, it is a mistake.
 	ErrInvalidRate = errors.New("invalid interest rate")
 
 	// ErrInsufficientAvailable is returned when a hold or withdrawal would
@@ -61,14 +48,9 @@ var (
 	// account.
 	ErrAccountFrozen = errors.New("account is frozen")
 
-	// ErrAccountDormant is returned when money is taken OUT of a dormant
-	// account — a withdrawal or a new hold. Credits are permitted and are what
-	// brings such an account back to life, so this is never returned for one.
-	//
-	// Dormancy is an ordinary state with an ordinary rule, so a blocked debit on a
-	// dormant account says so rather than reporting ErrInvalidStatusTransition —
-	// an error about changing a status, raised by an operation that is not
-	// changing one.
+	// ErrAccountDormant is returned when money is taken OUT of a dormant account —
+	// a withdrawal or a new hold. Credits are permitted and are what brings such
+	// an account back to life, so this is never returned for one.
 	ErrAccountDormant = errors.New("account is dormant")
 
 	// ErrAccountClosed is returned when an operation is attempted on a closed
@@ -84,86 +66,26 @@ var (
 	ErrInvalidStatusTransition = errors.New("invalid account status transition")
 
 	// ErrSameAccount is a transfer whose payer and payee are the one account.
-	//
-	// It posts nothing and it is not a no-op either: unrefused it would write a
-	// self-cancelling pair of entries and an audit event saying money moved, so
-	// the trail would carry an act that never happened. A customer moving money
-	// between two accounts of their own is the real version of this, and it has
-	// two account ids.
 	ErrSameAccount = errors.New("a transfer needs two different accounts")
 
 	// ErrAssetMismatch is a transfer between accounts denominated in different
 	// units.
-	//
-	// An amount is one integer at one scale, so a euro debit against a bitcoin
-	// credit is not a transfer at a bad rate — it is two different numbers with
-	// nothing between them saying what one is worth in the other. Converting is
-	// two operations with a price in the middle, and this bank has no dealing
-	// desk; see README.md, "Cross-Currency Payments Are Two Operations".
-	//
-	// The ledger would refuse the posting anyway, with ErrUnbalancedAsset. That
-	// names the symptom — a transaction whose legs do not balance within an asset
-	// — and this names the cause, in the layer that knows both accounts and can
-	// say which pair of them disagreed.
 	ErrAssetMismatch = errors.New("the two accounts are denominated in different assets")
 
 	// ErrIdentifierTaken is returned when an account is given an identifier
-	// another account at the SAME bank already holds. The check spans one
-	// register, because that is the widest scope a register can see — and it is
-	// also the right scope: a bank-issued identifier is globally unique by
-	// construction (an IBAN carries its own bank code, a PAN its BIN), so two
-	// banks cannot collide without one of them issuing addresses it was never
-	// allocated.
+	// another account at the SAME bank already holds.
 	ErrIdentifierTaken = errors.New("identifier already in use at this bank")
 
 	// ErrIdentifierNotFound is returned when no account holds the identifier.
 	ErrIdentifierNotFound = errors.New("identifier not found")
 
 	// ErrIdentifierAmbiguous is returned when more than one account holds it.
-	//
-	// This is refused rather than resolved to the first hit, for the reason
-	// settlement refuses to default a cycle's asset: an address that resolves
-	// to two accounts is not an address, and guessing quietly in the layer that
-	// decides where money goes is the failure worth having a sentinel for. It
-	// is also what closes the within-bank race that comes with enforcing
-	// uniqueness in the domain rather than with a constraint.
 	ErrIdentifierAmbiguous = errors.New("identifier resolves to more than one account")
 
 	// ErrIBANIsIssued is a caller supplying an IBAN — at OpenAccount, or at
 	// AddIdentifier — rather than being given one.
-	//
-	// A BANK ISSUES ITS CUSTOMERS' ADDRESSES. It allocates them out of the bank
-	// code its country's registry allocated to it, which is what makes the code
-	// inside an address a true statement about who holds the account: a bank
-	// cannot issue an address that routes to somebody else, because it has no
-	// other code to issue under.
-	//
-	// A caller-supplied IBAN is exactly the hole that closes. It would let one
-	// bank open an account at another bank's address, and nothing downstream
-	// could tell the difference — the address resolves here, and a directory says
-	// it belongs there.
-	//
-	// The refusal is only for this scheme, and the plural on Identifiers is why
-	// AddIdentifier survives at all: a card PAN is issued by a scheme somewhere
-	// else and quoted to this bank, so it arrives from a caller and always will.
-	// A customer wanting a second IBAN opens a second ACCOUNT, which is already
-	// the rule for a second currency.
 	ErrIBANIsIssued = errors.New("an IBAN is issued by this bank, not supplied to it")
 
 	// ErrNoIssuer is a Register with no bank code, asked to open an account.
-	//
-	// A register that mints addresses has to know what to mint them under, and
-	// there is no sensible default — every other value would be some other
-	// bank's. NewRegister takes the issuer for that reason, and this fires
-	// whenever it has not been allocated one.
-	//
-	// It is a REAL STATE and not only a wiring mistake, which is what makes it
-	// worth a sentinel rather than a panic: a bank code is a national registry's
-	// to give, and a bank that has been licensed and not yet answered has none.
-	// Such a bank works — it holds a book, a chart of accounts and a product —
-	// and cannot give a customer an address, because it has no range to give one
-	// out of. Every account here is opened with one, so what it really cannot do
-	// is take a customer at all. That is what a bank between its licence and its
-	// allocation is, and this is the refusal that says so.
 	ErrNoIssuer = errors.New("this register has no bank code to issue addresses under")
 )

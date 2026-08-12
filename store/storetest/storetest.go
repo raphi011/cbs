@@ -1,55 +1,6 @@
 // Package storetest is the shared suite a store must pass: RunLedger for the
 // ledger layer, RunDeposit for the deposit layer, RunPayment for the payment
 // layer, and RunProduct and RunLending for theirs.
-//
-// It is NOT a conformance suite: there is one implementation, so nothing here
-// cross-checks anything.
-//
-// What each case pins is the CONTRACT. This file, deposit.go, payment.go,
-// product.go and lending.go talk only to the Store and Tx interfaces — never to
-// ledger.Book, deposit.Register or payment.Network — and they name no table and
-// no dialect: identity allocation, ordering, idempotency, the balance aggregate,
-// the audit log, rollback.
-//
-// WHICH INSTITUTION runs which case is not uniform, and the split is deliberate.
-// The five capability suites — RunLedger, RunDeposit, RunProduct, RunLending and
-// RunPayment — are a BANK's, because a bank's schema is the only one holding
-// every table they reach. The clearing house and the settlement agent have
-// suites of their own, RunClearingHousePayment and RunCentralBankPayment, which
-// are separate cases over the tables those two schemas do hold. Four fifths of
-// this package is the bank's, which is what a bank's schema being four fifths of
-// the tables looks like.
-//
-// Each suite takes ITS institution's store type, so the split is checked by the
-// compiler rather than by where a case was filed: a bank case reaching for a
-// cycle, or a clearing house case reaching for a deposit account, does not
-// build. That is why there are three sets of open/update/view helpers at the
-// foot of payment.go rather than one.
-//
-// Where a case records what a store CANNOT show, it is recording why the case
-// exists: the ephemeral store serialises writers, so it is blind to anything
-// about read-then-write ordering — see races.go.
-//
-// races.go does not observe the interface boundary, on purpose. Its cases drive
-// payment.Network, because the defect they exist for is an ordering the ACTS
-// choose and the store cannot express — and the synthetic stand-in written to
-// respect the boundary, ConcurrentReadThenWriteOnOneKeyAgrees below, was blind
-// to three money defects of exactly that shape. Admit is here for the same
-// reason: races.go needs it and this package may not import an implementation,
-// because the implementation's tests import this package.
-//
-// # Ordering
-//
-// Every listing is ORDER BY created_at, seq, where seq is a monotonic per-book,
-// per-table sequence assigned when a row is first inserted — a column allocated
-// MAX(seq)+1 in store/sqlite. An upsert must not reissue it, or editing a row
-// moves it to the end of the list.
-//
-// The tie-break is never the ID. IDs are counter-derived strings, so "tx_10"
-// sorts before "tx_8" and a listing silently reorders itself the moment a
-// counter crosses a power of ten. It is the same mechanism ledger.AuditEvent.Seq
-// already uses, so the audit log and the entity listings agree on what order
-// means.
 package storetest
 
 import (
@@ -67,39 +18,17 @@ import (
 // Books used throughout the suite. Two of them, because almost every
 // store-level guarantee is per book and the interesting failure mode is a
 // implementation that leaks state across books.
-//
-// bookA is the book the store handed to a suite ANSWERS FOR, and every case
-// that names one names it. A store answers for exactly one book and refuses the
-// rest, so a case wanting a second book asks the factory for a second STORE —
-// which is what a second book is: another institution's database.
-//
-// bookB is that second store's book. It is used by the handful of cases about
-// isolation, and what each of them now demonstrates is stronger than what it did
-// with two books in one database: the rows cannot collide because the databases
-// cannot see each other, rather than because a primary key is composite.
-//
-// There was a bookC, for AuditPagingIsScopedToItsFilter, which needed a third
-// book whose events were payment-scoped so that the pager had gaps to step over.
-// The gaps come from the scopes and always did, so that case needs one book and
-// the constant is gone.
 const (
 	bookA ledger.BookID = "book-a"
 	bookB ledger.BookID = "book-b"
 )
 
 // RunLedger runs the ledger-layer suite against a store.
-//
-// newStore must return a store with no state in it; the suite calls it once per
-// subtest and closes the result.
 func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.BankStore) {
 	t.Helper()
 
 	t.Run("NextSubledgerBlockStepsBy100PerBook", func(t *testing.T) {
-		// TWO STORES, because a store answers for one book and refuses the
-		// rest. The claim is the same one it always was — a second book's chart
-		// of accounts starts at 100 rather than continuing the first's — and
-		// what changed is that the two books are now two databases, which is the
-		// only place a second book can be. See the note on bookA above.
+		// TWO STORES, because a store answers for one book and refuses the rest.
 		s := open(t, newStore, bookA)
 		other := open(t, newStore, bookB)
 
@@ -132,11 +61,9 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Ban
 	t.Run("NextIDSharesOneCounterPerBook", func(t *testing.T) {
 		s := open(t, newStore, bookA)
 
-		// ONE counter per book, shared by every prefix — not one counter per
-		// prefix. The number doubles as a creation order, which is why ldg_1,
-		// tx_2 and ent_3 interleave rather than each restarting at 1. A store
-		// that keyed its counter by (book, prefix) would still hand out unique
-		// IDs, so nothing else in this suite would notice.
+		// ONE counter per book, shared by every prefix — not one counter per prefix.
+		// The number doubles as a creation order, which is why ldg_1, tx_2 and ent_3
+		// interleave rather than each restarting at 1.
 		other := open(t, newStore, bookB)
 
 		var inA, inB []string
@@ -168,12 +95,9 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Ban
 	t.Run("TransactionEntriesKeepTheirOrder", func(t *testing.T) {
 		s := open(t, newStore, bookA)
 
-		// Transaction.Entries is an ordered slice, and the order is meaningful:
-		// it is the order the legs were written in, and it is what a settlement
-		// transaction's determinism rests on. A store that reconstructs entries
-		// from rows must therefore keep an explicit position — sorting by entry
-		// ID would look right until a counter crossed a power of ten, which is
-		// exactly what this fixture does.
+		// Transaction.Entries is an ordered slice, and the order is meaningful: it is
+		// the order the legs were written in, and it is what a settlement
+		// transaction's determinism rests on.
 		want := []ledger.Entry{
 			{ID: "ent_10", AccountID: "100.100.001", Amount: 400, Direction: ledger.Debit},
 			{ID: "ent_8", AccountID: "200.100.001", Amount: 100, Direction: ledger.Credit},
@@ -230,11 +154,8 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Ban
 	t.Run("AccountRoundTripsItsControlFlag", func(t *testing.T) {
 		s := open(t, newStore, bookA)
 
-		// Whether an account pools subsidiaries decides which entries the domain
-		// will accept against it, both ways round. A store that dropped the flag
-		// on the way out would report every account as plain, and the refusal
-		// that keeps money from landing in a pool with nobody's name on it would
-		// stop firing everywhere at once.
+		// Whether an account pools subsidiaries decides which entries the domain will
+		// accept against it, both ways round.
 		update(t, s, func(ctx context.Context, tx ledger.BankTx) error {
 			if err := tx.PutAccount(ctx, bookA, ledger.Account{
 				ID: "200.100.001", SubledgerID: "100", Name: "Customer Deposits",
@@ -276,12 +197,8 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Ban
 		s := open(t, newStore, bookA)
 		other := open(t, newStore, bookB)
 
-		// The mapping is keyed by (product, slot, asset) and the bank-wide row
-		// is the one with an empty product. A store that keyed on the slot alone
-		// would collapse a product's own revenue line onto the bank's; one that
-		// appended instead of upserting would leave two answers to a question
-		// that has one, and which of them a flow posted to would be whichever
-		// the store listed first.
+		// The mapping is keyed by (product, slot, asset) and the bank-wide row is the
+		// one with an empty product.
 		update(t, s, func(ctx context.Context, tx ledger.BankTx) error {
 			for _, row := range []ledger.SlotAccount{
 				{Slot: "deposit.principal", Asset: "EUR", Account: "200.100.001"},
@@ -318,9 +235,6 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Ban
 			assertEqual(t, "the product's own line", string(perProduct), "400.300.002")
 
 			// A product with no row of its own is NOT the bank-wide row here.
-			// The fallback is the domain's rule, stated once in
-			// ledger.Book.SlotAccountTx; a store that also implemented it would
-			// make "this product has its own line" unaskable.
 			_, err = tx.GetSlotAccount(ctx, bookA, "prd_basic", "deposit.interest_income", "EUR")
 			assertErrorIs(t, "an unmapped product", err, ledger.ErrSlotNotMapped)
 
@@ -364,13 +278,7 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Ban
 		s := open(t, newStore, bookA)
 
 		// One control account, three subsidiaries, and the reads that have to tell
-		// them apart. What this pins is the whole claim the dimension rests on:
-		// a position with no subsidiary is the WHOLE account and not the subsidiary
-		// named by the empty string, so the control figure is the same aggregate
-		// with one predicate dropped rather than a total stored beside the
-		// detail. A store that filtered on subsidiary_id = '' instead would
-		// report a control balance of zero and every subtest above would still
-		// pass.
+		// them apart.
 		const (
 			pooled ledger.AccountID = "200.100.001"
 			contra ledger.AccountID = "100.100.001"
@@ -430,10 +338,8 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Ban
 			}
 			assertEqual(t, "a subsidiary with no postings", absent, ledger.Amount(0))
 
-			// And the same detail asked for the other way round: the caller that
-			// does not know the subsidiaries yet. It is the drill-down a control
-			// account's page renders, and it must agree with the per-subsidiary
-			// reads above rather than being a second count of the same entries.
+			// And the same detail asked for the other way round: the caller that does
+			// not know the subsidiaries yet.
 			breakdown, err := tx.SubsidiaryBalances(ctx, bookA, pooled, ledger.Credit)
 			if err != nil {
 				return err
@@ -583,11 +489,6 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Ban
 
 	t.Run("SameIDsInDifferentBooks", func(t *testing.T) {
 		// TWO STORES, and this is the case where the change says the most.
-		//
-		// The claim: chart-of-accounts IDs are unique within a book, not globally,
-		// so two banks may both hold an account numbered 200.100.001. Here the two
-		// banks are two databases that cannot see each other, which is why the ids
-		// cannot collide in the first place.
 		s := open(t, newStore, bookA)
 		other := open(t, newStore, bookB)
 
@@ -659,10 +560,10 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Ban
 	t.Run("GetOnMissingRowsReturnsSentinels", func(t *testing.T) {
 		s := open(t, newStore, bookA)
 
-		// A store that reports "not found" as anything other than the domain
-		// sentinel — a wrapped sql.ErrNoRows, say — turns every 404 in the API
-		// into a 500, and turns a typo'd account ID in PostTransaction into an
-		// internal error instead of ledger.ErrAccountNotFound.
+		// A store that reports "not found" as anything other than the domain sentinel
+		// — a wrapped sql.ErrNoRows, say — turns every 404 in the API into a 500, and
+		// turns a typo'd account ID in PostTransaction into an internal error instead
+		// of ledger.ErrAccountNotFound.
 		early := time.Date(2025, 1, 15, 12, 0, 0, 0, time.UTC)
 		update(t, s, func(ctx context.Context, tx ledger.BankTx) error {
 			if err := tx.PutLedger(ctx, bookA, ledger.Ledger{ID: "ldg_1", Name: "GL", CreatedAt: early}); err != nil {
@@ -743,18 +644,7 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Ban
 	t.Run("ParentReferencesAreNotEnforced", func(t *testing.T) {
 		s := open(t, newStore, bookA)
 
-		// A store is a per-table key/value layer. "The parent must exist" is a
-		// DOMAIN rule — ledger.Book reads the ledger before creating a
-		// subledger, the subledger before an account, and every account before
-		// posting to it — and putting it in the schema as well enforces it twice,
-		// in two places that answer differently: the constraint fires first, and
-		// it fires as a foreign-key violation where the domain would have said
-		// ErrLedgerNotFound. See subledgers in store/sqlite/schema/bank/0001_init.sql.
-		//
-		// It is written from the failure it prevents: a composite FK on
-		// subledgers(book_id, ledger_id) turns the first write below into a
-		// constraint violation, and no other fixture in this suite writes a dangling
-		// LedgerID.
+		// A store is a per-table key/value layer.
 		update(t, s, func(ctx context.Context, tx ledger.BankTx) error {
 			// A subledger under a ledger that does not exist.
 			if err := tx.PutSubledger(ctx, bookA, ledger.Subledger{
@@ -815,19 +705,8 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Ban
 		early := time.Date(2025, 1, 15, 12, 0, 0, 0, time.UTC)
 		late := early.Add(time.Hour)
 
-		// Every listing is ordered by CreatedAt, ties broken by the row's
-		// insertion sequence — all five of them, not just the first.
-		//
-		// The tie-break must NOT be the ID. IDs are counter-derived strings, so
-		// "ldg_10" sorts before "ldg_8" and a listing silently reorders itself
-		// the moment a counter crosses a power of ten. Each fixture below is
-		// therefore built to three rules:
-		//
-		//   - a CreatedAt tie that only the tie-break can resolve,
-		//   - IDs spanning the 9 -> 10 boundary, so lexicographic ID order and
-		//     insertion order genuinely disagree, and
-		//   - the row inserted FIRST carrying the LATEST CreatedAt, so an
-		//     implementation that orders by sequence alone fails too.
+		// Every listing is ordered by CreatedAt, ties broken by the row's insertion
+		// sequence — all five of them, not just the first.
 		update(t, s, func(ctx context.Context, tx ledger.BankTx) error {
 			for _, l := range []ledger.Ledger{
 				{ID: "ldg_10", Name: "latest, inserted first", CreatedAt: late},
@@ -930,14 +809,6 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Ban
 
 		// An upsert keeps a row where it was: marking a transaction reversed, or
 		// re-putting an account with a new status, must not move it to the end.
-		//
-		// All three of the ledger's own tables, not just accounts. The rule is
-		// one line of SQL per table in a store that writes SQL — the insertion
-		// sequence is left out of the update branch — and one line is what a
-		// port gets wrong in one table and right in the others. Measured on
-		// store/sqlite: re-putting a LEDGER with its sequence rewritten moved it
-		// to the end of its listing and every case in this file still passed,
-		// because only accounts were re-put here.
 		update(t, s, func(ctx context.Context, tx ledger.BankTx) error {
 			if err := tx.PutAccount(ctx, bookA, ledger.Account{
 				ID: "200.100.008", SubledgerID: "100", Type: ledger.Liability, Name: "renamed", CreatedAt: early,
@@ -1012,10 +883,7 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Ban
 	t.Run("RePuttingATransactionReleasesItsOldIdempotencyKey", func(t *testing.T) {
 		s := open(t, newStore, bookA)
 
-		// PutTransaction is an upsert, and an upsert may change the key. A store
-		// that only ever adds to its idempotency index keeps resolving a key the
-		// transaction no longer carries — and then refuses the next transaction that
-		// legitimately claims it.
+		// PutTransaction is an upsert, and an upsert may change the key.
 		update(t, s, func(ctx context.Context, tx ledger.BankTx) error {
 			return tx.PutTransaction(ctx, bookA, transaction("tx_1", "key-1"))
 		})
@@ -1071,12 +939,7 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Ban
 
 		// ErrDuplicateIdempotencyKey is a domain sentinel, which means a caller is
 		// entitled to handle it and carry on — retry under a fresh key, fall back to
-		// the existing transaction, record the collision. That is only true if the
-		// failed statement did not take the whole unit of work with it, and whether
-		// it does is the database's answer rather than the domain's. SQLite rolls
-		// back the failed STATEMENT and leaves the transaction usable; a database
-		// that aborted the whole transaction would need a savepoint here. This
-		// subtest is what says the promise is kept either way.
+		// the existing transaction, record the collision.
 		update(t, s, func(ctx context.Context, tx ledger.BankTx) error {
 			return tx.PutTransaction(ctx, bookA, transaction("tx_1", "key-1"))
 		})
@@ -1145,16 +1008,7 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Ban
 	t.Run("EveryTextTheDomainAcceptsRoundTrips", func(t *testing.T) {
 		s := open(t, newStore, bookA)
 
-		// The store is a key/value layer: it does not validate, it stores. What
-		// it MUST do is hold, byte for byte, every string the domain is willing
-		// to hand it — because the domain is the only validator, so a store that
-		// refuses what the domain accepted refuses it with nobody to say why.
-		//
-		// A store must hold every byte sequence the domain lets through, so the
-		// corpus below is filtered through ledger.ValidateText: anything the domain
-		// rejects never reaches a store, and everything else has to survive the trip.
-		// Loosening ValidateText widens this corpus, which is what makes this subtest
-		// bite.
+		// The store is a key/value layer: it does not validate, it stores.
 		corpus := []string{
 			"Aurora Bank",
 			"Crédit Soleil",
@@ -1378,17 +1232,7 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Ban
 	})
 
 	// ValueDateBalanceExcludesZeroValueDateEntries pins a rule two stores once
-	// disagreed about and one store can still get wrong. The obvious in-Go
-	// implementation (!ValueDate.Before(before)) counts a zero time.Time{},
-	// which is before every real bound; a SQL store writes a zero date as NULL
-	// and "NULL < ?" is never true. This fixture's own transaction() helper
-	// creates exactly that shape, so the two answers were reachable on every
-	// entry posted with no value date.
-	//
-	// The ruling: a zero ValueDate means "not value-dated", so it is excluded
-	// from every bound rather than included in all of them. Book resolves
-	// every entry it posts (see PostTransaction), so this only arises from a
-	// Tx caller constructing an Entry directly, as this test does.
+	// disagreed about and one store can still get wrong.
 	t.Run("ValueDateBalanceExcludesZeroValueDateEntries", func(t *testing.T) {
 		s := open(t, newStore, bookA)
 
@@ -1493,12 +1337,8 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Ban
 			return err
 		})
 
-		// Opening is only the 1st: the 4th sits exactly ON from, and the
-		// movement check just below is what actually pins that from is
-		// inclusive. An implementation that used > instead of >= for the
-		// lower bound would silently drop the 4th out of both Opening (still
-		// 100, so this line alone would not catch it) and Movements (now 2
-		// instead of 3, which the length check below does catch).
+		// Opening is only the 1st: the 4th sits exactly ON from, and the movement
+		// check just below is what actually pins that from is inclusive.
 		assertEqual(t, "opening (only the 1st; the 4th is a movement, not opening)", got.Opening, ledger.Amount(100))
 		if len(got.Movements) != 3 {
 			t.Fatalf("movements = %d, want 3 (the 4th, the 5th, the 7th)", len(got.Movements))
@@ -1550,10 +1390,8 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Ban
 		day := func(d int) time.Time { return time.Date(2026, 6, d, 0, 0, 0, 0, time.UTC) }
 		postValueDatedSeriesFixture(t, s, day)
 
-		// [8th, 9th): past the 7th's net-zero pair (it contributes nothing
-		// to Opening either way) and before the 9th. Nothing at all falls in
-		// this window, so Movements is genuinely empty — unlike the 7th
-		// above, which is a movement that happens to net to zero.
+		// [8th, 9th): past the 7th's net-zero pair (it contributes nothing to Opening
+		// either way) and before the 9th.
 		var got ledger.Series
 		view(t, s, func(ctx context.Context, tx ledger.BankTx) error {
 			var err error
@@ -1566,17 +1404,11 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Ban
 		}
 	})
 
-	// ValueDatedSeriesExcludesZeroValueDateEntries is the movement-bucketing
-	// half of ValueDateBalanceExcludesZeroValueDateEntries above, and it needs
-	// its own subtest: Series.Opening inherits that ruling by delegating to the
-	// same balance query, but the per-day buckets are built by separate code and
-	// could get it right in one place and wrong in the other.
-	//
-	// A SQL store gets it free — a zero value date is stored as NULL, and NULL
-	// falls out of a day grouping, so there is no row to bucket. An in-Go one has
-	// to skip it explicitly or it buckets the entry onto time.Time{}'s day, year 1,
-	// and emits a movement for it. What this pins is that no movement for year 1
-	// ever appears, however the buckets are built.
+	// ValueDatedSeriesExcludesZeroValueDateEntries is the movement-bucketing half
+	// of ValueDateBalanceExcludesZeroValueDateEntries above, and it needs its own
+	// subtest: Series.Opening inherits that ruling by delegating to the same
+	// balance query, but the per-day buckets are built by separate code and could
+	// get it right in one place and wrong in the other.
 	t.Run("ValueDatedSeriesExcludesZeroValueDateEntries", func(t *testing.T) {
 		s := open(t, newStore, bookA)
 		day := func(d int) time.Time { return time.Date(2026, 6, d, 0, 0, 0, 0, time.UTC) }
@@ -1597,10 +1429,10 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Ban
 		})
 
 		// A window that starts before the year-1 day the naive bucketing would
-		// produce would not distinguish it from a legitimate movement, so read
-		// the same [4th, 9th) window every other subtest uses: the three
-		// movements it contains must be exactly the three the fixture seeds,
-		// and Opening must not have absorbed the 700 either.
+		// produce would not distinguish it from a legitimate movement, so read the
+		// same [4th, 9th) window every other subtest uses: the three movements it
+		// contains must be exactly the three the fixture seeds, and Opening must not
+		// have absorbed the 700 either.
 		var got ledger.Series
 		view(t, s, func(ctx context.Context, tx ledger.BankTx) error {
 			var err error
@@ -1735,11 +1567,9 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Ban
 		// store means it changes nothing and must not break.
 		assertEqual(t, "by this store's own book", len(audit(t, s, ledger.AuditFilter{BookID: bookA})), 4)
 
-		// BookID naming ANOTHER institution's book is REFUSED, and that is the
-		// point: an empty page is what a caller reading the wrong store would
-		// otherwise get, and it is indistinguishable from end-of-data. Which
-		// error is the implementation's to name — this package names no dialect
-		// — so what is asserted is that there IS one.
+		// BookID naming ANOTHER institution's book is REFUSED, and that is the point:
+		// an empty page is what a caller reading the wrong store would otherwise get,
+		// and it is indistinguishable from end-of-data.
 		if _, err := listAudit(s, ledger.AuditFilter{BookID: bookB}); err == nil {
 			t.Error("a filter naming another institution's book was answered rather than refused; an empty page reads as end-of-data")
 		}
@@ -1817,17 +1647,8 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Ban
 	t.Run("AuditPagingIsScopedToItsFilter", func(t *testing.T) {
 		s := open(t, newStore, bookA)
 
-		// Seq is a store-GLOBAL total order, not per book or per scope, so a
-		// scope's events are separated by gaps that belong to other scopes. A
-		// pager that treated Before as "the previous few sequence numbers"
-		// instead of as one predicate among the rest would return other layers'
-		// events — or nothing at all.
-		// One book, four kinds of event, because a store answers for one book.
-		// The gaps this case needs come from the SCOPES rather than from the
-		// books — which is what they always came from, since Seq is global and a
-		// scope's events are what the filter selects. Two of these were book-b's
-		// and book-c's; bookC exists for this case alone and now names nothing,
-		// which is why it is gone from the constants above.
+		// Seq is a store-GLOBAL total order, not per book or per scope, so a scope's
+		// events are separated by gaps that belong to other scopes.
 		update(t, s, func(ctx context.Context, tx ledger.BankTx) error {
 			for round := range 3 {
 				for _, e := range []ledger.AuditEvent{
@@ -1872,10 +1693,7 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Ban
 		paged.Before = all[0].Seq
 		assertEqual(t, "page below the oldest match", len(audit(t, s, paged)), 0)
 
-		// Before composes with Scope and EntityID together. The two matches are
-		// separated by a deposit-scope event, so paging between them only works
-		// if Before is one predicate among the rest rather than a slice of the
-		// global sequence.
+		// Before composes with Scope and EntityID together.
 		byEntity := ledger.AuditFilter{Scope: ledger.ScopeLedger, EntityID: "ent_1"}
 		ent1 := audit(t, s, byEntity)
 		assertEqual(t, "ledger events for ent_1", len(ent1), 2)
@@ -2063,46 +1881,8 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Ban
 	t.Run("ConcurrentReadThenWriteOnOneKeyAgrees", func(t *testing.T) {
 		s := open(t, newStore, bookA)
 
-		// This suite's only case with two units of work running AT ONCE, and
-		// the gap it closes is the reason it exists.
-		//
-		// Everything else here is single-threaded, so the suite would otherwise say
-		// nothing at all about a rule the APPLICATION makes by reading and then
-		// writing.
-		//
-		// races.go does the same job on payment's acts, which is where the rule this
-		// stands in for actually lives; the stand-in here was blind to three money
-		// defects of that shape. What is left for this one is the shape stated at the
-		// store interface with no act to hang it on, which is what a store
-		// implementer reads.
-		//
-		// What it encodes is the shape payment.SubmitPaymentTx uses to refuse a
-		// duplicate client reference: allocate an id, THEN read the key, THEN
-		// write. NextID is what makes it atomic — its row on the identity
-		// counter is locked until the transaction ends, so the second caller
-		// blocks there and, when it gets through, either sees the first
-		// caller's committed row or finds the first rolled back and the id with
-		// it. The same serialization every admission act that decides from a READ
-		// relies on — see payment.admissionSequenceTx, which draws an id for the
-		// lock and throws the number away. FoundBankTx is the one that does not
-		// call it, and does not need to: it allocates the bank's own id before it
-		// touches anything, which is this same ordering under a different name.
-		//
-		// The claim is exactly that and no wider. It does NOT say a store makes
-		// read-then-write atomic on its own; it says this ORDERING admits one writer,
-		// whatever is underneath.
-		//
-		// On store/sqlite the ordering is not the only thing holding it: the store
-		// admits one writer and Store.Update re-runs a loser against the winner's
-		// committed row, measured at ten runs out of ten with the ordering removed.
-		// See payment.admissionSequenceTx. The case stays as the statement of the
-		// shape a replacement has to keep.
-		//
-		// The read is on a NON-key attribute (the account's name) because that
-		// is the shape of the rule: a store cannot enforce it with a primary
-		// key, and a unique index would answer a constraint violation where the
-		// domain answers its sentinel. See
-		// transactions_idempotency_key_idx in store/sqlite/schema/bank/0001_init.sql.
+		// This suite's only case with two units of work running AT ONCE, and the gap
+		// it closes is the reason it exists.
 		const claimants = 8
 		const wanted = "the-one-and-only"
 
@@ -2128,12 +1908,8 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Ban
 							return errTaken
 						}
 					}
-					// TWO writes, as the operation this stands for has: a
-					// payment row and the ledger postings behind it. The
-					// window a wrong ordering leaves open is the interval
-					// between the read and the commit, so a case whose write
-					// was a single row would be measuring a narrower race than
-					// the one that shipped.
+					// TWO writes, as the operation this stands for has: a payment row and the
+					// ledger postings behind it.
 					if err := tx.PutTransaction(ctx, bookA, transaction(ledger.TransactionID("txn_"+id), "")); err != nil {
 						return err
 					}
@@ -2172,10 +1948,7 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Ban
 }
 
 // errTaken is the losers' answer in ConcurrentReadThenWriteOnOneKeyAgrees: the
-// name was already claimed. It stands in for payment.ErrDuplicateEndToEndID
-// rather than naming it — races.go names payment's sentinels directly, on the
-// acts themselves. What this case is worth beside those is the shape stated once
-// at the store interface, for rules the acts have not made yet.
+// name was already claimed.
 var errTaken = errors.New("storetest: the name is already claimed")
 
 // ---------------------------------------------------------------------------
@@ -2262,24 +2035,9 @@ func transaction(id ledger.TransactionID, key string) ledger.Transaction {
 	}
 }
 
-// postValueDatedSeriesFixture seeds the postings the ValueDatedSeries*
-// subtests share, between 901.001.001 ("acct1") and 901.001.002 ("acct2"),
-// each posting a balanced debit/credit pair:
-//
-//   - the 1st:  100, acct1 debited — before every from used below, so it is
-//     always opening, never a movement.
-//   - the 4th:   50, acct1 debited — sits exactly ON a from used below, to
-//     pin that from is inclusive: it must appear as its own movement and
-//     never fold into Opening.
-//   - the 5th:  200 + 200 (one carrying a time of day), both acct1 debited —
-//     nets into one movement of 400, pinning that same-day postings are
-//     netted rather than listed separately.
-//   - the 7th:  300 acct1 debited, 300 acct2 debited (i.e. acct1 credited) —
-//     equal and opposite on both accounts, netting to zero on either. Pins
-//     that a net-zero day is still emitted as a movement (Amount 0) rather
-//     than filtered out.
-//   - the 9th:  400, acct1 debited — outside every window used below (to is
-//     exclusive), so it never appears in Opening or Movements.
+// postValueDatedSeriesFixture seeds the postings the ValueDatedSeries* subtests
+// share, between 901.001.001 ("acct1") and 901.001.002 ("acct2"), each posting
+// a balanced debit/credit pair.
 func postValueDatedSeriesFixture(t *testing.T, s ledger.BankStore, day func(int) time.Time) {
 	t.Helper()
 	const (
@@ -2337,8 +2095,6 @@ func ids[T any](items []T, key func(T) string) []string {
 
 // assertOrder checks a listing's contents and their order in one shot, so a
 // wrong order reports the whole sequence rather than the first mismatched slot.
-// It reports rather than fails, so one run names every listing that drifted
-// instead of stopping at the first.
 func assertOrder(t *testing.T, label string, got []string, want ...string) {
 	t.Helper()
 	if fmt.Sprint(got) != fmt.Sprint(want) {

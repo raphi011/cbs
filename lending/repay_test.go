@@ -11,11 +11,6 @@ import (
 )
 
 // This is the spec's worked example, and the point of it is the €49.32.
-//
-// The schedule says the first month's interest is €50.00 — one twelfth of 6% on
-// €10,000. Thirty days of ACT/365 accrual is €49.32. Allocation settles what
-// ACTUALLY accrued, not what the plan projected, and the principal portion
-// absorbs the difference. That is why the 30/360 convention exists.
 func TestRepay_AllocatesAgainstAccruedNotTheSchedule(t *testing.T) {
 	ctx := context.Background()
 	p, book, loan, customer := disbursedLoan(t)
@@ -136,10 +131,7 @@ func TestRepay_Rejects(t *testing.T) {
 	_, err = p.Repay(ctx, loan.ID, customer, -1, day(2025, time.February, 14), "negative")
 	assertErrorIs(t, err, lending.ErrInvalidAmount)
 
-	// More than is owed. Overpaying a loan is a refund, not a repayment, and
-	// letting it through would drive the principal account negative — which
-	// checkSufficientBalance refuses anyway, but with an error naming the
-	// ledger rather than the mistake.
+	// More than is owed.
 	_, err = p.Repay(ctx, loan.ID, customer, 2_000_000, day(2025, time.February, 14), "too much")
 	assertErrorIs(t, err, lending.ErrInvalidAmount)
 }
@@ -244,21 +236,6 @@ func TestClose_RefusesAnUnsettledReceivable(t *testing.T) {
 
 // TestClose_SucceedsOnAnExactHalfMinorUnitResidue pins the one residue
 // Accrued.Minor() cannot represent as settled: exactly half a minor unit.
-// Minor() rounds half AWAY from zero, so Minor(500_000) is 1 and
-// Minor(-500_000) is -1 — never 0 — even though the receivable itself is
-// fully cleared. If CloseTx tested the record instead of the receivable's own
-// ledger balance, a facility that ever lands on this exact residue could
-// never be closed again: once drawn principal is zero, further accrual adds
-// nothing and the residue never resolves.
-//
-// €18.25 drawn at 10% (ACT/365), for exactly one day:
-//
-//	1_825 × 100_000 × 1 / 365 = 500_000 micro-minor-units, exactly half a cent.
-//
-// Minor(500_000) = 1, so settling the loan credits 1 cent to the receivable
-// (clearing it, since that is exactly its book balance) and leaves the record at
-// 500_000 − 1_000_000 = −500_000. Minor(−500_000) = −1, which is nonzero — and
-// the receivable is back to zero.
 func TestClose_SucceedsOnAnExactHalfMinorUnitResidue(t *testing.T) {
 	ctx := context.Background()
 	p, book, _, customer := newTestPortfolio(t)

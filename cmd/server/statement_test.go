@@ -12,22 +12,8 @@ import (
 )
 
 // The camt.053's own tests.
-//
-// They exist because nothing else in this package injected one. Every other
-// settlement test drives a cut-off and reads the state it leaves, which walks the
-// statement path but never puts a statement into a bank's download queue on its own terms
-// — so none of receiveStatement's own guards had a witness, and neither did the
-// two no-ops the domain makes for a message it has already acted on. All four
-// were verified by breaking them and watching exactly these tests fail; the
-// reviewer who found them replaced two early returns with panics and ran the
-// whole suite green.
 
 // reserveOf is a member's reserve asset in its OWN book, in euro.
-//
-// Its own, not the central bank's view of it: the whole point of a mirror leg is
-// that the two are separate postings in separate books, and a test about booking
-// twice has to read the one the second booking would land in. h.advice reads the
-// row beside it; ReserveBalance reads the other side.
 func (h *harness) reserveOf(t *testing.T, id payment.ParticipantID) ledger.Amount {
 	t.Helper()
 	ctx := context.Background()
@@ -63,11 +49,6 @@ func (h *harness) settlementAccountOf(t *testing.T, id payment.ParticipantID) le
 
 // statementTo is the camt.053 one bank was actually sent, parsed, with its own
 // document handed back for editing.
-//
-// The real message rather than a hand-built one, because the two tests below
-// provoke a receiver's guard by CHANGING one thing about a document the receiver
-// would otherwise accept. A statement built from scratch could fail for some
-// other reason and still read like a pass.
 func statementTo(t *testing.T, h *harness, to iso20022.BIC) (iso20022.Envelope, *iso20022.Camt053) {
 	t.Helper()
 	env, err := iso20022.Unmarshal(h.lastMessageOfTypeTo(t, to, "camt.053.001.08"))
@@ -95,17 +76,6 @@ func injectStatement(t *testing.T, h *harness, to iso20022.BIC, env iso20022.Env
 // TestARedeliveredStatementBooksTheMirrorLegOnce is the witness on
 // PostSettlementAdviceTx's first guard: an advice already AdvicePosted is
 // returned as it stands and nothing is posted.
-//
-// A queue can hand the same message over twice and the receiver cannot tell a
-// duplicate from a retry, so a redelivered camt.053 is an ORDINARY event and not
-// an error — which is why the day reports nothing, and why
-// the guard returns the existing row instead of refusing.
-//
-// The money assertion is the substance: the mirror leg moved the reserve once.
-// Behind the guard the posting carries the idempotency key
-// "<reference>:reserve:<participant>", so a defect that got past it could not
-// post twice either — the guard's own job is to stop the bank TRYING, and its
-// observable form is the unchanged advice row that comes back.
 func TestARedeliveredStatementBooksTheMirrorLegOnce(t *testing.T) {
 	h := newHarness(t)
 	h.submitCreditTransfer(t)
@@ -140,21 +110,6 @@ func TestARedeliveredStatementBooksTheMirrorLegOnce(t *testing.T) {
 
 // TestARedeliveredSettlementStatusPaysThePayeeOnce is the witness on
 // SettleAtBankTx's Settled guard.
-//
-// Same shape as the statement above and a different message: the clearing
-// house's per-payment ACSC, replayed.
-//
-// It is a COLLECTION rather than a credit transfer, and that is the whole
-// fixture. Only one bank is sent an ACSC now — the one that submitted — and on a
-// push that bank has no leg to post, so a replay there would have nothing to
-// double. On a pull the submitter IS the creditor's bank: it asked, and it holds
-// the leg that pays its own customer. That is the one arrangement where a
-// redelivered advice could pay somebody twice, and it is the one this guard
-// exists for.
-//
-// It returns the payment rather than refusing for a reason the comment there
-// gives: transitioning twice is what ErrInvalidStateTransition reports, and that
-// would tell a handler that did nothing wrong that it failed.
 func TestARedeliveredSettlementStatusPaysThePayeeOnce(t *testing.T) {
 	h := newHarness(t)
 	p := h.settledCollection(t)
@@ -190,22 +145,6 @@ func TestARedeliveredSettlementStatusPaysThePayeeOnce(t *testing.T) {
 
 // TestAStatementAboutAnotherBanksAccountIsRefused is
 // ErrStatementNotForThisBank's witness, and it had none.
-//
-// Its sibling ErrNotThisBanksPayment is pinned by TestOnlyThePayeesBankPaysThePayee
-// and this one — described in its own doc as guarding "the failure that has no
-// second reader to catch it" — was referenced by five comments and no test at
-// all.
-//
-// The failure is worth stating precisely: a bank that booked whatever camt.053
-// arrived would move its OWN reserve mirror by ANOTHER member's position, in its
-// own book, and under isolation there is nobody else who can see both books to
-// notice. Nothing in this deployment misroutes a statement, so the misrouting is
-// injected — the payer's bank's own statement, delivered to the payee's bank.
-//
-// Both layers, because they refuse for different reasons. The domain refuses
-// because the account named is not this participant's; the handler REPORTS
-// because a message it cannot act on has no answer to send — a statement is not
-// an instruction, so there is nothing to reject back to the sender.
 func TestAStatementAboutAnotherBanksAccountIsRefused(t *testing.T) {
 	h := newHarness(t)
 	h.submitCreditTransfer(t)
@@ -254,17 +193,6 @@ func TestAStatementAboutAnotherBanksAccountIsRefused(t *testing.T) {
 
 // TestAStatementCarryingTwoAccountsIsRefused is the witness on
 // bank.receiveStatement's own guard, which is not the domain's.
-//
-// The standard permits several Stmt elements in one camt.053 and this system
-// never builds one — StatementMessage sends one member per message, because a
-// second statement would be about an account the recipient does not hold. The
-// handler states that as a requirement it CHECKS rather than an assumption it
-// makes, and this is what walks the check: booking the first and dropping the
-// second would move a reserve mirror against a message half of which nothing
-// ever acted on.
-//
-// It is provoked by DUPLICATING the statement this bank was really sent, so the
-// only thing wrong with the document is the count.
 func TestAStatementCarryingTwoAccountsIsRefused(t *testing.T) {
 	h := newHarness(t)
 	h.submitCreditTransfer(t)
@@ -285,16 +213,6 @@ func TestAStatementCarryingTwoAccountsIsRefused(t *testing.T) {
 // TestAnUnreadableStatementIsNotBooked is the other half of the handler, and it
 // is a different failure from the one above: not a document this reader has no
 // rule for, but one it cannot read at all.
-//
-// Two entries in ONE statement is payment.ReadStatement's refusal, and its
-// reason is the sharper of the two — this system's central bank posts exactly one
-// netting movement per member per cycle, so posting the first and dropping the
-// second would move the bank's reserve mirror by the WRONG AMOUNT with nothing
-// anywhere recording that it had.
-//
-// A statement is answered by nothing, so the only trace is the day's report. That
-// is not a gap: the central bank has already settled and is final, and there is
-// no decision left for this bank to accept or refuse.
 func TestAnUnreadableStatementIsNotBooked(t *testing.T) {
 	h := newHarness(t)
 	h.submitCreditTransfer(t)

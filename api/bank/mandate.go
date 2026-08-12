@@ -10,17 +10,6 @@ import (
 
 // registerMandateRoutes is the CREDITOR bank's mandate console, and it is on a
 // bank's surface because a mandate is that bank's own row.
-//
-// A mandate looks like network infrastructure and is not: in SEPA the creditor
-// holds it, payment.SDD.ValidateMandate says so, and the bank that checks one at
-// submission is the creditor's. On the clearing house's surface this console
-// would be every member's authorisations over every other member's customers'
-// accounts, listed on one page.
-//
-// There is no debtor-side route. A debtor's bank has no mandate row in this
-// system and no message that would give it one, which is the limit
-// SDD.ValidateMandate already names: a real debtor's bank keeps records of its
-// own and can refuse a collection MD01, and this one cannot.
 func (s *surface) registerMandateRoutes(mux *api.Router) {
 	mux.HandleFunc("POST /mandates", api.HandleBody(http.StatusCreated, s.handleCreateMandate))
 	mux.HandleFunc("GET /mandates", api.Handle(http.StatusOK, s.handleListMandates))

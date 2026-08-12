@@ -18,14 +18,8 @@ type SubsidiaryBalance struct {
 }
 
 // SubsidiaryBalances is every subsidiary under a control account, ordered by
-// subsidiary, with the ones that net to zero left out — a customer who has repaid
-// is not a row in what the bank owes.
-//
-// A PLAIN account answers with nothing at all rather than with one unnamed row.
-// It pools nobody, so there is no detail under it to show; its balance is
-// BookBalance and that is the whole of it.
-//
-// Returns ErrAccountNotFound.
+// subsidiary, with the ones that net to zero left out — a customer who has
+// repaid is not a row in what the bank owes.
 func (s *Book) SubsidiaryBalances(ctx context.Context, account AccountID) ([]SubsidiaryBalance, error) {
 	var out []SubsidiaryBalance
 	err := s.store.View(ctx, func(ctx context.Context, tx Tx) error {
@@ -51,43 +45,13 @@ func (s *Book) SubsidiaryBalancesTx(ctx context.Context, tx Tx, account AccountI
 
 // AccountHistory is every transaction that touched one account, in book order,
 // each carrying the balance the account stood at once it had posted.
-//
-// It answers a different question from every other read in this file, and the
-// difference is what justifies it. BookBalance says what an account holds;
-// SeriesTx says what it held on each value date. This says HOW it came to hold
-// it — which transaction moved it, when, and what it stood at afterwards.
-//
-// Two readers want exactly that. A reconciliation holding a statement's closing
-// balance against the book needs the balance AT THE POSTING the statement
-// describes, not the balance now. An ageing report needs the same rows in the
-// same order to work out which of them the current balance is still made of. One
-// read serves both, which is why AgeAt below is a method on this rather than a
-// second query.
-//
-// # It is a BOOKING-date view and deliberately not a value-dated one
-//
-// Rows are in the store's listing order — creation instant, then insertion
-// sequence — which is the only total order a book has. A value-dated view of the
-// same account is SeriesTx, and the two answer to different questions: value
-// dating is about when money takes effect, and this is about what the book
-// recorded and in what order it recorded it.
-//
-// # Reversed transactions count
-//
-// For BookBalance's reason: a reversal posts its own mirrored entries, and those
-// are what cancel the original. A history that dropped either would not sum to
-// the balance it claims to explain, which would make every check built on it
-// wrong in the one case an auditor cares about.
 type AccountHistory struct {
 	// Position is what was asked for: a whole account, or one subsidiary within a
-	// control account. Over a control account the two are different documents —
-	// the pool's movements, or one customer's statement — and the second is the
-	// one a customer recognises.
+	// control account.
 	Position Position
-	// Normal is the direction that INCREASES this account, taken off the
-	// account's type. Every Movement and Running figure below is signed by it,
-	// so a caller never has to know whether it is looking at an asset or a
-	// liability.
+	// Normal is the direction that INCREASES this account, taken off the account's
+	// type. Every Movement and Running figure below is signed by it, so a caller
+	// never has to know whether it is looking at an asset or a liability.
 	Normal Direction
 	Rows   []HistoryRow
 	// Closing is the balance after the last row, and it equals BookBalance for
@@ -97,17 +61,6 @@ type AccountHistory struct {
 }
 
 // HistoryRow is one TRANSACTION's effect on one account.
-//
-// One row per transaction and not per entry, because a transaction is what a
-// reader recognises and what an idempotency key names. A transaction with two
-// entries on the same account is netted into one row: nothing in this system
-// posts one, and a reader that had to sum two rows to learn what one event did
-// would be reading the wrong shape.
-//
-// BookingDate and ValueDate are the TRANSACTION's. An entry carries a value date
-// of its own and the two legs of one event may differ, which is exactly why
-// value dating is SeriesTx's subject and not this one's: a row here describes an
-// event, and an event has one booking date.
 type HistoryRow struct {
 	Transaction TransactionID
 	BookingDate time.Time
@@ -135,18 +88,6 @@ func (s *Book) AccountHistory(ctx context.Context, pos Position) (AccountHistory
 }
 
 // AccountHistoryTx is AccountHistory within a caller-supplied unit of work.
-//
-// It reads the account first, for BookBalanceTx's reason: which way an account's
-// balance runs is a property of the account, and a caller supplying the
-// direction would be asserting something it cannot check. An unknown account is
-// ErrAccountNotFound rather than an empty history — a caller asking about an
-// account that is not there has a bug, and answering "no movements" would hide
-// it.
-//
-// There is no store method behind this and no schema change under it. It walks
-// the transactions the store already lists for the account and sums in Go,
-// because the running balance is a property of the ORDER and the store's
-// aggregate has no way to express one.
 func (s *Book) AccountHistoryTx(ctx context.Context, tx Tx, pos Position) (AccountHistory, error) {
 	acct, err := tx.GetAccount(ctx, s.id, pos.Account)
 	if err != nil {
@@ -199,11 +140,6 @@ func (s *Book) AccountHistoryTx(ctx context.Context, tx Tx, pos Position) (Accou
 
 // Lot is one part of a balance, with the transaction that put it there and how
 // long it has been there.
-//
-// A balance is one number and says nothing about time. An in-transit account
-// holding a thousand is business as usual if it arrived this morning and a
-// finding if it arrived in March, and only a decomposition into dated lots can
-// tell the two apart. This is that decomposition's unit.
 type Lot struct {
 	Transaction TransactionID
 	// Since is the booking date of the transaction this lot is left over from.
@@ -220,25 +156,6 @@ type Lot struct {
 }
 
 // Ageing is a balance decomposed into dated lots, oldest first.
-//
-// The rule is FIFO: a movement against the balance discharges the oldest lots
-// first. That is the conventional one, and it is also the one that reads
-// correctly for the accounts this exists for — a settlement discharges the batch
-// that opened before it, not the one that opened after.
-//
-// What FIFO buys is that a NETTED movement, which carries no identity of its
-// own, still consumes something identifiable. A member bank's mirror leg covers
-// a whole cut-off in one figure and names no payment, so nothing can attribute
-// it; FIFO attributes it anyway, by the only fact available, which is order.
-// What survives is therefore an honest answer about AGE and a weaker one about
-// WHICH payment — and where the postings do carry an identity, the lot's
-// Metadata carries it through, so the caller gets the stronger answer for free
-// on the accounts that can support it.
-//
-// Lots sum to Balance. That is the invariant this type exists to keep, and it
-// holds for a balance that has gone the other way too: a movement that outruns
-// every lot in the queue opens a lot of the new sign rather than a negative one
-// beside the old.
 type Ageing struct {
 	Position Position
 	AsOf     time.Time
@@ -270,14 +187,6 @@ func (a Ageing) OlderThan(days int) []Lot {
 }
 
 // AgeAt decomposes the history's closing balance into dated lots as at asOf.
-//
-// It does no I/O and touches no store, which is the point: the FIFO rule is
-// arithmetic over rows already read, so it is testable with no database at all
-// and one read of the account answers both the questions this file exists for.
-//
-// asOf sets only the ages. It does NOT cut the history off — a caller asking
-// about a balance as at a past date wants a value-dated read, and that is
-// SeriesTx.
 func (h AccountHistory) AgeAt(asOf time.Time) Ageing {
 	out := Ageing{Position: h.Position, AsOf: asOf, Balance: h.Closing}
 	day := DayStart(asOf)
@@ -285,9 +194,6 @@ func (h AccountHistory) AgeAt(asOf time.Time) Ageing {
 	for _, r := range h.Rows {
 		m := r.Movement
 		// Consume the front of the queue while this movement runs against it.
-		// Both guards are load-bearing: an exhausted queue leaves the remainder
-		// to open a lot of the new sign, and a movement that has been fully
-		// absorbed must stop, because zero is opposite in sign to everything.
 		for len(out.Lots) > 0 && m != 0 && opposed(out.Lots[0].Amount, m) {
 			if abs(out.Lots[0].Amount) > abs(m) {
 				out.Lots[0].Amount += m

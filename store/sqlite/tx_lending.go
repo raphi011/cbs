@@ -214,7 +214,7 @@ func scanInstallment(row interface{ Scan(...any) error }) (lending.Installment, 
 // ListInstallments returns a facility's schedule ordered by seq_no — the one
 // listing in this system not ordered by a timestamp, because seq_no is the
 // instalment's position in the contract and is already a total order within a
-// facility. It is book- and facility-scoped like every other listing here.
+// facility.
 func (t *tx) ListInstallments(ctx context.Context, book ledger.BookID, id lending.FacilityID) ([]lending.Installment, error) {
 	if err := t.own(book); err != nil {
 		return nil, err
@@ -243,10 +243,7 @@ func (t *tx) ListInstallments(ctx context.Context, book ledger.BookID, id lendin
 // Effective-dated facility terms
 // ---------------------------------------------------------------------------
 
-// PutFacilityTerms upserts under (facility, effective day). The day key is
-// derived with lending.TermsDayKey — the same function GetFacilityTermsAsOf
-// compares against — so the write and the as-of read cannot disagree about which
-// day a repricing landed in. Nothing here truncates a date; see that function.
+// PutFacilityTerms upserts under (facility, effective day).
 func (t *tx) PutFacilityTerms(ctx context.Context, book ledger.BookID, row lending.FacilityTerms) error {
 	if err := t.own(book); err != nil {
 		return err
@@ -325,11 +322,7 @@ func (t *tx) ListFacilityTerms(ctx context.Context, book ledger.BookID, id lendi
 	return out, rows.Err()
 }
 
-// GetFacilityTermsAsOf is the row in force on a day. It compares day_key
-// rather than effective_from so that the bound is a DAY on both sides — the
-// caller's instant is truncated by lending.TermsDayKey in Go, and the column it
-// is compared against was written the same way, so no timestamp arithmetic
-// happens in the database at all.
+// GetFacilityTermsAsOf is the row in force on a day.
 func (t *tx) GetFacilityTermsAsOf(ctx context.Context, book ledger.BookID, id lending.FacilityID, day time.Time) (lending.FacilityTerms, error) {
 	if err := t.own(book); err != nil {
 		return lending.FacilityTerms{}, err

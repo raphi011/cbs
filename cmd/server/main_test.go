@@ -13,31 +13,6 @@ import (
 // TestTheSeedLeavesNoPaymentHalfProcessed pins what a reader sees on the first
 // page load: the scenario `make dev` presents contains no payment caught
 // between a debit and the answer to it.
-//
-// It matters because a half-processed payment reads as a bug in the payment
-// rather than as a moment in its life. A credit transfer really does pass
-// through that moment — the payer's bank debits, uploads its pacs.008, and
-// waits — and Initiated is the status that names it: money gone from the payer,
-// no institution having yet said accept or reject.
-//
-// Two things produce the property and they are different in kind. What the seed
-// COMPOSES it composes one institution's half at a time, in its own unit of
-// work, playing each in turn — so there is no instant at which one of those is
-// half-processed. What it UPLOADS goes through a real cut-off and is worked all
-// the way through before Populate returns, which is builder.build's closing act:
-// nothing is left in a bank's hub and nothing waits in a download queue.
-//
-// The hubs and the hosts are therefore checked too, and that arm only exists now
-// that the seed uploads at all. A payment sitting in a hub is one whose payer is
-// debited and whose file has not been built; a file sitting unworked at a host
-// is one an institution was told had arrived and has not read.
-//
-// Two things are checked, because a status is only half the story. Money is the
-// other half: a rejection that transitioned the payment but never reversed the
-// payer's leg would leave a Rejected payment reading correctly while the
-// customer's money sat in their bank's clearing suspense. So the suspense
-// accounts are made to account for themselves — across every bank, they hold
-// exactly the money of the payments that are legitimately mid-clearing.
 func TestTheSeedLeavesNoPaymentHalfProcessed(t *testing.T) {
 	ctx := context.Background()
 
@@ -79,14 +54,6 @@ func TestTheSeedLeavesNoPaymentHalfProcessed(t *testing.T) {
 	// mid holds, per asset, the money the accepted-but-unsettled payments have
 	// taken out of a customer's account and not yet delivered. That is exactly
 	// what a clearing suspense account is for.
-	//
-	// A PUSH only, and the exclusion is settle-before-release rather than an
-	// exemption. Before finality the submitting bank is the only bank that has
-	// heard of the payment, and on a pull that bank is the payee's and posts
-	// NOTHING at submission: the account being collected from is the payer's
-	// bank's to look at, and that bank learns of the collection when its output
-	// file is released. So an in-flight direct debit has taken nobody's money and
-	// is in no suspense — counting it would demand a balance no bank should have.
 	mid := map[ledger.AssetCode]ledger.Amount{}
 	for _, p := range payments {
 		if p.Status == payment.Initiated {
@@ -109,8 +76,6 @@ func TestTheSeedLeavesNoPaymentHalfProcessed(t *testing.T) {
 	// Every bank in the system is every bank with a DATABASE, asked of the store
 	// set rather than of an institution: the clearing house holds a roster and no
 	// bank rows, and the roster omits a bank that was founded and never admitted.
-	// See payment.Stores.Banks, and cmd/server's own listener plan, which asks
-	// the same question for the same reason.
 	bics, err := stores.Banks(ctx)
 	if err != nil {
 		t.Fatalf("listing the banks: %v", err)

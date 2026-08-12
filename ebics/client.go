@@ -10,15 +10,6 @@ import (
 )
 
 // Client is one subscriber's connection to one host.
-//
-// A subscriber holds one of these per host it deals with, and that is the entire
-// address book of the system: a member bank has two, the clearing house has one,
-// and the settlement agent has none because it dials nobody.
-//
-// Everything it can do, it initiates. There is no callback and nothing arrives
-// unasked, so a bank that never calls Download is a bank whose customers are
-// never told the fate of anything — a real operational failure with no analogue
-// in a system where results are pushed.
 type Client struct {
 	// Subscriber is who this connection claims to be. See SubscriberHeader.
 	Subscriber SubscriberID
@@ -42,11 +33,6 @@ func NewClient(sub SubscriberID, url string) *Client {
 }
 
 // Upload sends a file and returns the order id the host minted for it.
-//
-// The answer is technical. An order id means the file arrived and parsed as an
-// envelope; what the receiver makes of the payments inside it comes back later,
-// on a download. An error here means the file did NOT arrive, and the caller
-// still holds it — a send has never been inside anybody's unit of work.
 func (c *Client) Upload(ctx context.Context, t OrderType, payload []byte) (OrderID, error) {
 	resp, err := c.do(ctx, Request{OrderType: t, Payload: payload})
 	if err != nil {
@@ -57,10 +43,6 @@ func (c *Client) Upload(ctx context.Context, t OrderType, payload []byte) (Order
 
 // Download collects what is waiting: C53 for statements, BTD for everything
 // else, in the order the host queued it.
-//
-// An empty queue is no files and no error. EBICS_NO_DOWNLOAD_DATA_AVAILABLE is a
-// quiet day rather than a failure, and a caller made to branch on it would
-// branch on it at every call site.
 func (c *Client) Download(ctx context.Context, t OrderType) ([]File, error) {
 	resp, err := c.do(ctx, Request{OrderType: t})
 	if CodeOf(err) == NoDownloadDataAvailable {
@@ -83,12 +65,6 @@ func (c *Client) Acknowledgements(ctx context.Context) ([]Acknowledgement, error
 }
 
 // OrderStatus is what became of one order.
-//
-// The three answers it separates are the reason HAC is worth having: an order
-// the host has never heard of (ErrUnknownOrder), one that arrived and has not
-// been looked at (Received), and one the host has worked through (Processed or
-// Rejected). A transport that answered what a file meant at the moment it was
-// sent could not tell the middle one from either neighbour.
 func (c *Client) OrderStatus(ctx context.Context, id OrderID) (Acknowledgement, error) {
 	acks, err := c.Acknowledgements(ctx)
 	if err != nil {
@@ -104,11 +80,6 @@ func (c *Client) OrderStatus(ctx context.Context, id OrderID) (Acknowledgement, 
 
 // do sends one envelope and reads the answer, turning a return code that is not
 // OK into a *Refusal.
-//
-// The two failures it keeps apart call for opposite things. An error with no
-// return code is a host that was not reached — connection refused, a timeout, a
-// 500 — and retrying is right; a *Refusal is a host that answered and said no,
-// and retrying is pointless.
 func (c *Client) do(ctx context.Context, req Request) (*Response, error) {
 	body, err := json.Marshal(req)
 	if err != nil {

@@ -173,11 +173,7 @@ func TestMarshalRejectsAHeaderThatDisagreesWithItsDocument(t *testing.T) {
 
 // prefixedTestDoc is registered only to prove that Unmarshal preserves an
 // xmlns:* prefix binding declared on the Document start element, rather than
-// losing it. Its Body field names the message's namespace explicitly — the
-// way a real message written with a prefix would — so a decode that lost the
-// prefix binding leaves Body unresolved and the field empty, rather than
-// erroring. That silence is exactly what makes the bug dangerous: see
-// TestUnmarshalPreservesPrefixedNamespaceBindings.
+// losing it.
 type prefixedTestDoc struct {
 	XMLName xml.Name `xml:"urn:example:test.002.001.01 Document"`
 	Body    string   `xml:"urn:example:test.002.001.01 Body"`
@@ -197,14 +193,8 @@ func init() {
 		func() Document { return &prefixedTestDoc{} })
 }
 
-// TestUnmarshalPreservesPrefixedNamespaceBindings pins a message whose
-// Document element uses a namespace prefix rather than a default xmlns. A
-// byte-rewrap that only copies the captured innerxml, without the start
-// element's own attributes, drops the "xmlns:p" declaration; the inner
-// <p:Body> then resolves to the undefined prefix "p" instead of the message's
-// namespace, and encoding/xml silently leaves Body empty rather than
-// erroring. Unmarshal must decode through a live *xml.Decoder so the prefix
-// binding stays in scope for the whole subtree.
+// TestUnmarshalPreservesPrefixedNamespaceBindings pins a message whose Document
+// element uses a namespace prefix rather than a default xmlns.
 func TestUnmarshalPreservesPrefixedNamespaceBindings(t *testing.T) {
 	in := `<Envelope><AppHdr xmlns="urn:iso:std:iso:20022:tech:xsd:head.001.001.02">` +
 		`<Fr><FIId><FinInstnId><BICFI>AURTSESSXXX</BICFI></FinInstnId></FIId></Fr>` +
@@ -226,10 +216,9 @@ func TestUnmarshalPreservesPrefixedNamespaceBindings(t *testing.T) {
 	}
 }
 
-// TestUnmarshalRejectsAnEnvelopeWithNoDocument pins the missing-<Document>
-// case to ErrMissingElement, matching what Marshal already reports for a nil
-// Document. Before this fix it reported ErrMessageDefinitionMismatch with an
-// empty document namespace, which named the wrong problem.
+// TestUnmarshalRejectsAnEnvelopeWithNoDocument pins the missing-<Document> case
+// to ErrMissingElement, matching what Marshal already reports for a nil
+// Document.
 func TestUnmarshalRejectsAnEnvelopeWithNoDocument(t *testing.T) {
 	in := `<Envelope><AppHdr xmlns="urn:iso:std:iso:20022:tech:xsd:head.001.001.02">` +
 		`<Fr><FIId><FinInstnId><BICFI>AURTSESSXXX</BICFI></FinInstnId></FIId></Fr>` +
@@ -268,9 +257,9 @@ func TestMarshalRejectsADocumentTheRegistryDoesNotKnow(t *testing.T) {
 }
 
 // TestRegisterDocumentPanicsWhenMessageDefinitionIdentifierDisagrees pins
-// registerDocument's self-consistency check: the registry key it is given
-// must agree with what the constructed value itself reports, or the registry
-// becomes a second, unreconciled source of truth.
+// registerDocument's self-consistency check: the registry key it is given must
+// agree with what the constructed value itself reports, or the registry becomes
+// a second, unreconciled source of truth.
 func TestRegisterDocumentPanicsWhenMessageDefinitionIdentifierDisagrees(t *testing.T) {
 	defer func() {
 		if r := recover(); r == nil {
@@ -283,11 +272,8 @@ func TestRegisterDocumentPanicsWhenMessageDefinitionIdentifierDisagrees(t *testi
 }
 
 // TestUnmarshalRejectsAWrongRootElement pins the root element's own identity:
-// an otherwise well-formed header and document wrapped in something other
-// than <Envelope> must fail, not decode successfully. The token walk that
-// replaced rawEnvelope only ever inspects the element at depth 2 (AppHdr,
-// Document) — it never looked at what depth 1 actually was, so any wrapper
-// element worked by accident, including <Document> itself.
+// an otherwise well-formed header and document wrapped in something other than
+// <Envelope> must fail, not decode successfully.
 func TestUnmarshalRejectsAWrongRootElement(t *testing.T) {
 	in := `<NotAnEnvelope><AppHdr xmlns="urn:iso:std:iso:20022:tech:xsd:head.001.001.02">` +
 		`<Fr><FIId><FinInstnId><BICFI>AURTSESSXXX</BICFI></FinInstnId></FIId></Fr>` +
@@ -302,12 +288,8 @@ func TestUnmarshalRejectsAWrongRootElement(t *testing.T) {
 }
 
 // TestUnmarshalRejectsContentAfterTheRootCloses pins the single-root
-// requirement: a second top-level element after the first </Envelope> must
-// fail rather than silently become the envelope that gets parsed. Without
-// this, an attacker (or a buggy peer) could smuggle two envelopes into one
-// message and rely on this codec picking whichever one a naive parser lands
-// on last, which is exactly the kind of parser differential that matters
-// between two banks.
+// requirement: a second top-level element after the first </Envelope> must fail
+// rather than silently become the envelope that gets parsed.
 func TestUnmarshalRejectsContentAfterTheRootCloses(t *testing.T) {
 	second := `<Envelope><AppHdr xmlns="urn:iso:std:iso:20022:tech:xsd:head.001.001.02">` +
 		`<Fr><FIId><FinInstnId><BICFI>AURTSESSXXX</BICFI></FinInstnId></FIId></Fr>` +
@@ -324,14 +306,7 @@ func TestUnmarshalRejectsContentAfterTheRootCloses(t *testing.T) {
 
 // TestUnmarshalRejectsASecondValidEnvelope pins the case
 // TestUnmarshalRejectsContentAfterTheRootCloses does NOT cover: two complete,
-// well-formed, individually valid envelopes concatenated back to back. That
-// first attempt at fixing "content after the root" only ever set its guard
-// inside the xml.EndElement branch, which Unmarshal never reaches on the
-// success path — it returns as soon as Document decodes and validates,
-// before consuming the root's own closing tag. So a first envelope that
-// fully succeeds was never checked for what came after it, which is exactly
-// the parser differential that matters: one reader takes the first envelope,
-// another could be misled into taking the last.
+// well-formed, individually valid envelopes concatenated back to back.
 func TestUnmarshalRejectsASecondValidEnvelope(t *testing.T) {
 	in := wantEnvelopeXML + wantEnvelopeXML
 	if _, err := Unmarshal([]byte(in)); err == nil {
@@ -339,10 +314,9 @@ func TestUnmarshalRejectsASecondValidEnvelope(t *testing.T) {
 	}
 }
 
-// TestUnmarshalAcceptsTrailingWhitespaceAndComments pins the other half of
-// the same fix: refusing a second envelope must not become refusing
-// everything after the first one. Whitespace and a comment carry no content
-// of their own and are legal trailing bytes.
+// TestUnmarshalAcceptsTrailingWhitespaceAndComments pins the other half of the
+// same fix: refusing a second envelope must not become refusing everything
+// after the first one.
 func TestUnmarshalAcceptsTrailingWhitespaceAndComments(t *testing.T) {
 	in := wantEnvelopeXML + "\n  \n<!-- a trailing comment -->\n  "
 	env, err := Unmarshal([]byte(in))
@@ -369,9 +343,7 @@ func TestRegisterDocumentPanicsWhenNamespaceDisagrees(t *testing.T) {
 }
 
 // envelopeAround wraps a valid header for test.001.001.01 and whatever body
-// bytes the caller supplies in a single <Envelope>. The tests below differ
-// only in what sits between the header and the root's closing tag, so the
-// header is written once here rather than copied into each of them.
+// bytes the caller supplies in a single <Envelope>.
 func envelopeAround(body string) string {
 	return `<Envelope><AppHdr xmlns="urn:iso:std:iso:20022:tech:xsd:head.001.001.02">` +
 		`<Fr><FIId><FinInstnId><BICFI>AURTSESSXXX</BICFI></FinInstnId></FIId></Fr>` +
@@ -387,9 +359,7 @@ const testDocumentXML = `<Document xmlns="urn:example:test.001.001.01"><Body>hel
 // element the codec does not recognise, sitting between </Document> and
 // </Envelope>, is skipped and the envelope still decodes. <Sgntr> is a real
 // element of the ISO 20022 business message envelope, and it is defined to
-// follow the document, so refusing it would refuse legitimate input. The same
-// element placed BEFORE <Document> was always skipped, so a rule that refused
-// it here would also be positional and asymmetric for no stated reason.
+// follow the document, so refusing it would refuse legitimate input.
 func TestUnmarshalAcceptsAnUnknownElementAfterTheDocument(t *testing.T) {
 	in := envelopeAround(testDocumentXML + `<Sgntr><X>signature</X></Sgntr>`)
 
@@ -408,8 +378,7 @@ func TestUnmarshalAcceptsAnUnknownElementAfterTheDocument(t *testing.T) {
 
 // TestUnmarshalAcceptsTextBeforeTheEnvelopeCloses is
 // TestUnmarshalAcceptsAnUnknownElementAfterTheDocument's counterpart for
-// character data. Text between </Document> and </Envelope> is still inside the
-// envelope, so the post-envelope text guard must not reach it.
+// character data.
 func TestUnmarshalAcceptsTextBeforeTheEnvelopeCloses(t *testing.T) {
 	in := envelopeAround(testDocumentXML + `some trailing text inside the envelope`)
 
@@ -422,11 +391,8 @@ func TestUnmarshalAcceptsTextBeforeTheEnvelopeCloses(t *testing.T) {
 	}
 }
 
-// TestUnmarshalRejectsASecondDocumentInTheSameEnvelope pins the one element
-// the envelope-level rule must NOT let through twice. Widening the guard so
-// that <Sgntr> can follow <Document> would, on its own, also let a second
-// <Document> follow the first and silently overwrite it — the same parser
-// differential as two concatenated envelopes, one level down.
+// TestUnmarshalRejectsASecondDocumentInTheSameEnvelope pins the one element the
+// envelope-level rule must NOT let through twice.
 func TestUnmarshalRejectsASecondDocumentInTheSameEnvelope(t *testing.T) {
 	in := envelopeAround(testDocumentXML + testDocumentXML)
 
@@ -453,8 +419,7 @@ func TestUnmarshalRejectsATrailingDirective(t *testing.T) {
 
 // TestUnmarshalAcceptsATrailingProcessingInstruction pins the processing
 // instruction half of the doc comment's claim about what stays legal after the
-// envelope closes. Without it, mutating the code to refuse trailing
-// xml.ProcInst leaves the whole suite green and the claim unchecked.
+// envelope closes.
 func TestUnmarshalAcceptsATrailingProcessingInstruction(t *testing.T) {
 	in := wantEnvelopeXML + "\n<?display mode=\"compact\"?>\n"
 
@@ -481,22 +446,6 @@ func appHdrXML(bizMsgIdr, msgDefIdr string) string {
 // TestUnmarshalRejectsASecondAppHdrInTheSameEnvelope pins the header against
 // the same duplication rule as <Document>, in BOTH positions, because the two
 // positions failed differently and only one of them was ever refused.
-//
-// AppHdr is the element that DRIVES dispatch, so two headers is the parser
-// differential the <Document> guard exists to prevent, applied to the field
-// that decides the document's type. Which copy won depended on where it sat:
-// a second header BEFORE <Document> overwrote hdr before dispatch, so the
-// SECOND won; a second header AFTER <Document> was decoded into hdr and then
-// thrown away, because result had already snapshotted the first — so the
-// FIRST won. Same bytes, two answers, chosen by position.
-//
-// The two copies here differ ONLY in BizMsgIdr, and both name the same,
-// registered message definition. That is deliberate. An earlier draft made
-// the second header name camt.053.001.08, and the before-position subtest
-// passed against the unfixed code — not because the duplicate was refused,
-// but because the overwritten header then failed the registry lookup. A
-// duplicate that changes nothing the other checks look at is the only kind
-// that isolates this guard.
 func TestUnmarshalRejectsASecondAppHdrInTheSameEnvelope(t *testing.T) {
 	first := appHdrXML("FIRST", "test.001.001.01")
 	second := appHdrXML("SECOND", "test.001.001.01")
@@ -526,12 +475,7 @@ func TestUnmarshalRejectsASecondAppHdrInTheSameEnvelope(t *testing.T) {
 }
 
 // TestUnmarshalAcceptsUndispatchedElementsAnywhere pins the two claims the
-// duplicate guards do NOT make. An element this codec does not dispatch on is
-// skipped wherever it sits — before <Document> as well as after it, which is
-// what makes the envelope-level rule symmetric rather than positional — and it
-// may repeat, because only the two elements the codec actually reads into
-// (AppHdr, Document) can be duplicated into a parser differential. Without
-// this, "skipped either way" and "may repeat freely" are prose no test checks.
+// duplicate guards do NOT make.
 func TestUnmarshalAcceptsUndispatchedElementsAnywhere(t *testing.T) {
 	hdr := appHdrXML("AURTSESSXXX-20260731-000001", "test.001.001.01")
 
@@ -570,11 +514,6 @@ func TestUnmarshalAcceptsUndispatchedElementsAnywhere(t *testing.T) {
 // trailing-content rules: text after </Envelope> was refused while text before
 // <Envelope> was accepted, so the same junk was fatal in one position and
 // invisible in the other.
-//
-// XML 1.0 forbids character data in the prolog, so a conforming parser rejects
-// the leading case outright — meaning a codec that accepted it would return a
-// value for bytes another parser would refuse to read at all. encoding/xml is
-// lenient there and will not raise it, so Unmarshal does.
 func TestUnmarshalRejectsTextOutsideTheEnvelope(t *testing.T) {
 	body := envelopeAround(testDocumentXML)
 
@@ -602,23 +541,6 @@ func TestUnmarshalRejectsTextOutsideTheEnvelope(t *testing.T) {
 
 // TestUnmarshalAcceptsALeadingByteOrderMark pins the one position in a document
 // where U+FEFF is not character data.
-//
-// XML 1.0 §4.3.3 and Appendix F make a leading UTF-8 byte order mark part of
-// the entity's ENCODING AUTODETECTION rather than its content, so a conforming
-// parser accepts it — and producers on the .NET and Windows stacks emit one by
-// default, which very much includes real bank and CSM middleware. encoding/xml
-// surfaces it as the first xml.CharData token, carrying the three bytes
-// EF BB BF, and bytes.TrimSpace does not trim them: U+FEFF is not
-// unicode.IsSpace. So the text-outside-the-root guard, once widened to fire at
-// depth 0 in EITHER direction, refused every BOM'd document — the exact
-// inversion of the asymmetry it was widened to close, since here a conforming
-// parser accepts what this one refused. Nothing in this repository noticed
-// because Marshal never emits a BOM.
-//
-// Anywhere other than first, U+FEFF is ZERO WIDTH NO-BREAK SPACE: ordinary
-// character data, and still refused outside the root. Both halves are pinned,
-// because a fix that trimmed the mark unconditionally would reopen the very
-// hole the widening closed.
 func TestUnmarshalAcceptsALeadingByteOrderMark(t *testing.T) {
 	bom := string(utf8BOM)
 
@@ -675,19 +597,6 @@ func TestUnmarshalAcceptsALeadingByteOrderMark(t *testing.T) {
 
 // TestUnmarshalTakesTheLastOfARepeatedScalar pins a known residual rather than
 // a desired behaviour, so that the doc comment claiming it stays honest.
-//
-// Inside a subtree handed to dec.DecodeElement, encoding/xml is last-wins for a
-// repeated scalar child: a second <BizMsgIdr> silently replaces the first
-// rather than being skipped or refused. The envelope's own children are
-// guarded against exactly this (a second <AppHdr> or <Document> is an error);
-// one level down, they are not. A parser that took the first value would
-// disagree with this one about the same bytes.
-//
-// It is left as-is because every actor in this repository decodes through this
-// function and so agrees with itself, and because the package doc says
-// interoperability with a foreign parser is not what this envelope is for. If
-// that ever stops being true, this test is where the decision is recorded, and
-// it will fail the moment the behaviour changes.
 func TestUnmarshalTakesTheLastOfARepeatedScalar(t *testing.T) {
 	in := `<Envelope><AppHdr xmlns="urn:iso:std:iso:20022:tech:xsd:head.001.001.02">` +
 		`<Fr><FIId><FinInstnId><BICFI>AURTSESSXXX</BICFI></FinInstnId></FIId></Fr>` +
@@ -710,10 +619,6 @@ func TestUnmarshalTakesTheLastOfARepeatedScalar(t *testing.T) {
 // asymmetry FuzzUnmarshal found: an AppHdr carrying nothing but a MsgDefIdr can
 // satisfy Unmarshal and then fail Marshal on the very next call, so the package
 // would accept bytes it could not reproduce.
-//
-// The document below is deliberately VALID — the point is that the header
-// alone decides it, and that the error is the same one Marshal would have
-// raised, only raised at the boundary where the bytes actually arrived.
 func TestUnmarshalRejectsAHeaderItCouldNotReMarshal(t *testing.T) {
 	in := `<Envelope><AppHdr xmlns="urn:iso:std:iso:20022:tech:xsd:head.001.001.02">` +
 		`<MsgDefIdr>test.001.001.01</MsgDefIdr></AppHdr>` + testDocumentXML + `</Envelope>`
@@ -739,15 +644,6 @@ func TestUnmarshalRejectsAHeaderItCouldNotReMarshal(t *testing.T) {
 // TestUnmarshalRejectsAHeaderWithNoCreationDate is the CreDt case of the same
 // asymmetry, and it is worse than the others because it does not fail on the
 // way back out — it INVENTS.
-//
-// head.001.001.02 declares CreDt with minOccurs defaulted to 1, and xmllint
-// refuses a header without it ("Missing child element(s). Expected is one of
-// ( BizSvc, MktPrctc, CreDt )"). Without this check a header with no <CreDt> is
-// accepted, decoded to the zero time, and re-marshalled as
-// <CreDt>0001-01-01T00:00:00Z</CreDt>: a schema-VALID document carrying a
-// business fact — the moment the header was created — that nobody sent. The
-// round trip holds, which is exactly why FuzzUnmarshal cannot find it; silent
-// fabrication is not a crash.
 func TestUnmarshalRejectsAHeaderWithNoCreationDate(t *testing.T) {
 	noCreDt := `<Envelope><AppHdr xmlns="urn:iso:std:iso:20022:tech:xsd:head.001.001.02">` +
 		`<Fr><FIId><FinInstnId><BICFI>AURTSESSXXX</BICFI></FinInstnId></FIId></Fr>` +
@@ -773,12 +669,6 @@ func TestUnmarshalRejectsAHeaderWithNoCreationDate(t *testing.T) {
 
 // TestUnmarshalledEnvelopesAlwaysReMarshal is FuzzUnmarshal's property stated
 // as an ordinary test, under a name that says what the property IS.
-//
-// It does not add coverage: a plain `go test` runs FuzzUnmarshal over its seed
-// corpus, and those seeds are f.Add-ed from these same four golden files, and
-// assertGoldenRoundTrip asserts it too. What this test buys is that the property
-// has a name a reader can grep for and a failure message that names it, rather
-// than arriving as a fuzz seed failing.
 func TestUnmarshalledEnvelopesAlwaysReMarshal(t *testing.T) {
 	for _, file := range []string{"pacs008.xml", "pacs003.xml", "pacs002.xml", "pacs004.xml"} {
 		t.Run(file, func(t *testing.T) {
@@ -800,19 +690,6 @@ func TestUnmarshalledEnvelopesAlwaysReMarshal(t *testing.T) {
 // TestUnmarshalSurvivesHostileInput is the safety net for the one function here
 // that reads bytes it did not write. Every case must return an error and none
 // may panic.
-//
-// It asserts the error CLASS per case rather than merely non-nilness. Checking
-// only err != nil would lock in — without ever observing it — that the empty
-// string and <Envelope></Envelope> come back as a bare io.EOF: neither
-// ErrMissingElement: AppHdr nor ErrMissingElement: Document, and the one error a
-// transport layer is idiomatically required to read as "the peer closed cleanly,
-// read more" rather than "these bytes are bad". This function sits behind a
-// channel or an HTTP handler, where a framing bug that truncates a body would
-// then surface as a clean disconnect.
-//
-// So io.EOF may never escape Unmarshal, for ANY input — that is asserted for
-// every case, including the ones whose sentinel is deliberately left open
-// because the input is not a structurally recognisable envelope at all.
 func TestUnmarshalSurvivesHostileInput(t *testing.T) {
 	cases := []struct {
 		name string
@@ -849,11 +726,9 @@ func TestUnmarshalSurvivesHostileInput(t *testing.T) {
 				`<FIToFICstmrCdtTrf></FIToFICstmrCdtTrf></Document></Envelope>`,
 			want: ErrMissingElement,
 		},
-		// The root-name check fires on the first token, so this one never
-		// reaches any nesting logic and is a duplicate of the `<a>` case as far
-		// as the code is concerned. It is kept because it is cheap, and the
-		// case below is the one that actually walks 5 000 levels — inside an
-		// <Envelope>, where dec.Skip has to do the walking.
+		// The root-name check fires on the first token, so this one never reaches any
+		// nesting logic and is a duplicate of the `<a>` case as far as the code is
+		// concerned.
 		{name: "deep nesting at the root", in: strings.Repeat(`<a>`, 5000)},
 		{name: "deep nesting inside the envelope", in: `<Envelope>` + strings.Repeat(`<a>`, 5000)},
 		{name: "control characters", in: "\x00\x01\x02"},

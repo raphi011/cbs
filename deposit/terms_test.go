@@ -213,9 +213,7 @@ func TestValidateRequiresAProductAndACompletePricing(t *testing.T) {
 }
 
 // A floating row takes its pricing from the product version in force on the
-// day, not from the version in force when the row was written. That is the
-// point: one published version reprices every account bound to it, per day,
-// without touching a single account row.
+// day, not from the version in force when the row was written.
 func TestResolveFloatsWithTheProductVersion(t *testing.T) {
 	rows := []OverdraftTerms{
 		{AccountID: "dep_1", EffectiveFrom: day(0), ProductID: "prd_basic", OverdraftLimit: 50_000},

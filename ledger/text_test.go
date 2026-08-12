@@ -10,9 +10,7 @@ import (
 
 // The corpus below is shared with store/storetest, which asserts the other half
 // of the same rule: every string ValidateText accepts must round-trip through
-// the store unchanged. Keep the two in step — a string this test moves from
-// "rejected" to "accepted" is a string the store then has to be able to hold,
-// byte for byte.
+// the store unchanged.
 
 func TestValidateTextAcceptsOrdinaryText(t *testing.T) {
 	for _, s := range []string{
@@ -37,8 +35,7 @@ func TestValidateTextAcceptsOrdinaryText(t *testing.T) {
 func TestValidateTextRejectsControlCharactersAndInvalidUTF8(t *testing.T) {
 	// Every one of these is legal in a Go string and legal in JSON, and none of
 	// them is refused by the store: SQLite holds a NUL and an invalid UTF-8 byte
-	// happily. So nothing below this line is enforced by a database. It is enforced
-	// here or nowhere, which is the argument in text.go read from the other end.
+	// happily. So nothing below this line is enforced by a database.
 	for _, tc := range []struct{ label, s string }{
 		{"NUL", "Ban\x00k"},
 		{"invalid UTF-8", "Ban\xffk"},

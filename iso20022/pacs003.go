@@ -13,11 +13,6 @@ func init() {
 
 // Pacs003 is FIToFICustomerDirectDebit: a collection sent by the CREDITOR's
 // bank, asking the debtor's bank to pay under a mandate the debtor signed.
-//
-// It is what payment.SDD names, and it is the mirror image of pacs.008 in one
-// specific way worth noticing: the sender is the party being paid. A push
-// scheme's message travels with the money; a pull scheme's message travels
-// against it.
 type Pacs003 struct {
 	XMLName            xml.Name                  `xml:"urn:iso:std:iso:20022:tech:xsd:pacs.003.001.08 Document"`
 	FIToFICstmrDrctDbt FIToFICustomerDirectDebit `xml:"FIToFICstmrDrctDbt"`
@@ -49,10 +44,7 @@ func (m FIToFICustomerDirectDebit) validate() error {
 	return nil
 }
 
-// DirectDebitGroupHeader describes the collection message as a whole. It has
-// the same shape as a credit transfer's group header and is a separate type
-// because the two are separate definitions in the standard and will not
-// necessarily stay identical across versions.
+// DirectDebitGroupHeader describes the collection message as a whole.
 type DirectDebitGroupHeader struct {
 	MsgId             string                   `xml:"MsgId"`
 	CreDtTm           ISODateTime              `xml:"CreDtTm"`
@@ -78,28 +70,12 @@ func (h DirectDebitGroupHeader) validate() error {
 }
 
 // MandateRelatedInformation is the authorisation the collection relies on.
-//
-// This is what makes a direct debit different from a credit transfer at the
-// message level: the mandate travels WITH the collection, rather than being a
-// record only the creditor's bank holds. A debtor's bank that has never seen
-// the mandate can still check the identifier and the signature date against a
-// dispute.
-//
-// Both fields are minOccurs="0" in MandateRelatedInformation14 — the ISO
-// standard requires NEITHER — and both are mandatory in the EPC guidelines. This
-// package keeps that distinction sharp on purpose (see CashAccount), and it
-// matters here because a debtor's bank cannot check a dispute against a mandate
-// identifier or signature date that never arrived. payment.Mandate has CreatedAt
-// and no signature date.
 type MandateRelatedInformation struct {
 	MndtId    string  `xml:"MndtId"`
 	DtOfSgntr ISODate `xml:"DtOfSgntr"`
 }
 
-// validate enforces both EPC-mandatory fields. DtOfSgntr counts as absent when
-// it is the zero ISODate: a zero date marshals as 0001-01-01, which is a date
-// no mandate was ever signed on, so treating it as "present but wrong" instead
-// of "absent" would be the more misleading choice.
+// validate enforces both EPC-mandatory fields.
 func (m MandateRelatedInformation) validate() error {
 	if m.MndtId == "" {
 		return fmt.Errorf("%w: MndtRltdInf/MndtId", ErrMissingElement)
@@ -111,11 +87,7 @@ func (m MandateRelatedInformation) validate() error {
 }
 
 // PersonIdentificationScheme names the scheme an "other" person identifier was
-// issued under. This package's only use of it is fixed by the EPC guidelines:
-// CdtrSchmeId's Othr/Id is always a Creditor Identifier, and SchmeNm always
-// says so with the literal proprietary value SEPA — not a member of the ISO
-// external code list, which is why only Prtry is carried here and not a full
-// Cd/Prtry choice.
+// issued under.
 type PersonIdentificationScheme struct {
 	Prtry string `xml:"Prtry"`
 }
@@ -143,10 +115,7 @@ func (g GenericPersonIdentification) validate() error {
 }
 
 // PersonIdentification is the standard's PersonIdentification13: a date and
-// place of birth, or one or more "other" identifiers. This package carries
-// exactly one Othr — the Creditor Identifier — and nothing else: SEPA's use of
-// this type is not about the creditor being a natural person, only about which
-// arm of Party38Choice the standard puts a proprietary-scheme identifier in.
+// place of birth, or one or more "other" identifiers.
 type PersonIdentification struct {
 	Othr GenericPersonIdentification `xml:"Othr"`
 }
@@ -157,14 +126,6 @@ func (p PersonIdentification) validate() error { return p.Othr.validate() }
 // mandate was issued under — EPC AT-02, mandatory on every SEPA Core
 // collection, though PartyIdentification135 leaves the whole element optional
 // in the standard.
-//
-// It is what lets the debtor's bank check a collection against a mandate
-// scoped to a specific creditor without ever having seen that creditor's own
-// records: the identifier is assigned by a national scheme (a country's
-// central bank or an equivalent authority), not chosen by the creditor, so it
-// cannot be forged the way a free-text creditor name could be. The standard's
-// PartyIdentification135 also allows a name and postal address here; the EPC
-// guidelines do not require them and neither is carried.
 type CreditorSchemeIdentification struct {
 	Id PartyChoice `xml:"Id"`
 }
@@ -190,10 +151,6 @@ func (t DirectDebitTransaction) validate() error {
 }
 
 // DirectDebitTransactionInformation is one collection.
-//
-// The field order is the schema's, and it differs from a credit transfer's in
-// the way the message's direction implies: the creditor and its agent come
-// first, because the creditor's bank is the sender.
 type DirectDebitTransactionInformation struct {
 	PmtId          PaymentIdentification         `xml:"PmtId"`
 	PmtTpInf       *PaymentTypeInformation       `xml:"PmtTpInf,omitempty"`
@@ -210,12 +167,12 @@ type DirectDebitTransactionInformation struct {
 }
 
 // validate enforces, alongside the checks pacs.008's equivalent method makes,
-// the two EPC-mandatory elements of PmtTpInf that PaymentTypeInformation
-// itself does not require (see that type's doc comment for why): LclInstrm
-// must be present and given BY CODE — AT-20 names the scheme CORE, and only
-// the Cd arm of the choice can carry a code, so a collection that supplied
-// Prtry instead is exactly as non-conformant as one with no LclInstrm at all —
-// and SeqTp must be present.
+// the two EPC-mandatory elements of PmtTpInf that PaymentTypeInformation itself
+// does not require (see that type's doc comment for why): LclInstrm must be
+// present and given BY CODE — AT-20 names the scheme CORE, and only the Cd arm
+// of the choice can carry a code, so a collection that supplied Prtry instead
+// is exactly as non-conformant as one with no LclInstrm at all — and SeqTp must
+// be present.
 func (t DirectDebitTransactionInformation) validate() error {
 	if err := t.PmtId.validate(); err != nil {
 		return err

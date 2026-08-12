@@ -14,34 +14,6 @@ import (
 
 // paymentAudit reads the payment-scope audit trail of the WHOLE SYSTEM,
 // optionally narrowed to one entity.
-//
-// It is three reads of three books, because each institution keeps its own
-// payment-scope log in its own database — a mandate is the creditor bank's, a
-// cycle is the clearing house's, a settlement is the central bank's. See
-// payment.Network.book.
-//
-// So the trail these tests are about is spread across N+2 logs, and this reads
-// them all and CONCATENATES them, institution by institution: the clearing
-// house, the settlement agent, then each bank, each in its own order.
-//
-// # There is no total order to sort into
-//
-// Each institution has its own database and therefore its own counter, so two
-// events from two institutions carry Seq numbers that mean "third thing this
-// bank did" and "third thing the clearing house did". Comparing them produces an
-// order nothing in the system has; sorted anyway, the trail comes out
-// interleaved by accident of how busy each institution had been.
-//
-// What replaces it is the only cross-institution order this system can honestly
-// state: NONE. There is no global clock and no shared log, and that is the
-// finding rather than a limitation of the fixture — an auditor holding three
-// banks' logs and a clearing house's has exactly this problem, and answers it
-// with the MESSAGES, which carry causality the counters do not.
-//
-// So the concatenation is a grouping, and every assertion built on it reads as
-// "this institution recorded these things, in this order; that one recorded
-// those". Where a test's subject IS one institution's log, it should read that
-// one directly rather than the whole — see institutionAudit.
 func paymentAudit(t *testing.T, sys *testSystem, entity string) []ledger.AuditEvent {
 	t.Helper()
 	var events []ledger.AuditEvent
@@ -52,10 +24,6 @@ func paymentAudit(t *testing.T, sys *testSystem, entity string) []ledger.AuditEv
 }
 
 // institutionAudit is ONE institution's payment-scope log, in its own order.
-//
-// It is the read every assertion about ordering has to be built on now, because
-// an institution's Seq is a total order within its own database and nothing
-// orders two databases against each other. See paymentAudit.
 func institutionAudit(t *testing.T, r auditReader, entity string) []ledger.AuditEvent {
 	t.Helper()
 	got, err := r.net.ListAudit(context.Background(), ledger.AuditFilter{
@@ -87,13 +55,8 @@ func cbAudit(t *testing.T, sys *testSystem, entity string) []ledger.AuditEvent {
 	return institutionAudit(t, auditReader{net: sys.cb(), book: CentralBankBook}, entity)
 }
 
-// auditReader is one institution's log: the network to ask, and the book its own
-// rows are written under.
-//
-// The book is carried rather than derived because Network.book is unexported and
-// this is an external test package — which is the right way round for a test:
-// naming the three books here means a change to that three-way answer breaks
-// this file instead of silently narrowing what these assertions read.
+// auditReader is one institution's log: the network to ask, and the book its
+// own rows are written under.
 type auditReader struct {
 	// net is an interface and not one of the three institution types because
 	// this fixture asks all three the same question. Reading one's own trail is
@@ -107,17 +70,6 @@ type auditReader struct {
 // auditReaders is every institution whose payment-scope log is part of the
 // system's trail: the clearing house, the settlement agent, and every member
 // bank that exists at the moment it is called.
-//
-// The banks came from the clearing house's ListBanks, which is a read that did
-// not survive the store split — a clearing house holds no banks table. The
-// roster cannot replace it either: a FOUNDED bank has no roster entry and does
-// have a log, and TestFoundingABankIsAudited is about exactly that bank.
-//
-// What replaces it is Stores.Banks — every bank whose DATABASE exists, which
-// includes the founded and unadmitted one. That is the composition root's
-// question rather than an institution's, and a test fixture assembling the whole
-// system's trail is the composition root; no institution has this list and none
-// should.
 func auditReaders(t *testing.T, sys *testSystem) []auditReader {
 	t.Helper()
 	bics, err := sys.stores.Banks(context.Background())
@@ -147,13 +99,6 @@ func auditBooks(t *testing.T, sys *testSystem) []ledger.BookID {
 
 // withoutRefreshes drops the directory refreshes a fixture's admissions left
 // behind.
-//
-// storetest.Admit subscribes to the routing directory after admitting, which is
-// a fifth act and no part of an admission; the event it appends is keyed by the
-// subscribing bank's own BIC, so it answers the same entity filter as the two
-// events about that bank's row. A case that listed it would be asserting how the
-// helper is composed rather than what the acts under test do. The cases that ARE
-// about a refresh assert on it directly.
 func withoutRefreshes(events []ledger.AuditEvent) []ledger.AuditEvent {
 	out := make([]ledger.AuditEvent, 0, len(events))
 	for _, e := range events {
@@ -173,31 +118,8 @@ func eventTypes(events []ledger.AuditEvent) string {
 }
 
 // TestPaymentAuditCoversTheNettingFlow pins the fan-out events: closing a cycle
-// records one payment.cleared per payment plus one cycle.closed, and settling it
-// records one cycle.settled plus one payment.settled per payment. A cycle with
-// two payments is the smallest fixture that can tell "once" from "once per
-// payment" apart.
-//
-// # The ORDER across the cut-off is out of reach
-//
-// cycle.settled is the settlement agent's, and each payment.settled is a payee's
-// bank's, appended when that bank posts its own creditor leg on the clearing
-// house's advice. They are two institutions' acts in two databases, so there is
-// no merged list to read an order off.
-//
-// There is no list to read it off now. The two events are in two DATABASES with
-// two counters, so nothing here can order them — see paymentAudit. The claim
-// they carried (a payee is not paid before the reserves move) is a claim about
-// FILES and is measured where the files are, in cmd/server; what this test
-// measures is what each institution's own log contains and in what order, which
-// is the strongest statement four separate logs support.
-//
-// # So it asserts four trails, and their differences are the subject
-//
-// A settlement agent that has never heard of a payment, a clearing house that
-// never sees three of an admission's four acts, and two banks whose logs are the
-// same shape as each other and say nothing about each other. Each of those is a
-// separation the one shared log could not have shown.
+// records one payment.cleared per payment plus one cycle.closed, and settling
+// it records one cycle.settled plus one payment.settled per payment.
 func TestPaymentAuditCoversTheNettingFlow(t *testing.T) {
 	ctx := context.Background()
 	sys := testNetwork(t)
@@ -224,10 +146,6 @@ func TestPaymentAuditCoversTheNettingFlow(t *testing.T) {
 	// FOUR trails, one per institution, and each is asserted whole and in its own
 	// order. There is no fifth list that is all of them: see paymentAudit on why
 	// the concatenation is a grouping and not a sequence.
-	//
-	// The clearing house's is the only one that sees the flow as a flow — it
-	// admits both members, opens and closes the cut-off and takes each payment
-	// into it — and even it does not see an admission's other three acts.
 	assertEqual(t, "the clearing house's trail", eventTypes(csmAudit(t, sys, "")),
 		strings.Join([]string{
 			ledger.EventMemberAdmitted, // Bank A into the roster
@@ -258,18 +176,8 @@ func TestPaymentAuditCoversTheNettingFlow(t *testing.T) {
 
 	// Each bank's is the same shape as the other's, and it is the shape of what a
 	// bank actually did: it founded itself, it recorded the membership it was
-	// granted, and it took part in both payments — as the submitter of one and
-	// the receiver of the other. TWO payment.initiated per bank, because a bank's
-	// log opens with its own initiation for every payment it holds a row for
-	// (SubmitPaymentTx and AcceptInboundTx both append one); the distinction
-	// between the two roles is not in the event and is not meant to be.
-	//
-	// No cycle and no settlement. A member is told the outcome of a cut-off and
-	// posts against it; it does not run one.
-	//
-	// The directory refreshes this fixture's admissions leave behind are filtered
-	// out — see ofType. They are neither an admission's act nor a payment's, and a
-	// list that included them would be asserting how storetest.Admit is composed.
+	// granted, and it took part in both payments — as the submitter of one and the
+	// receiver of the other.
 	eachBank := strings.Join([]string{
 		ledger.EventParticipantAdded,
 		ledger.EventMembershipRecorded,
@@ -298,9 +206,7 @@ func TestPaymentAuditCoversTheNettingFlow(t *testing.T) {
 	}
 
 	// A bank's own two, keyed by its own id: it founded itself, and later it
-	// recorded what the scheme told it. The other two acts of its admission are
-	// keyed by its BIC — and a bank's id IS its BIC, so what separates them is the
-	// LOG THEY ARE IN. See TestEachActOfAnAdmissionLeavesItsOwnAuditEvent.
+	// recorded what the scheme told it.
 	assertEqual(t, "Bank A's own trail for itself",
 		eventTypes(withoutRefreshes(bankAudit(t, sys, a.BIC, string(a.ID)))),
 		ledger.EventParticipantAdded+" "+ledger.EventMembershipRecorded)
@@ -350,30 +256,6 @@ func TestPaymentAuditCoversTheNettingFlow(t *testing.T) {
 
 // TestARefusedSettlementLeavesNoAuditTrail is why the events are written on the
 // operation's own transaction rather than through a wrapper that opens its own.
-//
-// A settlement that fails on an underfunded member must leave nothing behind —
-// including its audit trail. An event that survived would be worse than no event
-// at all: an immutable log asserting that money moved when it did not.
-//
-// # It was called TestAuditEventsRollBackWithTheOperation, and that name stopped
-// being true
-//
-// The claim was a ROLLBACK, and it was the right description of the code that
-// carried it: SettleCycleTx posted the central bank's netting transaction and
-// then every member's mirror leg, so an underfunded member was discovered after
-// the unit of work had already written, and the store had to undo it.
-//
-// The mirror leg is the member's own act, so SettleCycleTx checks each net
-// payer's reserve ITSELF, above the netting transaction and with only reads
-// behind it. Against this fixture the refusal is therefore a clean no-op:
-// nothing was written, so nothing was rolled back. What the assertions below
-// measure — a refused cut-off leaves no trace, which is what makes asking again
-// safe once the member is funded — is still worth pinning, and a settlement that
-// started appending before it checked would fail them.
-//
-// TestSettleCycleIsAtomic in system_test.go is the same correction on the
-// balances rather than the trail, and it names the test that still carries the
-// mid-flight rollback claim: TestAFailedReversalRollsBackTheWholeRejection.
 func TestARefusedSettlementLeavesNoAuditTrail(t *testing.T) {
 	ctx := context.Background()
 	sys, cycleID := newClosedCycleWithUnderfundedMember(t)
@@ -404,11 +286,6 @@ func TestARefusedSettlementLeavesNoAuditTrail(t *testing.T) {
 // TestRejectedPaymentIsAudited covers the branch the happy path never reaches,
 // and pins that a rejected payment's own initiation events survive: the
 // rejection is a later unit of work, not a rollback of the initiation.
-//
-// Three trails, because a rejection is three institutions' acts and each records
-// its own: the clearing house decides, and each bank records the decision on its
-// own copy — the payer's giving the money back. See RejectAtBankTx, and the
-// reject helper, which plays all three.
 func TestRejectedPaymentIsAudited(t *testing.T) {
 	ctx := context.Background()
 	sys := testNetwork(t)
@@ -536,18 +413,7 @@ func TestReturnedPaymentIsAudited(t *testing.T) {
 }
 
 // TestParticipantAuditPayloadDropsLiveHandles pins that the payload of both
-// events about a BANK is the stored row. Ledger and Deposit are handles over the
-// store, not data — serializing them would put an empty object in an immutable
-// log and suggest the row has columns it does not have.
-//
-// Both, because there are two of them now and they carry the same type: the bank
-// founds itself and later records what the scheme told it. A check on one of the
-// two would leave the other free to leak a handle.
-//
-// Both are in the BANK's own log, which is what selects them: a bank's id is its
-// BIC, so the two events the other institutions wrote about the same address
-// answer the same entity filter and are a different type carrying a different
-// payload. See TestEachActOfAnAdmissionLeavesItsOwnAuditEvent.
+// events about a BANK is the stored row.
 func TestParticipantAuditPayloadDropsLiveHandles(t *testing.T) {
 	ctx := context.Background()
 	sys := testNetwork(t)
@@ -578,45 +444,6 @@ func TestParticipantAuditPayloadDropsLiveHandles(t *testing.T) {
 
 // TestEachActOfAnAdmissionLeavesItsOwnAuditEvent is carried requirement 2, made
 // falsifiable.
-//
-// # What it is for
-//
-// The audit log is this system's only immutable record, and admission stopped
-// being one unit of work. participant.added is written by the bank founding
-// ITSELF, so its payload is a bank with no settlement account numbers on
-// it — honest about what founding did and silent about everything after. Without
-// the other three, the settlement account numbers an admission produces would
-// exist in no immutable record at all: the bank's row carries the current value
-// and a row is not a log.
-//
-// # What each event has to be about
-//
-// The two the other institutions wrote are keyed by the BIC because that is the
-// only identifier those institutions have — neither of them has ever been told
-// this system's bank ids. The bank's own two are keyed by its id, and they are
-// its own row before and after.
-//
-// # The log each event is in is what separates them
-//
-// A bank's ParticipantID IS its BIC (see AsBank), so all four events are keyed by
-// one string and filtering by entity cannot tell the institutions apart. What
-// can is WHOSE DATABASE each event is in: the bank's own log holds the two it
-// wrote, the settlement agent's holds the account it opened, the clearing
-// house's holds the roster entry it made. That is a stronger separation than a
-// key — a key is a convention and this is a boundary — and it is why the four
-// assertions below are four reads rather than one.
-//
-// There is no ORDER between them. Each institution's log orders its own acts and
-// nothing orders one against another (see paymentAudit), so "participant.added,
-// then settlement_account.opened, then member.admitted, then
-// membership.recorded" is not a sequence this system can state. What survives is
-// that each act happened, in the log of the institution that performed it, and
-// that each carries its result.
-//
-// The settlement account numbers are asserted on the events that must carry
-// them, rather than only counting types: an event whose payload had lost the
-// accounts would be a log entry that recorded the act and not its result, and a
-// count would pass over it.
 func TestEachActOfAnAdmissionLeavesItsOwnAuditEvent(t *testing.T) {
 	ctx := context.Background()
 	sys := testNetwork(t)
@@ -625,16 +452,11 @@ func TestEachActOfAnAdmissionLeavesItsOwnAuditEvent(t *testing.T) {
 	assertNoError(t, err)
 
 	// The bank's own two, in its own log and in its own order: it founded itself
-	// and later recorded what the scheme told it. The subscription that follows in
-	// this fixture is a fifth act and no part of an admission (storetest.Admit),
-	// so it is dropped rather than listed.
+	// and later recorded what the scheme told it.
 	assertEqual(t, "the bank's own trail",
 		eventTypes(withoutRefreshes(bankAudit(t, sys, testBIC, ""))),
 		ledger.EventParticipantAdded+" "+ledger.EventMembershipRecorded)
-	// The settlement agent allocated a bank code and opened the account. Two
-	// events because they are two registers: a reserve account is at a central
-	// bank and a Bankleitzahl comes from a registry, and this institution is
-	// standing in for both.
+	// The settlement agent allocated a bank code and opened the account.
 	assertEqual(t, "the settlement agent's trail", eventTypes(cbAudit(t, sys, "")),
 		ledger.EventBankCodeAllocated+" "+ledger.EventSettlementAccountOpened)
 	// The clearing house put the address in the roster.

@@ -18,9 +18,7 @@ import (
 // ---------------------------------------------------------------------------
 
 // agedSystem is a testSystem whose clock moves, because an ageing report
-// measures time and every other fixture in this package is frozen. It starts at
-// fixedTime, so a setup that does not advance behaves exactly as testNetwork's
-// does and the value dates the other suites assert still hold.
+// measures time and every other fixture in this package is frozen.
 type agedSystem struct {
 	*testSystem
 	nanos *atomic.Int64
@@ -49,8 +47,7 @@ func (s *agedSystem) advance(days int) {
 
 // pushToAClosedPayee carries one credit transfer to finality against a payee
 // whose account closes between their bank's acceptance and the cut-off, which
-// is the case Unclaimed Balances exists for. It returns the payment and the two
-// banks.
+// is the case Unclaimed Balances exists for.
 func pushToAClosedPayee(t *testing.T, sys *testSystem) (a, b *Bank, payer deposit.AccountID, pay Payment) {
 	t.Helper()
 	ctx := context.Background()
@@ -82,13 +79,8 @@ func suspense(t *testing.T, sys *testSystem, bic iso20022.BIC) AgeingReport {
 	return rep
 }
 
-// TestAnUnclaimedBalanceIsAgedPerPayment is the stronger of the two answers this
-// walk gives, and the reason it is stronger is a fact about the postings.
-//
-// Every credit into unclaimed balances is ONE payment's diverted creditor leg
-// and carries that payment's id, so the report can say which payment, which
-// scheme, and what may be done about it. A clearing suspense's residue cannot,
-// and the test below is the contrast.
+// TestAnUnclaimedBalanceIsAgedPerPayment is the stronger of the two answers
+// this walk gives, and the reason it is stronger is a fact about the postings.
 func TestAnUnclaimedBalanceIsAgedPerPayment(t *testing.T) {
 	sys := agedNetwork(t)
 	_, b, _, pay := pushToAClosedPayee(t, sys.testSystem)
@@ -108,13 +100,6 @@ func TestAnUnclaimedBalanceIsAgedPerPayment(t *testing.T) {
 // TestWhoseBankYouAreDecidesWhetherYourSuspenseResidueHasAName is the contrast,
 // and both halves come out of ONE fixture so that neither can be explained by
 // the other's setup.
-//
-// A payer's bank raises its suspense with the DEBTOR leg, which names the
-// payment. A payee's bank raises it with the netted mirror leg, which names
-// nothing — deliberately, because a member holds no cycle and one movement
-// covers a whole cut-off. So the same walk answers "which payment" at one end of
-// one payment and cannot at the other, and the missing name is not something
-// this report could recover.
 func TestWhoseBankYouAreDecidesWhetherYourSuspenseResidueHasAName(t *testing.T) {
 	ctx := context.Background()
 	sys := agedNetwork(t)
@@ -133,10 +118,8 @@ func TestWhoseBankYouAreDecidesWhetherYourSuspenseResidueHasAName(t *testing.T) 
 	_, statements, err := sys.settleCycle(ctx, cyc.ID)
 	assertNoError(t, err)
 
-	// Only the PAYEE's bank books its statement, and neither bank posts a
-	// customer leg. So each is left holding the same money at a different stage
-	// of the same cut-off: A has not yet been told, B has been told and has not
-	// yet paid its customer.
+	// Only the PAYEE's bank books its statement, and neither bank posts a customer
+	// leg.
 	for _, st := range statements {
 		if st.Agent != b.BIC {
 			continue
@@ -163,12 +146,6 @@ func TestWhoseBankYouAreDecidesWhetherYourSuspenseResidueHasAName(t *testing.T) 
 }
 
 // TestAClearingSuspenseHasNoDeadlineHoweverOldItIs states the ruling as a test.
-//
-// No rulebook puts a clock on a clearing suspense: what discharges it is a
-// conversation, and a conversation has no due date this bank could hold anybody
-// to. So the report ages and does not judge — inventing a deadline would be
-// inventing a rulebook, and an operator's judgement about what is too long is
-// exactly the thing this code has no standing to make.
 func TestAClearingSuspenseHasNoDeadlineHoweverOldItIs(t *testing.T) {
 	ctx := context.Background()
 	sys := agedNetwork(t)
@@ -192,12 +169,6 @@ func TestAClearingSuspenseHasNoDeadlineHoweverOldItIs(t *testing.T) {
 
 // TestAnUnclaimedBalanceGoesOverdueWhenTheWindowRunsOut pins the boundary, and
 // the boundary is a day on the settlement calendar rather than an age.
-//
-// The credit lands on a Wednesday and the window is three BANKING BUSINESS days,
-// so it runs out on the Monday — five calendar days later, because the weekend
-// is not part of it. A report that compared the age against the figure would
-// have called this overdue on the Saturday, which is the error this does not
-// make.
 func TestAnUnclaimedBalanceGoesOverdueWhenTheWindowRunsOut(t *testing.T) {
 	sys := agedNetwork(t)
 	_, b, _, _ := pushToAClosedPayee(t, sys.testSystem)
@@ -216,12 +187,6 @@ func TestAnUnclaimedBalanceGoesOverdueWhenTheWindowRunsOut(t *testing.T) {
 // TestReturningAnAgedUnclaimedBalanceClearsIt is the whole point of the report:
 // what it finds is something a bank can act on, with an instrument that already
 // exists.
-//
-// Nothing new is built for this. The payee's bank IS the returner on a push, and
-// clawbackTx debits unclaimed balances with no customer check — the payee never
-// received the money, so the bank is releasing an obligation rather than taking
-// money off anybody. What was missing was never the posting; it was that an
-// operator had to already know the payment id.
 func TestReturningAnAgedUnclaimedBalanceClearsIt(t *testing.T) {
 	sys := agedNetwork(t)
 	a, b, alice, pay := pushToAClosedPayee(t, sys.testSystem)
@@ -242,34 +207,6 @@ func TestReturningAnAgedUnclaimedBalanceClearsIt(t *testing.T) {
 
 // TestAnUnclaimedBalanceOnAPullHasNoBankThatMayReturnIt is the gap this task
 // found and does not close, asserted rather than written down.
-//
-// On a pull the bank left holding the money is the CREDITOR's — the biller's
-// account closed between its bank's answer and the cut-off — and ReturnerOf
-// names the DEBTOR's bank the returner, correctly: a pacs.004 on a pull is the
-// payer's bank's instrument and the payer has asked for nothing. What the
-// creditor's bank wants is a REVERSAL, pacs.007, which is deferred by design in
-// iso20022/doc.go along with camt.056.
-//
-// So the lot is reported, blocked, and carries NO deadline however old it gets.
-// A clock on money this bank has no instrument to move would be a report telling
-// somebody off for a message they cannot send.
-//
-// # The block is load-bearing, and the second half measures why
-//
-// PostReturnLeg does not refuse this bank: on a pull the creditor's bank holds
-// the clawback leg, so it is a party to the return and posts it without a
-// choice — the refusal is the RETURNER's alone, and only on a push. Called with
-// no pacs.004 behind it, it does what it is told: the unclaimed balance is
-// released into this bank's clearing suspense and its own copy goes Returned,
-// while no return exists at any other institution and no reserves come back.
-// The money has moved from an account that says "owed to somebody unidentified"
-// into one that says "in flight", and nothing is in flight.
-//
-// That is the same shape as a forged pacs.002 and has the same answer: the
-// message is the authorisation, the channel is what makes it trustworthy, and
-// reconciliation is what catches an act nobody asked for. It is why this report
-// blocks the lot instead of offering the obvious method, and it is measured here
-// so that a later reader does not reach for that method.
 func TestAnUnclaimedBalanceOnAPullHasNoBankThatMayReturnIt(t *testing.T) {
 	ctx := context.Background()
 	sys := agedNetwork(t)
@@ -333,16 +270,6 @@ func TestAnUnclaimedBalanceOnAPullHasNoBankThatMayReturnIt(t *testing.T) {
 
 // TestARefundThePayerCouldNotTakeIsTerminal is the third state of this account
 // and the one that looks most like the first.
-//
-// Both are unclaimed balances holding a settled payment's money for a customer
-// who closed their account. What differs is that this money has ALREADY been
-// sent back: it is the refund leg of a completed return, sitting at the PAYER's
-// bank because the payer could not take it. There is nothing further to return
-// it to, and a report that offered a return here would be offering to send money
-// back to the bank that had just sent it.
-//
-// The status of this bank's own copy is what tells them apart, and it is the
-// only thing that does.
 func TestARefundThePayerCouldNotTakeIsTerminal(t *testing.T) {
 	ctx := context.Background()
 	sys := agedNetwork(t)
@@ -376,13 +303,8 @@ func TestARefundThePayerCouldNotTakeIsTerminal(t *testing.T) {
 
 // TestAgeingIsNotAnActTheOtherTwoInstitutionsCanPerform is the same boundary
 // Reconcile has, and it is asserted here too because these are separate entry
-// points: a clearing house has no ledger and a settlement agent holds neither of
-// these accounts.
-//
-// Both acts are methods on BankNetwork, so neither is reachable through a handle
-// Networks minted for another institution. What is measured here is the one
-// crossing left: a bank's handle over another institution's core, which only
-// this package can assemble. See export_test.go.
+// points: a clearing house has no ledger and a settlement agent holds neither
+// of these accounts.
 func TestAgeingIsNotAnActTheOtherTwoInstitutionsCanPerform(t *testing.T) {
 	ctx := context.Background()
 	sys := agedNetwork(t)

@@ -7,15 +7,7 @@ import (
 	"github.com/raphi011/cbs/ledger"
 )
 
-// This file defines the JSON wire format for the API. The domain packages use
-// integer enums (rendered here via their String() methods) and typed string
-// IDs (rendered as plain strings), so explicit DTOs keep the wire format
-// readable and decoupled from the internal Go types. Monetary amounts stay as
-// integer minor units (never floats or strings).
-//
-// Per-resource DTOs live in dto_ledger.go, dto_deposit.go, and dto_payment.go
-// (mirroring the surface packages that read them). This file holds only the
-// types shared across resources.
+// This file defines the JSON wire format for the API.
 
 // AuditEventDTO is the wire shape of an audit event. All four layers render
 // into it; scope says which one produced it.
@@ -24,11 +16,6 @@ type AuditEventDTO struct {
 	ID  string `json:"id"`
 	// BookID is which institution's log this event is in, and it is on the wire
 	// because Seq stopped identifying one.
-	//
-	// Each institution has its own database and its own counter, so every log
-	// starts at 1 and "seq 7" names as many events as there are institutions. The
-	// book is what disambiguates them, and a reader holding pages from several
-	// logs has no other way to.
 	BookID    string            `json:"bookId"`
 	Scope     string            `json:"scope"`
 	Timestamp time.Time         `json:"timestamp"`

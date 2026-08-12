@@ -14,14 +14,6 @@ import (
 )
 
 // RunDeposit runs the deposit-layer suite against a store.
-//
-// It talks only to deposit.Store and deposit.Tx — never to deposit.Register — so
-// what it pins is the storage contract: book scoping, not-found sentinels,
-// listing order, the active-hold aggregate, snapshot upsert identity, and the
-// cross-layer rollback that deposit.Tx embedding ledger.Tx exists to provide.
-//
-// newStore must return a store with no state in it; the suite calls it once per
-// subtest and closes the result.
 func RunDeposit(t *testing.T, newStore func(*testing.T, ledger.BookID) deposit.Store) {
 	t.Helper()
 
@@ -124,15 +116,8 @@ func RunDeposit(t *testing.T, newStore func(*testing.T, ledger.BookID) deposit.S
 		})
 	})
 
-	// Identifiers ride on the account aggregate: PutDepositAccount writes them
-	// and both readers bring them back. If they did not, the register's
-	// uniqueness check would pass against a store that had silently dropped
-	// the very rows it was checking.
-	//
-	// TWO identifiers, written out of order: a set of one round-trips through any
-	// ordering rule at all. The order is ascending by (scheme, value) — a stated
-	// rule rather than whatever the store's index happens to give, which is what
-	// makes it checkable.
+	// Identifiers ride on the account aggregate: PutDepositAccount writes them and
+	// both readers bring them back.
 	t.Run("IdentifiersSurviveAccountRead", func(t *testing.T) {
 		s := openDeposit(t, newStore, bookA)
 		lower := deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "DE20999000010000000001"}
@@ -173,12 +158,7 @@ func RunDeposit(t *testing.T, newStore func(*testing.T, ledger.BookID) deposit.S
 	})
 
 	// An account with no identifiers reads back with a NIL set, not an empty
-	// non-nil one. A SQL store has no rows to return and cannot produce anything
-	// else; an in-Go one is handed whatever the caller built, and
-	// api/handlers_deposit.go builds make([]Identifier, 0) from an absent JSON
-	// field — so the two answers were both reachable. Callers compare with
-	// reflect.DeepEqual and encoders distinguish null from [], so this is a real
-	// difference, not a cosmetic one.
+	// non-nil one.
 	t.Run("NoIdentifiersReadsBackNil", func(t *testing.T) {
 		s := openDeposit(t, newStore, bookA)
 
@@ -201,16 +181,7 @@ func RunDeposit(t *testing.T, newStore func(*testing.T, ledger.BookID) deposit.S
 		})
 	})
 
-	// One account carrying the same pair twice collapses to one. The store
-	// cannot do otherwise — (book, account, scheme, value) is the primary key of
-	// deposit_account_identifiers and the insert is ON CONFLICT DO NOTHING — and
-	// this case is what makes that a CONTRACT rather than a consequence of the
-	// current key.
-	//
-	// This is NOT in tension with IdentifierUniquenessIsNotEnforced below. That
-	// one is about two ACCOUNTS sharing a value, which is a domain rule with no
-	// constraint behind it. This is one account listing one address twice, which
-	// is not a domain question at all: it is the same row written twice.
+	// One account carrying the same pair twice collapses to one.
 	t.Run("DuplicateIdentifiersOnOneAccountCollapse", func(t *testing.T) {
 		s := openDeposit(t, newStore, bookA)
 		iban := deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "DE20999000010000000001"}
@@ -337,13 +308,9 @@ func RunDeposit(t *testing.T, newStore func(*testing.T, ledger.BookID) deposit.S
 		})
 	})
 
-	// The SCHEME half of the pair is matched exactly, and the lookup is scoped
-	// by book like every other method here. Two banks holding the same value is
-	// a legal state, and each book sees only its own.
-	//
-	// The value half is matched under the scheme's own rule, which for an IBAN is
-	// not literal — see
-	// ListDepositAccountsByIdentifierMatchesAnIBANThroughItsSeparators.
+	// The SCHEME half of the pair is matched exactly, and the lookup is scoped by
+	// book like every other method here. Two banks holding the same value is a
+	// legal state, and each book sees only its own.
 	t.Run("ListDepositAccountsByIdentifierMatchesTheSchemeExactlyAndIsBookScoped", func(t *testing.T) {
 		s := openDeposit(t, newStore, bookA)
 		iban := deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "DE20999000010000000001"}
@@ -411,20 +378,6 @@ func RunDeposit(t *testing.T, newStore func(*testing.T, ledger.BookID) deposit.S
 	})
 
 	// An IBAN matches through its display separators, in BOTH directions.
-	//
-	// This is the case that makes a customer's own address findable. A bank
-	// mints and stores the canonical compact form, and what a person types is
-	// whatever their statement prints — grouped in fours, sometimes hyphenated —
-	// so a store comparing raw values answers "no such account" to somebody
-	// holding the account. The rule is deposit.Identifier.MatchValue, and a store
-	// expressing it in SQL is re-implementing a Go function: the case below is
-	// what says the two agree.
-	//
-	// BOTH directions, because a store must compact its ROWS and not only its
-	// query. A canonical query against a separated row is not a state the
-	// register writes, and the store may not assume that: it is handed rows, and
-	// a comparison that held only when one side was canonical would be a rule
-	// with a precondition nothing states.
 	t.Run("ListDepositAccountsByIdentifierMatchesAnIBANThroughItsSeparators", func(t *testing.T) {
 		s := openDeposit(t, newStore, bookA)
 		const pan = deposit.IdentifierScheme("PAN")
@@ -432,10 +385,8 @@ func RunDeposit(t *testing.T, newStore func(*testing.T, ledger.BookID) deposit.S
 		grouped := deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "DE20 9990 0001 0000 0000 01"}
 		hyphenated := deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "DE20-9990-0001-0000-0000-01"}
 
-		// dep_2 is a SECOND BANK's account, in a second bank's database, because
-		// a store answers for one book. It could have been a second account in
-		// this one; keeping it at the other bank costs nothing and keeps the
-		// pair of directions being read off two independent stores.
+		// dep_2 is a SECOND BANK's account, in a second bank's database, because a
+		// store answers for one book.
 		otherBank := openDeposit(t, newStore, bookB)
 		updateDeposit(t, s, func(ctx context.Context, tx deposit.Tx) error {
 			// dep_1 holds the canonical form, dep_2 a separated one. Two accounts
@@ -488,11 +439,7 @@ func RunDeposit(t *testing.T, newStore func(*testing.T, ledger.BookID) deposit.S
 			if len(none) != 0 {
 				t.Fatalf("lookup of a different IBAN = %#v, want none", none)
 			}
-			// And the rule is the IBAN's, not every scheme's. A card PAN whose
-			// value happens to carry a hyphen is a different address from one
-			// without: nothing outside IdentifierIBAN has a display form, and a
-			// store stripping punctuation from arbitrary identifiers would merge
-			// two addresses a scheme keeps apart.
+			// And the rule is the IBAN's, not every scheme's.
 			held, err := tx.ListDepositAccountsByIdentifier(ctx, bookA, deposit.Identifier{Scheme: pan, Value: "4111-1111"})
 			if err != nil {
 				return err
@@ -526,19 +473,6 @@ func RunDeposit(t *testing.T, newStore func(*testing.T, ledger.BookID) deposit.S
 	})
 
 	// CASE is folded too, and on the ROW as well as the query.
-	//
-	// It is a separate case because it is a separate half of iban.Compact, and a
-	// store that stripped separators without folding case passes every direction
-	// above: an address is upper-cased everywhere it is minted, so nothing else
-	// here writes a row that would notice. The query side is folded before it
-	// arrives — it is MatchValue's output — so a store folding only what it was
-	// given would look correct and would answer "no such account" to the one row
-	// that needed it.
-	//
-	// A lower-cased row is not a state the register writes. It is exactly the
-	// state this contract has to cover anyway: the store is handed rows, and a
-	// comparison rule with an unstated precondition on its inputs is not the rule
-	// deposit.Identifier.MatchValue states.
 	t.Run("ListDepositAccountsByIdentifierFoldsCaseOnAnIBAN", func(t *testing.T) {
 		s := openDeposit(t, newStore, bookA)
 		lowered := deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "de20 9990 0001 0000 0000 01"}
@@ -565,15 +499,8 @@ func RunDeposit(t *testing.T, newStore func(*testing.T, ledger.BookID) deposit.S
 		})
 	})
 
-	// The store does NOT enforce uniqueness, and this test is what keeps it
-	// that way.
-	//
-	// It is the same job ParentReferencesAreNotEnforced does. "One bank issues
-	// an address once" is a domain rule that deposit.Register enforces by
-	// reading before it writes; a UNIQUE constraint would fire on the race that
-	// read-then-write leaves open, which the register does not, and would fire as
-	// a constraint violation rather than as ErrIdentifierTaken. The resulting
-	// ambiguity is caught at READ time instead, by Register.ResolveIdentifier.
+	// The store does NOT enforce uniqueness, and this test is what keeps it that
+	// way.
 	t.Run("IdentifierUniquenessIsNotEnforced", func(t *testing.T) {
 		s := openDeposit(t, newStore, bookA)
 		iban := deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "DE20999000010000000001"}
@@ -605,21 +532,6 @@ func RunDeposit(t *testing.T, newStore func(*testing.T, ledger.BookID) deposit.S
 
 	// Neither store enforces uniqueness ACROSS SPELLINGS either, and this is the
 	// case that keeps the write-side rule where it belongs.
-	//
-	// deposit.Register.checkIdentifierFreeTx refuses a second account taking an
-	// address another one at the bank already holds, and since the lookup became
-	// canonical that refusal covers both spellings of one IBAN. The refusal is a
-	// READ followed by a write, in the domain layer, with nothing behind it —
-	// and it has to stay there. A UNIQUE index on the compacted value would be
-	// the obvious way to make the schema enforce the same thing, and it would
-	// refuse under the race that has no lock over it — where the register does
-	// not — and refuse as a constraint violation rather than as the domain's
-	// sentinel.
-	//
-	// So the store must ACCEPT the pair the register refuses, and one lookup
-	// must return both accounts — which is what makes the resulting ambiguity
-	// visible at read time (Register.ResolveIdentifier, and the network sweep
-	// above it) rather than lost in a constraint violation.
 	t.Run("IdentifierUniquenessIsNotEnforcedAcrossSpellings", func(t *testing.T) {
 		s := openDeposit(t, newStore, bookA)
 		canonical := deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "DE20999000010000000001"}
@@ -723,10 +635,9 @@ func RunDeposit(t *testing.T, newStore func(*testing.T, ledger.BookID) deposit.S
 		late := early.Add(time.Hour)
 
 		// Same shape and same three rules as the ledger's ordering fixture: a
-		// CreatedAt tie, IDs spanning the 9 -> 10 boundary so lexicographic ID
-		// order disagrees with insertion order, and the row inserted FIRST
-		// carrying the LATEST CreatedAt. Ordering by (CreatedAt, ID) fails here,
-		// and so does ordering by sequence alone.
+		// CreatedAt tie, IDs spanning the 9 -> 10 boundary so lexicographic ID order
+		// disagrees with insertion order, and the row inserted FIRST carrying the
+		// LATEST CreatedAt.
 		updateDeposit(t, s, func(ctx context.Context, tx deposit.Tx) error {
 			for _, a := range []deposit.Account{
 				{ID: "dep_10", Name: "latest, inserted first", CreatedAt: late},
@@ -1085,12 +996,8 @@ func RunDeposit(t *testing.T, newStore func(*testing.T, ledger.BookID) deposit.S
 
 	// The accrual state is the set of fields on a deposit account that a store
 	// could plausibly drop without any other subtest noticing: nothing else in
-	// this suite writes them, and an accrual that silently starts from zero
-	// every day looks like a working system that charges no interest.
-	//
-	// The credit terms are not among them — they are rows in their own table,
-	// covered by OverdraftTermsTimeline below. What is left on the account is what
-	// an accrual carries FORWARD rather than what prices it.
+	// this suite writes them, and an accrual that silently starts from zero every
+	// day looks like a working system that charges no interest.
 	t.Run("AccrualStateRoundTrip", func(t *testing.T) {
 		s := openDeposit(t, newStore, bookA)
 
@@ -1155,10 +1062,8 @@ func RunDeposit(t *testing.T, newStore func(*testing.T, ledger.BookID) deposit.S
 	})
 
 	// The terms timeline. Everything the accrual depends on is here: ordering
-	// (termsAt binary-searches the slice List hands it), the day-granular
-	// upsert identity, and the four positions the as-of lookup has to answer
-	// for. A store that got any of them wrong would produce interest figures
-	// nobody could reproduce, and no other subtest would notice.
+	// (termsAt binary-searches the slice List hands it), the day-granular upsert
+	// identity, and the four positions the as-of lookup has to answer for.
 	t.Run("OverdraftTermsTimeline", func(t *testing.T) {
 		s := openDeposit(t, newStore, bookA)
 
@@ -1168,8 +1073,7 @@ func RunDeposit(t *testing.T, newStore func(*testing.T, ledger.BookID) deposit.S
 
 		// A NEGOTIATED row, so that the assertions below stay about the store's
 		// ordering and identity rather than about a catalogue this suite does not
-		// build. The floating shape is exercised by ResetClearsDepositState and by
-		// OverdraftTermsPricingOverlayRoundTrip.
+		// build.
 		row := func(from time.Time, rate interest.Rate) deposit.OverdraftTerms {
 			return deposit.OverdraftTerms{
 				AccountID: "dep_1", EffectiveFrom: from, ProductID: "prd_basic",
@@ -1296,10 +1200,8 @@ func RunDeposit(t *testing.T, newStore func(*testing.T, ledger.BookID) deposit.S
 		})
 	})
 
-	// The overlay is the deposit layer's only pointer field, and the only place
-	// a store can conflate "float from the product" with "interest-free". Both
-	// stores must round-trip the distinction, and neither may hand a reader a
-	// pointer into its own state.
+	// The overlay is the deposit layer's only pointer field, and the only place a
+	// store can conflate "float from the product" with "interest-free".
 	t.Run("OverdraftTermsPricingOverlayRoundTrip", func(t *testing.T) {
 		s := openDeposit(t, newStore, bookA)
 

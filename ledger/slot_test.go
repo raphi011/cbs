@@ -49,10 +49,7 @@ func slotAccount(t *testing.T, book slotBook, product string, slot Slot) (Accoun
 	return out, err
 }
 
-// A flow asks for a role and gets an account. That is the whole point of the
-// mapping: neither the deposit layer nor the lending one names an account, and
-// an operator who repoints a slot moves where the flow posts without either of
-// them being rebuilt.
+// A flow asks for a role and gets an account.
 func TestASlotResolvesToTheAccountItWasPointedAt(t *testing.T) {
 	book := newSlotBook(t)
 	deposits, _ := pooledChart(t, book.Book)
@@ -68,10 +65,7 @@ func TestASlotResolvesToTheAccountItWasPointedAt(t *testing.T) {
 }
 
 // The account has to be the kind the slot needs, and it is checked HERE, at the
-// write. A Revenue account filling a Liability slot posts the right amount on
-// the wrong side of the balance sheet; a plain account filling a control slot is
-// refused at every posting from then on, none of which names the configuration
-// change that caused it.
+// write.
 func TestMapSlotRefusesAnAccountTheSlotCannotUse(t *testing.T) {
 	book := newSlotBook(t)
 	deposits, vault := pooledChart(t, book.Book)
@@ -120,10 +114,7 @@ func TestAProductOverridesOneSlotAndInheritsTheRest(t *testing.T) {
 }
 
 // A slot that HOLDS A BALANCE takes no product-specific row, and the refusal is
-// the whole reason Slot.ByProduct exists. Money already posted under a subsidiary
-// stays where it was posted: if a later resolution answered with another line,
-// the balance anybody read would be the second half only, and moving the first
-// half is a reclassification journal this system does not have.
+// the whole reason Slot.ByProduct exists.
 func TestAProductMayNotOverrideALineThatHoldsABalance(t *testing.T) {
 	book := newSlotBook(t)
 	deposits, _ := pooledChart(t, book.Book)

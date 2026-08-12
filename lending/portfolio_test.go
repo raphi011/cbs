@@ -14,11 +14,7 @@ import (
 
 const bookID ledger.BookID = "bank"
 
-// mutableClock is a test clock a test can move. Most of this package runs on the
-// frozen one below, which is the stronger fixture — but a terms row records WHEN
-// it was entered as well as when it takes effect, and an advance takes its value
-// date from the clock, so a test about a facility's life over time has to be able
-// to move it.
+// mutableClock is a test clock a test can move.
 type mutableClock struct{ at time.Time }
 
 func (c *mutableClock) set(t time.Time) { c.at = t }
@@ -214,12 +210,7 @@ func TestDisburse_PostsPrincipalAndGeneratesTheSchedule(t *testing.T) {
 	if after.Status != lending.Active {
 		t.Errorf("status = %s, want Active", after.Status)
 	}
-	// Disbursement does not touch LastAccrualDate, and it is still zero here. The
-	// accrual window opens at ORIGINATION and never moves, so there is nothing for a
-	// disbursement to open and LastAccrualDate is only the advancement guard's
-	// high-water mark, set by the first accrual run. Money not yet paid out still
-	// earns nothing — but by arithmetic, because the drawn series is zero across
-	// those days, rather than by a date on the row.
+	// Disbursement does not touch LastAccrualDate, and it is still zero here.
 	if !after.LastAccrualDate.IsZero() {
 		t.Errorf("last accrual date = %v, want zero: disbursement does not open a window", after.LastAccrualDate)
 	}
@@ -313,20 +304,6 @@ func TestDraw_RespectsTheCommitmentAndRepeats(t *testing.T) {
 
 // TestDisburse_LeavesTheAccrualWindowAlone is the successor to a test that
 // pinned a clamp this change deletes.
-//
-// ErrAlreadyDisbursed is guarded on drawn principal, not on status, so a term
-// loan repaid in full and not closed can be disbursed a second time. End-of-day
-// takes its date from the caller, so accrual can legitimately have run through a
-// date ahead of the wall clock by then. A disbursement that reopened the
-// recompute window at the clock and zeroed AccruedGross with it would leave the
-// window behind an already-charged span and charge it twice.
-//
-// Neither figure is touched at all now: the window opens at origination and never
-// moves, so there is no boundary for a day to fall between and nothing for a
-// clamp to protect. This asserts exactly that, on the same awkward path — the
-// deleted clamp's own scenario, with the assertion moved from "it clamped" to
-// "there is nothing to clamp". What the re-accrual then charges is
-// TestReDisbursementChargesTheSpanBeforeTheRepayment's subject.
 func TestDisburse_LeavesTheAccrualWindowAlone(t *testing.T) {
 	ctx := context.Background()
 	p, _, loan, customer := disbursedLoan(t)
@@ -361,13 +338,9 @@ func TestDisburse_LeavesTheAccrualWindowAlone(t *testing.T) {
 	assertEqual(t, "timeline length after a re-disbursement", len(rows), 1)
 }
 
-// SetFacilityTerms refuses a term loan that has a generated schedule, and allows
-// a revolving line (which has none) and an undisbursed term loan (which has none
-// yet).
-//
-// Refusing is better than documenting a divergence nobody would see: a repriced
-// term loan whose schedule still reflected the old rate would let the final
-// instalment silently absorb the difference, unnoticed until maturity.
+// SetFacilityTerms refuses a term loan that has a generated schedule, and
+// allows a revolving line (which has none) and an undisbursed term loan (which
+// has none yet).
 func TestSetFacilityTermsRefusesADisbursedTermLoan(t *testing.T) {
 	ctx := context.Background()
 
@@ -401,19 +374,6 @@ func TestSetFacilityTermsRefusesADisbursedTermLoan(t *testing.T) {
 // SetFacilityTerms refuses a FUTURE-DATED repricing on a term loan, even one
 // with no schedule at all — and that is not a second-guess of the schedule
 // guard, it is the case that guard cannot see.
-//
-// DisburseTx pins the schedule to the row in force ON THE DISBURSEMENT DAY. A row
-// effective after that day is invisible to the schedule and reached by the
-// accrual anyway, so allowing it would produce exactly the divergence
-// ErrScheduleWouldDiverge exists to make unreachable:
-//
-//	open at 6% -> reprice to 24% effective day 30 -> disburse on day 0
-//	-> schedule pinned at 6%, accrual steps to 24% on day 30, and the loan now
-//	   HAS a schedule so it can never be repriced back
-//
-// The second half of this test is the arithmetic of that divergence, run against
-// a revolving line — which is allowed to be future-dated, having no schedule —
-// so the figures are not hypothetical: they are what a term loan would have done.
 func TestSetFacilityTermsRefusesAFutureDatedTermLoanRepricing(t *testing.T) {
 	ctx := context.Background()
 
@@ -475,13 +435,6 @@ func TestSetFacilityTermsRefusesAFutureDatedTermLoanRepricing(t *testing.T) {
 
 // A zero effectiveFrom means TODAY on the portfolio's clock, the same mapping
 // deposit.SetOverdraftTermsTx makes.
-//
-// It is load-bearing rather than tidy. An unmapped zero time day-truncates to
-// 0001-01-01, sorts to the FRONT of the timeline, and becomes the day accrual
-// opens its recompute window at — so one such row turns every nightly run into a
-// walk over two millennia of days for that facility. Reading the INJECTED clock
-// rather than the wall clock is the other half: api and seed run frozen, and a
-// wall-clock day would be a future-dated row nothing those runs ever price at.
 func TestSetFacilityTermsMapsAZeroEffectiveDateToToday(t *testing.T) {
 	ctx := context.Background()
 
@@ -601,9 +554,7 @@ func assertErrorIs(t *testing.T, err, target error) {
 }
 
 // assertNoError, assertEqual and assertDate mirror the in-package helpers in
-// schedule_test.go. They are duplicated rather than shared because that file is
-// `package lending` and this one is `package lending_test`, and a test helper is
-// not worth an exported symbol.
+// schedule_test.go.
 func assertNoError(t *testing.T, err error) {
 	t.Helper()
 	if err != nil {

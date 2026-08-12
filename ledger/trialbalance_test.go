@@ -150,11 +150,7 @@ func TestATrialBalanceCountsAControlAccountOnceAndNotOncePerSubsidiary(t *testin
 	assertEqual(t, "the detail against the control line", detail, pooled.Credits)
 }
 
-// TestATrialBalanceReportsWhatIsRecordedAndNotYetEffective. The columns are
-// book balances because only the book is guaranteed to balance: the two legs of
-// one event may take economic effect on different days, so a value-dated
-// restatement of these columns would not add up. InFlight is where that
-// divergence is reported instead of hidden.
+// TestATrialBalanceReportsWhatIsRecordedAndNotYetEffective.
 func TestATrialBalanceReportsWhatIsRecordedAndNotYetEffective(t *testing.T) {
 	ctx := context.Background()
 	book := testBook(t)
@@ -188,8 +184,7 @@ func TestATrialBalanceReportsWhatIsRecordedAndNotYetEffective(t *testing.T) {
 
 	// The cash line has a credit recorded against it that has not yet taken
 	// effect, so the book stands 4,000 SHORT of the debit side its value dates
-	// justify. Alice's own leg is dated today, so her line has nothing in
-	// flight — which is the asymmetry that makes this figure worth reporting.
+	// justify.
 	assertEqual(t, "cash in flight", rowFor(t, tb, cash.ID).InFlight, -4_000)
 	assertEqual(t, "Alice in flight", rowFor(t, tb, alice.ID).InFlight, Amount(0))
 	// And the asset total is exactly what a value-dated restatement of the two
@@ -229,8 +224,7 @@ func TestATrialBalanceListsAnAccountThatHasNeverBeenPostedTo(t *testing.T) {
 
 // TestATrialBalanceIsTakenAgainstOneViewOfTheBook is what the single unit of
 // work buys: the whole report is read at one snapshot, so it cannot see half of
-// a transaction. Driving it through a caller's Tx alongside a posting is the
-// case that would expose a per-account View.
+// a transaction.
 func TestATrialBalanceIsTakenAgainstOneViewOfTheBook(t *testing.T) {
 	ctx := context.Background()
 	book := testBook(t)

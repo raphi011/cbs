@@ -11,11 +11,6 @@ import (
 
 // fuzzInput is one payment as the fuzzer describes it: the fields a credit
 // transfer's message actually reads, and nothing else.
-//
-// It exists because the store cannot be fuzzed. A deposit account this
-// repository would open always has a name and a well-formed identifier, so a
-// fixture-driven test can only ever explore the inputs the fixture builder
-// thought of. These are the same fields, unconstrained.
 type fuzzInput struct {
 	EndToEndID   string
 	DebtorName   string
@@ -28,16 +23,6 @@ type fuzzInput struct {
 }
 
 // buildCreditTransfer drives the SAME conversion CreditTransferMessage drives.
-//
-// It stops one step short of CreditTransferMessage and no further: that method
-// takes the two sides off the payment — partiesOf, which reads nothing — and
-// then calls creditTransfer, and this calls creditTransfer with the two
-// messageParty values supplied directly, as a file of one. What is skipped is a
-// struct copy. Everything the
-// translator decides — ibanOf, namedParty, amountOf, the header, the whole
-// message tree — is on this path. A wrapper that assembled a CashAccount itself,
-// rather than going through ibanOf, would be a second translator and would test
-// nothing about the first.
 func buildCreditTransfer(in fuzzInput) (iso20022.Envelope, error) {
 	p := Payment{
 		ID:          "pay_fuzz",
@@ -63,12 +48,6 @@ func buildCreditTransfer(in fuzzInput) (iso20022.Envelope, error) {
 
 // FuzzTranslate drives the translation boundary: a payment becomes a message,
 // the message becomes bytes, the bytes become a message again.
-//
-// The property is that a payment this system can hold always produces a
-// message the codec accepts. A crash or a Marshal error is a real defect —
-// either the translator emits something invalid, or a field this system
-// permits has no legal representation, and both are bugs worth finding here
-// rather than at a counterparty.
 func FuzzTranslate(f *testing.F) {
 	f.Add("e2e-1", "Aurora Customer", "Verde Customer", "DE89370400440532013000", "IT60X0542811101000000123456", int64(1000), "invoice 42")
 	f.Add("", "A", "B", "DE89370400440532013000", "IT60X0542811101000000123456", int64(1), "")

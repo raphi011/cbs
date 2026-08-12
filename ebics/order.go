@@ -4,11 +4,6 @@ import "strings"
 
 // OrderType is an EBICS 2.x order type: three letters saying what a file is and
 // which way it travels.
-//
-// EBICS 3.0 replaced the codes with BTF, a structured descriptor, and France has
-// mandated it while Germany migrates. The opaque triples are kept here because
-// they are legible on a page and because a structured descriptor would be a
-// grammar with one user.
 type OrderType string
 
 const (
@@ -26,13 +21,8 @@ const (
 	BTD OrderType = "BTD" // everything else waiting in the queue, in order
 
 	// C25 is a camt.025 receipt waiting in a queue. It is a LABEL and never a
-	// selector: BTD is what collects it, and asking for it by name is refused
-	// like any other type this host does not offer.
-	//
-	// The types above are what a subscriber may NAME. A file already in a queue
-	// still has to say what it is, because a subscriber that collected a mixed
-	// download reads each file by what it carries — and camt.025 is the one
-	// document this deployment enqueues that no named type covers.
+	// selector: BTD is what collects it, and asking for it by name is refused like
+	// any other type this host does not offer.
 	C25 OrderType = "C25"
 )
 
@@ -53,11 +43,6 @@ func (t OrderType) IsDownload() bool { return downloads[t] }
 
 // OrderID identifies one order at one host: four characters, a letter and then
 // three from 0-9A-Z, which is the protocol's own format.
-//
-// It is unique at the host that minted it and nowhere else. A bank talking to
-// the clearing house and to the settlement agent can hold two live orders called
-// A007, which is not a collision because an order id means nothing without the
-// connection it was minted on.
 type OrderID string
 
 // orderIDAlphabet is the protocol's: digits then letters, so A000 is the first
@@ -69,11 +54,6 @@ const orderIDAlphabet = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
 const orderIDSpace = 26 * 36 * 36 * 36
 
 // mintOrderID is the nth order id a host allocates, counting from zero.
-//
-// The space wraps, as the protocol's does, and a host that reached the far end
-// would begin overwriting its oldest orders' acknowledgements. Real hosts avoid
-// that with a retention window rather than with a wider id, and no deployment of
-// this system can reach 1,213,056 orders in the first place.
 func mintOrderID(n int) OrderID {
 	n %= orderIDSpace
 
@@ -89,11 +69,6 @@ func mintOrderID(n int) OrderID {
 
 // OrderStatus is what the host has made of an uploaded order, and the three
 // values are the whole point of asking.
-//
-// Received is not a provisional Processed. It is the honest answer for the
-// window between a file arriving and anybody looking inside it — a window that
-// is real, is where a bulk system spends most of its time, and is invisible in
-// any transport that answers what a file means at the moment it is sent.
 type OrderStatus string
 
 const (
@@ -104,10 +79,6 @@ const (
 
 // Acknowledgement is one line of the HAC file: an order the subscriber uploaded
 // and what the host has done with it.
-//
-// Detail is free text from the host and is for a human reading a log. A machine
-// answer about the CONTENTS of the file arrives as a business message on a
-// later download, never here.
 type Acknowledgement struct {
 	OrderID   OrderID     `json:"orderId"`
 	OrderType OrderType   `json:"orderType"`
@@ -124,13 +95,6 @@ type File struct {
 }
 
 // SubscriberID identifies one party enrolled at one host.
-//
-// Real EBICS spreads this over three identifiers — a host id, a partner id for
-// the organisation and a user id for the person or system acting for it, which
-// is what makes VEU's four-eyes expressible. One identifier is enough for a
-// deployment whose subscribers are institutions rather than people. This
-// package neither requires nor validates any particular form; the deployment
-// happens to use a BIC, and the transport does not know that is what it is.
 type SubscriberID string
 
 func (s SubscriberID) String() string { return string(s) }

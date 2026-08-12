@@ -8,10 +8,7 @@ import (
 
 // The day's order is the thing this file holds. Every other suite asserts on
 // what a day PRODUCED — a balance, a status, a queue — and every one of them
-// would stay green if two phases swapped places and the money still arrived. A
-// reordering that costs nothing today is what settlement risk looks like the day
-// a phase is added between them, so the sequence is written out here and
-// compared, the way the route table is dumped and compared.
+// would stay green if two phases swapped places and the money still arrived.
 
 // namesOf renders a sequence as the lines a golden comparison reads.
 func namesOf(list []phase) []string {
@@ -22,14 +19,7 @@ func namesOf(list []phase) []string {
 	return out
 }
 
-// TestTheDayRunsItsPhasesInOrder is the golden sequence. It fails on an
-// insertion, a deletion and a reordering alike, which is the point: each of the
-// three is a domain decision, and none of them should be able to arrive as a
-// side effect of a change to a phase's body.
-//
-// ADR-0002 is two lines of it — the clearing-house cut-off, then the settlement,
-// then the release. Before this list existed that ruling was statement order in
-// one function and prose in fourteen files, and nothing failed if it moved.
+// TestTheDayRunsItsPhasesInOrder is the golden sequence.
 func TestTheDayRunsItsPhasesInOrder(t *testing.T) {
 	want := []string{
 		"refresh",
@@ -53,11 +43,6 @@ func TestTheDayRunsItsPhasesInOrder(t *testing.T) {
 }
 
 // TestOnlyTheEndOfDaySurvivesAWeekend pins what a day nothing settles on does.
-//
-// Interest accrues over a weekend, which is the entire reason day-count
-// conventions exist, and nothing else moves — no cut-off, no clearing, no
-// settlement. Before settlementOnly existed that answer was readable only from
-// AdvanceDay's doc comment.
 func TestOnlyTheEndOfDaySurvivesAWeekend(t *testing.T) {
 	got := namesOf(onSettlementDay(beforeClock, false))
 	if want := []string{"end of day"}; !slices.Equal(got, want) {
@@ -71,13 +56,6 @@ func TestOnlyTheEndOfDaySurvivesAWeekend(t *testing.T) {
 
 // TestEverySequenceRunsThePhasesInTheDaysOwnOrder is the guarantee the derived
 // sequences buy, stated directly.
-//
-// A sequence NAMES the phases it wants and never the order it wants them in, so
-// a subset runs them in the day's relative order or it does not run. What this
-// asserts is that the property holds for every sequence in the package —
-// including the two that live in test files, which is where it was previously
-// free to drift: workThrough re-wrote the list, and re-writing is what lets a
-// fixture prove something about a deployment nobody could deploy.
 func TestEverySequenceRunsThePhasesInTheDaysOwnOrder(t *testing.T) {
 	for _, s := range []struct {
 		name  string
@@ -97,14 +75,8 @@ func TestEverySequenceRunsThePhasesInTheDaysOwnOrder(t *testing.T) {
 				t.Errorf("selects %s, want %s",
 					strings.Join(got, " → "), strings.Join(s.phase, " → "))
 			}
-			// And the property the golden list above cannot state for itself:
-			// whatever this sequence holds, it holds in the day's order.
-			//
-			// The narrowed collection stands for the day's, which is the one
-			// step in this package that is not a phase of a day. Reading it as
-			// the phase it narrows is what lets the check below still mean
-			// something for a carry — it sits where the day's collection sits,
-			// and it is last there for the same reason.
+			// And the property the golden list above cannot state for itself: whatever
+			// this sequence holds, it holds in the day's order.
 			if !isSubsequence(asDayPhases(got), namesOf(beforeClock)) {
 				t.Errorf("%s is not a subsequence of the day: %s",
 					s.name, strings.Join(got, " → "))
@@ -126,10 +98,6 @@ func TestOnlyRefusesAPhaseTheDayDoesNotDeclare(t *testing.T) {
 }
 
 // asDayPhases reads the narrowed collection as the day phase it narrows.
-//
-// It is one entry long and it should stay that way: every other step of every
-// sequence in this package IS a phase of a day, and each addition here is a
-// place a sequence stopped being derived from the day.
 func asDayPhases(names []string) []string {
 	out := make([]string, 0, len(names))
 	for _, n := range names {

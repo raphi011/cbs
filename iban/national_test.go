@@ -21,12 +21,6 @@ func sub(s string, i int, c byte) string {
 
 // reseal recomputes the international check digits over a BBAN somebody has
 // tampered with, producing an address that passes mod-97 and is still wrong.
-//
-// This is not a hypothetical attack. It is what happens when an address is
-// BUILT from a wrong domestic account number: the builder computes the two
-// digits correctly over bad input, and the result is a well-formed IBAN for an
-// account that does not exist. It is exactly the case a national check is still
-// in the standard for.
 func reseal(compact string) string {
 	c := Country(compact[:2])
 	return string(c) + checkDigits(c, compact[4:]) + compact[4:]
@@ -34,11 +28,6 @@ func reseal(compact string) string {
 
 // TestTheNationalCheckCatchesWhatModNinetySevenCannot is the reason Italy and
 // France still carry a check character of their own.
-//
-// A resealed address is internationally perfect: every bank in Europe running
-// the only check it is required to run accepts it. The country that issued the
-// address does not, because its own check is computed over a different span with
-// different weights and the tampering does not survive both.
 func TestTheNationalCheckCatchesWhatModNinetySevenCannot(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -77,24 +66,9 @@ func digitsOf(s string) []int {
 	return pos
 }
 
-// TestWhatModNinetySevenCatches is the measured claim behind the whole task, and
-// it is measured rather than asserted because "a check digit catches typos" is
-// worth nothing without a number beside it.
-//
-// Measured over the four published addresses, exhaustively:
-//
-//   - SINGLE-CHARACTER substitutions, every digit position, every one of the
-//     nine other digits: 810 mutations, 810 caught. All of them.
-//   - TRANSPOSITIONS of two different digits, every pair of positions at every
-//     distance, not only adjacent ones: 787 mutations, 787 caught. All of them.
-//
-// The second is stronger than the property usually quoted for this check, and it
-// is not luck: transposing digits at distance d changes the value by a multiple
-// of 10^d − 1, and 10 has multiplicative order 96 modulo 97 — the reason 1/97
-// has a 96-digit repeating decimal. No address is 96 characters long, so no
-// transposition of two digits can ever be missed.
-//
-// What it DOES miss is in the test below.
+// TestWhatModNinetySevenCatches is the measured claim behind the whole task,
+// and it is measured rather than asserted because "a check digit catches typos"
+// is worth nothing without a number beside it.
 func TestWhatModNinetySevenCatches(t *testing.T) {
 	subs, subsCaught := 0, 0
 	trans, transCaught := 0, 0
@@ -138,17 +112,6 @@ func TestWhatModNinetySevenCatches(t *testing.T) {
 }
 
 // TestWhatModNinetySevenMisses is the other half, and the honest half.
-//
-// A single wrong character is always caught and so is any transposition. TWO
-// wrong characters are not: if the two errors happen to cancel modulo 97, the
-// address verifies. Measured exhaustively over DE89370400440532013000 — every
-// pair of digit positions, every pair of replacement digits — 15,390 mutations
-// leave 141 undetected, which is 0.92%, near the 1.03% a uniform residue would
-// give.
-//
-// That figure is the argument for the national checks above and for everything
-// downstream of this package. A check digit says an address was probably typed
-// correctly. It never says the address exists.
 func TestWhatModNinetySevenMisses(t *testing.T) {
 	const address = "DE89370400440532013000"
 	pos := digitsOf(address)

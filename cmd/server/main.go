@@ -19,13 +19,6 @@ import (
 )
 
 // The two institutions this process plays, by address.
-//
-// They are configured rather than read, because neither has a participant row:
-// member banks are admitted and carry their own BIC, and the central bank and
-// the clearing house ARE the configuration. The two values are real-shaped and
-// deliberately different from each other and from every seeded bank — one BIC in
-// two roles would be one subscriber identity for two hosts, which
-// Config.validate refuses.
 const (
 	centralBankBIC   = "CBSEDEFFXXX"
 	clearingHouseBIC = "CSMXFRPPXXX"
@@ -41,11 +34,6 @@ func main() {
 	// The clock comes FIRST, because everything below is dated from it: the
 	// stores, the networks and the sample dataset all read this one function, and
 	// time.Now appears nowhere under any of them.
-	//
-	// It is read out of the database directory, so a deployment restarted
-	// mid-timeline resumes on the day it left rather than rewinding to the
-	// anchor. With no directory there is nowhere to keep it and it starts at the
-	// anchor every time, which is the same bargain the ephemeral store makes.
 	clock, err := calendar.OpenClock(*database, seed.BaseDate)
 	if err != nil {
 		log.Error("opening the business date", "error", err)
@@ -69,8 +57,6 @@ func main() {
 	// The two URLs are derived here rather than configured, because hostPlan below
 	// gives the central bank the base port and the clearing house the next: a
 	// second source for those two numbers would be a second thing to keep in step.
-	// Every institution's connection is opened lazily, on the first file it sends
-	// — which is a business day, or the sample dataset's own cut-off.
 	cfg := Config{
 		CentralBankBIC:   centralBankBIC,
 		ClearingHouseBIC: clearingHouseBIC,
@@ -84,14 +70,6 @@ func main() {
 	}
 
 	// The two HOSTS first, and the sample dataset between them and the banks.
-	//
-	// The order is a real constraint rather than tidiness, and it runs both ways.
-	// The seed founds the banks, so a listener per bank cannot be planned before
-	// it. And the seed UPLOADS — its in-flight payments go through a real cut-off,
-	// which is what leaves the clearing house holding a share to release for each
-	// of them — so the clearing house has to be answering on its own address
-	// before Populate is called. Nothing is ever pushed at a member bank, so a
-	// bank with no listener yet is a bank nothing is waiting to reach.
 	shutdownHosts, err := serve(context.Background(), hostPlan(*basePort), dep, log)
 	if err != nil {
 		log.Error("starting the institutions' listeners", "error", err)
@@ -123,9 +101,7 @@ func main() {
 
 	// There is nothing to drain and nothing to join. No goroutine runs under this
 	// process but the listeners' own: work is queued by requests and performed by
-	// AdvanceDay, on the caller's goroutine. What a shutdown leaves behind is the
-	// files sitting in the download queues, which is what a real gateway's
-	// operator would re-send.
+	// AdvanceDay, on the caller's goroutine.
 	log.Info("shutting down")
 	shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -135,12 +111,6 @@ func main() {
 }
 
 // ebicsURL is the file-transfer endpoint on one institution's listener.
-//
-// Loopback rather than the listen address, because the listeners bind every
-// interface and a subscriber in this process is dialling back into it. One path
-// for every host and every order type, which is the protocol's own shape: EBICS
-// is one endpoint that everything POSTs to, and what a request is asking for is
-// in the envelope.
 func ebicsURL(port int) string {
 	return fmt.Sprintf("http://127.0.0.1:%d%s", port, ebicsPath)
 }
@@ -148,10 +118,6 @@ func ebicsURL(port int) string {
 // openStores opens every institution's database under dir, or an ephemeral set
 // when dir is empty. OpenSet applies each shape's embedded migrations either
 // way, so a fresh directory is usable straight away.
-//
-// There is nothing to redact from the log line: a filesystem path carries no
-// secret, where a database DSN routinely arrives from the environment carrying a
-// real credential.
 func openStores(ctx context.Context, dir string, clock func() time.Time, log *slog.Logger) (*sqlite.Set, error) {
 	set, err := sqlite.OpenSet(ctx, dir, clock)
 	if err != nil {

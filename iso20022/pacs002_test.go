@@ -50,10 +50,6 @@ func TestPacs002RoundTripCarriesAPartialRejection(t *testing.T) {
 // TestPacs002CarriesItsOwnStatusIdentifiers pins the two EPC-mandatory,
 // ISO-optional elements that make a status attributable: the reference the
 // issuer gives to THIS status, and the identity of the party that issued it.
-//
-// The BIC asserted for Orgtr is the clearing house's, not the sender of the
-// original pacs.008 — see StatusReasonInformation on why the two are not the
-// same question.
 func TestPacs002CarriesItsOwnStatusIdentifiers(t *testing.T) {
 	env := assertGoldenRoundTrip(t, "pacs002.xml")
 	rpt := env.Document.(*Pacs002).FIToFIPmtStsRpt

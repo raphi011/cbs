@@ -15,42 +15,14 @@ import (
 )
 
 // The two banks this suite's fixtures are about.
-//
-// They are BICs because a bank's ParticipantID IS its BIC: a fixture id that is
-// not a well-formed address is a bank no message could reach. See bankRow, which
-// fills a bank's three identifiers from this one value because the store writes
-// one column and derives the rest.
 const (
 	auroraBIC iso20022.BIC = "AURODEFFXXX"
 	verdeBIC  iso20022.BIC = "VERDITMMXXX"
 )
 
 // RunPayment runs the payment-layer cases whose rows are a MEMBER BANK's: its
-// own record of itself, the mandates it holds as creditor bank, its copy of each
-// payment it is a party to, and the advices it was sent.
-//
-// It talks only to payment.BankStore and payment.BankTx — never to
-// payment.Network, which the race suites in races.go do instead — so what it
-// pins is the storage contract: the not-found sentinels, the fact that a Bank's
-// live handles are derived rather than stored, listing order, the end-to-end-id
-// lookup, deep copying, and the three-layer rollback that payment.BankTx
-// embedding deposit.Tx embedding ledger.Tx exists to provide.
-//
-// # It was one suite over one store, and it is three
-//
-// The other two are RunClearingHousePayment and RunCentralBankPayment. The split
-// is the SCHEMA's: a bank's database has no roster, no cycles and no
-// settlements, so every case about those would be refused by name on it — which
-// is the intended way to find a case that has been put in the wrong suite.
-//
-// Two cases make a narrower claim than they look like they should. The rollback
-// case cannot claim that a cycle rolls back with a payment, because the two are
-// in two databases and no transaction spans them; and the listing-order case
-// orders one institution's rows at a time.
-//
-// newStore must return a store answering for the given book with no state in it;
-// the suite calls it once per subtest and closes the result. It takes a book
-// because the advice cases need a SECOND bank, which means a second store.
+// own record of itself, the mandates it holds as creditor bank, its copy of
+// each payment it is a party to, and the advices it was sent.
 func RunPayment(t *testing.T, newStore func(*testing.T, ledger.BookID) payment.BankStore) {
 	t.Helper()
 
@@ -58,10 +30,7 @@ func RunPayment(t *testing.T, newStore func(*testing.T, ledger.BookID) payment.B
 		s := openPayment(t, newStore, bookA)
 
 		p := bankRow(auroraBIC, "Aurora Bank", early)
-		// A Network hands the store a fully bound Bank. Ledger and Deposit are
-		// handles over the store, not data: there is no column that could hold a
-		// *ledger.Book, and a store that kept them would hand back a Bank wired
-		// to whatever it was wired to when it was written.
+		// A Network hands the store a fully bound Bank.
 		p.Ledger = ledger.NewBook(nil, ledger.BookID(auroraBIC), nil)
 
 		updateBank(t, s, func(ctx context.Context, tx payment.BankTx) error {
@@ -82,35 +51,23 @@ func RunPayment(t *testing.T, newStore func(*testing.T, ledger.BookID) payment.B
 		assertEqual(t, "name", got.Name, "Aurora Bank")
 		assertEqual(t, "book id", string(got.BookID), string(auroraBIC))
 		assertEqual(t, "customer subledger", string(got.CustomerSubledger), "100")
-		// The product OpenCustomerAccount opens from. It is data like the
-		// subledger above, not a handle like Ledger below, so it has to survive
-		// the round trip — a store that drops it leaves every bank pricing
-		// accounts from a product id of "", which fails as "product not found"
-		// several layers away from the store that lost it.
+		// The product OpenCustomerAccount opens from.
 		assertEqual(t, "product id", string(got.ProductID), "prd_basic")
 		assertEqual(t, "product id in listings", string(listed[0].ProductID), "prd_basic")
-		// The BIC is what a file is addressed by, and it is DERIVED from the id rather
-		// than stored beside it: a bank's id IS its address, so there is no bic
-		// column and nothing for a store to drop. What is asserted is that the
-		// derivation happens on both read paths — a store that filled it in GetBank
-		// and not in ListBanks would leave every bank in a listing unroutable.
+		// The BIC is what a file is addressed by, and it is DERIVED from the id
+		// rather than stored beside it: a bank's id IS its address, so there is no
+		// bic column and nothing for a store to drop.
 		assertEqual(t, "bic", string(got.BIC), string(auroraBIC))
 		assertEqual(t, "bic in listings", string(listed[0].BIC), string(auroraBIC))
 		assertEqual(t, "suspense account", string(got.Assets["EUR"].Suspense), "200.200.001")
 		assertEqual(t, "reserve account", string(got.Assets["EUR"].Reserve), "100.200.001")
-		// The settlement account number, in both queries, because a store can lose
-		// a column in one and not the other. Emptiness is how a bank's own row says
-		// the scheme has not answered it yet, so a store that drops this one hands
-		// back a bank that has been admitted and reads as though it has not.
+		// The settlement account number, in both queries, because a store can lose a
+		// column in one and not the other.
 		assertEqual(t, "settlement account", string(got.Assets["EUR"].Settlement), "200.100.001")
 		assertEqual(t, "settlement account in listings", string(listed[0].Assets["EUR"].Settlement), "200.100.001")
 		assertEqual(t, "created at", got.CreatedAt.Equal(early), true)
-		// The admission it recorded that account under, asserted for the same
-		// reason and in both queries. It is what RecordMembershipTx compares
-		// an arriving acknowledgement against, so a store that drops it leaves
-		// every member accepting an acknowledgement from any admission at all —
-		// which was measured to move a bank's settlement reference onto an
-		// invented account. See payment.Bank.AdmissionRef.
+		// The admission it recorded that account under, asserted for the same reason
+		// and in both queries.
 		assertEqual(t, "admission reference", got.AdmissionRef, "adm-"+string(auroraBIC))
 		assertEqual(t, "admission reference in listings", listed[0].AdmissionRef, "adm-"+string(auroraBIC))
 
@@ -206,10 +163,8 @@ func RunPayment(t *testing.T, newStore func(*testing.T, ledger.BookID) payment.B
 			return nil
 		})
 
-		// And the map the store hands back is the caller's own: mutating it
-		// must not reach into the store. A SQL store cannot get that wrong; an
-		// in-Go one gets it wrong by handing out the map it stored, which is why
-		// the rule is written down rather than assumed.
+		// And the map the store hands back is the caller's own: mutating it must not
+		// reach into the store.
 		viewBank(t, s, func(ctx context.Context, tx payment.BankTx) error {
 			got, err := tx.GetBank(ctx, "alpha")
 			if err != nil {
@@ -265,11 +220,7 @@ func RunPayment(t *testing.T, newStore func(*testing.T, ledger.BookID) payment.B
 		s := openPayment(t, newStore, bookA)
 
 		// samplePayment and mandate each quote a DIFFERENT non-empty identifier on
-		// the debtor side than on the creditor side. The store holds a PartyRef's
-		// identifier as two columns per side (scheme, value), and two same-shaped
-		// TEXT columns is exactly the case a transposed insert argument or scan
-		// target would not fail on — it would just read back wrong. Asserting both
-		// sides, on both entities, independently is what would catch that.
+		// the debtor side than on the creditor side.
 		updateBank(t, s, func(ctx context.Context, tx payment.BankTx) error {
 			if err := tx.PutPayment(ctx, samplePayment("pay_1", "e2e-1", early)); err != nil {
 				return err
@@ -302,18 +253,8 @@ func RunPayment(t *testing.T, newStore func(*testing.T, ledger.BookID) payment.B
 	t.Run("SubmittedPaymentRoundTripsWithNoCycleAndNoDebtorLeg", func(t *testing.T) {
 		s := openPayment(t, newStore, bookA)
 
-		// The shape the split invented, and the one every payment now passes
-		// through: Initiated, in NO cycle, and — for a pull — with no debtor
-		// leg either. Before it, a payment reached PutPayment only once it was
-		// already Accepted and already in a cycle, which is what every other
-		// fixture in this file still writes.
-		//
-		// Empty is a value here, not a missing one. payments.cycle_id is TEXT
-		// NOT NULL with no CHECK and no foreign key, so "" round-trips today;
-		// this case is what makes that a property of the CONTRACT rather than
-		// of the current DDL. A later CHECK (cycle_id <> ''), or the foreign
-		// key cycle_payments.cycle_id already carries, would refuse the write
-		// this fixture makes — and without this case nothing would notice.
+		// The shape the split invented, and the one every payment now passes through:
+		// Initiated, in NO cycle, and — for a pull — with no debtor leg either.
 		p := samplePayment("pay_1", "e2e-1", early)
 		p.Status = payment.Initiated
 		p.CycleID = ""
@@ -341,10 +282,9 @@ func RunPayment(t *testing.T, newStore func(*testing.T, ledger.BookID) payment.B
 		assertEqual(t, "status in listings", listed[0].Status, payment.Initiated)
 		assertEqual(t, "cycle in listings", string(listed[0].CycleID), "")
 
-		// And it is still found by the reference it claimed: an uncycled
-		// payment is a payment, so the duplicate check at submission — the
-		// only thing standing between a customer and paying twice — has to see
-		// it.
+		// And it is still found by the reference it claimed: an uncycled payment is a
+		// payment, so the duplicate check at submission — the only thing standing
+		// between a customer and paying twice — has to see it.
 		viewBank(t, s, func(ctx context.Context, tx payment.BankTx) error {
 			byRef, err := tx.GetPaymentByEndToEndID(ctx, "e2e-1")
 			if err != nil {
@@ -383,11 +323,10 @@ func RunPayment(t *testing.T, newStore func(*testing.T, ledger.BookID) payment.B
 
 		assertEqual(t, "reject code", string(got.RejectCode), "AC04")
 		assertEqual(t, "reject reason", got.RejectReason, "creditor account is closed")
-		// paymentColumns is shared between the get and list queries, so a
-		// positional bug would likely bite both alike — but the BIC case
-		// asserts both paths for the same reason, and a future list query
-		// that builds its own column list is exactly what only this second
-		// assertion would catch.
+		// paymentColumns is shared between the get and list queries, so a positional
+		// bug would likely bite both alike — but the BIC case asserts both paths for
+		// the same reason, and a future list query that builds its own column list is
+		// exactly what only this second assertion would catch.
 		assertEqual(t, "reject code in listings", string(listed[0].RejectCode), "AC04")
 		assertEqual(t, "reject reason in listings", listed[0].RejectReason, "creditor account is closed")
 	})
@@ -397,17 +336,10 @@ func RunPayment(t *testing.T, newStore func(*testing.T, ledger.BookID) payment.B
 
 		late := early.Add(time.Hour)
 
-		// The same three rules the ledger and deposit fixtures use, because the
-		// same two mistakes are available here: a CreatedAt tie only the
-		// insertion sequence can break, IDs whose lexicographic order disagrees
-		// with insertion order, and the row inserted FIRST carrying the LATEST
-		// creation instant. Ordering by (CreatedAt, ID) fails on this fixture, and
-		// so does ordering by sequence alone.
-		//
-		// The banks cannot use the 9 -> 10 boundary the other four do, because a
-		// bank's id is its BIC and a BIC has a fixed shape. Four addresses whose
-		// alphabetical order is not their insertion order make the same two
-		// mistakes available, which is all the boundary was ever for.
+		// The same three rules the ledger and deposit fixtures use, because the same
+		// two mistakes are available here: a CreatedAt tie only the insertion
+		// sequence can break, IDs whose lexicographic order disagrees with insertion
+		// order, and the row inserted FIRST carrying the LATEST creation instant.
 		updateBank(t, s, func(ctx context.Context, tx payment.BankTx) error {
 			for _, p := range []struct {
 				id string
@@ -521,10 +453,7 @@ func RunPayment(t *testing.T, newStore func(*testing.T, ledger.BookID) payment.B
 	t.Run("RePuttingAPaymentReleasesItsOldEndToEndID", func(t *testing.T) {
 		s := openPayment(t, newStore, bookA)
 
-		// The same rule the ledger applies to a re-keyed idempotency key. The
-		// end-to-end id index is maintained by the store, so a store that only ever
-		// adds to it goes on resolving a reference the payment no longer carries —
-		// and then refuses the next payment that legitimately claims it.
+		// The same rule the ledger applies to a re-keyed idempotency key.
 		updateBank(t, s, func(ctx context.Context, tx payment.BankTx) error {
 			return tx.PutPayment(ctx, samplePayment("pay_1", "SCT-001", early))
 		})
@@ -568,11 +497,8 @@ func RunPayment(t *testing.T, newStore func(*testing.T, ledger.BookID) payment.B
 	t.Run("PutIsAnUpsertAndDeepCopies", func(t *testing.T) {
 		s := openPayment(t, newStore, bookA)
 
-		// A payment carries a map and a bank carries one too: the accounts it
-		// holds per asset. A store that keeps the caller's reference lets a later
-		// mutation rewrite history — which a store serialising on the way in
-		// never can, so the rule has to be stated rather than left to the
-		// backend.
+		// A payment carries a map and a bank carries one too: the accounts it holds
+		// per asset.
 		p := samplePayment("pay_1", "SCT-001", early)
 		p.Metadata = map[string]string{"scheme": "sepa.ct"}
 		bank := bankRow(auroraBIC, "Aurora Bank", early)
@@ -656,19 +582,8 @@ func RunPayment(t *testing.T, newStore func(*testing.T, ledger.BookID) payment.B
 		paymentRecordsBothReturnLegs(t, openPayment(t, newStore, bookA))
 	})
 
-	// RoutingDirectoryIsReplacedWholesale pins the one write on payment.BankTx that is
-	// not an upsert, and the reason it is not one.
-	//
-	// A member's routing directory is a COPY of a file somebody else publishes.
-	// Every other Put in this suite writes a row its institution decided about, so
-	// merging is right for those; a subscriber that merged would hold the union of
-	// every snapshot it ever pulled, and a member that had left the roster would
-	// stay routable out of a directory nobody could correct. So the second refresh
-	// here drops an entry, and the assertion is that the entry is GONE.
-	//
-	// The two allocations that share a code are the other half of the case: 99999
-	// is an ABI in Italy and a code banque in France, they name different banks,
-	// and a copy keyed by the code alone would hold one of them.
+	// RoutingDirectoryIsReplacedWholesale pins the one write on payment.BankTx
+	// that is not an upsert, and the reason it is not one.
 	t.Run("RoutingDirectoryIsReplacedWholesale", func(t *testing.T) {
 		s := openPayment(t, newStore, bookA)
 
@@ -745,16 +660,9 @@ func RunPayment(t *testing.T, newStore func(*testing.T, ledger.BookID) payment.B
 	t.Run("UpdateRollsBackAllThreeLayersTogether", func(t *testing.T) {
 		s := openPayment(t, newStore, bookA)
 
-		// This is what the whole embedding chain exists for: a bank's own act
-		// writes payment rows, posts through the ledger and reads the deposit
-		// layer in one unit of work, so a failure must undo all of it.
-		//
-		// The rows are this INSTITUTION's, and that is the split narrowing what
-		// the case can claim rather than weakening it. The cycle and the
-		// settlement it also wrote are in two other databases, and the honest
-		// statement about those is the opposite one: they cannot roll back with
-		// these, because no transaction spans two databases. That is what the
-		// business day models everywhere else.
+		// This is what the whole embedding chain exists for: a bank's own act writes
+		// payment rows, posts through the ledger and reads the deposit layer in one
+		// unit of work, so a failure must undo all of it.
 		updateBank(t, s, func(ctx context.Context, tx payment.BankTx) error {
 			return tx.PutBank(ctx, bankRow(auroraBIC, "Aurora Bank", early))
 		})
@@ -886,14 +794,6 @@ func RunPayment(t *testing.T, newStore func(*testing.T, ledger.BookID) payment.B
 
 // RunClearingHousePayment runs the payment-layer cases whose rows are the
 // CLEARING HOUSE's: the roster it routes by, and the cycles it cuts.
-//
-// It is a suite of its own because the division is the schema's. The clearing
-// house's database has no banks table, no mandates, no settlements and no book
-// of accounts at all, so every case above would be refused by name on it — which
-// is the intended way to find one that has been put in the wrong suite.
-//
-// newStore must return the clearing house's store with no state in it; the suite
-// calls it once per subtest and closes the result.
 func RunClearingHousePayment(t *testing.T, newStore func(*testing.T) payment.ClearingHouseStore) {
 	t.Helper()
 
@@ -922,18 +822,7 @@ func RunClearingHousePayment(t *testing.T, newStore func(*testing.T) payment.Cle
 	})
 
 	// Cycle listing order, which was part of PaymentListOrderingIsCreatedAtThenSeq
-	// while one store held every row kind. The fixture is that case's: a
-	// CreatedAt tie only the insertion sequence can break, ids whose
-	// lexicographic order disagrees with insertion order, and the row inserted
-	// FIRST carrying the latest instant.
-	// A cycle carries a slice AND a map, which is what makes it the row this rule
-	// is most worth asserting on. See PutIsAnUpsertAndDeepCopies for the bank's
-	// half of the same rule.
-	// Reset empties this institution's tables, which is its share of what
-	// ResetClearsPaymentState asserts for the bank. Each row kind is its own
-	// table, so a table left out of the clear is a row that survives a reset —
-	// and the whole point of Reset is that a reset store behaves like a fresh
-	// one.
+	// while one store held every row kind.
 	t.Run("ResetClearsTheClearingHousesState", func(t *testing.T) {
 		s := openClearingHouse(t, newStore)
 
@@ -944,10 +833,10 @@ func RunClearingHousePayment(t *testing.T, newStore func(*testing.T) payment.Cle
 			if err := tx.PutCycle(ctx, cycle("cyc_1", payment.SchemeSEPACT, payment.CycleOpen, early)); err != nil {
 				return err
 			}
-			// What this institution has taken in and not yet handed over, which is
-			// the state a reset most has to take with it: a share that survived one
-			// would be released into a bank's queue by the next cycle to be given
-			// the same id, since the id counters restart with the rows.
+			// What this institution has taken in and not yet handed over, which is the
+			// state a reset most has to take with it: a share that survived one would be
+			// released into a bank's queue by the next cycle to be given the same id,
+			// since the id counters restart with the rows.
 			if err := tx.AddHeldFile(ctx, payment.HeldFile{
 				CycleID: "cyc_1", Destination: auroraBIC, File: []byte("<f/>"),
 				Transactions: []payment.HeldTransaction{{Position: 0, PaymentID: "pay_1"}},
@@ -1047,19 +936,6 @@ func RunClearingHousePayment(t *testing.T, newStore func(*testing.T) payment.Cle
 
 	// What this institution has taken in and not yet handed over: the two things
 	// it stores that are an OBLIGATION rather than a record.
-	//
-	// Their contract is unlike every other one in this suite in three ways, and
-	// all three are asserted here. A share has no key its caller knows, so
-	// writing the same value twice is two obligations and not one rewritten —
-	// the opposite of what Put means everywhere else. The listing order is the
-	// BUILD order, because a share has no timestamp: it is not an event. And a
-	// share is discharged ONE at a time, named by the Seq the listing gives it,
-	// because the bank it is addressed to is handed it one at a time and the
-	// hand-over can fail.
-	//
-	// The name says "survive their cycle" because a share must be readable and
-	// removable whatever became of the cut-off that names it, so the fixture
-	// never writes one.
 	t.Run("HeldFilesSurviveTheirCycleAndReleaseInBuildOrder", func(t *testing.T) {
 		s := openClearingHouse(t, newStore)
 
@@ -1123,9 +999,7 @@ func RunClearingHousePayment(t *testing.T, newStore func(*testing.T) payment.Cle
 		})
 
 		// The release: the ONE share named goes, its neighbours in the same cut-off
-		// stay, and the positions go with it rather than being left behind. A
-		// discharge that took the cut-off's would take shares no bank has been
-		// handed — see payment.DropHeldFile.
+		// stay, and the positions go with it rather than being left behind.
 		var first payment.HeldFile
 		viewCsm(t, s, func(ctx context.Context, tx payment.CsmTx) error {
 			held, err := tx.ListHeldFiles(ctx, "cyc_1")
@@ -1252,30 +1126,6 @@ func RunClearingHousePayment(t *testing.T, newStore func(*testing.T) payment.Cle
 
 	// RosterEntryCarriesNoAccountIdentifiers is the case that makes the split a
 	// claim about the code rather than about the plan.
-	//
-	// The clearing house routes. It has no business holding a bank's subledger,
-	// its product, or its account at the central bank, and the way that stops
-	// being a promise is a check on the STRUCT: the table below is the whole set
-	// of fields a RosterEntry may have, so a field added to it fails this case by
-	// name instead of passing silently.
-	//
-	// AdmissionRef is in the table and is not an account identifier. It is the
-	// reference every act of one admission quotes — a correlator, naming no
-	// account in any book — and the clearing house's refusal is what reads it.
-	// What this case exists to keep out is an identifier that would let this
-	// institution reach into another's ledger; a correlator reaches nothing.
-	//
-	// Issuer is in the table and is the reason the row exists at all. A bank code
-	// is a national registry's allocation with no computable relationship to a
-	// BIC, so turning the address a payer quotes into the agent a message is sent
-	// to takes a published pairing — and publishing it is what a clearing house
-	// does. It names no account in anybody's book: it says which INSTITUTION
-	// issued a range, which is routing in the most literal sense this table has.
-	//
-	// Name is NOT in the table. The acknowledgement this row is written from names
-	// the account owner by BIC and by nothing else, so a name here could only be
-	// filled by the clearing house being told one it was never sent. This case is
-	// what makes putting it back a failure rather than a quiet regression.
 	t.Run("RosterEntryCarriesNoAccountIdentifiers", func(t *testing.T) {
 		s := openClearingHouse(t, newStore)
 
@@ -1348,32 +1198,9 @@ func RunClearingHousePayment(t *testing.T, newStore func(*testing.T) payment.Cle
 		})
 	})
 
-	// RosterEntryAssetsAreAnOrderedList pins the two properties of Assets that
-	// its Go type has and a set does not: the caller's ORDER survives, and a
-	// REPEATED asset is stored rather than refused.
-	//
-	// The second is the one this case was written for: a store must hold what the
-	// Go type it is handed can hold, and a child table keyed by (bic, asset) would
-	// refuse a slice that repeats an asset.
-	//
-	// No writer in the system reaches it. payment.AdmitMemberTx takes the assets
-	// from a map keyed by asset and appends only the ones the entry does not
-	// already hold, so an acknowledgement that repeats a currency collapses before
-	// this table is reached — and a map cannot hold two accounts in one currency
-	// to begin with.
-	//
-	// What is asserted here is the STORE's contract with the Go type it is
-	// handed: Assets is a slice, a slice can repeat, and a store must hold what a
-	// caller passes it whether or not any caller passes that.
-	//
-	// What a store must NOT do is decide about it. Refusing a duplicate is a
-	// judgement about the message that carried it, and it belongs to the
-	// institution reading the message; a store that refused would make that
-	// judgement in one store and not the other, which is how this started.
-	//
-	// The order is asserted with a fixture that is NOT alphabetical, on purpose.
-	// The other roster case uses EUR, USD, which a store that sorted its child
-	// rows would pass by accident.
+	// RosterEntryAssetsAreAnOrderedList pins the two properties of Assets that its
+	// Go type has and a set does not: the caller's ORDER survives, and a REPEATED
+	// asset is stored rather than refused.
 	t.Run("RosterEntryAssetsAreAnOrderedList", func(t *testing.T) {
 		s := openClearingHouse(t, newStore)
 
@@ -1472,11 +1299,6 @@ func RunClearingHousePayment(t *testing.T, newStore func(*testing.T) payment.Cle
 
 // RunCentralBankPayment runs the payment-layer cases whose rows are the CENTRAL
 // BANK's: its own register of the members it holds settlement accounts for.
-//
-// See RunClearingHousePayment on why this is a suite of its own.
-//
-// newStore must return the central bank's store with no state in it; the suite
-// calls it once per subtest and closes the result.
 func RunCentralBankPayment(t *testing.T, newStore func(*testing.T) payment.CentralBankStore) {
 	t.Helper()
 
@@ -1574,11 +1396,6 @@ func RunCentralBankPayment(t *testing.T, newStore func(*testing.T) payment.Centr
 
 	// SettlementMemberIsKeyedByBIC is the central bank's own record of a bank it
 	// holds a settlement account for, and the point of the case is the key.
-	//
-	// The settlement agent holds no roster and no participant ids. What the request
-	// tells it is a BIC, so a lookup by anything else is a lookup it could not
-	// make — which is why the store is asked for this row by BIC here and never by
-	// a bank id.
 	t.Run("SettlementMemberIsKeyedByBIC", func(t *testing.T) {
 		s := openCentralBank(t, newStore)
 
@@ -1635,13 +1452,8 @@ func RunCentralBankPayment(t *testing.T, newStore func(*testing.T) payment.Centr
 		})
 	})
 
-	// SettlementMemberKeepsOneAccountPerAsset pins that the map survives the
-	// round trip with its keys.
-	//
-	// A member read back with an empty map settles nothing — the settlement
-	// agent would have no account to post the net position of a cut-off to — and
-	// the map is a second TABLE, so "the row came back" and "the accounts came
-	// back" are two different claims about two different reads.
+	// SettlementMemberKeepsOneAccountPerAsset pins that the map survives the round
+	// trip with its keys.
 	t.Run("SettlementMemberKeepsOneAccountPerAsset", func(t *testing.T) {
 		s := openCentralBank(t, newStore)
 
@@ -1712,11 +1524,6 @@ func RunCentralBankPayment(t *testing.T, newStore func(*testing.T) payment.Centr
 // bankRow is one bank's own record of itself, admitted: it carries a settlement
 // reference and the admission it recorded one under, because a column a store
 // drops has to be a column it was given something to hold.
-//
-// It is keyed by the only identifier it has: a bank's ParticipantID, its BIC and
-// its BookID are one value, so this takes one and fills all three. A fixture
-// that set them independently could not be round-tripped — the store writes the
-// key alone and derives the other two back out of it.
 func bankRow(bic iso20022.BIC, name string, createdAt time.Time) payment.Bank {
 	id := payment.ParticipantID(bic)
 	return payment.Bank{
@@ -1782,10 +1589,6 @@ func samplePayment(id payment.PaymentID, endToEndID string, createdAt time.Time)
 // paymentRoundTripsPartyDetails pins that what a MESSAGE says about each side —
 // the agent's BIC and the account holder's name — survives a round trip through
 // the store.
-//
-// It is stored rather than looked up because looking it up is a read of another
-// bank's deposit register. A store that dropped these fields would send the
-// name-reading code back.
 func paymentRoundTripsPartyDetails(t *testing.T, st payment.BankStore) {
 	ctx := context.Background()
 	p := samplePayment("pay_details", "e2e-details", early)
@@ -1815,20 +1618,8 @@ func paymentRoundTripsPartyDetails(t *testing.T, st payment.BankStore) {
 }
 
 // paymentRecordsWhereTheCreditorLegLanded pins that
-// payment.Payment.CreditorLegAccount survives a round trip in both of the states
-// it has, and that the empty one is a value rather than a missing field.
-//
-// This is a MONEY column, not a trace. payment.PostReturnLegTx claws the funds
-// back from the account named here, and the account is not the payee's whenever
-// the creditor leg diverted to unclaimed balances. A store that dropped it would
-// send a return to the payee's GL account — which for a diverted payment was
-// never credited — and the ledger would post it happily: an overdrawn deposit is
-// a Liability going negative, which nothing in the book refuses.
-//
-// Both states are asserted because both are written. The empty one is what every
-// payment carries until its creditor leg posts, and it is stored as ” under a
-// NOT NULL DEFAULT ”, so a store that turned it into a NULL — or a CHECK that
-// refused it — would refuse the ordinary case.
+// payment.Payment.CreditorLegAccount survives a round trip in both of the
+// states it has, and that the empty one is a value rather than a missing field.
 func paymentRecordsWhereTheCreditorLegLanded(t *testing.T, st payment.BankStore) {
 	ctx := context.Background()
 
@@ -1901,19 +1692,6 @@ func paymentRecordsWhereTheCreditorLegLanded(t *testing.T, st payment.BankStore)
 // paymentRecordsBothReturnLegs pins that payment.Payment's two return-leg
 // transaction ids survive a round trip, and that a payment carrying only ONE of
 // them round-trips as one rather than as two or none.
-//
-// The half-returned state is the one that matters, and it is not a corner case:
-// it is what every return looks like between the two banks' acts. The returning
-// bank posts its leg and sends; the other bank posts hours later. In between,
-// exactly one of these columns is set, and it is the ONLY thing that tells the
-// second bank it is the second — payment.PostReturnLegTx reads the other side's
-// id to decide whether this leg takes the payment to Returned. A store that
-// dropped either column, or that turned an unset one into anything other than
-// the empty value, would make both banks think they were first: two clawbacks
-// and no refund, or a payment stuck at Settled with the money in two suspenses.
-//
-// A leg that has not been posted has no transaction, and an absent id and an
-// empty one are the same fact here.
 func paymentRecordsBothReturnLegs(t *testing.T, st payment.BankStore) {
 	ctx := context.Background()
 
@@ -1987,13 +1765,9 @@ func paymentRecordsBothReturnLegs(t *testing.T, st payment.BankStore) {
 	}
 }
 
-// settlementAdviceIsScopedToTheBankThatWasAdvised pins that an advice belongs to
-// ONE bank's book and that two banks advised of the same cycle do not collide.
-//
-// The book is part of the key, not a column on it. A member bank's record of
-// what it was told about a cut-off is its own — it lives in that bank's store
-// and nowhere else — and a key that omitted the book would make the second
-// bank's advice overwrite the first's.
+// settlementAdviceIsScopedToTheBankThatWasAdvised pins that an advice belongs
+// to ONE bank's book and that two banks advised of the same cycle do not
+// collide.
 func settlementAdviceIsScopedToTheBankThatWasAdvised(t *testing.T, st, other payment.BankStore) {
 	ctx := context.Background()
 	one := payment.SettlementAdvice{
@@ -2008,9 +1782,7 @@ func settlementAdviceIsScopedToTheBankThatWasAdvised(t *testing.T, st, other pay
 		AdvisedAt: early, PostedAt: early,
 	}
 	// TWO STORES, because an advice is one bank's record of what it was told and
-	// each bank holds its own database. The scoping this case is named for used
-	// to be a book_id column in one store; it is two databases now, and the
-	// listing below is scoped because there is nothing else in it.
+	// each bank holds its own database.
 	if err := st.Update(ctx, func(ctx context.Context, tx payment.BankTx) error {
 		return tx.PutSettlementAdvice(ctx, one.Book, one)
 	}); err != nil {
@@ -2053,19 +1825,6 @@ func settlementAdviceIsScopedToTheBankThatWasAdvised(t *testing.T, st, other pay
 
 	// The ORDER, which the scoping assertion above could not reach: bank_2 held
 	// exactly one row, so a listing that sorted by nothing at all passed.
-	//
-	// payment.BankStore documents this list as AdvisedAt then seq, like every other
-	// listing in the interface. A SQL store gets there with ORDER BY advised_at,
-	// seq; an in-Go one had to sort a map whose iteration order the runtime
-	// randomises, which is how a missing ORDER BY and a missing sort were both
-	// reachable. This is the only place either could be caught: a bank in one
-	// asset holds one advice per cut-off, and it takes three cut-offs before
-	// order means anything.
-	//
-	// The last two share an instant, which is the half that matters. Ties are
-	// broken by INSERTION sequence and not by cycle id — cyc_4 is written before
-	// cyc_3 and must come back first — so a store that fell back to sorting by
-	// key would pass on distinct timestamps and fail here.
 	later := early.Add(time.Hour)
 	for _, a := range []payment.SettlementAdvice{
 		{Book: bookA, Reference: "cyc_4", Asset: "EUR", Movement: 40, ClosingBalance: 40,
@@ -2116,14 +1875,6 @@ func settlementAdviceIsScopedToTheBankThatWasAdvised(t *testing.T, st, other pay
 	}
 
 	// The book ARGUMENT is the scope; the Book FIELD is the row's record of it.
-	//
-	// This is the only method in payment.BankTx that carries a book twice, and
-	// cmd/server/books_test.go's recorder relies on the two being the same thing: its
-	// override notes the argument alone, and structCarriedBooks["PutSettlementAdvice"]
-	// cites this subtest as the evidence that nothing else could be recorded.
-	// The store holds it by construction — its INSERT writes book_id from the
-	// argument and never reads a.Book — and an advice whose field disagrees with
-	// the argument is the only thing that can tell whether that is still true.
 	misfiled := payment.SettlementAdvice{
 		Book: bookB, Reference: "cyc_2", Asset: "EUR",
 		Movement: 100, ClosingBalance: 100,
@@ -2162,8 +1913,8 @@ func settlementAdviceIsScopedToTheBankThatWasAdvised(t *testing.T, st, other pay
 // advicesAreKeyedByReferenceNotByCycle pins that a bank's record of having
 // booked a reserve movement is the same row whether the movement discharged a
 // cut-off or a single return: the two put here differ only in what their
-// Reference names — a cycle id and a payment id — and neither collides with
-// the other, in the same book and the same asset.
+// Reference names — a cycle id and a payment id — and neither collides with the
+// other, in the same book and the same asset.
 func advicesAreKeyedByReferenceNotByCycle(t *testing.T, st payment.BankStore) {
 	ctx := context.Background()
 	cutOff := payment.SettlementAdvice{
@@ -2251,13 +2002,8 @@ func settlement(id payment.SettlementID, cycleID payment.CycleID, settledAt time
 }
 
 // openPayment builds a fresh store for one subtest and closes it when the
-// subtest ends.
-// The three suites' open-and-close helpers, one set per institution.
-//
-// There are three because there are three store types, and that is the split
-// itself rather than a repetition: a helper written against one interface over
-// all three is exactly what a bank suite reaching for a cycle used to compile
-// through.
+// subtest ends. The three suites' open-and-close helpers, one set per
+// institution.
 
 // openPayment builds a fresh bank store for one subtest and closes it when the
 // subtest ends. It takes a book because the advice cases need a SECOND bank,

@@ -70,10 +70,7 @@ func TestAmountMinor(t *testing.T) {
 	}
 }
 
-// TestAmountMinorRefusesToRound is the load-bearing case. A euro message
-// carrying 0.005 does not mean half a cent that should become one cent or zero
-// — it means something this system cannot represent, and picking an answer
-// would put a rounding error into a ledger that is otherwise exact.
+// TestAmountMinorRefusesToRound is the load-bearing case.
 func TestAmountMinorRefusesToRound(t *testing.T) {
 	for _, v := range []string{"1234.567", "0.005", "1.000000001"} {
 		_, err := ActiveCurrencyAndAmount{Ccy: "EUR", Value: v}.Minor(2)
@@ -111,18 +108,6 @@ func TestAmountRoundTrips(t *testing.T) {
 // TestValidateAdmitsNineteenDigitsAtScaleFive pins the one gap in Validate's
 // magnitude check, so that the doc comment stating it is a claim with a test
 // behind it rather than a confession without one.
-//
-// Validate checks shape by calling Minor(5), which pads the fraction to five
-// places and parses the result as an int64. For a value that ALREADY has five
-// fraction digits the padding is a no-op, so the only thing left is the int64
-// range — and MaxInt64 is nineteen digits, where ActiveCurrencyAndAmount's
-// totalDigits facet is eighteen. The value below is therefore invalid against
-// the schema and accepted here.
-//
-// It is inert in this repository today because no asset is scaled to five;
-// nothing enforces that, which is exactly why it is pinned. Implementing a real
-// totalDigits check flips this test, and whoever does it should replace it with
-// its opposite rather than delete it.
 func TestValidateAdmitsNineteenDigitsAtScaleFive(t *testing.T) {
 	// 9223372036854775807 minor units at scale 5 — MaxInt64, rendered.
 	a := ActiveCurrencyAndAmount{Ccy: "XXX", Value: "92233720368547.75807"}

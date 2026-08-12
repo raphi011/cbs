@@ -13,10 +13,6 @@ func init() {
 
 // Pacs008 is FIToFICustomerCreditTransfer: the interbank message that moves a
 // credit transfer from the debtor's bank to the creditor's.
-//
-// It is what payment.SCT names. Note what it is NOT: the customer's instruction
-// to their own bank is a pain.001, a different message on a different layer,
-// which this package does not implement.
 type Pacs008 struct {
 	XMLName           xml.Name                     `xml:"urn:iso:std:iso:20022:tech:xsd:pacs.008.001.08 Document"`
 	FIToFICstmrCdtTrf FIToFICustomerCreditTransfer `xml:"FIToFICstmrCdtTrf"`
@@ -49,11 +45,6 @@ func (m FIToFICustomerCreditTransfer) validate() error {
 }
 
 // CreditTransferGroupHeader describes the message as a whole.
-//
-// NbOfTxs and TtlIntrBkSttlmAmt are a string and an amount rather than
-// derivations of the slice below, because they are what the SENDER asserted.
-// A receiver that recomputed them instead of checking them would never notice a
-// truncated file.
 type CreditTransferGroupHeader struct {
 	MsgId             string                   `xml:"MsgId"`
 	CreDtTm           ISODateTime              `xml:"CreDtTm"`
@@ -79,11 +70,6 @@ func (h CreditTransferGroupHeader) validate() error {
 }
 
 // CreditTransferTransaction is one credit transfer.
-//
-// The field order is the schema's sequence order and must not be changed: the
-// debtor comes before the debtor's agent, and the creditor's agent comes before
-// the creditor. That looks inconsistent until you read it as the payment's own
-// path — party, its bank, the other bank, the other party.
 type CreditTransferTransaction struct {
 	PmtId          PaymentIdentification         `xml:"PmtId"`
 	PmtTpInf       *PaymentTypeInformation       `xml:"PmtTpInf,omitempty"`
@@ -107,9 +93,7 @@ func (t CreditTransferTransaction) validate() error {
 			return fmt.Errorf("PmtTpInf: %w", err)
 		}
 		// SeqTp has no element in PaymentTypeInformation28 at all — see
-		// PaymentTypeInformation's doc comment. PaymentTypeInformation.validate()
-		// cannot refuse it, because SeqTp is legal there for pacs.003; only a
-		// message that actually is a pacs.008 knows to reject it.
+		// PaymentTypeInformation's doc comment.
 		if t.PmtTpInf.SeqTp != nil {
 			return fmt.Errorf("%w: PmtTpInf/SeqTp", ErrElementNotAllowed)
 		}

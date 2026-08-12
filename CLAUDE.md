@@ -8,27 +8,25 @@ The teaching book _How Money Moves_ lives in the _Lead Engineer's Field Guide_
 
 ## Comments: what earns its place
 
-This repository has been through one large comment cull. The rules below are what
-it converged on; follow them rather than re-deriving them.
+**Three lines is the budget, and it is a ceiling rather than a target.** Every
+Go comment in this repository states its claim in at most three lines. There is
+no larger allowance for an exported type, a long-form `#` section or a
+`doc.go`: a package doc is three lines like everything else. The one exception
+is a single sentence that will not fit, which is kept whole rather than cut in
+half.
+
+**The argument is not here.** Refusal rationales, absence-records, the
+"why not the other way" reasoning and the worked examples were removed
+deliberately, not lost. Do not reinstate them beside the code. Where a decision
+needs to be recoverable, it goes in `docs/adr/` as a numbered ruling or in
+`docs/specs/` as a design record, and the comment states the rule and points
+there in the same three lines.
 
 **Write the rule, not the history.** A comment states what is true now. It does
 not say what the code used to do, which task changed it, what an earlier version
-of the comment claimed, or that a ruling was reversed. If the old behaviour is
-worth knowing, it is worth a test, not a paragraph — and `git log` already has
-it. Words that should not appear in a comment: "used to", "no longer does",
-"Task N", "sub-project N", "this comment said", "an earlier version".
-
-**Where a rejected alternative is genuinely instructive**, state it as a
-hypothesis in the present tense — "a sweep over every bank's register would
-catch a cross-bank collision; there is none, because…" — not as a change log.
-
-**Length is a budget.** Aim for these, and treat anything beyond as needing a
-reason you could defend in review:
-
-- inline comment: 1–3 lines
-- function or field doc: up to ~10 lines
-- exported type or long-form `#` section: up to ~25 lines
-- package doc (`doc.go`): as long as the domain needs, and no longer
+of the comment claimed, or that a ruling was reversed. Words that should not
+appear in a comment: "used to", "no longer does", "Task N", "sub-project N",
+"this comment said", "an earlier version".
 
 **Do not restate the code.** If the sentence can be read off the identifiers and
 the three lines below it, delete it. Prefer a better name to a comment that
@@ -37,10 +35,15 @@ explains a worse one.
 **Say it once.** A rule belongs in one place, with the other sites pointing at
 it. Three copies become three versions.
 
-**What is always worth writing:** an invariant the compiler cannot state, why a
-refusal exists and what it costs, why something is ABSENT (a missing constraint,
-an unresolved lookup, a check deliberately not made), an ordering that is
-load-bearing, and a measured number with what was measured.
+**The budget is not enforced mechanically.** Nothing in CI measures it, so it
+holds only as long as it is applied in review. If it is drifting, measure it
+before arguing about it: `find . -name '*.go' | xargs grep -h '^\s*//' | wc -l`
+was 12,058 when this rule was written.
+
+**The schemas are exempt, and deliberately.** The three `0001_init.sql` files
+carry the domain argument for the relational mapping, at whatever length it
+needs. See the section below: what is ABSENT from a schema has no column to
+hang a comment on, so the prose is the only record of it.
 
 ## Domain knowledge stays consistent across layers
 

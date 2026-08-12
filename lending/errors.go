@@ -43,47 +43,20 @@ var (
 	// facility that owes nothing.
 	ErrNothingOutstanding = errors.New("facility has nothing outstanding")
 
-	// ErrNoRefundOutstanding is returned when an interest refund is paid against
-	// a facility the bank owes nothing on. It is ErrNothingOutstanding with the
-	// money running the other way, and it is a separate sentinel because the two
-	// mean opposite things to a caller: one says the borrower has already
-	// settled, the other says the bank has.
+	// ErrNoRefundOutstanding is returned when an interest refund is paid against a
+	// facility the bank owes nothing on.
 	ErrNoRefundOutstanding = errors.New("facility has no interest refund outstanding")
 
-	// ErrCycleAlreadyBilled is returned when a revolving line's billing cycle
-	// is charged twice. Billing appends an instalment and capitalizes the
-	// receivable, so a retried request — a proxy retry, a double-submitted
-	// form — would leave the borrower owing two minimum payments for one
-	// cycle and drifting into arrears from an infrastructure event.
+	// ErrCycleAlreadyBilled is returned when a revolving line's billing cycle is
+	// charged twice.
 	ErrCycleAlreadyBilled = errors.New("this billing cycle has already been charged")
 
-	// ErrTermsNotFound is returned when no facility terms are in force on a
-	// day. Every facility gets an opening terms row at origination, so the only
-	// way to miss is to ask about a day before the facility existed.
-	//
-	// Like deposit.ErrTermsNotFound it is deliberately absent from
-	// api.errorStatus's 404 list and reaches the client as a 500: a facility
-	// with no opening row is internally inconsistent state rather than a missing
-	// resource, and a 404 would read as "no such facility".
+	// ErrTermsNotFound is returned when no facility terms are in force on a day.
+	// Every facility gets an opening terms row at origination, so the only way to
+	// miss is to ask about a day before the facility existed.
 	ErrTermsNotFound = errors.New("no facility terms in force on that day")
 
-	// ErrScheduleWouldDiverge is returned when repricing a term loan would put
-	// its instalment schedule out of step with its accrual. Two cases: the loan
-	// already HAS a generated schedule, or the row would be effective AFTER the
-	// day it is entered, which is the day a schedule generated later would be
-	// pinned at.
-	//
-	// A term loan's instalments are generated once, at disbursement, from the
-	// rate in force then, and stored as rows. If accrual followed a timeline
-	// and the schedule did not, the plan and the actual accrual would drift
-	// apart — beyond the ordinary plan-versus-actual divergence this package
-	// already teaches, which 30/360 exists to keep small — and the final
-	// instalment would silently absorb the difference, unnoticed until
-	// maturity. Regenerating a schedule against repayments already posted
-	// against it needs versioned schedule rows and open-item allocation, which
-	// is its own topic. Repricing is allowed freely on a revolving line (no
-	// schedule, and so nothing for a future-dated row to get ahead of) and on an
-	// undisbursed term loan effective on or before today (no schedule yet, and
-	// the one generated later will be pinned at this very row).
+	// ErrScheduleWouldDiverge is returned when repricing a term loan would put its
+	// instalment schedule out of step with its accrual.
 	ErrScheduleWouldDiverge = errors.New("repricing a term loan with a generated schedule would diverge from it")
 )

@@ -9,29 +9,12 @@ import (
 	"github.com/raphi011/cbs/ledger"
 )
 
-// Catalogue is the register over a book's products. It owns no state: products
-// and versions live in a Store, exactly as the ledger's rows do, and the
-// Catalogue keeps only the store handle, the book it audits through, the BookID
-// both are scoped to, and its clock.
-//
-// # What it refuses, and why the refusals are here
-//
-// A store accepts any write. The rules that make a catalogue trustworthy — a
-// published version is frozen, publication is forward-only, an unknown product
-// has no versions — are all enforced here, in the domain layer. None of them is
-// a constraint a schema could carry honestly: the first is about a row's
-// PREVIOUS state, which a CHECK cannot see; the second is about today, which a
-// schema has no idea of; and the third is "the parent must exist", which the
-// schema refuses for the reason it refuses every other one. It is the same
-// position the schema takes about text and about parent references.
+// Catalogue is the register over a book's products.
 type Catalogue struct {
 	// store owns all persistent state of this layer.
 	store Store
 
-	// gl is the general ledger this catalogue is scoped alongside. The
-	// catalogue posts nothing — a price is not a movement of money — so it is
-	// held for the same reason deposit.Register holds it: one book, one
-	// identity, and a later kind of product that does post has it to hand.
+	// gl is the general ledger this catalogue is scoped alongside.
 	gl *ledger.Book
 
 	// bookID is the book both layers are scoped to. Every store call carries
@@ -43,10 +26,6 @@ type Catalogue struct {
 }
 
 // NewCatalogue creates a catalogue over the given store for one book.
-//
-// id must be book.ID(): the catalogue's rows and the book's audit events are
-// scoped by the same BookID. Share the clock with the book so that audit
-// timestamps and effective dates line up across layers.
 func NewCatalogue(store Store, book *ledger.Book, id ledger.BookID, clock func() time.Time) *Catalogue {
 	return &Catalogue{store: store, gl: book, bookID: id, clock: clock}
 }
@@ -90,9 +69,6 @@ func (c *Catalogue) appendAuditTx(ctx context.Context, tx Tx, eventType, entityI
 
 // CreateProduct adds a catalogue entry. It has no price yet: DraftVersion and
 // PublishVersion give it one, and until then no account can be opened from it.
-//
-// Returns ErrNameRequired for an unnamed product, ledger.ErrInvalidText for an
-// unusable name and ErrKindMismatch for an unknown kind.
 func (c *Catalogue) CreateProduct(ctx context.Context, name string, kind Kind) (Product, error) {
 	var out Product
 	err := c.store.Update(ctx, func(ctx context.Context, tx Tx) error {
@@ -126,18 +102,6 @@ func (c *Catalogue) CreateProductTx(ctx context.Context, tx Tx, name string, kin
 
 // DraftVersion writes an unpublished version for one effective day, or replaces
 // the draft already there.
-//
-// A draft prices nothing: resolution skips it, so the published version before
-// it stays in force through its day. That is what stops immutability from
-// meaning a typo in a rate is permanent — and a rule worked around with a
-// manual UPDATE is the thing this package defends against.
-//
-// effectiveFrom is truncated to a day. It may be in the past: only PUBLICATION
-// is forward-only, and refusing a backdated draft would only mean the refusal
-// arrived at a less useful moment.
-//
-// Returns ErrProductNotFound, ErrVersionPublished if that day is already
-// published, and ErrInvalidRate.
 func (c *Catalogue) DraftVersion(ctx context.Context, id ID, effectiveFrom time.Time, pricing OverdraftPricing) (Version, error) {
 	var out Version
 	err := c.store.Update(ctx, func(ctx context.Context, tx Tx) error {
@@ -182,24 +146,7 @@ func (c *Catalogue) DraftVersionTx(ctx context.Context, tx Tx, id ID, effectiveF
 }
 
 // PublishVersion freezes the draft for one effective day and stamps its content
-// hash. From then on it prices every account bound to the product whose own row
-// carries no overlay, for every day from effectiveFrom until the next published
-// version.
-//
-// # Forward-only
-//
-// A version effective before today is refused with ErrRetroactivePublish. It
-// would move interest already charged on every account bound to the product at
-// once, and the audit log would be the only control on it; maker-checker is the
-// real answer and this system has none. Retroactive repricing stays where its
-// blast radius is one customer: deposit's per-account pricing overlay, which
-// may be backdated and whose delta the accrual posts as ordinary correction
-// interest. Correcting a mispublished rate is therefore laborious, and should
-// be — it is a set of individual decisions about money already taken from named
-// customers.
-//
-// Returns ErrProductNotFound, ErrVersionNotFound if that day has no draft,
-// ErrVersionPublished if it is already published, and ErrRetroactivePublish.
+// hash.
 func (c *Catalogue) PublishVersion(ctx context.Context, id ID, effectiveFrom time.Time) (Version, error) {
 	var out Version
 	err := c.store.Update(ctx, func(ctx context.Context, tx Tx) error {
@@ -245,12 +192,6 @@ func (c *Catalogue) PublishVersionTx(ctx context.Context, tx Tx, id ID, effectiv
 
 // RetireProduct takes a product off sale: no new account may be opened from it
 // and no account may be migrated to it.
-//
-// It does not unprice anything. The accounts already sold from a withdrawn
-// product keep resolving against its versions for as long as they live, which
-// is why Retired is checked at OpenAccount and never at resolution.
-//
-// Returns ErrProductNotFound.
 func (c *Catalogue) RetireProduct(ctx context.Context, id ID) (Product, error) {
 	var out Product
 	err := c.store.Update(ctx, func(ctx context.Context, tx Tx) error {
@@ -297,8 +238,6 @@ func (c *Catalogue) ListProducts(ctx context.Context) ([]Product, error) {
 // Versions returns a product's whole timeline, oldest first, drafts included.
 // It is the point of making the catalogue effective-dated: the history is
 // inspectable rather than merely recoverable by replaying the audit log.
-//
-// Returns ErrProductNotFound.
 func (c *Catalogue) Versions(ctx context.Context, id ID) ([]Version, error) {
 	var out []Version
 	err := c.store.View(ctx, func(ctx context.Context, tx Tx) error {
@@ -314,9 +253,6 @@ func (c *Catalogue) Versions(ctx context.Context, id ID) ([]Version, error) {
 
 // VersionInForce is the published version pricing a day, with its hash
 // verified.
-//
-// Returns ErrProductNotFound, ErrVersionNotFound for a day the product had no
-// published price on, and ErrHashMismatch for a row edited in the database.
 func (c *Catalogue) VersionInForce(ctx context.Context, id ID, day time.Time) (Version, error) {
 	var out Version
 	err := c.store.View(ctx, func(ctx context.Context, tx Tx) error {
@@ -338,12 +274,6 @@ func (c *Catalogue) VersionInForce(ctx context.Context, id ID, day time.Time) (V
 
 // versionOnTx is the version stored for exactly one effective day, published or
 // draft, or a zero Version if that day has none.
-//
-// It reads the timeline rather than using GetProductVersionAsOf, because
-// as-of is the wrong question here twice over: it skips drafts, and it returns
-// the row in force on the day rather than the row FOR the day. A draft for the
-// 20th must be found when the 1st is published, and must not be mistaken for
-// one when the 20th is asked about.
 func (c *Catalogue) versionOnTx(ctx context.Context, tx Tx, id ID, day time.Time) (Version, error) {
 	rows, err := tx.ListProductVersions(ctx, c.bookID, id)
 	if err != nil {

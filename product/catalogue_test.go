@@ -95,8 +95,7 @@ func TestCreateDraftPublish(t *testing.T) {
 
 // Publication is forward-only. A version effective in the past would reprice
 // every account bound to the product retroactively, moving interest already
-// charged, with the audit log as the only control. Retroactivity is a
-// per-account overlay instead — see the design doc.
+// charged, with the audit log as the only control.
 func TestPublishRefusesThePast(t *testing.T) {
 	ctx := context.Background()
 	clock := &mutableClock{at: day(10)}
@@ -184,10 +183,6 @@ func TestUnknownProductAndBadPricingAreRefused(t *testing.T) {
 
 // Every catalogue write is in the audit log, under its own scope, because a
 // published price is a fact an auditor asks who entered and when.
-//
-// The log is read through the store rather than through *ledger.Book, whose
-// GetAuditLog deliberately narrows to ScopeLedger so a Book reports only the
-// mutations it made. It is how lending/refund_test.go reads ScopeLending.
 func TestCatalogueWritesAreAudited(t *testing.T) {
 	ctx := context.Background()
 	clock := &mutableClock{at: day(10)}

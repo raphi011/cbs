@@ -4,14 +4,6 @@ import "context"
 
 // ---------------------------------------------------------------------------
 // Enumeration
-//
-// These read-only methods enumerate deposit-layer entities for callers that
-// need to browse the register (for example a UI). Each runs in a read-only unit
-// of work. To keep enumeration simple they are total: an unknown account yields
-// an empty slice rather than an error. Callers that want a 404 can pre-validate
-// with GetAccount. The store returns accounts and holds ordered by CreatedAt
-// then insertion order, and snapshots by business date.
-// ---------------------------------------------------------------------------
 
 // ListAccounts returns all deposit accounts, ordered by creation time then
 // insertion order.

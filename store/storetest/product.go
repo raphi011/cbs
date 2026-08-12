@@ -12,12 +12,6 @@ import (
 )
 
 // RunProduct runs the catalogue suite against a store.
-//
-// It talks only to product.Store and product.Tx — never to product.Catalogue —
-// so what it pins is the storage contract: book scoping, not-found sentinels,
-// listing order, upsert identity, and the two things a store could get subtly
-// wrong without any other test noticing, which are that the as-of lookup skips
-// drafts and that a returned row's pricing is a copy.
 func RunProduct(t *testing.T, newStore func(*testing.T, ledger.BookID) product.Store) {
 	t.Helper()
 
@@ -208,9 +202,7 @@ func RunProduct(t *testing.T, newStore func(*testing.T, ledger.BookID) product.S
 	})
 
 	// An in-Go store holds values in maps, so a reader could be handed the very
-	// row a later writer mutates; a SQL store cannot do that at all. The rule is
-	// the same either way and is free on one of them, which is exactly why it has
-	// to be written down rather than left to whichever store is underneath.
+	// row a later writer mutates; a SQL store cannot do that at all.
 	t.Run("ReadRowsAreCopies", func(t *testing.T) {
 		s := openProduct(t, newStore, bookA)
 

@@ -4,14 +4,6 @@ import "context"
 
 // ---------------------------------------------------------------------------
 // Enumeration
-//
-// These read-only methods enumerate entities for callers that need to browse
-// the ledger (for example a UI), since the store is otherwise only queryable by
-// ID. Each runs in a read-only unit of work and returns value copies, never
-// anything the store still owns. The store returns each listing sorted by
-// CreatedAt then insertion order, so callers see a stable order across calls
-// and across store implementations; the filters below preserve that order.
-// ---------------------------------------------------------------------------
 
 // ListLedgers returns all ledgers, ordered by creation time then insertion
 // order.
@@ -77,8 +69,7 @@ func (s *Book) ListTransactions(ctx context.Context) ([]Transaction, error) {
 
 // ListTransactionsForPosition returns all transactions that have at least one
 // entry referencing the given position, ordered by creation time then insertion
-// order. Each transaction carries all of its legs, including those belonging to
-// other subsidiaries under the same control account.
+// order.
 func (s *Book) ListTransactionsForPosition(ctx context.Context, pos Position) ([]Transaction, error) {
 	var out []Transaction
 	err := s.store.View(ctx, func(ctx context.Context, tx Tx) error {

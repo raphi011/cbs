@@ -16,19 +16,6 @@ import (
 // check for the lodgement's two, and it exists for the sentence the admission
 // test's doc ends on: a message definition added without this is a claim nobody
 // checked.
-//
-// It matters more here than it did there, because these two schemas were not in
-// the repository when the messages were written. camt.050.001.05.xsd and
-// camt.025.001.05.xsd had to be downloaded before either could be validated at
-// all, and until they were, both message files rested entirely on having been
-// read carefully — which is the state camt.053 was in while every statement the
-// system emitted was invalid.
-//
-// The REFUSING receipt is the case worth having, and it is the second subtest
-// rather than a variation of the first. An accepted receipt carries no Desc at
-// all, so a document with the element populated is not exercised by the happy
-// path — and Desc is the element carrying a truncated Go error string, which is
-// the one thing here most likely to produce something a schema rejects.
 func TestTheLodgementMessagesThisSystemEmitsValidateAgainstTheSchema(t *testing.T) {
 	bin, err := exec.LookPath("xmllint")
 	if err != nil {
@@ -57,9 +44,7 @@ func TestTheLodgementMessagesThisSystemEmitsValidateAgainstTheSchema(t *testing.
 		t.Fatalf("LodgementReceiptMessage (accepted): %v", err)
 	}
 	// A reason LONGER than Max140Text, so that the truncation is what gets
-	// validated rather than a short string that would have fitted anyway. The
-	// refusals that reach this element are Go error strings quoting a BIC, an
-	// asset and two account ids, which really do exceed 140 characters.
+	// validated rather than a short string that would have fitted anyway.
 	refused, err := LodgementReceiptMessage(LodgementReceipt{
 		Ref:    "nord-lodge-1",
 		Status: iso20022.TransactionStatusRejected,
@@ -87,15 +72,6 @@ func TestTheLodgementMessagesThisSystemEmitsValidateAgainstTheSchema(t *testing.
 // TestARefusalReasonIsTruncatedToFitTheElement pins the narrowing
 // LodgementReceiptMessage makes, and it is about a document that would not
 // marshal rather than about tidiness.
-//
-// camt.025's Desc is Max140Text, and the refusals that reach it are Go error
-// strings quoting a BIC, an asset and two account ids. An over-long one would
-// produce a document xmllint rejects — and, worse, one the central bank's own
-// handler would fail to build, so the member would be told nothing at all.
-//
-// Three claims, because the obvious implementation gets the first two wrong: the
-// result fits, the ellipsis is INSIDE the limit rather than added to it, and the
-// cut lands on a rune boundary so the result is still valid UTF-8.
 func TestARefusalReasonIsTruncatedToFitTheElement(t *testing.T) {
 	long := strings.Repeat("é", 400)
 	got := truncateTo(long, 140)
@@ -114,19 +90,12 @@ func TestARefusalReasonIsTruncatedToFitTheElement(t *testing.T) {
 	}
 }
 
-// validateEmitted marshals one document this package built and runs xmllint over
-// it against its own schema.
-//
-// It is shared by the two tests above rather than copied, because what it encodes
-// is the awkward part: the DOCUMENT alone is validated, without the Envelope
-// wrapper, since that wrapper is this repository's own invention and appears in no
-// XSD.
+// validateEmitted marshals one document this package built and runs xmllint
+// over it against its own schema.
 func validateEmitted(t *testing.T, bin, name, schema string, env iso20022.Envelope) {
 	t.Helper()
-	// iso20022/testdata/xsd, reached from here, because the schemas are
-	// downloaded once into the package that owns the codec rather than
-	// copied per caller. They are gitignored, so this is a path that
-	// exists on a machine somebody has prepared and nowhere else.
+	// iso20022/testdata/xsd, reached from here, because the schemas are downloaded
+	// once into the package that owns the codec rather than copied per caller.
 	schemaPath := filepath.Join("..", "iso20022", "testdata", "xsd", schema)
 	if _, err := os.Stat(schemaPath); err != nil {
 		skipUnlessSchemasRequired(t, "%s not present; see iso20022/testdata/README.md", schemaPath)
@@ -146,10 +115,6 @@ func validateEmitted(t *testing.T, bin, name, schema string, env iso20022.Envelo
 
 // skipUnlessSchemasRequired skips the calling test, or fails it when the schema
 // check has been made mandatory.
-//
-// It repeats iso20022's own switch rather than importing it, because that one
-// is unexported and test-only. The two must agree on the variable's NAME, which
-// is what `make test-schemas` sets, and on nothing else.
 func skipUnlessSchemasRequired(t *testing.T, format string, args ...any) {
 	t.Helper()
 	if os.Getenv("ISO20022_REQUIRE_SCHEMAS") != "" {

@@ -10,10 +10,6 @@ import (
 )
 
 // The product catalogue's HTTP surface.
-//
-// Products are book-scoped like every other entity here, so every route hangs
-// off a participant: the same product ID at two banks is two products, because
-// a catalogue belongs to a bank.
 func (s *surface) registerProductRoutes(mux *api.Router) {
 	mux.HandleFunc("POST /products", handleBody(s, http.StatusCreated, s.handleCreateProduct))
 	mux.HandleFunc("GET /products", handle(s, http.StatusOK, s.handleListProducts))
@@ -42,8 +38,7 @@ func (s *surface) handleCreateProduct(r *http.Request, p *payment.Bank, req api.
 
 // handleListProducts returns the whole catalogue, RETIRED ENTRIES INCLUDED: a
 // withdrawn product is still the product some accounts are on, and a client
-// rendering one of those accounts has to be able to name it. Filtering the
-// list a form offers is the client's job.
+// rendering one of those accounts has to be able to name it.
 func (s *surface) handleListProducts(r *http.Request, p *payment.Bank) ([]api.ProductDTO, error) {
 	list, err := p.Catalogue.ListProducts(r.Context())
 	if err != nil {
@@ -107,12 +102,6 @@ func (s *surface) handleListVersions(r *http.Request, p *payment.Bank) ([]api.Pr
 // handlePublishVersion freezes the draft for one effective day and stamps its
 // content hash. From then on it prices every account bound to the product whose
 // own row carries no overlay.
-//
-// Publication is FORWARD-ONLY: a version effective before today is refused with
-// 422. It would move interest already charged on every account bound to the
-// product at once, and the audit log would be the only control on it.
-// Retroactive repricing stays with the per-account overlay, where the blast
-// radius is one named customer.
 func (s *surface) handlePublishVersion(r *http.Request, p *payment.Bank) (api.ProductVersionDTO, error) {
 	day, err := api.ParseDay("day", r.PathValue("day"))
 	if err != nil {

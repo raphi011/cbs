@@ -9,20 +9,6 @@ import (
 const headerNamespace = "urn:iso:std:iso:20022:tech:xsd:head.001.001.02"
 
 // Document is one ISO 20022 message.
-//
-// Its methods are unexported, which keeps ACCIDENTAL implementations out: a
-// type defined outside this package cannot satisfy Document merely by having
-// methods of the right names. It does not keep every implementation out — a
-// package that embeds an exported iso20022 type gets that type's unexported
-// methods promoted, and can then override the exported
-// MessageDefinitionIdentifier to name a different message while keeping the
-// embedded namespace() and validate(). That is a deliberate hole, left open
-// because Go has no narrower way to say "implementable only here": sealing it
-// completely would also block the legitimate case of one message type reusing
-// another's plumbing. What IS guaranteed, because both Marshal and
-// registerDocument check it, is that no value reaches either without agreeing
-// with documentRegistry: a Document the codec cannot dispatch to is not a
-// Document.
 type Document interface {
 	// MessageDefinitionIdentifier is the value the header's MsgDefIdr must
 	// carry for this message, e.g. "pacs.008.001.08".
@@ -31,30 +17,13 @@ type Document interface {
 	// namespace is the XML namespace of the message's root element.
 	namespace() string
 
-	// validate reports whether the message is missing an element this
-	// package treats as mandatory, or breaks an xsd:choice constraint.
-	//
-	// "Mandatory" is not simply "the ISO standard requires it": several
-	// elements the standard itself leaves minOccurs="0" are mandatory in the
-	// EPC guidelines this package targets — pacs.003's SeqTp, LclInstrm and
-	// CdtrSchmeId, MandateRelatedInformation's MndtId and DtOfSgntr, and
-	// pacs.002's StsId and StsRsnInf/Orgtr, and pacs.004's RtrId, RtrRsnInf
-	// and RtrRsnInf/Orgtr, are exactly that case, and validate() enforces the
-	// EPC requirement even though the schema alone would accept the element's
-	// absence. It is not, however, a full implementation of either rule book:
-	// a code-set field such as ChrgBr is checked for PRESENCE, not for
-	// carrying the one value SEPA allows, and validate() does not cross-check
-	// a group header's NbOfTxs or TtlIntrBkSttlmAmt against the transactions
-	// beneath it. One EPC-mandatory element is also deliberately not modelled
-	// at all and so cannot be enforced: OrgnlTxRef, which pacs.002 and
-	// pacs.004 both require — see PaymentTransactionStatus for why.
+	// validate reports whether the message is missing an element this package
+	// treats as mandatory, or breaks an xsd:choice constraint.
 	validate() error
 }
 
 // documentRegistry maps a message definition identifier to its namespace and a
-// constructor. Each message file registers itself in an init function, which is
-// what lets Unmarshal turn a MsgDefIdr into a concrete type without a switch
-// that must be kept in step with the file list.
+// constructor.
 var documentRegistry = map[string]documentType{}
 
 type documentType struct {
@@ -62,15 +31,8 @@ type documentType struct {
 	make      func() Document
 }
 
-// registerDocument records a message type under a message definition
-// identifier and a namespace. Both are also asserted against a probe instance
-// built by make: the identifier and namespace are otherwise a second source of
-// truth alongside the type's own MessageDefinitionIdentifier and namespace
-// methods, and nothing else would ever notice the two disagreeing — Unmarshal
-// would dispatch to the type under the registered key, and the type would then
-// report a different one, which is a round trip Marshal cannot reproduce. A
-// mismatch here is a programming error caught at package init, so it panics,
-// the same as the duplicate-key case below.
+// registerDocument records a message type under a message definition identifier
+// and a namespace.
 func registerDocument(msgDefIdr, namespace string, make func() Document) {
 	if _, dup := documentRegistry[msgDefIdr]; dup {
 		panic("iso20022: duplicate message definition " + msgDefIdr)
@@ -103,13 +65,6 @@ type Party44Choice struct {
 // NewAgent builds a Party44Choice for a BIC. It is a constructor rather than a
 // literal because the nesting — FIId, FinInstnId, BICFI — is four levels deep
 // to say one thing.
-//
-// It is exported, unlike the rest of this package's constructors-by-
-// convenience, because the translator in payment builds EVERY header this
-// system sends, and a four-level literal repeated at each of five message
-// types is five chances to address the wrong element. Exporting it does not
-// widen what payment can say — a Party44Choice is a struct it could always
-// have written out by hand — only how legibly it can say it.
 func NewAgent(b BIC) Party44Choice {
 	return Party44Choice{FIId: FinancialInstitution{
 		FinInstnId: FinancialInstitutionIdentification{BICFI: b},
@@ -117,15 +72,6 @@ func NewAgent(b BIC) Party44Choice {
 }
 
 // AppHdr is the ISO 20022 business application header, head.001.001.02.
-//
-// It is the routing layer: who sent the message, who it is for, its own
-// identifier, and — the field the codec turns on — which message definition the
-// enclosed document follows. A receiver dispatches on MsgDefIdr, which is
-// exactly what Unmarshal does.
-//
-// The standard has more fields than these: a business service, a market
-// practice identifier, a priority, a duplicate flag, a signature. None is used
-// here, and each is absent rather than empty.
 type AppHdr struct {
 	XMLName   xml.Name      `xml:"urn:iso:std:iso:20022:tech:xsd:head.001.001.02 AppHdr"`
 	Fr        Party44Choice `xml:"Fr"`
@@ -135,21 +81,9 @@ type AppHdr struct {
 	CreDt     ISODateTime   `xml:"CreDt"`
 }
 
-// validate checks the five elements head.001.001.02 makes 1..1 and this
-// package carries. It runs on both sides of the codec — Marshal will not emit
-// a header it fails, and Unmarshal will not return one.
-//
-// CreDt is checked for the same reason the other four are, and is the one that
-// mattered most. The schema declares it with minOccurs defaulted to 1, so a
-// header without it is invalid; but the Go zero value of a time is a perfectly
-// marshallable timestamp, so an unchecked CreDt did not fail on the way back
-// out — it INVENTED. A message with no <CreDt> was accepted and re-emitted as
-// <CreDt>0001-01-01T00:00:00Z</CreDt>: a schema-valid document asserting the
-// moment the header was created, which nobody had sent. Silent fabrication of
-// a business fact is worse than the round-trip error the receive-path
-// validation was added to eliminate, and the round trip holding is exactly why
-// FuzzUnmarshal could not find it. See
-// TestUnmarshalRejectsAHeaderWithNoCreationDate.
+// validate checks the five elements head.001.001.02 makes 1..1 and this package
+// carries. It runs on both sides of the codec — Marshal will not emit a header
+// it fails, and Unmarshal will not return one.
 func (h AppHdr) validate() error {
 	if err := h.Fr.FIId.FinInstnId.BICFI.Validate(); err != nil {
 		return fmt.Errorf("AppHdr/Fr: %w", err)
@@ -170,17 +104,6 @@ func (h AppHdr) validate() error {
 }
 
 // Envelope is a header and a document travelling together.
-//
-// The two inner elements are standard. The Envelope element around them is NOT:
-// how a header and a document are packaged is a property of the network
-// carrying them, and every clearing house does it differently. This is this
-// repository's stand-in. See the package doc.
-// Note the ABSENCE of struct tags on AppHdr and Document. Both are named by
-// their own XMLName field's tag, which is what carries the namespace; a tag
-// here would name them again without one, and encoding/xml would then have two
-// disagreeing sources for the same element. Document is an interface, so its
-// element name comes from whichever concrete message it holds — which is the
-// mechanism that lets one Envelope type carry all four messages.
 type Envelope struct {
 	XMLName  xml.Name `xml:"Envelope"`
 	AppHdr   AppHdr

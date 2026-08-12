@@ -25,13 +25,6 @@ func frozen() time.Time { return time.Unix(0, 0).UTC() }
 
 // host is a server with aurora enrolled, which is what provisioning leaves
 // behind.
-//
-// It is built over the CLEARING HOUSE's real database rather than over a double,
-// for the reason store/sqlite's own tests give: there is one implementation of
-// this port and nothing for a second one to be cross-checked against, so a suite
-// that ran on a fake would prove nothing about the rows a restart has to find.
-// Which of the two hosting institutions it is makes no difference here — the
-// transport has never heard of either.
 func host(t *testing.T) *ebics.Server {
 	t.Helper()
 	s := ebics.NewServer(testenv.NewSet(t, frozen).ClearingHouseEBICS())
@@ -278,17 +271,6 @@ func TestEnrollingTwiceIsNothing(t *testing.T) {
 
 // TestASecondHostOverTheSameStoreIsHoldingWhatTheFirstWas is the whole reason
 // this state is rows.
-//
-// A file in a download queue is one institution holding bytes another is owed,
-// and by the time it is in there the money behind it has usually already moved.
-// A host that lost its queues when the process ended lost the obligation and
-// kept the movement, with nothing anywhere refusing anything. The order log is
-// the same act on a smaller stake: a subscriber told EBICS_OK went away, so a log
-// that forgot the order can answer nothing about the file it took in.
-//
-// What the second host does NOT inherit is the enrolments, and that is the one
-// thing here that is derived rather than kept: provisioning admits the
-// subscribers again from the roster on every boot.
 func TestASecondHostOverTheSameStoreIsHoldingWhatTheFirstWas(t *testing.T) {
 	set := testenv.NewSet(t, frozen)
 

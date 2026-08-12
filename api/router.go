@@ -7,17 +7,6 @@ import (
 )
 
 // Router is an http.ServeMux that remembers what was registered on it.
-//
-// ServeMux has no introspection: once a pattern is handed to HandleFunc it is
-// unreachable. That is fine for serving and useless for proving that an API
-// split across three operators kept every route exactly once, which is the one
-// claim a re-home of this size has to be able to make. Recording the patterns
-// on the way in costs a slice and makes that claim testable.
-//
-// It is what api/bank, api/csm and api/centralbank each hand back from their
-// Routes function, and it is the reason none of the three has to remember the
-// middleware chain: registering and serving are two calls, and Handler below is
-// the second.
 type Router struct {
 	mux      *http.ServeMux
 	patterns *[]string

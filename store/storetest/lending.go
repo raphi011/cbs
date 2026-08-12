@@ -13,11 +13,6 @@ import (
 )
 
 // RunLending runs the lending-layer suite against a store.
-//
-// Like the other suites it talks only to lending.Store and lending.Tx — never
-// to lending.Portfolio — so what it pins is the storage contract: book scoping,
-// the not-found sentinel, listing order, the composite instalment key, and the
-// cross-layer rollback that lending.Tx embedding ledger.Tx exists to provide.
 func RunLending(t *testing.T, newStore func(*testing.T, ledger.BookID) lending.Store) {
 	t.Helper()
 
@@ -54,12 +49,10 @@ func RunLending(t *testing.T, newStore func(*testing.T, ledger.BookID) lending.S
 	t.Run("FacilityRoundTripsEveryField", func(t *testing.T) {
 		s := openLending(t, newStore, bookA)
 
-		// Every field, because most of them are the sort a store can silently
-		// drop: a minimum-payment share that reads back as zero is a line that
-		// bills nothing, and an accrued residue that reads back as zero is a
-		// facility that recomputes its interest from scratch every day. The rate
-		// and the day count are not here — they are facility_terms rows now, and
-		// FacilityTermsTimeline below is where they round-trip.
+		// Every field, because most of them are the sort a store can silently drop: a
+		// minimum-payment share that reads back as zero is a line that bills nothing,
+		// and an accrued residue that reads back as zero is a facility that
+		// recomputes its interest from scratch every day.
 		want := lending.Facility{
 			ID: "fac_1", Kind: lending.RevolvingLine, Name: "Bruno Line", Asset: "EUR",
 			Commitment: 250_000,
@@ -88,11 +81,9 @@ func RunLending(t *testing.T, newStore func(*testing.T, ledger.BookID) lending.S
 			// A negative residue is the ordinary state after a capitalization
 			// that rounded up, so an unsigned column would corrupt it.
 			assertEqual(t, label+" accrued", got.Accrued, want.Accrued)
-			// AccruedGross is the whole-life recompute's running total, and a
-			// store that dropped it would re-derive that whole life as a fresh
-			// delta every night and charge the same interest over and over.
-			// Nothing else in this suite would notice: it is not derivable from
-			// any other column, and Accrued alone round-trips fine without it.
+			// AccruedGross is the whole-life recompute's running total, and a store that
+			// dropped it would re-derive that whole life as a fresh delta every night
+			// and charge the same interest over and over.
 			assertEqual(t, label+" accrued gross", got.AccruedGross, want.AccruedGross)
 			assertEqual(t, label+" days past due", got.Arrears.DaysPastDue, want.Arrears.DaysPastDue)
 			assertEqual(t, label+" bucket", got.Arrears.Bucket, want.Arrears.Bucket)
@@ -142,10 +133,8 @@ func RunLending(t *testing.T, newStore func(*testing.T, ledger.BookID) lending.S
 				t.Errorf("open-ended maturity = %v, want zero", open.MaturityAt)
 			}
 			// A facility that has never been accrued carries the zero time, and
-			// accrueFacilityTx hands it straight to DayCount.Days as the start of
-			// the advancement guard's span. A store that read it back as an epoch
-			// would still advance the guard; one that read it back as anything in
-			// the FUTURE would refuse every run the facility ever has.
+			// accrueFacilityTx hands it straight to DayCount.Days as the start of the
+			// advancement guard's span.
 			if !open.LastAccrualDate.IsZero() {
 				t.Errorf("never-accrued date = %v, want zero", open.LastAccrualDate)
 			}
@@ -170,10 +159,7 @@ func RunLending(t *testing.T, newStore func(*testing.T, ledger.BookID) lending.S
 			return nil
 		})
 
-		// The same ID in another bank's database is equally not found. This was
-		// a second book in one store and the defect it caught was a lookup that
-		// forgot to scope by book; what it catches now is a second bank's store
-		// answering with the first bank's row.
+		// The same ID in another bank's database is equally not found.
 		other := openLending(t, newStore, bookB)
 		viewLending(t, other, func(ctx context.Context, tx lending.Tx) error {
 			_, err := tx.GetFacility(ctx, bookB, "fac_1")
@@ -318,11 +304,7 @@ func RunLending(t *testing.T, newStore func(*testing.T, ledger.BookID) lending.S
 			}
 			assertOrder(t, "ListInstallments", seqs, "1", "2", "3", "9", "10")
 
-			// Every field, for every row — not just the first. Interest and
-			// DueDate are exactly the sort of field a store can silently drop
-			// or mis-map (a wrong time zone, say) without any other assertion
-			// here noticing, since ordering is by Seq and neither is read back
-			// anywhere else.
+			// Every field, for every row — not just the first.
 			for _, i := range got {
 				assertEqual(t, "instalment "+itoa(i.Seq)+" principal", i.Principal, ledger.Amount(1000+i.Seq))
 				assertEqual(t, "instalment "+itoa(i.Seq)+" interest", i.Interest, ledger.Amount(i.Seq))
@@ -380,15 +362,7 @@ func RunLending(t *testing.T, newStore func(*testing.T, ledger.BookID) lending.S
 				t.Errorf("instalment 2 due date after upsert: got %v, want %v", got[1].DueDate, due(2))
 			}
 
-			// A row the upsert never touched must keep its own fields. Interest
-			// is checked again here — not just before the upsert — because a
-			// store that rebuilds every row on any write to the same facility
-			// would pass the check above and still fail this one. PaidPrincipal
-			// and PaidInterest are checked on a row that was NEVER put with a
-			// non-zero payment, which is the only way to catch a store that
-			// drops those two columns on ordinary inserts: the rewritten row
-			// (Seq 2) would pass even with dropped columns if PutInstallment
-			// zero-filled them by coincidence, but an untouched row would not.
+			// A row the upsert never touched must keep its own fields.
 			untouched := got[0] // Seq 1, never re-put.
 			assertEqual(t, "untouched instalment interest", untouched.Interest, ledger.Amount(1))
 			assertEqual(t, "untouched instalment paid principal", untouched.PaidPrincipal, ledger.Amount(0))
@@ -445,10 +419,8 @@ func RunLending(t *testing.T, newStore func(*testing.T, ledger.BookID) lending.S
 	})
 
 	// The terms timeline. Everything the accrual depends on is here: ordering
-	// (termsAt binary-searches the slice List hands it), the day-granular
-	// upsert identity, and the four positions the as-of lookup has to answer
-	// for. A store that got any of them wrong would produce interest figures
-	// nobody could reproduce, and no other subtest would notice.
+	// (termsAt binary-searches the slice List hands it), the day-granular upsert
+	// identity, and the four positions the as-of lookup has to answer for.
 	t.Run("FacilityTermsTimeline", func(t *testing.T) {
 		s := openLending(t, newStore, bookA)
 

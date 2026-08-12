@@ -12,11 +12,6 @@ import (
 )
 
 // bicLexicalSpace pulls the pattern facet out of a named simpleType.
-//
-// It is a regexp over XSD text rather than a parse, which is enough for the one
-// question TestAnyBICAndBICFIShareOneLexicalSpace asks and is why that test can
-// exist at all: an XSD parser would be a dependency, and this package has none
-// beyond the standard library.
 func bicLexicalSpace(schema, typeName string) string {
 	re := regexp.MustCompile(`(?s)<xs:simpleType name="` + typeName +
 		`">.*?<xs:pattern value="([^"]+)"`)
@@ -31,30 +26,6 @@ func bicLexicalSpace(schema, typeName string) string {
 // OrganisationIdentification's doc makes about the standard: that
 // AnyBICDec2014Identifier and BICFIDec2014Identifier constrain their values
 // identically, so one Go BIC type may serve both elements.
-//
-// The claim was carried as unchecked prose for as long as the type existed,
-// under a justification that said a test could only skip on a machine without
-// the schemas. That was wrong, and skipUnlessRequired is why: the same mechanism
-// the golden schema check uses turns a missing schema directory into a failure
-// under ISO20022_REQUIRE_SCHEMAS and a skip otherwise. `make test-schemas` does
-// not run this test — it filters on TestGoldenFilesValidateAgainstTheSchema —
-// but a full `ISO20022_REQUIRE_SCHEMAS=1 go test ./iso20022/` does.
-//
-// A schema that declares neither type is not evidence either way and is passed
-// over; the compared count is asserted non-zero so that an empty directory
-// cannot make this pass by examining nothing.
-//
-// A schema declaring only ONE of them is passed over rather than refused.
-// camt.050.001.05 and camt.025.001.05 declare BICFI alone and are entitled to:
-// camt.050 identifies both parties as financial institutions
-// (BranchAndFinancialInstitutionIdentification6) and camt.025 names no party at
-// all, so neither has an element of the AnyBIC type to declare it for.
-//
-// Skipping them is provably safe rather than merely convenient: a type a schema
-// does not declare is one no element in that schema can have, so there is no
-// element in either message whose lexical space this test would have been
-// checking. Ten of the twelve schemas still declare both and still compare, so
-// the claim is checked exactly as hard as it was before the two arrived.
 func TestAnyBICAndBICFIShareOneLexicalSpace(t *testing.T) {
 	schemas, err := filepath.Glob(filepath.Join("testdata", "xsd", "*.xsd"))
 	if err != nil {
@@ -147,13 +118,6 @@ func TestIBANCompact(t *testing.T) {
 // TestIBANValidateAcceptsAValueWhoseCheckDigitsAreWrong is the claim this
 // package must not quietly break, and the reason ErrIBANPattern is not a
 // checksum error.
-//
-// Validate here is the SCHEMA's rule and nothing more. A document carrying a
-// structurally well-formed address whose mod-97 does not come out at 1 is
-// schema-valid, and a receiver has to be able to READ one before it can refuse
-// it — a codec that rejected it would turn a payment this system answers AC01 to
-// into a document it cannot parse. The checksum is package iban's, one package
-// away and deliberately unreachable from here.
 func TestIBANValidateAcceptsAValueWhoseCheckDigitsAreWrong(t *testing.T) {
 	// Real addresses with their check digits overwritten, which is the shape a
 	// mistyped one arrives in.
@@ -248,9 +212,7 @@ func TestBranchAndFinancialInstitutionValidate(t *testing.T) {
 }
 
 // TestPartyIdentificationRequiresSomeIdentification pins the floor: a party
-// element that identifies its party in NO way is refused. A name alone
-// satisfies it; so does an identification alone, which is the case
-// TestPartyIdentificationAcceptsAnIdentifierInsteadOfAName covers.
+// element that identifies its party in NO way is refused.
 func TestPartyIdentificationRequiresSomeIdentification(t *testing.T) {
 	if err := (PartyIdentification{}).validate(); !errors.Is(err, ErrMissingElement) {
 		t.Fatalf("validate() = %v, want it to wrap ErrMissingElement", err)
@@ -262,10 +224,7 @@ func TestPartyIdentificationRequiresSomeIdentification(t *testing.T) {
 
 // TestPartyIdentificationAcceptsAnIdentifierInsteadOfAName pins the widening
 // that pacs.002's Orgtr required: a party may be identified without being
-// named, because the party issuing a status is a PSP known by its BIC. The
-// name requirement did not disappear where it applies — it moved to
-// validateNamedParty, which the two customer-carrying messages call; see
-// TestNamedPartyStillRequiresAName below.
+// named, because the party issuing a status is a PSP known by its BIC.
 func TestPartyIdentificationAcceptsAnIdentifierInsteadOfAName(t *testing.T) {
 	byBIC := PartyIdentification{Id: &PartyChoice{
 		OrgId: &OrganisationIdentification{AnyBIC: "CSMBFRPPXXX"},
@@ -321,12 +280,6 @@ func TestNamedPartyStillRequiresAName(t *testing.T) {
 // TestSettlementInstructionChecksPresenceNotValue pins the sentence
 // SettlementInstruction's doc comment now makes about the CODE, as opposed to
 // the ones it makes about the guidelines.
-//
-// SttlmMtd is checked for PRESENCE and not for a value. "Always CLRG for SEPA"
-// is false of the scheme — the SCT Inter-PSP IG allows INGA and INDA too, and
-// the SDD Core IG restricts the element not at all — so both halves are asserted
-// here: absence is an error, and a value this system does not itself produce is
-// not.
 func TestSettlementInstructionChecksPresenceNotValue(t *testing.T) {
 	if err := (SettlementInstruction{}).validate(); !errors.Is(err, ErrMissingElement) {
 		t.Fatalf("validate() with no SttlmMtd = %v, want it to wrap ErrMissingElement", err)
@@ -345,9 +298,6 @@ func TestSettlementInstructionChecksPresenceNotValue(t *testing.T) {
 // RemittanceInformation's doc comment makes about this package: it models the
 // unstructured arm and nothing else, and it does not re-check the schema's
 // Max140Text bound.
-//
-// The EPC guidelines allow one unstructured line, and they do not exclude the
-// structured arm: either may be present. This is the statement about the code.
 func TestRemittanceInformationCarriesTheUnstructuredArmOnly(t *testing.T) {
 	if n := reflect.TypeOf(RemittanceInformation{}).NumField(); n != 1 {
 		t.Fatalf("RemittanceInformation has %d fields, want 1; the doc comment says only the unstructured arm is modelled", n)

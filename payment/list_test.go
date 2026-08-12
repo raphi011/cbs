@@ -9,16 +9,6 @@ import (
 
 // TestListBanksAndLookup is the read narrowed to what an institution can
 // actually answer, and the narrowing is the finding.
-//
-// A clearing house holds no banks table — it holds a ROSTER of addresses, which
-// is a different claim and says nothing about a bank that has been founded and
-// never admitted. So "which banks" is two reads at two different scopes:
-//
-//   - each bank lists ITSELF, from its own database, and that is the whole of
-//     what a bank knows about who else is on the network.
-//   - the set of banks is the COMPOSITION ROOT's question, answered by
-//     Stores.Banks and by no institution. See allBanks, and auditReaders, which
-//     had the same problem.
 func TestListBanksAndLookup(t *testing.T) {
 	ctx := context.Background()
 	sys := testNetwork(t)
@@ -73,10 +63,8 @@ func TestListPaymentsCyclesSettlements(t *testing.T) {
 	assertEqual(t, "cycle count", len(cycles), 1)
 
 	// The settlements are the SETTLEMENT AGENT's rows and are read on its own
-	// network: a settlement is what that institution did in its own book, and
-	// the clearing house's shape has no table for it. The link back is
-	// Settlement.CycleID, which is the direction it can be kept — see
-	// GetSettlementByCycleID.
+	// network: a settlement is what that institution did in its own book, and the
+	// clearing house's shape has no table for it.
 	settlements, err := sys.cb().ListSettlements(ctx)
 	assertNoError(t, err)
 	assertEqual(t, "settlement count", len(settlements), 1)
