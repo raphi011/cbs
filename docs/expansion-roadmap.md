@@ -744,7 +744,9 @@ Measured, they do not: `api/bank` shares 3 of its 17 methods with `bankOps` and
 `api/centralbank` shares 0 of its 5 with `settlementOps`. `ops.go` stays, with a
 different subject — which of ONE institution's acts a business day performs.
 
-### Separate the store by institution — `todo`
+### Separate the store by institution — `spec`
+
+[Design record](specs/2026-08-12-store-per-institution-design.md).
 
 The defect ADR-0006 removed from `payment.Network`, still in place one layer
 down. `payment.Tx` is one interface over three schemas, so every shape implements
@@ -766,9 +768,10 @@ refuse. The pattern is already in the tree: `ledger.Tx`, `deposit.Tx` and
 `lending.Tx` are separate interfaces `payment.Tx` embeds, and this is carrying it
 through to the institution boundary.
 
-The cost is `store/storetest`, which is written against `Store` and `Tx` and run
-by all three shapes; splitting the interface splits what each shape can be held
-to, and that is the part to design before starting.
+`store/storetest` was expected to be the expensive part and is not. Its payment
+suites are already three separate function bodies, one per institution, so the
+interface splits along a line the tests are already drawn on — see the record,
+which also corrects the claim that three shapes each run one shared suite.
 
 ### Deepen the transport module — `done`
 

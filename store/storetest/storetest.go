@@ -9,8 +9,16 @@
 // product.go and lending.go talk only to the Store and Tx interfaces — never to
 // ledger.Book, deposit.Register or payment.Network — and they name no table and
 // no dialect: identity allocation, ordering, idempotency, the balance aggregate,
-// the audit log, rollback. Three store shapes — bank, csm, centralbank — each
-// run this file.
+// the audit log, rollback.
+//
+// WHICH SHAPE runs which case is not uniform, and the split is deliberate. The
+// five capability suites — RunLedger, RunDeposit, RunProduct, RunLending and
+// RunPayment — are a BANK's, because the bank shape is the only one holding
+// every table they reach. The clearing house and the settlement agent have
+// suites of their own, RunClearingHousePayment and RunCentralBankPayment, which
+// are separate cases over the tables those two schemas do hold. Four fifths of
+// this package is the bank's, which is what a bank's schema being four fifths of
+// the tables looks like.
 //
 // Where a case records what a store CANNOT show, it is recording why the case
 // exists: the ephemeral store serialises writers, so it is blind to anything

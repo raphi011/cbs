@@ -148,8 +148,14 @@ guard each, in `store/sqlite/sqlite_test.go`: foreign keys are really enforced,
 and there is exactly one non-primary-key unique index.
 
 `store/storetest` is not a conformance suite. It is the shared suite — written
-against `Store` and `Tx`, naming no table and no dialect — and the three store
-shapes each run it.
+against `Store` and `Tx`, naming no table and no dialect.
+
+**Which shape runs which suite is not uniform.** The five capability suites
+(`RunLedger`, `RunDeposit`, `RunProduct`, `RunLending`, `RunPayment`) run against
+the **bank** shape alone, because it is the only one holding every table they
+reach; the clearing house and the settlement agent have separate suites over the
+tables their schemas do hold. Roughly four fifths of the package is the bank's.
+`store/sqlite/conformance_test.go` is where each suite's shape is chosen.
 
 Three things about the store are worth knowing before changing anything near it:
 
