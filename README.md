@@ -1774,7 +1774,9 @@ This document used to say **"there is exactly one migration"**, and that is a *r
 
 What each file *lacks* is what it says. There is no `payments` table in the central bank's and no `cycles` table either — the settlement agent is told a set of positions and a reference, checks that every net payer can cover its own, and posts the whole thing or none, and it never holds the batch. There is no ledger at all in the clearing house's: no `accounts`, no `entries`, no `transactions`, because clearing moves no money. A bank's `payments` has no `cycle_id`, and the clearing house's has no leg columns. `TestSchemaArgumentsReachSqliteMaster` runs three cases, one per shape.
 
-What one file *has* that neither other does is the pair of tables holding what that institution has taken in and not yet handed over: `held_files` (with `held_file_transactions`) and `held_returns`, in the clearing house's. Nothing in the other two shapes is like them, because sorting one submitted file into M addressed ones is the act no member could perform for itself — a bank holds no share of anybody's file, and the settlement agent has no payments at all. They are the only tables in any of the three that record an **obligation** rather than something that happened, which is why they exist: reserves move against them, and [an obligation kept only in a process ends when the process does](docs/adr/0003-an-institutions-obligations-live-in-its-database.md).
+What one file *has* that neither other does is the pair of tables holding what that institution has taken in and not yet handed over: `held_files` (with `held_file_transactions`) and `held_returns`, in the clearing house's. Nothing in the other two shapes is like them, because sorting one submitted file into M addressed ones is the act no member could perform for itself — a bank holds no share of anybody's file, and the settlement agent has no payments at all. They record an **obligation** rather than something that happened, which is why they exist: reserves move against them, and [an obligation kept only in a process ends when the process does](docs/adr/0003-an-institutions-obligations-live-in-its-database.md).
+
+What **two** files have and the third does not is the file transport: `ebics_queue` and `ebics_orders`, in the clearing house's schema and the settlement agent's. Those are the two institutions that are *dialled*; EBICS has no push, so a member bank dials out and hosts nothing, and the files it is owed wait in somebody else's database until it comes to collect them. A queue row is one institution holding bytes addressed to another, and what keeps those bytes opaque is not that they are unstored — it is that nothing an institution can call reaches the table. See [ADR-0004](docs/adr/0004-a-queue-is-a-table-and-stays-opaque.md).
 
 Two columns exist because a **derivation** turned out to cross an institutional boundary, and both are worth naming because they look like denormalisation and are not:
 
@@ -1916,14 +1918,23 @@ DATABASE_URL=./cbs.db go run ./cmd/server      # a file; state outlives the proc
 
 There is nothing to redact from the log line that records which database was opened, and there used to be. `-database` was a Postgres DSN, which routinely arrives from the environment carrying a real credential, and a log line is the easiest place in a system to leak one; a filesystem path carries no secret, so the function that hid it is gone rather than kept for a value that cannot contain one.
 
-**What a restart does not keep is everything the transport holds in memory,** and each absence is deliberate rather than pending:
+**What a restart keeps is every obligation an institution has taken on and not yet discharged.** Each of them is a row in the database of the institution that owes it:
+
+| Kept | Where | What it would cost to lose |
+|---|---|---|
+| a receiving bank's **share** of a file taken in, and a **`pacs.004`** waiting for finality | `held_files`, `held_file_transactions`, `held_returns` in the clearing house's schema | reserves final and the payee's bank never told the payment exists, with the money in that bank's clearing suspense |
+| the two hosts' **download queues** | `ebics_queue` in the clearing house's schema and the settlement agent's | the same loss on the far side of the release: a settled cut-off's output files, gone with nothing refusing anything |
+| the two hosts' **order log** | `ebics_orders` in the same two schemas | the audit trail — a subscriber told `EBICS_OK` and then unable to learn what became of its file — and the instruction the settlement agent has not worked through yet |
+
+Reserves move against every one of those, which is what makes them obligations rather than caches. `cmd/server`'s two restart tests are the only ones in the repository that can fail for this reason: one drops the process between a cut-off and its settlement, the other between a settlement and the banks collecting what it released, and both ask whether the receiving banks were still handed their instructions. [ADR-0003](docs/adr/0003-an-institutions-obligations-live-in-its-database.md) is the ruling on the first, [ADR-0004](docs/adr/0004-a-queue-is-a-table-and-stays-opaque.md) on the second.
+
+**One thing is still memory, and it is a defect rather than a boundary:**
 
 | Not stored | Where it lives | What a restart costs |
 |---|---|---|
-| the **download queues** | the two EBICS hosts' memory | every file waiting to be collected — including a settled cut-off's output files, on the far side of the release |
 | a bank's **payment hub** | that bank's memory | instructions accumulated since the last cut-off, whose debtor legs *are* committed — so the money is in suspense against a file that will never be built |
 
-Both are defects rather than boundaries, and both are one institution's obligation living in a process. **The clearing house's are not on this list any more**, and that is the distinction the two rows above are waiting for: a share of a file it has taken in and not yet handed over, and a `pacs.004` uploaded to the settlement agent and not yet answered, are rows in that institution's own database — `held_files`, `held_file_transactions` and `held_returns` in [`csm/0001_init.sql`](store/sqlite/schema/csm/0001_init.sql). Reserves move against both, so a restart used to leave the money final and the receiving bank never told the payment exists. `cmd/server`'s `TestACutOffSettledAfterARestartStillReachesEveryReceivingBank` drops the process between a cut-off and its settlement and asks whether the banks were still handed their instructions; [ADR-0003](docs/adr/0003-an-institutions-obligations-live-in-its-database.md) is the ruling, and it names the queues and the hub as the cases it does not close.
+**Enrolment is memory too and is not on that list**, because it is *derived*: who may dial a host is who the clearing house's roster names, and provisioning admits every member again at each boot. Nothing is lost by not writing it down.
 
 **The business date is beside the databases, not in one.** It is a fact about the *deployment*, and a bank's database holding one would be that bank's opinion about what day it is — a state no clearing system has, because two banks could then disagree. So it is a small file in the `-database` directory, read at boot and written on each advance. With no directory it starts at the seed's base date every time, which is exactly what the ephemeral store does and is what keeps `go test ./...` free of setup.
 

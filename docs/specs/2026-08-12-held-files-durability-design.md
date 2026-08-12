@@ -33,20 +33,17 @@ moved.
 | Output shares, close → settle | ~~`ClearingHouse.output`~~ `held_files` | ~~every receiving bank's share of a cut-off~~ nothing | **closed by phase 2** |
 | A `pacs.004` uploaded, answer pending | ~~`ClearingHouse.held`~~ `held_returns` | ~~the return's second hop~~ nothing | **closed by phase 2** |
 | Instructions with committed debtor legs | `Bank.hub` | the file that was going to be built | customers debited, money in clearing suspense, no file ever uploaded |
-| Files released and not yet collected | `ebics.Server.subs[…].queue` | a settled cut-off's output files | identical to row 1, on the far side of the release the guard permits |
-| Every order ever uploaded | `ebics.Server.orders` | the order log | HAC answers nothing; the duplicate check at ingestion loses its memory |
+| Files released and not yet collected | ~~`ebics.Server.subs[…].queue`~~ `ebics_queue` | ~~a settled cut-off's output files~~ nothing | **closed by phase 3** |
+| Every order ever uploaded | ~~`ebics.Server.orders`~~ `ebics_orders` | ~~the order log~~ nothing | **closed by phase 3** |
 
 Rows 1–4 are the same loss wearing four hats: an obligation without a record.
 Row 5 is an audit trail, which is a different kind of bad.
 
-**Rows 1 and 2 are closed; rows 3–5 are not.** The sharpest thing to understand
-before choosing scope was that the guard could close row 1 and could never close
-row 4, and it stayed true when the tables landed: the shares survive a restart
-now, and a restart *after* settlement and before the receiving banks collect
-still loses the files with the reserves already moved, with nothing refusing
-anything — the shares were present, the release happened, the queue is simply
-gone. Phase 2 moved the cliff a few seconds later in the same day. Phase 3 is
-what removes it.
+**Only row 3 is open.** The sharpest thing to understand before choosing scope was
+that the guard could close row 1 and could never close row 4, and it stayed true
+when the tables landed: phase 2 moved the cliff a few seconds later in the same
+day, and phase 3 removed it. What is left is one member bank's hub, which is
+separable by institution and is that bank's own sub-project.
 
 ## Why the share cannot just be a rendered file
 
@@ -226,30 +223,87 @@ which is what a later reader needs before moving any of this back into memory.
    tables, six `payment.Tx` methods behind six on `csmOps`, and the restart test.
    `unhandable` stays — it is now the guard on a defect that should no longer
    occur, which is where a guard belongs. See _What phase 2 actually cost_.
-3. **The EBICS host.** Queues and the order log, without which 1 and 2 leave the
+3. **The EBICS host.** ~~Queues and the order log, without which 1 and 2 leave the
    cliff standing on the far side of the release. Largest, and the one that turns
-   `DATABASE_URL` into a deployment that genuinely resumes.
+   `DATABASE_URL` into a deployment that genuinely resumes.~~ **Done.** Two tables
+   in each hosting institution's schema, a port declared by `ebics`, and the
+   restart test's sibling. See _What phase 3 actually cost_.
 
 Each phase is shippable and each leaves the system better than it found it. What
 must not happen is 2 alone, announced as "the clearing house is durable now".
 
+## What phase 3 actually cost
+
+The two tables landed close to the shape phase 2's did. Six things about them
+were not visible from the design above.
+
+**The argument against them was right, and about the wrong thing.**
+`csm/0001_init.sql` said a table of queued bytes "is a store this institution
+reads, and the first query anybody writes against it is a clearing house looking
+inside a file it is only carrying". What answers it is not that the bytes are
+unstored — real store-and-forward transports keep their queues on disk, which is
+what the word means — it is that nothing an institution can call reaches the
+table. The port is declared by `ebics`, whose vocabulary is subscribers, order
+ids, order types and payloads, and no method on `payment.Tx` names any of it. The
+crossing is not resisted; it is inexpressible. That is
+[ADR-0004](../adr/0004-a-queue-is-a-table-and-stays-opaque.md).
+
+**ENROLMENT stayed in memory, and it is the interesting half.** Everything else a
+host holds became rows; who is enrolled did not, because it is DERIVED — the
+roster is the durable record of who may dial, and provisioning admits every
+member again at each boot. So `ebics.Server` is a mutex over one map and a store
+for everything else, and `NewDeployment` re-enrolling from the roster is not
+recovery code, it is the same code a first boot runs.
+
+**One counter, not `MAX(seq)+1`.** A queue row is deleted when it is collected,
+so a sequence derived from the rows would mint an order id the host has already
+acknowledged under. The counter is a row in `id_sequences` — the one place in
+each schema that already holds every counter an institution draws from — and the
+`seq` column on both tables stores the ordinal the id was minted from rather than
+a row sequence of its own. It is the only deviation from that convention in
+either file and it is argued in the statement.
+
+**Answering an order became a SECOND unit of work.** The institution's work and
+the acknowledgement of it cannot be one transaction, because the work is dozens
+of units of its own. So a store failure after a file has been processed leaves
+the order on the list and it is worked again tomorrow — reported rather than
+dropped, and safe because the clearing house records a payment before it does
+anything else with a file and each of the settlement agent's three acts carries an
+idempotency key. The old code discarded both errors, which was correct when the
+only reachable failure was an unknown id.
+
+**`NewDeployment` took a fourth argument.** The two hosts' stores cannot come off
+`payment.Networks` without the domain naming the transport, so `cmd/server`
+declares a `Hosts` interface of two methods and `sqlite.Set` satisfies it
+structurally. Both halves meet in the composition root and nowhere below it.
+
+**The restart test gained a sibling and lost a step.**
+`TestACutOffSettledAfterARestartStillReachesEveryReceivingBank` no longer calls
+`Settle` by hand — the `pacs.009` is in the settlement agent's work list and the
+next day works through it — and
+`TestFilesReleasedBeforeARestartAreStillCollectedAfterIt` drops the process
+between the release and the members' collection, which is the loss phase 2
+explicitly left standing. It composes `Deployment.clear`'s phases 4 and 5 by
+hand, because `AdvanceDay` has no seam between releasing and collecting.
+
 ## What this does not do
 
 `Bank.hub` (row 3) is one member bank's own database and its own sub-project. It
-belongs with phase 3 by kind and is separable by institution; naming it here is
-what stops phase 2 reading as the whole story.
+is separable by institution, and naming it here is what stops this record reading
+as the whole story.
 
 ## How it is proved
 
-- A restart test: build a deployment against a file-backed store, close a cycle,
-  drop the process, reopen, settle, and assert every receiving bank was handed
-  its instructions. This is the only test that can fail for the reason this
-  sub-project exists, and it is
-  `cmd/server`'s `TestACutOffSettledAfterARestartStillReachesEveryReceivingBank`.
-  The operator has to **re-instruct** after the restart, because the `pacs.009`
-  the cut-off uploaded was sitting in the settlement agent's download queue and
-  that queue is phase 3's. What the test proves is that the clearing house's own
-  obligations survive, not that the deployment resumes.
+- Two restart tests, in `cmd/server/restart_test.go`, and they are the only tests
+  that can fail for the reason this sub-project exists. Both build a deployment
+  against a file-backed store, drop the process, reopen over the same files and
+  ask whether every receiving bank was handed its instructions.
+  `TestACutOffSettledAfterARestartStillReachesEveryReceivingBank` drops it
+  between a cut-off and its settlement, and nothing is re-instructed;
+  `TestFilesReleasedBeforeARestartAreStillCollectedAfterIt` drops it between the
+  settlement and the members' collection, which is the loss on the far side of
+  the release. Together they say the deployment resumes rather than that one
+  institution's obligations survive.
 - `payment/recon`'s `partiesHoldTheirCopy` over the same deployment, which finds
   in the books what the test above asserts on the wire.
 - The seed's own suite, re-baselined, plus `TestTheSeededNetworkReconciles` —
@@ -271,3 +325,15 @@ the *Payment hub* entry now says it is the last one that is.
 [ADR-0003](../adr/0003-an-institutions-obligations-live-in-its-database.md) is
 the ruling, and ADR-0002's *What it costs* points at it instead of recording the
 defect.
+
+Phase 3 moved the same four layers again. `README.md`'s *Persistence* section
+turned its "not stored" table into a table of what IS kept and left one row in the
+absent one; the `download-queue` hint gained the paragraph about a queue
+outliving a process and why storing it is not the holder reading somebody else's
+mail; quiz chapter 15's "which of these get a table" question flipped the queue to
+a correct answer and gained a bank's hub as the wrong one; `CONTEXT.md` gained an
+*Order log* entry and its *Enrolment* entry now says it is the only thing a host
+keeps outside its database. The absence argued on `roster_entries` became a
+pointer to `ebics_queue` two sections down, and
+`TestSchemaArgumentsReachSqliteMaster` gained three cases against the new
+statements.

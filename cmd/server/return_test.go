@@ -843,7 +843,7 @@ func TestTheSettlementAgentCannotAnswerYesWithAReason(t *testing.T) {
 	h := newHarness(t)
 	cb := &CentralBank{d: h.dep, net: h.cb(), ops: h.cb(), bic: h.cfg.CentralBankBIC, host: h.dep.CentralBank().host}
 
-	err := cb.answer(h.cfg.ClearingHouseBIC,
+	err := cb.answer(context.Background(), h.cfg.ClearingHouseBIC,
 		payment.OriginalMessage{MsgID: notProvided, MsgDefIdr: notProvided},
 		notProvided, "cyc_x",
 		iso20022.TransactionStatusSettlementCompleted,

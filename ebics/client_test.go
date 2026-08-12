@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/raphi011/cbs/ebics"
+	"github.com/raphi011/cbs/store/testenv"
 )
 
 // dial stands a host up on a real listener and returns a subscriber's
@@ -19,19 +20,24 @@ import (
 func dial(t *testing.T) (*ebics.Server, *ebics.Client) {
 	t.Helper()
 
-	s := ebics.NewServer()
-	s.Enrol(aurora)
+	s := host(t)
 	srv := httptest.NewServer(s)
 	t.Cleanup(srv.Close)
 
 	return s, ebics.NewClient(aurora, srv.URL)
 }
 
+// bare is a host with nobody enrolled: what a listener serves before
+// provisioning has admitted anybody.
+func bare(t *testing.T) *ebics.Server {
+	t.Helper()
+	return ebics.NewServer(testenv.NewSet(t, frozen).ClearingHouseEBICS())
+}
+
 // TestAFileGoesUpAndTheAnswerComesBackOnALaterDownload is the seam the whole
 // package is for: the upload is answered technically, and what the receiver made
 // of the contents is a separate collection.
 func TestAFileGoesUpAndTheAnswerComesBackOnALaterDownload(t *testing.T) {
-	ctx := context.Background()
 	s, c := dial(t)
 
 	id, err := c.Upload(ctx, ebics.CCT, []byte("a file of credit transfers"))
@@ -46,14 +52,17 @@ func TestAFileGoesUpAndTheAnswerComesBackOnALaterDownload(t *testing.T) {
 	}
 
 	// The institution works through its inbox and addresses an answer back.
-	pending := s.Pending()
+	pending, err := s.Pending(ctx)
+	if err != nil {
+		t.Fatalf("Pending: %v", err)
+	}
 	if len(pending) != 1 {
 		t.Fatalf("the host holds %d orders, want 1", len(pending))
 	}
-	if _, err := s.Enqueue(pending[0].Subscriber, ebics.CST, []byte("a status report")); err != nil {
+	if _, err := s.Enqueue(ctx, pending[0].Subscriber, ebics.CST, []byte("a status report")); err != nil {
 		t.Fatalf("Enqueue: %v", err)
 	}
-	if err := s.Processed(pending[0].ID, "1 transaction"); err != nil {
+	if err := s.Processed(ctx, pending[0].ID, "1 transaction"); err != nil {
 		t.Fatalf("Processed: %v", err)
 	}
 
@@ -76,7 +85,6 @@ func TestAFileGoesUpAndTheAnswerComesBackOnALaterDownload(t *testing.T) {
 
 // TestOrderStatusSeparatesTheThreeAnswers is HAC's whole purpose.
 func TestOrderStatusSeparatesTheThreeAnswers(t *testing.T) {
-	ctx := context.Background()
 	s, c := dial(t)
 
 	if _, err := c.OrderStatus(ctx, "A000"); !errors.Is(err, ebics.ErrUnknownOrder) {
@@ -95,7 +103,7 @@ func TestOrderStatusSeparatesTheThreeAnswers(t *testing.T) {
 		t.Errorf("an order nobody has looked at: %s, want %s", ack.Status, ebics.Received)
 	}
 
-	if err := s.Rejected(id, "the file is not a pacs.008"); err != nil {
+	if err := s.Rejected(ctx, id, "the file is not a pacs.008"); err != nil {
 		t.Fatalf("Rejected: %v", err)
 	}
 	ack, err = c.OrderStatus(ctx, id)
@@ -110,12 +118,12 @@ func TestOrderStatusSeparatesTheThreeAnswers(t *testing.T) {
 // TestAHostThatCannotBeReachedIsNotARefusal: the two call for opposite things —
 // retry the first, do not retry the second.
 func TestAHostThatCannotBeReachedIsNotARefusal(t *testing.T) {
-	srv := httptest.NewServer(ebics.NewServer())
+	srv := httptest.NewServer(bare(t))
 	url := srv.URL
 	srv.Close()
 
 	c := ebics.NewClient(aurora, url)
-	_, err := c.Upload(context.Background(), ebics.CCT, []byte("a file"))
+	_, err := c.Upload(ctx, ebics.CCT, []byte("a file"))
 	if err == nil {
 		t.Fatal("uploading to a closed listener succeeded")
 	}
@@ -127,8 +135,7 @@ func TestAHostThatCannotBeReachedIsNotARefusal(t *testing.T) {
 // TestARefusalIsAnEnvelopeAndNotAnHttpError keeps the two failure kinds apart on
 // the wire as well as in the client.
 func TestARefusalIsAnEnvelopeAndNotAnHttpError(t *testing.T) {
-	s := ebics.NewServer()
-	srv := httptest.NewServer(s)
+	srv := httptest.NewServer(bare(t))
 	t.Cleanup(srv.Close)
 
 	body := strings.NewReader(`{"orderType":"CCT"}`)
@@ -157,8 +164,7 @@ func TestARefusalIsAnEnvelopeAndNotAnHttpError(t *testing.T) {
 }
 
 func TestARequestThatNamesNobodyIsRefused(t *testing.T) {
-	s := ebics.NewServer()
-	srv := httptest.NewServer(s)
+	srv := httptest.NewServer(bare(t))
 	t.Cleanup(srv.Close)
 
 	resp, err := http.Post(srv.URL, "application/json", strings.NewReader(`{"orderType":"CCT"}`))
@@ -180,10 +186,7 @@ func TestARequestThatNamesNobodyIsRefused(t *testing.T) {
 // type is in the envelope and never in a path, so the handler answers wherever
 // the deployment mounts it.
 func TestTheEndpointIsOneUrlAndTakesOnlyAPost(t *testing.T) {
-	ctx := context.Background()
-
-	s := ebics.NewServer()
-	s.Enrol(aurora)
+	s := host(t)
 	mux := http.NewServeMux()
 	mux.Handle("/somewhere/else/", http.StripPrefix("/somewhere/else", s))
 	srv := httptest.NewServer(mux)
@@ -210,7 +213,7 @@ func TestTheEndpointIsOneUrlAndTakesOnlyAPost(t *testing.T) {
 func TestACancelledCollectionIsTheCallersOwnFailure(t *testing.T) {
 	_, c := dial(t)
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(ctx)
 	cancel()
 
 	if _, err := c.Download(ctx, ebics.BTD); !errors.Is(err, context.Canceled) {

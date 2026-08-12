@@ -1,10 +1,13 @@
 package ebics_test
 
 import (
+	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/raphi011/cbs/ebics"
+	"github.com/raphi011/cbs/store/testenv"
 )
 
 const (
@@ -12,11 +15,26 @@ const (
 	borea  = ebics.SubscriberID("BOREITRRXXX")
 )
 
+// ctx is the one every call here takes. Nothing in this suite cancels anything;
+// the parameter is there because every act on a host is a unit of work.
+var ctx = context.Background()
+
+// frozen is the clock the stores read. Nothing in the transport is dated, so it
+// exists only because opening a store needs one.
+func frozen() time.Time { return time.Unix(0, 0).UTC() }
+
 // host is a server with aurora enrolled, which is what provisioning leaves
 // behind.
+//
+// It is built over the CLEARING HOUSE's real database rather than over a double,
+// for the reason store/sqlite's own tests give: there is one implementation of
+// this port and nothing for a second one to be cross-checked against, so a suite
+// that ran on a fake would prove nothing about the rows a restart has to find.
+// Which of the two hosting institutions it is makes no difference here — the
+// transport has never heard of either.
 func host(t *testing.T) *ebics.Server {
 	t.Helper()
-	s := ebics.NewServer()
+	s := ebics.NewServer(testenv.NewSet(t, frozen).ClearingHouseEBICS())
 	s.Enrol(aurora)
 	return s
 }
@@ -24,7 +42,7 @@ func host(t *testing.T) *ebics.Server {
 func TestAnUploadIsAnsweredWithAnOrderIdAndNothingElse(t *testing.T) {
 	s := host(t)
 
-	id, err := s.Upload(aurora, ebics.CCT, []byte("a file of credit transfers"))
+	id, err := s.Upload(ctx, aurora, ebics.CCT, []byte("a file of credit transfers"))
 	if err != nil {
 		t.Fatalf("Upload: %v", err)
 	}
@@ -33,7 +51,10 @@ func TestAnUploadIsAnsweredWithAnOrderIdAndNothingElse(t *testing.T) {
 	}
 
 	// The file is the institution's work list, and nothing has looked inside it.
-	pending := s.Pending()
+	pending, err := s.Pending(ctx)
+	if err != nil {
+		t.Fatalf("Pending: %v", err)
+	}
 	if len(pending) != 1 {
 		t.Fatalf("Pending holds %d orders, want 1", len(pending))
 	}
@@ -41,7 +62,7 @@ func TestAnUploadIsAnsweredWithAnOrderIdAndNothingElse(t *testing.T) {
 		t.Errorf("Pending holds %+v, want the order just uploaded", pending[0])
 	}
 
-	acks, err := s.Acknowledgements(aurora)
+	acks, err := s.Acknowledgements(ctx, aurora)
 	if err != nil {
 		t.Fatalf("Acknowledgements: %v", err)
 	}
@@ -56,19 +77,19 @@ func TestAnUploadIsAnsweredWithAnOrderIdAndNothingElse(t *testing.T) {
 func TestASubscriberWithNoEnrolmentIsRefusedEverything(t *testing.T) {
 	s := host(t)
 
-	if _, err := s.Upload(borea, ebics.CCT, nil); ebics.CodeOf(err) != ebics.InvalidUserOrUserState {
+	if _, err := s.Upload(ctx, borea, ebics.CCT, nil); ebics.CodeOf(err) != ebics.InvalidUserOrUserState {
 		t.Errorf("Upload by a stranger: %v, want %s", err, ebics.InvalidUserOrUserState)
 	}
-	if _, err := s.Download(borea, ebics.BTD); ebics.CodeOf(err) != ebics.InvalidUserOrUserState {
+	if _, err := s.Download(ctx, borea, ebics.BTD); ebics.CodeOf(err) != ebics.InvalidUserOrUserState {
 		t.Errorf("Download by a stranger: %v, want %s", err, ebics.InvalidUserOrUserState)
 	}
-	if _, err := s.Acknowledgements(borea); ebics.CodeOf(err) != ebics.InvalidUserOrUserState {
+	if _, err := s.Acknowledgements(ctx, borea); ebics.CodeOf(err) != ebics.InvalidUserOrUserState {
 		t.Errorf("Acknowledgements for a stranger: %v, want %s", err, ebics.InvalidUserOrUserState)
 	}
 
 	// And a file addressed to it has nowhere to go, which is the same fact from
 	// the other side: no enrolment, no queue.
-	if _, err := s.Enqueue(borea, ebics.CST, nil); ebics.CodeOf(err) != ebics.InvalidUserOrUserState {
+	if _, err := s.Enqueue(ctx, borea, ebics.CST, nil); ebics.CodeOf(err) != ebics.InvalidUserOrUserState {
 		t.Errorf("Enqueue to a stranger: %v, want %s", err, ebics.InvalidUserOrUserState)
 	}
 }
@@ -76,12 +97,12 @@ func TestASubscriberWithNoEnrolmentIsRefusedEverything(t *testing.T) {
 func TestOneQueueComesOutInTheOrderItWentIn(t *testing.T) {
 	s := host(t)
 	for _, payload := range []string{"first", "second", "third"} {
-		if _, err := s.Enqueue(aurora, ebics.CST, []byte(payload)); err != nil {
+		if _, err := s.Enqueue(ctx, aurora, ebics.CST, []byte(payload)); err != nil {
 			t.Fatalf("Enqueue %s: %v", payload, err)
 		}
 	}
 
-	files, err := s.Download(aurora, ebics.BTD)
+	files, err := s.Download(ctx, aurora, ebics.BTD)
 	if err != nil {
 		t.Fatalf("Download: %v", err)
 	}
@@ -97,14 +118,14 @@ func TestOneQueueComesOutInTheOrderItWentIn(t *testing.T) {
 
 func TestADownloadEmptiesTheQueueExactlyOnce(t *testing.T) {
 	s := host(t)
-	if _, err := s.Enqueue(aurora, ebics.CST, []byte("a status report")); err != nil {
+	if _, err := s.Enqueue(ctx, aurora, ebics.CST, []byte("a status report")); err != nil {
 		t.Fatalf("Enqueue: %v", err)
 	}
 
-	if files, err := s.Download(aurora, ebics.BTD); err != nil || len(files) != 1 {
+	if files, err := s.Download(ctx, aurora, ebics.BTD); err != nil || len(files) != 1 {
 		t.Fatalf("first Download = %d files, %v; want 1 file", len(files), err)
 	}
-	if _, err := s.Download(aurora, ebics.BTD); ebics.CodeOf(err) != ebics.NoDownloadDataAvailable {
+	if _, err := s.Download(ctx, aurora, ebics.BTD); ebics.CodeOf(err) != ebics.NoDownloadDataAvailable {
 		t.Errorf("second Download: %v, want %s", err, ebics.NoDownloadDataAvailable)
 	}
 }
@@ -114,14 +135,14 @@ func TestADownloadEmptiesTheQueueExactlyOnce(t *testing.T) {
 // BTD, so collecting one does not drag the other along.
 func TestTheStatementQueueIsCollectedSeparately(t *testing.T) {
 	s := host(t)
-	if _, err := s.Enqueue(aurora, ebics.C53, []byte("a statement")); err != nil {
+	if _, err := s.Enqueue(ctx, aurora, ebics.C53, []byte("a statement")); err != nil {
 		t.Fatalf("Enqueue a statement: %v", err)
 	}
-	if _, err := s.Enqueue(aurora, ebics.CST, []byte("a status report")); err != nil {
+	if _, err := s.Enqueue(ctx, aurora, ebics.CST, []byte("a status report")); err != nil {
 		t.Fatalf("Enqueue a status report: %v", err)
 	}
 
-	statements, err := s.Download(aurora, ebics.C53)
+	statements, err := s.Download(ctx, aurora, ebics.C53)
 	if err != nil {
 		t.Fatalf("Download C53: %v", err)
 	}
@@ -129,7 +150,7 @@ func TestTheStatementQueueIsCollectedSeparately(t *testing.T) {
 		t.Fatalf("C53 collected %+v, want the statement alone", statements)
 	}
 
-	rest, err := s.Download(aurora, ebics.BTD)
+	rest, err := s.Download(ctx, aurora, ebics.BTD)
 	if err != nil {
 		t.Fatalf("Download BTD: %v", err)
 	}
@@ -142,14 +163,14 @@ func TestTwoSubscribersSeeOnlyTheirOwnQueue(t *testing.T) {
 	s := host(t)
 	s.Enrol(borea)
 
-	if _, err := s.Enqueue(aurora, ebics.CST, []byte("for aurora")); err != nil {
+	if _, err := s.Enqueue(ctx, aurora, ebics.CST, []byte("for aurora")); err != nil {
 		t.Fatalf("Enqueue: %v", err)
 	}
 
-	if _, err := s.Download(borea, ebics.BTD); ebics.CodeOf(err) != ebics.NoDownloadDataAvailable {
+	if _, err := s.Download(ctx, borea, ebics.BTD); ebics.CodeOf(err) != ebics.NoDownloadDataAvailable {
 		t.Errorf("borea collected aurora's file: %v", err)
 	}
-	if files, err := s.Download(aurora, ebics.BTD); err != nil || len(files) != 1 {
+	if files, err := s.Download(ctx, aurora, ebics.BTD); err != nil || len(files) != 1 {
 		t.Errorf("aurora's own file: %d files, %v", len(files), err)
 	}
 }
@@ -157,17 +178,17 @@ func TestTwoSubscribersSeeOnlyTheirOwnQueue(t *testing.T) {
 func TestAnOrderTypeTravellingTheWrongWayIsRefused(t *testing.T) {
 	s := host(t)
 
-	if _, err := s.Upload(aurora, ebics.C53, nil); ebics.CodeOf(err) != ebics.UnsupportedOrderType {
+	if _, err := s.Upload(ctx, aurora, ebics.C53, nil); ebics.CodeOf(err) != ebics.UnsupportedOrderType {
 		t.Errorf("uploading a statement: %v, want %s", err, ebics.UnsupportedOrderType)
 	}
-	if _, err := s.Download(aurora, ebics.CCT); ebics.CodeOf(err) != ebics.UnsupportedOrderType {
+	if _, err := s.Download(ctx, aurora, ebics.CCT); ebics.CodeOf(err) != ebics.UnsupportedOrderType {
 		t.Errorf("collecting a CCT: %v, want %s", err, ebics.UnsupportedOrderType)
 	}
 
 	// BTD selects files and never names one, so nothing can be enqueued under
 	// it — nor under HAC, which is computed rather than queued.
 	for _, selector := range []ebics.OrderType{ebics.BTD, ebics.HAC} {
-		if _, err := s.Enqueue(aurora, selector, nil); ebics.CodeOf(err) != ebics.UnsupportedOrderType {
+		if _, err := s.Enqueue(ctx, aurora, selector, nil); ebics.CodeOf(err) != ebics.UnsupportedOrderType {
 			t.Errorf("enqueuing a %s: %v, want %s", selector, err, ebics.UnsupportedOrderType)
 		}
 	}
@@ -178,7 +199,7 @@ func TestAnOrderTypeTravellingTheWrongWayIsRefused(t *testing.T) {
 // has.
 func TestAnOrderIsAnsweredOnceTheInstitutionHasWorkedThroughIt(t *testing.T) {
 	s := host(t)
-	id, err := s.Upload(aurora, ebics.CCT, []byte("a file"))
+	id, err := s.Upload(ctx, aurora, ebics.CCT, []byte("a file"))
 	if err != nil {
 		t.Fatalf("Upload: %v", err)
 	}
@@ -187,7 +208,7 @@ func TestAnOrderIsAnsweredOnceTheInstitutionHasWorkedThroughIt(t *testing.T) {
 		t.Errorf("before the institution ran: %s, want %s", got, ebics.Received)
 	}
 
-	if err := s.Processed(id, "1 transaction, 1 accepted"); err != nil {
+	if err := s.Processed(ctx, id, "1 transaction, 1 accepted"); err != nil {
 		t.Fatalf("Processed: %v", err)
 	}
 	if got := statusOf(t, s, id); got != ebics.Processed {
@@ -196,25 +217,29 @@ func TestAnOrderIsAnsweredOnceTheInstitutionHasWorkedThroughIt(t *testing.T) {
 
 	// It leaves the work list, and the queue it was never in stays empty: an
 	// answer about a file's contents travels as a message, not as this.
-	if pending := s.Pending(); len(pending) != 0 {
+	pending, err := s.Pending(ctx)
+	if err != nil {
+		t.Fatalf("Pending: %v", err)
+	}
+	if len(pending) != 0 {
 		t.Errorf("Pending still holds %d orders", len(pending))
 	}
 }
 
 func TestAFileTheReceiverCouldNotReadIsRecordedAgainstItsOrder(t *testing.T) {
 	s := host(t)
-	id, err := s.Upload(aurora, ebics.CCT, []byte("not a pacs.008"))
+	id, err := s.Upload(ctx, aurora, ebics.CCT, []byte("not a pacs.008"))
 	if err != nil {
 		t.Fatalf("Upload: %v", err)
 	}
 
 	// The uploader was told the file arrived and went away, so this is the only
 	// place the failure can be recorded.
-	if err := s.Rejected(id, "the file is not a pacs.008"); err != nil {
+	if err := s.Rejected(ctx, id, "the file is not a pacs.008"); err != nil {
 		t.Fatalf("Rejected: %v", err)
 	}
 
-	acks, err := s.Acknowledgements(aurora)
+	acks, err := s.Acknowledgements(ctx, aurora)
 	if err != nil {
 		t.Fatalf("Acknowledgements: %v", err)
 	}
@@ -226,7 +251,7 @@ func TestAFileTheReceiverCouldNotReadIsRecordedAgainstItsOrder(t *testing.T) {
 func TestAnsweringAnOrderNoHostHasIsRefused(t *testing.T) {
 	s := host(t)
 
-	err := s.Processed("Z999", "")
+	err := s.Processed(ctx, "Z999", "")
 	if ebics.CodeOf(err) != ebics.InvalidRequest {
 		t.Errorf("Processed on an unknown order: %v, want %s", err, ebics.InvalidRequest)
 	}
@@ -238,7 +263,7 @@ func TestAnsweringAnOrderNoHostHasIsRefused(t *testing.T) {
 
 func TestEnrollingTwiceIsNothing(t *testing.T) {
 	s := host(t)
-	if _, err := s.Enqueue(aurora, ebics.CST, []byte("for aurora")); err != nil {
+	if _, err := s.Enqueue(ctx, aurora, ebics.CST, []byte("for aurora")); err != nil {
 		t.Fatalf("Enqueue: %v", err)
 	}
 
@@ -246,14 +271,75 @@ func TestEnrollingTwiceIsNothing(t *testing.T) {
 	// institution, so a second enrolment must not empty the queue.
 	s.Enrol(aurora)
 
-	if files, err := s.Download(aurora, ebics.BTD); err != nil || len(files) != 1 {
+	if files, err := s.Download(ctx, aurora, ebics.BTD); err != nil || len(files) != 1 {
 		t.Errorf("after re-enrolment: %d files, %v; want the file still there", len(files), err)
+	}
+}
+
+// TestASecondHostOverTheSameStoreIsHoldingWhatTheFirstWas is the whole reason
+// this state is rows.
+//
+// A file in a download queue is one institution holding bytes another is owed,
+// and by the time it is in there the money behind it has usually already moved.
+// A host that lost its queues when the process ended lost the obligation and
+// kept the movement, with nothing anywhere refusing anything. The order log is
+// the same act on a smaller stake: a subscriber told EBICS_OK went away, so a log
+// that forgot the order can answer nothing about the file it took in.
+//
+// What the second host does NOT inherit is the enrolments, and that is the one
+// thing here that is derived rather than kept: provisioning admits the
+// subscribers again from the roster on every boot.
+func TestASecondHostOverTheSameStoreIsHoldingWhatTheFirstWas(t *testing.T) {
+	set := testenv.NewSet(t, frozen)
+
+	first := ebics.NewServer(set.ClearingHouseEBICS())
+	first.Enrol(aurora)
+	id, err := first.Upload(ctx, aurora, ebics.CCT, []byte("a file of credit transfers"))
+	if err != nil {
+		t.Fatalf("Upload: %v", err)
+	}
+	if _, err := first.Enqueue(ctx, aurora, ebics.CST, []byte("a status report")); err != nil {
+		t.Fatalf("Enqueue: %v", err)
+	}
+
+	// The process ends and another opens the same database.
+	second := ebics.NewServer(set.ClearingHouseEBICS())
+	second.Enrol(aurora)
+
+	files, err := second.Download(ctx, aurora, ebics.BTD)
+	if err != nil {
+		t.Fatalf("Download after the restart: %v", err)
+	}
+	if len(files) != 1 || string(files[0].Payload) != "a status report" {
+		t.Errorf("collected %+v after the restart, want the file the first host was holding", files)
+	}
+
+	pending, err := second.Pending(ctx)
+	if err != nil {
+		t.Fatalf("Pending after the restart: %v", err)
+	}
+	if len(pending) != 1 || pending[0].ID != id || string(pending[0].Payload) != "a file of credit transfers" {
+		t.Errorf("the work list is %+v after the restart, want the order the first host took in", pending)
+	}
+	if got := statusOf(t, second, id); got != ebics.Received {
+		t.Errorf("order %s is %s after the restart, want %s", id, got, ebics.Received)
+	}
+
+	// And the id space does not start again. An order id is unique at the host
+	// that minted it, and a counter rebuilt from the rows would hand this one the
+	// id the first host has already acknowledged.
+	next, err := second.Upload(ctx, aurora, ebics.CCT, []byte("another file"))
+	if err != nil {
+		t.Fatalf("Upload after the restart: %v", err)
+	}
+	if next == id {
+		t.Errorf("the second host minted %s again, which the first host has already answered for", next)
 	}
 }
 
 func statusOf(t *testing.T, s *ebics.Server, id ebics.OrderID) ebics.OrderStatus {
 	t.Helper()
-	acks, err := s.Acknowledgements(aurora)
+	acks, err := s.Acknowledgements(ctx, aurora)
 	if err != nil {
 		t.Fatalf("Acknowledgements: %v", err)
 	}

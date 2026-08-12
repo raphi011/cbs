@@ -132,9 +132,10 @@ func (s *Network) ListHeldFiles(ctx context.Context, id CycleID) ([]HeldFile, er
 //
 // AFTER the release rather than as part of reading it, so that a process ending
 // between the settlement and the hand-over leaves the obligations standing in
-// the database rather than consuming them. What no institution here does yet is
-// pick them up again on the way back: the queues they were handed into are the
-// EBICS host's, and that state is still in memory.
+// the database rather than consuming them. What they are handed INTO is a row as
+// well — a download queue is the transport's table in this same institution's
+// database — so the obligation is durable on both sides of the moment it changes
+// hands.
 //
 // It runs whatever became of the individual queues, which is the same answer the
 // release itself gives: a share that could not be enqueued is a fault the day's

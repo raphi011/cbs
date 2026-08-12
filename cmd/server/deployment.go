@@ -65,6 +65,28 @@ func (c Config) validate() error {
 	return nil
 }
 
+// Hosts is where the two institutions that are DIALLED keep their transport
+// state: one download queue per enrolled subscriber, and the log of the orders
+// each has uploaded.
+//
+// There is no bank entry and there cannot be one. EBICS has no push, so a member
+// bank dials out and is never dialled; the files it is owed wait in a queue in
+// somebody else's database until it comes to collect them.
+//
+// It is a separate argument to NewDeployment rather than something read off
+// payment.Networks, and that separation is the point. The domain must not be able
+// to name a queue: a payment.Network that could reach one would be an institution
+// able to read a file it is only carrying. Both halves meet here, in the
+// composition root, and nowhere below it.
+//
+// Declared here and satisfied structurally, which is the same shape every
+// interface in this package has: sqlite.Set is what a deployment is handed and
+// names nothing of this package's.
+type Hosts interface {
+	ClearingHouseEBICS() ebics.Store
+	CentralBankEBICS() ebics.Store
+}
+
 // A Deployment is every institution this process holds, the clock they all read,
 // and the business day that drives them.
 //
@@ -110,7 +132,8 @@ type Deployment struct {
 
 	// The two hosts, built once. Each holds an ebics.Server, which is the whole
 	// of what it means to be dialled: a download queue per enrolled subscriber
-	// and a log of the orders they have uploaded.
+	// and a log of the orders they have uploaded, both in that institution's own
+	// database.
 	csm *ClearingHouse
 	cb  *CentralBank
 
@@ -176,7 +199,7 @@ type Deployment struct {
 //
 // The clearing house enrols at the settlement agent for the same reason a bank
 // does: it uploads settlement instructions and collects the answers.
-func NewDeployment(ctx context.Context, nets *payment.Networks, clock *calendar.Clock, cfg Config,
+func NewDeployment(ctx context.Context, nets *payment.Networks, hosts Hosts, clock *calendar.Clock, cfg Config,
 	populate func(context.Context, *payment.Networks, seed.Deployment) error, log *slog.Logger) (*Deployment, error) {
 
 	if err := cfg.validate(); err != nil {
@@ -199,12 +222,12 @@ func NewDeployment(ctx context.Context, nets *payment.Networks, clock *calendar.
 	}
 	d.cb = &CentralBank{
 		d: d, net: nets.CentralBank(), ops: nets.CentralBank(),
-		bic: cfg.CentralBankBIC, host: ebics.NewServer(),
+		bic: cfg.CentralBankBIC, host: ebics.NewServer(hosts.CentralBankEBICS()),
 	}
 	d.csm = &ClearingHouse{
 		d: d, net: nets.ClearingHouse(), ops: nets.ClearingHouse(),
 		bic:  cfg.ClearingHouseBIC,
-		host: ebics.NewServer(),
+		host: ebics.NewServer(hosts.ClearingHouseEBICS()),
 		cb:   ebics.NewClient(ebics.SubscriberID(cfg.ClearingHouseBIC), cfg.CentralBankURL),
 	}
 	d.cb.host.Enrol(ebics.SubscriberID(cfg.ClearingHouseBIC))
@@ -722,19 +745,21 @@ func (d *Deployment) member(bic iso20022.BIC) (*Bank, error) {
 //
 // # Everything an institution holds between files goes with the rows
 //
-// A download queue holds bytes addressed to a subscriber, and the payments those
-// bytes describe are about to be deleted. Both hosts are therefore emptied, and
-// every reseeded bank is enrolled again as the seed admits it. A queue that
-// survived would deliver a file about a payment no institution holds a row for,
-// on the first day after the reset.
+// A download queue holds bytes addressed to a subscriber and the payments those
+// bytes describe are about to be deleted, so a queue that survived would deliver
+// a file about a payment no institution holds a row for, on the first day after
+// the reset. It goes with the rest, because it IS rows now — and so do the order
+// log, the held files and the held returns. That matters more than it saves: a
+// share held against a cycle id would be released into a bank's queue by the next
+// cycle to mint that id, since the sequences restart with the rows.
 //
-// The same goes for the one other thing kept outside the store: each bank's
-// payment hub. An instruction taken and not yet cut off would otherwise be
-// uploaded after the reset about a payment nobody holds. The clearing house's
-// held files and held returns need no line here, because they are rows and go
-// with the rest — and that matters more than it saves: a share held against a
-// cycle id would be released into a bank's queue by the next cycle to mint that
-// id, since the sequences restart with the rows.
+// The hosts are still emptied here, and what that empties is the one thing they
+// keep outside the store: the ENROLMENTS. Every reseeded bank is admitted again
+// as the seed founds it, which is what gives it a queue to be addressed through.
+//
+// The same goes for the one other thing kept outside a store anywhere: each
+// bank's payment hub. An instruction taken and not yet cut off would otherwise be
+// uploaded after the reset about a payment nobody holds.
 //
 // # Every institution is EMPTIED and none is replaced
 //

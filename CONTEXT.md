@@ -95,9 +95,14 @@ against.
 _Avoid_: message id — that is the `head.001` `BizMsgIdr`, minted by the sender
 
 **Download queue**:
-The files one host holds for one subscriber, in order. Enrolment creates it and
-it is the whole of routing.
+The files one host holds for one subscriber, in order, as rows in that host's
+own database. It is the whole of routing.
 _Avoid_: inbox, mailbox, actor table, address table
+
+**Order log**:
+Every order a host has been sent and what it made of each. What `HAC` answers
+from, and the hosting institution's own work list.
+_Avoid_: audit log — that is an institution's record of its own decisions
 
 **Subscriber**:
 A party enrolled at a host, which is what gives it a queue. A bank is a
@@ -105,8 +110,9 @@ subscriber at two hosts; the settlement agent is a subscriber nowhere.
 _Avoid_: actor, node, peer
 
 **Enrolment**:
-Giving a subscriber its download queue. A separate act from admission, and the
-one that makes a bank REACHABLE.
+Admitting a subscriber to a host, which is what makes a bank REACHABLE. A
+separate act from admission, and the only thing a host keeps outside its
+database — it is rebuilt from the roster at every boot.
 _Avoid_: admission, registration, provisioning
 
 **Host**:

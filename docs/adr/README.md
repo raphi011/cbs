@@ -22,3 +22,4 @@ overriding it — see `docs/agents/domain.md`.
 | [0001](0001-the-deployment-owns-the-clock.md) | The deployment owns the clock | sub-project 21 |
 | [0002](0002-settle-before-release.md) | The clearing house settles before it releases | sub-project 21, task 8 |
 | [0003](0003-an-institutions-obligations-live-in-its-database.md) | An institution's unfinished obligations live in its own database | held-files durability, phase 2 |
+| [0004](0004-a-queue-is-a-table-and-stays-opaque.md) | A download queue is a table, and the bytes in it stay opaque | held-files durability, phase 3 |

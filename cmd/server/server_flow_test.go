@@ -55,7 +55,8 @@ func newAPIHarness(t *testing.T) *server {
 
 	clock := calendar.NewClock(seed.BaseDate)
 	data := seed.New(clock)
-	nets := payment.NewNetworks(testenv.NewSet(t, clock.Now), clock.Now)
+	set := testenv.NewSet(t, clock.Now)
+	nets := payment.NewNetworks(set, clock.Now)
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 
 	s := &server{nets: nets, clock: clock}
@@ -72,7 +73,7 @@ func newAPIHarness(t *testing.T) *server {
 	cfg.ClearingHouseURL = csmHost.URL
 	cfg.CentralBankURL = cbHost.URL
 
-	dep, err := NewDeployment(ctx, nets, clock, cfg, data.Populate, log)
+	dep, err := NewDeployment(ctx, nets, set, clock, cfg, data.Populate, log)
 	if err != nil {
 		t.Fatalf("NewDeployment: %v", err)
 	}
@@ -324,14 +325,14 @@ func TestResetThrowsTheQueuesAwayWithTheRows(t *testing.T) {
 	payer := payerRoutes(t, srv)
 	postJSON(t, payer, "/payments", validSubmission(t, srv))
 	doJSON(t, payer, "POST", "/payments/cutoff", "", http.StatusAccepted)
-	if pending := len(srv.dep.ClearingHouse().host.Pending()); pending == 0 {
+	if pending := pendingAt(t, srv.dep.ClearingHouse().host); pending == 0 {
 		t.Fatal("the cut-off left no file at the clearing house, so this test would pass on nothing")
 	}
 	rec := post(t, srv.CentralBankRoutes(), "/admin/reset")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("reset = %d", rec.Code)
 	}
-	if pending := len(srv.dep.ClearingHouse().host.Pending()); pending != 0 {
+	if pending := pendingAt(t, srv.dep.ClearingHouse().host); pending != 0 {
 		t.Fatalf("%d files survived the reset; each describes a payment no institution now holds", pending)
 	}
 }
@@ -813,7 +814,7 @@ func TestAResetKeepsEveryBindingAListenerMadeAtStartup(t *testing.T) {
 	if _, err := client.Upload(ctx, ebics.CCT, []byte("<a file this test never asks anybody to read/>")); err != nil {
 		t.Fatalf("%s uploading to the host its listener mounts: %v", bic, err)
 	}
-	if got := len(csm.host.Pending()); got != 1 {
+	if got := pendingAt(t, csm.host); got != 1 {
 		t.Errorf("the clearing house has %d files to work through, and one was just uploaded to the host its listener mounts", got)
 	}
 }

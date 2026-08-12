@@ -1,8 +1,10 @@
 -- centralbank/0001_init: the settlement agent's whole world, in one migration.
 --
--- Thirteen tables. Six of them are a general ledger and are also in
+-- Fifteen tables. Six of them are a general ledger and are also in
 -- bank/0001_init.sql, because a central bank keeps a book of accounts like any
--- other bank does; the other seven are what makes it a central bank.
+-- other bank does; two are the file transport and are also in csm/0001_init.sql,
+-- because this institution and the clearing house are the two that are dialled;
+-- the other seven are what makes it a central bank.
 --
 -- What is absent is again the substance. THE CENTRAL BANK HAS NO CUSTOMERS: no
 -- deposit register, no deposit account identifiers, no holds, no snapshots, no
@@ -543,6 +545,63 @@ CREATE TABLE settlement_positions (
     amount        INTEGER NOT NULL,
     PRIMARY KEY (settlement_id, bic)
 ) STRICT;
+
+-- ---------------------------------------------------------------------------
+-- The file transport
+-- ---------------------------------------------------------------------------
+
+CREATE TABLE ebics_queue (
+    -- One download queue per subscriber, at the second of the two institutions
+    -- that are DIALLED. ebics_queue in csm/0001_init.sql carries the arguments
+    -- for both — why bytes addressed to somebody else may sit in the holder's
+    -- database, why the seq column is not this file's MAX(seq)+1 — and they apply
+    -- here unchanged.
+    --
+    -- The subscribers differ and that is the whole difference. This host's
+    -- queues belong to the member banks AND to the clearing house, which is a
+    -- subscriber here exactly as a bank is; what waits in them is a camt.053
+    -- telling a member its reserve moved, a camt.025 receipting a lodgement, and
+    -- the pacs.002 that says a cut-off is final. THE LAST ONE IS WHY THIS TABLE
+    -- MATTERS: an instruction settled and an answer never collected is a cut-off
+    -- whose reserves have moved and whose payments no member has been told about.
+    --
+    -- There is no roster in this database for subscriber to reference, and
+    -- settlement_members is not one: a member with a reserve account and a
+    -- subscriber that can dial in are different facts, and this institution is
+    -- dialled by a clearing house that holds no reserve account at all.
+    order_id   TEXT PRIMARY KEY,
+    subscriber TEXT NOT NULL,
+    order_type TEXT NOT NULL,
+    payload    BLOB NOT NULL,
+    seq        INTEGER NOT NULL
+) STRICT;
+
+CREATE INDEX ebics_queue_subscriber_idx ON ebics_queue (
+    -- One subscriber's queue in enqueue order; the only read this table has.
+    subscriber, seq
+);
+
+CREATE TABLE ebics_orders (
+    -- The order log: every file uploaded to this host and what it made of each.
+    -- ebics_orders in csm/0001_init.sql carries the argument.
+    --
+    -- What arrives here is narrower than at the clearing house and worth naming:
+    -- a pacs.009 instructing a settlement, a pacs.004 returning one payment, and
+    -- a camt.050 lodging cash. Every one of them moves central-bank money, so
+    -- this is the log of the only orders in the system that do.
+    order_id   TEXT PRIMARY KEY,
+    subscriber TEXT NOT NULL,
+    order_type TEXT NOT NULL,
+    payload    BLOB NOT NULL,
+    status     TEXT NOT NULL,
+    detail     TEXT NOT NULL DEFAULT '',
+    seq        INTEGER NOT NULL
+) STRICT;
+
+CREATE INDEX ebics_orders_subscriber_idx ON ebics_orders (
+    -- HAC: one subscriber's uploads, oldest first.
+    subscriber, seq
+);
 
 -- ---------------------------------------------------------------------------
 -- The audit log

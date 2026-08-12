@@ -50,10 +50,12 @@ has to be readable and removable whatever became of the batch row that names it.
 ## Consequences
 
 **A cut-off settled after a restart still reaches every receiving bank.** That is
-the claim, and `cmd/server/restart_test.go` is the only test in the repository
-that can fail for the reason this record exists: it drops the process between a
-cut-off and its settlement, opens a second one over the same files, and asks
-whether the banks were handed their instructions.
+the claim, and `cmd/server/restart_test.go` holds it: it drops the process
+between a cut-off and its settlement, opens a second one over the same files, and
+asks whether the banks were handed their instructions. Its sibling in the same
+file is [ADR-0004](0004-a-queue-is-a-table-and-stays-opaque.md)'s, and between
+them they are the only tests in the repository that can fail for the reason these
+two records exist.
 
 **`ErrCycleNotReleasable` becomes a guard on something that should not happen.**
 It refuses a cut-off whose payments have no share behind them, which was a
@@ -80,11 +82,12 @@ orders the two now.
 
 ## What this does not close
 
-**The EBICS host's queues and its order log are still memory.** A file released
-into a receiving bank's download queue and not yet collected is lost with the
-reserves already moved, which is this defect on the far side of the release, and
-the order log is an audit trail that a restart empties. This ruling is about what
-an INSTITUTION owes; the transport between them is the next phase.
+**The EBICS host's queues and its order log.** A file released into a receiving
+bank's download queue and not yet collected is lost with the reserves already
+moved, which is this defect on the far side of the release, and the order log is
+an audit trail that a restart empties. This ruling is about what an INSTITUTION
+owes; the transport between them is
+[ADR-0004](0004-a-queue-is-a-table-and-stays-opaque.md), which closes both.
 
 **A member bank's hub is still memory.** Instructions with committed debtor legs,
 waiting for that bank's own cut-off: a payer debited, money in clearing suspense,

@@ -62,9 +62,9 @@ func TestTheSeedLeavesNoPaymentHalfProcessed(t *testing.T) {
 		{srv.dep.cfg.ClearingHouseBIC, srv.dep.ClearingHouse().host},
 		{srv.dep.cfg.CentralBankBIC, srv.dep.CentralBank().host},
 	} {
-		if got := host.s.Pending(); len(got) != 0 {
+		if got := pendingAt(t, host.s); got != 0 {
 			t.Errorf("%d files are waiting unworked at %s; the build uploaded them and left before that institution read them",
-				len(got), host.at)
+				got, host.at)
 		}
 	}
 

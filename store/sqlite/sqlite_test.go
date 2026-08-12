@@ -265,6 +265,10 @@ func TestSchemaArgumentsReachSqliteMaster(t *testing.T) {
 			// The same absent table, in the shape a reader would expect to hold
 			// it: the settlement agent decides which days money moves on.
 			{"transactions", "WHAT DAY IT IS IS NOT IN THIS DATABASE EITHER"},
+			// An absent foreign key with no parent to point at, in the shape
+			// where being dialled and holding a reserve account are two facts:
+			// the clearing house is a subscriber here and is not a member.
+			{"ebics_queue", "There is no roster in this database for subscriber to reference"},
 		}},
 		{CSM, payment.ClearingHouseBook, []struct{ object, argument string }{
 			// A COLUMN that is not here, which is the kind of argument with
@@ -274,8 +278,15 @@ func TestSchemaArgumentsReachSqliteMaster(t *testing.T) {
 			// The audit log's absent foreign key, argued in the shape that has
 			// no books table at all.
 			{"audit_events", "It has no foreign key to books"},
-			// The download queue, argued on the row that IS the routing table.
-			{"roster_entries", "NOR IS THE DOWNLOAD QUEUE HERE"},
+			// An argument for why something IS here, which a dump needs as much
+			// as an absence: bytes addressed to another institution may sit in
+			// this one's database because nothing this institution can call
+			// reaches them.
+			{"ebics_queue", "WHY THE BYTES MAY SIT IN THIS INSTITUTION'S DATABASE AT ALL"},
+			// An absent foreign key whose parent IS in this database, on the one
+			// table where a member leaving the roster must not take its unread
+			// files with it.
+			{"ebics_queue", "No foreign key to roster_entries"},
 			// An absent foreign key whose parent is in this same database, so
 			// the constraint is writable and stays out anyway: what one
 			// institution owes another must outlive the batch row naming it.

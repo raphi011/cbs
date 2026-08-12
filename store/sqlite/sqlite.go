@@ -150,6 +150,11 @@ var (
 	// its own single row in banks, its copy of the scheme's routing directory,
 	// the mandates it holds as creditor bank, its own copy of each payment it is
 	// a party to, and the advices it was sent.
+	//
+	// It holds NO transport, and that is the topology rather than an omission.
+	// EBICS has no push, so a bank dials the two institutions that host queues
+	// and is never dialled itself; the files it is owed wait in a queue in
+	// somebody else's database until it comes to collect them.
 	Bank = shape("bank",
 		"books", "ledgers", "subledgers", "accounts", "slot_accounts", "transactions", "entries",
 		"deposit_accounts", "deposit_account_identifiers", "holds", "snapshots", "overdraft_terms",
@@ -160,21 +165,24 @@ var (
 
 	// CSM is the clearing house: a roster, cycles, its own copy of each payment
 	// it carries, the files and returns it has taken in and not yet handed over,
-	// and no book of accounts of any kind.
+	// the transport every member dials, and no book of accounts of any kind.
 	CSM = shape("csm",
 		"roster_entries", "roster_entry_assets",
 		"payments", "cycles", "cycle_payments",
 		"held_files", "held_file_transactions", "held_returns",
+		"ebics_queue", "ebics_orders",
 		"audit_events", "id_sequences").withPaymentCycle()
 
 	// CentralBank is the settlement agent: a ledger holding the members' reserve
 	// accounts, its own member register, the register of bank codes it allocates
-	// as four national registries in one, the settlements it discharged, and no
-	// customers and no payments.
+	// as four national registries in one, the settlements it discharged, the
+	// transport the clearing house and every member dial, and no customers and no
+	// payments.
 	CentralBank = shape("centralbank",
 		"books", "ledgers", "subledgers", "accounts", "transactions", "entries",
 		"bank_codes", "settlement_members", "settlement_member_accounts",
 		"settlements", "settlement_positions",
+		"ebics_queue", "ebics_orders",
 		"audit_events", "id_sequences")
 )
 

@@ -77,7 +77,7 @@ func main() {
 		CentralBankURL:   ebicsURL(*basePort),
 		ClearingHouseURL: ebicsURL(*basePort + 1),
 	}
-	dep, err := NewDeployment(context.Background(), nets, clock, cfg, data.Populate, log)
+	dep, err := NewDeployment(context.Background(), nets, stores, clock, cfg, data.Populate, log)
 	if err != nil {
 		log.Error("building the deployment", "error", err)
 		os.Exit(1)

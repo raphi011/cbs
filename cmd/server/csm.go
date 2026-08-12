@@ -128,7 +128,12 @@ func (c *ClearingHouse) Return(ctx context.Context, id payment.PaymentID, reason
 // Writing to a queue cannot fail on the RECIPIENT's account, which is the one
 // improvement worth naming: a statement fan-out can no longer be truncated by an
 // unreachable bank, because there is nothing to reach.
-func (c *ClearingHouse) enqueue(to iso20022.BIC, env iso20022.Envelope) error {
+//
+// It is a WRITE, in its own unit of work, and it is deliberately not in the
+// caller's: a queue row committed alongside a decision the store then rolled back
+// would hand a bank a file about a payment no institution recorded. See the
+// doors' section in deployment.go, which states the rule for every hop.
+func (c *ClearingHouse) enqueue(ctx context.Context, to iso20022.BIC, env iso20022.Envelope) error {
 	t, err := orderTypeOf(env.Document)
 	if err != nil {
 		return err
@@ -137,7 +142,7 @@ func (c *ClearingHouse) enqueue(to iso20022.BIC, env iso20022.Envelope) error {
 	if err != nil {
 		return fmt.Errorf("server: %s marshalling for %s: %w", c.bic, to, err)
 	}
-	id, err := c.host.Enqueue(ebics.SubscriberID(to), t, raw)
+	id, err := c.host.Enqueue(ctx, ebics.SubscriberID(to), t, raw)
 	if err != nil {
 		return fmt.Errorf("server: %s cannot address a %s to %s: %w", c.bic, t, to, err)
 	}
@@ -183,18 +188,31 @@ func (c *ClearingHouse) upload(ctx context.Context, env iso20022.Envelope) error
 // transport exists for: the uploader was told EBICS_OK and went away, so
 // "processed" and "rejected" are what a subscriber's HAC download tells it
 // later, and neither says anything about the payments inside the file.
+//
+// The acknowledgement is a SECOND unit of work, after the one that did the work,
+// and a failure to write it is reported rather than dropped. What it costs is
+// that the order stays on this list and is worked again tomorrow — which the
+// duplicate check in takeRecorded refuses, because the payment row is recorded
+// before anything else happens to a file. So the failure is loud and the money
+// is not moved twice.
 func (c *ClearingHouse) work(ctx context.Context) []Problem {
 	ctx = withActor(ctx, c.bic)
 
+	pending, err := c.host.Pending(ctx)
+	if err != nil {
+		return []Problem{{Institution: c.bic, Detail: fmt.Sprintf("reading the orders waiting to be worked through: %v", err)}}
+	}
 	var problems []Problem
-	for _, order := range c.host.Pending() {
-		err := c.handle(ctx, order)
-		if err != nil {
+	for _, order := range pending {
+		answer, detail := c.host.Processed, ""
+		if err := c.handle(ctx, order); err != nil {
 			problems = append(problems, Problem{Institution: c.bic, OrderID: order.ID, Detail: err.Error()})
-			_ = c.host.Rejected(order.ID, err.Error())
-			continue
+			answer, detail = c.host.Rejected, err.Error()
 		}
-		_ = c.host.Processed(order.ID, "")
+		if err := answer(ctx, order.ID, detail); err != nil {
+			problems = append(problems, Problem{Institution: c.bic, OrderID: order.ID,
+				Detail: fmt.Sprintf("recording what became of this order: %v", err)})
+		}
 	}
 	return problems
 }
@@ -235,7 +253,7 @@ func (c *ClearingHouse) handle(ctx context.Context, order ebics.Order) error {
 func (c *ClearingHouse) handleFile(ctx context.Context, from iso20022.BIC, raw []byte) error {
 	env, err := iso20022.Unmarshal(raw)
 	if err != nil {
-		return c.answerUnreadable(from, err)
+		return c.answerUnreadable(ctx, from, err)
 	}
 	switch doc := env.Document.(type) {
 	case *iso20022.Pacs008:
@@ -277,12 +295,12 @@ func (c *ClearingHouse) handleFile(ctx context.Context, from iso20022.BIC, raw [
 
 // answerUnreadable queues an FF01 for the subscriber whose file would not parse.
 // See unreadable.
-func (c *ClearingHouse) answerUnreadable(from iso20022.BIC, cause error) error {
+func (c *ClearingHouse) answerUnreadable(ctx context.Context, from iso20022.BIC, cause error) error {
 	env, err := unreadable(c.d.messageContext(c.bic, from), cause)
 	if err != nil {
 		return errors.Join(fmt.Errorf("server: %s could not build the FF01 for %s: %w", c.bic, from, err), cause)
 	}
-	return c.enqueue(from, env)
+	return c.enqueue(ctx, from, env)
 }
 
 // takeCreditTransfer takes a credit transfer into the network: this
@@ -487,7 +505,7 @@ func (c *ClearingHouse) takeRecorded(ctx context.Context, from iso20022.BIC, raw
 	}
 
 	if len(reports) > 0 {
-		errs = append(errs, c.forwardDecision(from, "", orig, reports))
+		errs = append(errs, c.forwardDecision(ctx, from, "", orig, reports))
 	}
 	return errors.Join(errs...)
 }
@@ -555,12 +573,11 @@ func (c *ClearingHouse) refuse(ctx context.Context, p payment.Payment,
 //
 // Read, released, and only then deleted, so that a process ending between the
 // settlement and the hand-over leaves the obligations standing in the database
-// instead of consuming them. Nothing picks them up again on the way back yet —
-// the queues they are handed into are the EBICS host's and that state is still
-// in memory — so what this buys today is that the loss is visible rather than
-// gone. Deleting is not optional either: a share left behind would be released
-// again by a redelivered ACSC, and a bank handed the same instructions twice
-// credits the same customer twice.
+// instead of consuming them. What they are handed INTO is a row as well, so the
+// obligation is durable on both sides of the moment it changes hands. Deleting
+// is not optional either: a share left behind would be released again by a
+// redelivered ACSC, and a bank handed the same instructions twice credits the
+// same customer twice.
 //
 // A file that could not be queued is joined rather than returned, for the reason
 // a day carries on past one failure: a destination this institution could not
@@ -599,7 +616,7 @@ func (c *ClearingHouse) releaseFiles(ctx context.Context, cycle payment.CycleID,
 				c.bic, cycle, f.Destination, err))
 			continue
 		}
-		errs = append(errs, c.enqueue(f.Destination, iso20022.Envelope{
+		errs = append(errs, c.enqueue(ctx, f.Destination, iso20022.Envelope{
 			AppHdr: iso20022.AppHdr{
 				Fr:        iso20022.NewAgent(c.bic),
 				To:        iso20022.NewAgent(f.Destination),
@@ -796,7 +813,7 @@ func (c *ClearingHouse) relayReturn(ctx context.Context, from iso20022.BIC, env 
 // from the upload, which is what makes the release survive a process. What
 // travels is that document unchanged — it is what the returning bank said and is
 // not this institution's to rewrite — under a header this hop builds.
-func (c *ClearingHouse) releaseReturn(held payment.HeldReturn, id payment.PaymentID) error {
+func (c *ClearingHouse) releaseReturn(ctx context.Context, held payment.HeldReturn, id payment.PaymentID) error {
 	env, err := iso20022.Unmarshal(held.File)
 	if err != nil {
 		return fmt.Errorf("server: %s settled the return of %s and cannot read the message it is holding: %w", c.bic, id, err)
@@ -813,7 +830,7 @@ func (c *ClearingHouse) releaseReturn(held payment.HeldReturn, id payment.Paymen
 	if to == held.ReturnedBy {
 		to = ref.CdtrAgt.FinInstnId.BICFI
 	}
-	return c.enqueue(to, iso20022.Envelope{
+	return c.enqueue(ctx, to, iso20022.Envelope{
 		AppHdr: iso20022.AppHdr{
 			Fr:        iso20022.NewAgent(c.bic),
 			To:        iso20022.NewAgent(to),
@@ -864,7 +881,7 @@ func (c *ClearingHouse) receiveUnreadable(from iso20022.BIC, doc *iso20022.Pacs0
 // arrived in, because those coincide on the ordinary path and not on the
 // operator's: Reject has no file at all. Which bank submitted is the scheme's
 // direction and nothing else. See submitterOf.
-func (c *ClearingHouse) tell(p payment.Payment, orig payment.OriginalMessage,
+func (c *ClearingHouse) tell(ctx context.Context, p payment.Payment, orig payment.OriginalMessage,
 	r payment.TransactionStatusReport) error {
 
 	scheme, ok := c.ops.Scheme(p.Scheme)
@@ -872,7 +889,7 @@ func (c *ClearingHouse) tell(p payment.Payment, orig payment.OriginalMessage,
 		return fmt.Errorf("server: %s decided %s and holds no %q scheme to say who submitted it: %w",
 			c.bic, p.ID, p.Scheme, payment.ErrSchemeNotFound)
 	}
-	return c.forward(submitterOf(scheme, p.DebtorDetails.Agent, p.CreditorDetails.Agent), orig, r)
+	return c.forward(ctx, submitterOf(scheme, p.DebtorDetails.Agent, p.CreditorDetails.Agent), orig, r)
 }
 
 // forward queues the status for one bank. Which bank, and how many of them, is
@@ -889,8 +906,8 @@ func (c *ClearingHouse) tell(p payment.Payment, orig payment.OriginalMessage,
 // The ORIGINAL message it refers back to is unchanged: that is the submitting
 // bank's pacs.008 or pacs.003, which is what every hop is about and the only
 // thing that bank can match on.
-func (c *ClearingHouse) forward(to iso20022.BIC, orig payment.OriginalMessage, r payment.TransactionStatusReport) error {
-	return c.forwardDecision(to, "", orig, []payment.TransactionStatusReport{r})
+func (c *ClearingHouse) forward(ctx context.Context, to iso20022.BIC, orig payment.OriginalMessage, r payment.TransactionStatusReport) error {
+	return c.forwardDecision(ctx, to, "", orig, []payment.TransactionStatusReport{r})
 }
 
 // forwardDecision is forward for a status this institution is CARRYING rather
@@ -902,14 +919,14 @@ func (c *ClearingHouse) forward(to iso20022.BIC, orig payment.OriginalMessage, r
 // point rather than a bool. receiveReturnStatus's own doc says this institution
 // decides nothing there, and iso20022.StatusReasonInformation says Orgtr exists
 // so that a receiver does not blame the relay for the refusal.
-func (c *ClearingHouse) forwardDecision(to, decidedBy iso20022.BIC, orig payment.OriginalMessage, rs []payment.TransactionStatusReport) error {
+func (c *ClearingHouse) forwardDecision(ctx context.Context, to, decidedBy iso20022.BIC, orig payment.OriginalMessage, rs []payment.TransactionStatusReport) error {
 	mc := c.d.messageContext(c.bic, to)
 	mc.DecidedBy = decidedBy
 	env, err := payment.StatusMessage(orig, rs, mc)
 	if err != nil {
 		return fmt.Errorf("server: %s could not build its pacs.002 for %s: %w", c.bic, to, err)
 	}
-	return c.enqueue(to, env)
+	return c.enqueue(ctx, to, env)
 }
 
 // Reject is the clearing house declining a payment because an operator said so.
@@ -964,7 +981,7 @@ func (c *ClearingHouse) Reject(ctx context.Context, id payment.PaymentID, code i
 	// comes back BESIDE the error rather than being swallowed — closeCycle's
 	// shape, and the same half-happened outcome: a payment that is Rejected and
 	// whose payer has not been given their money back.
-	if err := c.tell(p, payment.OriginalMessage{MsgID: notProvided, MsgDefIdr: notProvided}, r); err != nil {
+	if err := c.tell(ctx, p, payment.OriginalMessage{MsgID: notProvided, MsgDefIdr: notProvided}, r); err != nil {
 		return p, fmt.Errorf("server: %s rejected %s and could not say so: %w", c.bic, p.ID, err)
 	}
 	return p, nil
@@ -1429,7 +1446,7 @@ func (c *ClearingHouse) tellSettled(ctx context.Context, id payment.CycleID, ori
 				c.bic, id, p.Scheme, p.ID, payment.ErrSchemeNotFound))
 		}
 		c.d.journal.outcome(TransactionOutcome{DecidedBy: c.bic, Payment: p.ID, Status: r.Status})
-		if err := c.forward(submitterOf(scheme, p.DebtorDetails.Agent, p.CreditorDetails.Agent), orig,
+		if err := c.forward(ctx, submitterOf(scheme, p.DebtorDetails.Agent, p.CreditorDetails.Agent), orig,
 			payment.TransactionStatusReport{
 				EndToEndID: endToEndOf(p),
 				TxID:       string(p.ID),
@@ -1503,7 +1520,7 @@ func (c *ClearingHouse) receiveReturnStatus(ctx context.Context, from iso20022.B
 		// The SETTLEMENT AGENT decided this, not the clearing house, and the message
 		// says so. It is the one hop in this system where the sender and the
 		// originator are different institutions; see forwardDecision.
-		errs := []error{c.forwardDecision(returner, from, orig, []payment.TransactionStatusReport{r})}
+		errs := []error{c.forwardDecision(ctx, returner, from, orig, []payment.TransactionStatusReport{r})}
 
 		held, err := c.ops.GetHeldReturn(ctx, id)
 		holding := err == nil
@@ -1518,7 +1535,7 @@ func (c *ClearingHouse) receiveReturnStatus(ctx context.Context, from iso20022.B
 				c.bic, id, err))
 		}
 		if holding && r.Status == iso20022.TransactionStatusSettlementCompleted {
-			errs = append(errs, c.releaseReturn(held, id))
+			errs = append(errs, c.releaseReturn(ctx, held, id))
 		}
 		if r.Status == iso20022.TransactionStatusSettlementCompleted {
 			// This institution's own copy, which nothing else writes: the return's two
