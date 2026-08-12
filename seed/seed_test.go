@@ -147,8 +147,11 @@ func TestNetworkShape(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list cycles: %v", err)
 	}
-	if got := len(cycles); got != 5 {
-		t.Fatalf("cycles = %d, want 5", got)
+	// Five the scenario built and two the build leaves EMPTY and open, one per
+	// scheme, because a day validates its files against the open cut-off window
+	// before it opens tomorrow's — see the end of builder.build.
+	if got := len(cycles); got != 7 {
+		t.Fatalf("cycles = %d, want 7", got)
 	}
 	// The SETTLEMENT AGENT's rows: a settlement is what that institution did in
 	// its own book, and the clearing house's shape has no table for one.
@@ -174,6 +177,55 @@ func TestNetworkShape(t *testing.T) {
 	}
 }
 
+// TestTheBuildLeavesNoPaymentInAnOpenCycle is the constraint a payment added to
+// this scenario later would break without it.
+//
+// This process builds no files. It plays every institution itself and hands the
+// clearing house rows, so the clearing house holds no receiving bank's share for
+// anything seeded into a cycle — and a share is what release hands over. A
+// payment left in the OPEN cycle is therefore settled by the first business day
+// anyone advances, against reserves that really move, and the bank that has to
+// credit the payee is never told the payment exists. It is silent, it is
+// permanent, and the money stops in that bank's clearing suspense.
+//
+// So the rule is not "close the cycles" as tidiness: an open cycle with a
+// payment in it is a payment this dataset cannot complete. A CLOSED one is fine,
+// which is what Phase D has always relied on — a day closes the open cycles and
+// settles only the closed ones that net to nothing, and a cycle with a real
+// position is neither.
+//
+// The empty open cycles are required rather than tolerated: a day validates its
+// files against the open cut-off window BEFORE opening tomorrow's, so a
+// deployment handed none refuses every payment in the first day's files.
+//
+// cmd/server's TestSeededInFlightPaymentsAreAppliedWhenTheirCycleSettles is the
+// same claim at the other end — it advances a real day over this dataset and
+// checks every settled payment reached the bank that has to apply it. This one
+// says why, here, where the mistake would be made.
+func TestTheBuildLeavesNoPaymentInAnOpenCycle(t *testing.T) {
+	ctx := context.Background()
+	net := testNetwork(t)
+
+	cycles, err := net.ListCycles(ctx)
+	if err != nil {
+		t.Fatalf("list cycles: %v", err)
+	}
+	var open int
+	for _, c := range cycles {
+		if c.Status != payment.CycleOpen {
+			continue
+		}
+		open++
+		if len(c.PaymentIDs) != 0 {
+			t.Errorf("cycle %s (%s) is open with %d payments in it; the first advance will settle them and no receiving bank will be handed a file",
+				c.ID, c.Scheme, len(c.PaymentIDs))
+		}
+	}
+	if open != 2 {
+		t.Errorf("open cycles = %d, want one per scheme; a day refuses the files it takes in before it opens tomorrow's window", open)
+	}
+}
+
 func TestPaymentStatusCoverage(t *testing.T) {
 	ctx := context.Background()
 	net := testNetwork(t)
@@ -188,11 +240,23 @@ func TestPaymentStatusCoverage(t *testing.T) {
 	for _, p := range payments {
 		byStatus[p.Status]++
 	}
+	// No Accepted, and its absence is the assertion.
+	//
+	// Accepted at the clearing house means "in the OPEN cycle", and an open cycle
+	// is what the next business day settles. This process builds no files, so the
+	// clearing house holds no share to release for anything seeded into a cycle,
+	// and a payment left Accepted would be settled by the first advance against
+	// reserves that really move — with the bank that has to pay the payee never
+	// told the payment exists. The build closes every cycle it opens for that
+	// reason, and its in-flight payments are Cleared.
+	//
+	// The status is still in the dataset where a reader meets it: the SUBMITTING
+	// banks' own copies read Accepted, because the ACSC reached them.
 	want := map[payment.PaymentStatus]int{
 		payment.Settled:  4,
 		payment.Returned: 1,
-		payment.Cleared:  2,
-		payment.Accepted: 3,
+		payment.Cleared:  5,
+		payment.Accepted: 0,
 		payment.Rejected: 1,
 	}
 	for status, n := range want {
@@ -216,13 +280,14 @@ func TestPaymentStatusCoverage(t *testing.T) {
 // question any actor in this system may ask — see payment/recon.
 //
 // The seed is the right subject for it because it is the widest deployment this
-// repository builds: four banks, eleven payments in five statuses, five cycles
+// repository builds: four banks, eleven payments in four statuses, seven cycles
 // in three, two settlements and a return. Every earlier assertion in this file
 // is about one of those in isolation.
 //
 // The unreconciled positions are asserted rather than ignored, and that is the
 // point of the second half. This scenario deliberately ends with payments in
-// flight — three Accepted and two Cleared — so a bank's suspense NOT returning
+// flight — five Cleared, in cycles the build closed and nothing settles — so a
+// bank's suspense NOT returning
 // to zero is the correct outcome and a harness that demanded zero would be
 // measuring the wrong thing. What must be true is that every non-zero suspense
 // has something outstanding against it, which is what Check enforces, and that
@@ -262,7 +327,7 @@ func TestTheSeededNetworkReconciles(t *testing.T) {
 // construction: the harness catches a member's advice row against the AGENT's
 // register, and a bank holding no such register cannot. Over this scenario the
 // harness reports no break at all, so the containment says every one of the four
-// banks reconciles from inside, across eleven payments in five statuses, two
+// banks reconciles from inside, across eleven payments in four statuses, two
 // settlements and a return. A false positive in the narrow instrument fails here.
 //
 // # The positions agree in BOTH directions, and that is the stronger half
@@ -393,37 +458,62 @@ func TestSeedRejectLeavesThePayersBankUntouchedWhenItsHalfFails(t *testing.T) {
 	ctx := context.Background()
 	net := testNetwork(t)
 
-	// Any Accepted payment: it has a posted debtor leg and the CSM's half
-	// takes it, exactly as the one the seed itself rejects. Accepted is the
-	// CLEARING HOUSE's status, and the leg is the payer's bank's fact, so the
-	// two come off two copies.
+	// The subject is BUILT rather than scavenged out of the finished dataset.
+	//
+	// A rejection is what a clearing house does to a payment in its OPEN cycle,
+	// and the build deliberately leaves none there — see builder.build's closing
+	// act. The dataset's in-flight payments are Cleared, which RejectAtCSM
+	// refuses, and the one payment the seed does reject is already Rejected. So
+	// the precondition is made here: one more instruction, through the same
+	// composite the build uses, into the empty cycle the build left open.
+	//
+	// Its parties are taken off a payment this scenario already settled, because
+	// those are two customers at two banks it has proved can pay each other — the
+	// addresses resolve, both banks are admitted, and the payer has money. A pair
+	// this test invented would be asserting on the resolution rather than on the
+	// rejection.
+	b := &builder{ctx: ctx, nets: net.nets}
+
 	payments, err := net.ListPayments(ctx)
 	if err != nil {
 		t.Fatalf("list payments: %v", err)
 	}
-	var target payment.Payment
-	var payer *payment.Network
+	var from payment.Payment
 	for _, p := range payments {
-		if p.Status != payment.Accepted {
-			continue
-		}
-		at := net.bank(payment.ParticipantID(p.DebtorDetails.Agent))
-		mine, err := at.GetPayment(ctx, p.ID)
-		if err != nil {
-			t.Fatalf("the payer's bank's copy of %s: %v", p.ID, err)
-		}
-		if mine.DebtorLegTx != "" {
-			target, payer = mine, at
+		if p.Status == payment.Settled && p.Scheme == payment.SchemeSEPACT {
+			from = p
+			break
 		}
 	}
-	if target.ID == "" {
-		t.Fatal("no accepted payment with a posted leg in the seed data")
+	if from.ID == "" {
+		t.Fatal("no settled credit transfer in the seed data to take a pair of parties from")
+	}
+	made := b.initiate(payment.InitiatePaymentRequest{
+		Scheme:          from.Scheme,
+		Debtor:          from.Debtor,
+		Creditor:        from.Creditor,
+		Amount:          1_000,
+		EndToEndID:      "SCT-REJECTED-HALFWAY",
+		Description:     "A rejection whose reversal fails",
+		DebtorDetails:   payment.PartyDetails{Agent: from.DebtorDetails.Agent, Name: from.DebtorDetails.Name},
+		CreditorDetails: payment.PartyDetails{Agent: from.CreditorDetails.Agent, Name: from.CreditorDetails.Name},
+	})
+	if made.Status != payment.Accepted {
+		t.Fatalf("the clearing house took the new instruction to %s, want Accepted; there is no open cycle to reject out of", made.Status)
+	}
+
+	payer := net.bank(payment.ParticipantID(made.DebtorDetails.Agent))
+	target, err := payer.GetPayment(ctx, made.ID)
+	if err != nil {
+		t.Fatalf("the payer's bank's copy of %s: %v", made.ID, err)
+	}
+	if target.DebtorLegTx == "" {
+		t.Fatal("the payer's bank posted no debtor leg, so a rejection has nothing to fail to reverse")
 	}
 	if err := payer.ReverseDebtorLeg(ctx, target, "reversed already"); err != nil {
 		t.Fatalf("reverse the leg out from under the composite: %v", err)
 	}
 
-	b := &builder{ctx: ctx, nets: net.nets}
 	err = rejectErr(b, target.ID, iso20022.StatusReasonDuplication, "duplicate instruction")
 	if !errors.Is(err, ledger.ErrTransactionAlreadyReversed) {
 		t.Fatalf("reject = %v, want ErrTransactionAlreadyReversed", err)

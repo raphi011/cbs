@@ -39,7 +39,7 @@ else
 OPEN := xdg-open
 endif
 
-.PHONY: help install build run dev clean test test-schemas
+.PHONY: help install build run dev clean clean-db test test-schemas
 
 help: ## Show this help
 	@echo "CBS — make targets:"
@@ -144,3 +144,32 @@ test-schemas: ## Run every XSD check, requiring xmllint and iso20022/testdata/xs
 
 clean: ## Remove build outputs
 	rm -rf bin $(WEB)/.next
+
+# The databases a run with a DATABASE_URL left behind, and the clock beside them.
+#
+# With no path there is nothing on disk to remove and this says so rather than
+# succeeding quietly: the databases are in memory, the clock starts at the seed's
+# base date every time, and a restart is already the reset. Exiting non-zero is
+# the point — a target that shrugged would tell someone whose state survived that
+# it had not.
+#
+# The CLOCK goes with them because it lives in the same directory and is what
+# makes a deployment resume on the business date it left off (ADR-0001). Removing
+# the databases alone would replay the seed's timeline under whatever date the
+# last run reached, which is a deployment whose sample data is dated in its own
+# future.
+#
+# ONE recipe line, for the reason the serve macro above is one: this make gives
+# every line its own shell, so a guard on one line would not protect an `rm -rf`
+# on the next.
+clean-db: ## Remove the databases DATABASE_URL points at, and their clock
+	@if [ -z "$(DATABASE_URL)" ]; then \
+		echo "clean-db: DATABASE_URL is empty, so this deployment's databases are in memory and nothing is on disk to remove."; \
+		echo "           Restart the server to reset it, or name the directory you ran with:"; \
+		echo "               make clean-db DATABASE_URL=./cbs.db"; \
+		exit 1; \
+	elif [ ! -e "$(DATABASE_URL)" ]; then \
+		echo "clean-db: $(DATABASE_URL) does not exist; nothing to remove"; \
+	else \
+		rm -rf -- "$(DATABASE_URL)" && echo "clean-db: removed $(DATABASE_URL)"; \
+	fi

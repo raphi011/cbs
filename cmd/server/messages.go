@@ -119,6 +119,19 @@ func submitterOf(scheme payment.Scheme, debtorAgent, creditorAgent iso20022.BIC)
 	return debtorAgent
 }
 
+// receiverOf is the bank a released output file is addressed to: the other one.
+//
+// Same rule read the other way round, and separate from submitterOf because the
+// two answer different questions on the same payment — who is owed the ANSWER to
+// an instruction, and who is owed the INSTRUCTION. Deriving one from the other at
+// each call site is how they come to disagree.
+func receiverOf(scheme payment.Scheme, debtorAgent, creditorAgent iso20022.BIC) iso20022.BIC {
+	if scheme.Direction() == payment.Pull {
+		return debtorAgent
+	}
+	return creditorAgent
+}
+
 // returnerOf is the party whose bank sends a settled payment back: submitterOf's
 // counterpart in both senses, the other party and the other role.
 //
