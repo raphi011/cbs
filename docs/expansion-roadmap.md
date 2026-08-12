@@ -219,7 +219,11 @@ it bites rather than only here:
   cycle settling and its files being released loses shares whose reserves have
   already moved, and no receiving bank is ever handed the instructions it has to
   apply. The fix is a table in that institution's own database; the absence is
-  argued inside `csm/0001_init.sql`'s `cycles` statement.
+  argued inside `csm/0001_init.sql`'s `cycles` statement. It is no longer
+  SILENT, which is the half that has landed: `ClearingHouse.unhanded` reports
+  every payment a cut-off settled and released to nobody, naming the bank that
+  was owed the instruction, and `payment/recon`'s `partiesHoldTheirCopy` finds
+  the same state in the books afterwards.
 - **A bank's payment hub is in memory too**, so a restart loses instructions
   whose debtor legs are committed — money in clearing suspense against a file
   that will never be built. `payment/recon` is the instrument that finds it.
@@ -348,6 +352,24 @@ short a number someone can see.
 
 Ranked by value per unit of effort. Nothing here blocks the sequence above, and
 each is a self-contained afternoon-to-a-week.
+
+### Where a payment is — the lifecycle trail and the hub that holds it — `spec`
+
+[`2026-08-11-payment-whereabouts-design.md`](specs/2026-08-11-payment-whereabouts-design.md).
+Web only, and it adds no route, no column and no status: a payment resting in its
+bank's hub is rendered nowhere, on any screen, in any persona, and
+`GET /payments/pending` has never been called by the frontend. A reader who
+initiates a payment and looks for it at the clearing house is told nothing, and
+the cycles screen cannot distinguish the cycle that is accepting payments from
+the two a day's last phase just opened empty.
+
+Four tasks: a trail per institution's copy read from that institution's own
+audit, the pending section on a bank's own screen, three toasts and two empty
+states that name the act that moves an instruction, and the `accepting` badge on
+the cycles table. Everything it renders is already answerable today.
+
+`hint-content.ts` explains all of it well and behind a `?` the reader has no
+reason to open; the defect is placement, not content, so no hint body changes.
 
 ### Reject future booking dates — designed, not built
 
