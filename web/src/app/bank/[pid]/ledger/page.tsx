@@ -201,7 +201,7 @@ function AccountDialog({
 }
 
 function AccountRow({ pid, account }: { pid: string; account: Account }) {
-  const { data } = useAccountBalance(pid, account.id);
+  const balance = useAccountBalance(pid, account.id);
   const { byCode } = useAssetLookup();
   const asset = byCode.get(account.asset);
   return (
@@ -217,8 +217,18 @@ function AccountRow({ pid, account }: { pid: string; account: Account }) {
         <IdText id={account.id} />
       </span>
       <span className="text-sm font-medium">
-        {asset ? (
-          <Money amount={data?.balance ?? 0} asset={asset} />
+        {balance.isError ? (
+          // An account holding nothing and an account nobody could ask about
+          // are different facts, and a chart of accounts that renders the
+          // second as 0.00 is telling the reader the first.
+          <span
+            className="text-xs text-destructive"
+            title={describeError(balance.error)}
+          >
+            unavailable
+          </span>
+        ) : asset && balance.data ? (
+          <Money amount={balance.data.balance} asset={asset} />
         ) : (
           <Skeleton className="h-4 w-16" />
         )}
