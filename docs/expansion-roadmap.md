@@ -228,9 +228,9 @@ were *reachable for the first time but unclaimed* — task 7 claimed both, and
 unclaimed.
 
 It did **not** claim the threading half of *A business date* — assigning the date
-at command acceptance and carrying it — which is the `BusinessDate` type under
-*Structural work*, and is a compiler-guided rename across four packages that had
-no business being inside a transport swap.
+at command acceptance and carrying it — which is the `Day` type under *Structural
+work*, and is a compiler-guided rename across four packages that had no business
+being inside a transport swap.
 
 **Three things it leaves behind**, none of them a surprise and each written where
 it bites rather than only here:
@@ -547,9 +547,8 @@ accounting purposes**. The worked case this gets wrong today is a transfer
 submitted after cut-off before a holiday weekend; `lending.AddMonths` and the
 schedule generator will silently disagree with any calendar.
 
-Pairs with the `BusinessDate` type under *Structural work* — same problem
-approached from the code side, and doing either alone leaves the other's cost
-in place.
+Pairs with the `Day` type under *Structural work* — same problem approached from
+the code side, and doing either alone leaves the other's cost in place.
 
 **The roll half shipped with §21**, which gave the deployment a clock, a TARGET
 calendar and an explicit advance that runs a business day — see
@@ -656,7 +655,7 @@ win; none is urgent, and the first is the one the others keep tripping over.
 
 ### Collapse the `X` / `XTx` doubling
 
-**77 `…Tx` sibling methods.** Nearly every one is a six-line closure with no
+**84 `…Tx` sibling methods.** Nearly every one is a six-line closure with no
 caller outside its own package: every domain operation exists twice, one form
 opening a unit of work and its twin running inside one.
 
@@ -669,25 +668,34 @@ Same cause, visible cost today: `handleListFacilities` opens two store
 transactions *per facility* and reads each facility row three times, because
 `Drawn` and `RefundPayableFor` each own their own `View`.
 
-### Cross-layer composition needs an owner
+### Cross-layer composition has an owner — `done`
 
-`handleRepay` (`api/handlers_lending.go:274`) opens a `deposit.Store` transaction
-inside an HTTP handler, then downcasts it with `tx.(lending.Tx)` and a
-hand-written error string to reach the lending layer. `payment/bank.go:401` is
-the same five lines with a different prefix. Both error paths are unreachable by
-construction — `payment.BankTx` embeds `lending.Tx` — so a static fact is checked
-at runtime, twice. `deposit.Register.Store()` (`register.go:88`) exists only to
-permit this.
+`Bank` was the candidate and `Bank` is the answer. `Network.bind` already hands a
+bank its ledger, register, portfolio and catalogue, so giving it the store those
+four share adds no reach a holder of one did not already have — and a
+`payment.BankTx` embeds `deposit.Tx` and `lending.Tx`, so an act spanning both
+opens ONE unit of work and downcasts nothing.
 
-The composition belongs on the type that holds the `payment.BankStore` whose
-transaction already spans every layer. **That type has to be named first**: this was designed
-as `Participant.Repay`, and `payment.Participant` was dissolved into `Bank`,
-`SettlementMember` and `RosterEntry`. `Bank` is the candidate.
+`payment.Bank.Repay` and `Bank.RunEndOfDay` are the two such acts. Each lost a
+`tx.(lending.Tx)` and a hand-written error string for a case the type system
+already refuses; `handleRepay` is now a date parse, a call and a DTO.
 
-### A `BusinessDate` type in `ledger`
+`deposit.Register.Store()` stays, with its reason corrected: it opens a unit of
+work over ONE layer, which is what a `deposit.Tx` reaches, and its only callers
+are tests.
+
+### A `Day` type in `ledger`
+
+**Not `BusinessDate`.** That term is taken, and correctly: the business date is
+what day the DEPLOYMENT thinks it is, one per deployment, and
+`cmd/server.BusinessDate` is it. Most of the values below are not that — a
+booking date, a value date, an effective-from and an as-of are all backdatable,
+and `CONTEXT.md` already rules that a booking date must not be called a business
+date. What is wanted is the day-granular VALUE those are carried in.
 
 `ledger` treats value date as first class. `deposit` and `lending` thread a bare
-`time.Time` through ~38 signatures under four different names, and pay for it:
+`time.Time` through 38 exported signatures under four different names, and pay
+for it:
 
 - **Six independent truncations of one value in a single call chain.**
 - **Two hand-rolled comparison functions**, because `==` on `time.Time` compares
@@ -698,9 +706,9 @@ as `Participant.Repay`, and `payment.Participant` was dissolved into `Bank`,
   `p.now()`, so they cannot be backdated — while `Repay`, `RefundInterest`,
   `Accrue` and both capitalisations can.
 
-A day-granular, UTC-normalised-at-construction type with `Start()`, `NextDay()`,
-`Key()` and value equality. Thread the type, not the instant, and a missing date
-becomes a compile error. Cheaper today than at any later point.
+A day-granular, UTC-normalised-at-construction `ledger.Day` with `Start()`,
+`Next()`, `Key()` and value equality. Thread the type, not the instant, and a
+missing date becomes a compile error. Cheaper today than at any later point.
 
 ### The business day as a declared sequence — `done`
 
@@ -756,10 +764,10 @@ compile time. Candidate 4 of the same review measured its test coverage:
 emptying `inShape` to `return nil` left the whole suite green.
 
 `payment.BankTx`, `CsmTx` and `CentralBankTx` replace it, composed from the
-capabilities two institutions genuinely share — `ledger.CommonTx` (4, all three),
+capabilities two institutions genuinely share — `ledger.CommonTx` (3, all three),
 `ledger.Tx` (22, bank and settlement agent), `ledger.SlotTx` (3, a bank's),
 `PaymentRowsTx` (4, bank and clearing house), `ebics.Tx` (8, the two that are
-dialled). Reach per institution: **74 / 30 / 46** against 108, measured, and
+dialled). Reach per institution: **73 / 29 / 45** against 108, measured, and
 every crossing is a build failure.
 
 The shape became a constructor rather than a parameter — `OpenBank`,
@@ -797,10 +805,11 @@ unexported, leaving the DTO files free of I/O as `api/doc.go` claims.
 
 The 99-route table was dumped before and after and is byte-identical.
 
-### Move the derived balances off the store seam
+### Move the derived balances off the store seam — `spec`
 
-The `Tx` seam carries ~57 methods, 70% of them Put/Get/List pass-through. The
-cost is in the rest: eleven computations expressed twice, in two languages, with
+The three transaction seams carry 73 / 21 / 37 methods, 82 / 76 / 70% of them
+Put/Get/List pass-through. The cost is in the rest: eleven computations
+expressed twice, in two languages, with
 contract prose as the only link — listing order, both balances, the series,
 `ListTransactionsForAccount`, `ActiveHoldTotal`, both uniqueness claims,
 `GetOpenCycle`, the subledger block. "Sign an entry by its account's normal
@@ -808,10 +817,34 @@ direction" is written five times. Adding `ValueDatedSeries` cost 88 lines of
 implementation and 103 lines of shared-suite test.
 
 **The reason this was filed as speculative has expired.** It traded away
-Postgres's index-backed `SUM`, and there is no Postgres. What is left to weigh is
-SQLite's aggregate against a Go scan over streamed entries — a measurement, not
-an argument. Measure it before deciding, on a file rather than an ephemeral
-database.
+Postgres's index-backed `SUM`, and there is no Postgres. What was left to weigh
+was SQLite's aggregate against a Go scan over streamed entries, and that is a
+measurement rather than an argument.
+
+**Measured, the aggregate is not what makes a balance cost anything.**
+`BenchmarkBookBalance` (`store/sqlite/balance_bench_test.go`, Apple M2, a file
+under WAL, both sides reading the same rows through the same index prefix):
+
+| entries on the account | SQL `SUM` | the same sum in Go |
+| ---------------------- | --------- | ------------------ |
+| 100                    | 82 µs     | 85 µs              |
+| 1 000                  | 424 µs    | 602 µs             |
+| 10 000                 | 4.7 ms    | 6.7 ms             |
+| 100 000                | 69 ms     | 85 ms              |
+
+At the size a customer account actually reaches, the two are inside the noise of
+each other and BOTH are dominated by opening the unit of work — a repeat run put
+the Go scan ahead at 100 entries. The aggregate pulls away only past ten thousand
+entries on ONE account, and it pulls away by about a fifth, because the row I/O
+is the cost either way and only the addition moved. So the seam is not defended
+by this number: what it costs to move a derived balance into the domain is a
+fifth of a millisecond on accounts a hundred times busier than any in the seed,
+and what it buys is eleven computations written once.
+
+[Design record](specs/2026-08-12-derived-balances-off-the-store-seam-design.md) —
+six phases, and it separates the eight computations that move from the three
+constraints that cannot: a uniqueness claim under concurrency belongs where the
+transactions are.
 
 ### `Scheme` — an interface with seven constant returns
 

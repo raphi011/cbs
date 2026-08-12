@@ -108,8 +108,8 @@ would go looking for it.
 
 ## Not decided here
 
-**Threading the date through the accounting layers.** The roadmap's *`BusinessDate`
-type in `ledger`* item asks for the date to be assigned once at command acceptance
+**Threading the date through the accounting layers.** The roadmap's *`Day` type
+in `ledger`* item asks for the date to be assigned once at command acceptance
 and carried with the command, so nothing downstream calls `today()`. That is a
 day-granular type through ~38 signatures in `deposit` and `lending`, and doing it
 inside a transport swap would put a compiler-guided rename across four packages
