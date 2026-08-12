@@ -76,18 +76,20 @@ identity check each name the one question they ask of all three. Reading one's
 own trail is the rare act that is every institution's, and saying so is clearer
 than the concrete type was.
 
-**`ErrNotInThisShape` is now the odd one out.** It refuses at runtime what the
-types refuse at compile time one layer up, and it exists because `payment.Tx` is
-one interface over three schemas — the same shape this record removes from
-`Network`, still in place underneath it.
+**`ErrNotInThisShape` was left the odd one out**, refusing at runtime what these
+types refuse at compile time one layer up, because `payment.Tx` was one interface
+over three schemas — the same shape this record removes from `Network`, still in
+place underneath it. [ADR-0007](0007-a-store-per-institution.md) is that shape
+removed, and the error is gone.
 
 ## What it costs
 
 **The core is 15 methods three institutions share, and that is a judgement.**
-`GetPayment` is on all three because every institution keeps its own copy of a
-payment's row. Pushing it down would give three types three identical methods
-and one place for them to drift; leaving it up means a handle can read a payment
-row its schema may not hold, which `ErrNotInThisShape` answers.
+`GetPayment` was on all three because every institution was said to keep its own
+copy of a payment's row. The settlement agent does not, and
+[ADR-0007](0007-a-store-per-institution.md) pushed that pair of readers down onto
+the two institutions that do — three lines duplicated, against a handle that can
+no longer name a row its schema does not hold.
 
 **A zero-value handle is still constructible.** `BankNetwork{}` compiles
 anywhere; its identity is `roleUnset`, so the first act refuses naming "no

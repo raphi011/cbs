@@ -29,12 +29,12 @@ const (
 // own record of itself, the mandates it holds as creditor bank, its copy of each
 // payment it is a party to, and the advices it was sent.
 //
-// It talks only to payment.Store and payment.Tx — never to payment.Network,
-// which the race suites in races.go do instead — so what it pins is the storage
-// contract: the not-found sentinels, the fact that a Bank's live handles are
-// derived rather than stored, listing order, the end-to-end-id lookup, deep
-// copying, and the three-layer rollback that payment.Tx embedding deposit.Tx
-// embedding ledger.Tx exists to provide.
+// It talks only to payment.BankStore and payment.BankTx — never to
+// payment.Network, which the race suites in races.go do instead — so what it
+// pins is the storage contract: the not-found sentinels, the fact that a Bank's
+// live handles are derived rather than stored, listing order, the end-to-end-id
+// lookup, deep copying, and the three-layer rollback that payment.BankTx
+// embedding deposit.Tx embedding ledger.Tx exists to provide.
 //
 // # It was one suite over one store, and it is three
 //

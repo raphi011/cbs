@@ -25,3 +25,4 @@ overriding it — see `docs/agents/domain.md`.
 | [0004](0004-a-queue-is-a-table-and-stays-opaque.md) | A download queue is a table, and the bytes in it stay opaque | held-files durability, phase 3 |
 | [0005](0005-a-business-day-is-a-declared-sequence.md) | A business day is a declared sequence, and a subset is derived from it | architecture review |
 | [0006](0006-one-type-per-institution.md) | One type per institution, and the identity guards what is left | architecture review |
+| [0007](0007-a-store-per-institution.md) | A store per institution, and the shape is a constructor | store-per-institution design |

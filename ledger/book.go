@@ -84,8 +84,8 @@ type Book struct {
 //
 // Example:
 //
-//	store, _ := sqlite.Open(ctx, "", time.Now)
-//	book := ledger.NewBook(store, "bank", time.Now)
+//	store, _ := sqlite.OpenBank(ctx, "bank", "", time.Now)
+//	book := ledger.NewBook(store.Ledger(), "bank", time.Now)
 //	l, _ := book.CreateLedger(ctx, "General Ledger")
 //	sl, _ := book.CreateSubledger(ctx, l.ID, "Accounts Receivable")
 //	acct, _ := book.CreateAccount(ctx, sl.ID, "Customer A", ledger.Asset, "EUR")

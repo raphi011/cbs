@@ -4,15 +4,17 @@
 //
 // Like the layers below it, the package holds no state of its own: banks, the
 // two rows the other institutions keep about them, payments, mandates, clearing
-// cycles and settlements all live in a Store behind the payment.Store and
-// payment.Tx interfaces declared here.
+// cycles and settlements all live behind the store and transaction interfaces
+// declared here.
 //
-// There is no such thing as THE store. There is one database per institution —
-// N member banks, the clearing house, the settlement agent — and Stores is the
-// set of them. A Network is one institution's handle on one of them, so which
-// rows an act can even see is decided by which institution is performing it,
-// and a method reaching for a table its institution's schema does not create is
-// refused by name. See Identity, Networks and Stores.
+// There is no such thing as THE store, and there is no one interface for one
+// either. There is a database per institution — N member banks, the clearing
+// house, the settlement agent — with a store type and a transaction type apiece:
+// BankStore over BankTx, ClearingHouseStore over CsmTx, CentralBankStore over
+// CentralBankTx. Stores is the set of them. So which rows an act can see is
+// decided by which institution is performing it, and a method reaching for a
+// table its institution's schema does not create does not compile. See Identity,
+// Networks and Stores.
 //
 // # The model
 //

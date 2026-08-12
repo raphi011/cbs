@@ -122,9 +122,24 @@ dependencies and no external ones.
 **How many databases a deployment has is N+2**: one per member bank, the
 clearing house's, and the settlement agent's. No statement spans two of them, a
 bank reading another bank's rows finds nothing, and a method reaching for a table
-its institution's schema does not create is refused by name
-(`sqlite.ErrNotInThisShape`). The `banks` table lives only in a bank's own
-database; `settlements` lives only in the central bank's.
+its institution's schema does not create **does not compile**. The `banks` table
+lives only in a bank's own database; `settlements` lives only in the central
+bank's.
+
+**There is one store type per institution**, and that is what refuses the
+crossing: `sqlite.OpenBank`, `OpenClearingHouse` and `OpenCentralBank` return
+`*BankStore`, `*ClearingHouseStore` and `*CentralBankStore`, whose units of work
+are `payment.BankTx`, `payment.CsmTx` and `payment.CentralBankTx`. There is no
+`payment.Tx` and no `payment.Store`. Reach is 74 / 30 / 46 methods, and
+[ADR-0007](docs/adr/0007-a-store-per-institution.md) is the ruling. The shape is
+a CONSTRUCTOR rather than a parameter, so there is no seam where a store opened
+as one institution hands out another's transaction.
+
+`sqlite.Shape` survives as an internal value and refuses nothing. It carries the
+migration directory, the table list `Reset` empties, and the two column-list
+flags — `paymentLegs` and `paymentCycle` — which are finer than any interface:
+the type refuses a table an institution does not have, and the implementation
+still decides which columns it writes.
 
 `store/testenv` has **two entry points** because there are two kinds of suite.
 `New` opens ONE member bank's database, which is what the `ledger`, `deposit`,
@@ -148,14 +163,16 @@ guard each, in `store/sqlite/sqlite_test.go`: foreign keys are really enforced,
 and there is exactly one non-primary-key unique index.
 
 `store/storetest` is not a conformance suite. It is the shared suite — written
-against `Store` and `Tx`, naming no table and no dialect.
+against the domain's store and transaction interfaces, naming no table and no
+dialect.
 
-**Which shape runs which suite is not uniform.** The five capability suites
-(`RunLedger`, `RunDeposit`, `RunProduct`, `RunLending`, `RunPayment`) run against
-the **bank** shape alone, because it is the only one holding every table they
-reach; the clearing house and the settlement agent have separate suites over the
-tables their schemas do hold. Roughly four fifths of the package is the bank's.
-`store/sqlite/conformance_test.go` is where each suite's shape is chosen.
+**Which institution runs which suite is not uniform.** The five capability suites
+(`RunLedger`, `RunDeposit`, `RunProduct`, `RunLending`, `RunPayment`) take a
+**bank's** store, because a bank's schema is the only one holding every table
+they reach; the clearing house and the settlement agent have separate suites
+over the tables their schemas do hold, and each takes its own store type. Roughly
+four fifths of the package is the bank's.
+`store/sqlite/conformance_test.go` is where each suite's store is opened.
 
 Three things about the store are worth knowing before changing anything near it:
 

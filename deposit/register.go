@@ -109,8 +109,8 @@ type Register struct {
 //
 // Example:
 //
-//	s, _ := sqlite.Open(ctx, "", time.Now)
-//	book := ledger.NewBook(s, "bank", time.Now)
+//	s, _ := sqlite.OpenBank(ctx, "bank", "", time.Now)
+//	book := ledger.NewBook(s.Ledger(), "bank", time.Now)
 //	reg := deposit.NewRegister(s.Deposit(), book, "bank", time.Now,
 //		iban.Issuer{Country: iban.DE, BankCode: "99900001"}, customers.ID)
 func NewRegister(store Store, book *ledger.Book, id ledger.BookID, clock func() time.Time, issuer iban.Issuer, customers ledger.SubledgerID) *Register {

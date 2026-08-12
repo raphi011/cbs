@@ -1,7 +1,11 @@
-// Package sqlite is the SQLite implementation of ledger.Store, deposit.Store,
-// payment.Store, product.Store and lending.Store, on modernc.org/sqlite — real
-// SQLite transpiled to Go, so the module gains Go dependencies and loses every
-// external one. No server, no Docker, no C toolchain.
+// Package sqlite is the SQLite implementation of every store the domain
+// declares — ledger's, deposit's, product's, lending's, ebics's, and one per
+// institution at the payment layer — on modernc.org/sqlite, real SQLite
+// transpiled to Go, so the module gains Go dependencies and loses every external
+// one. No server, no Docker, no C toolchain.
+//
+// There are three ways in and each is an institution: OpenBank,
+// OpenClearingHouse, OpenCentralBank. See BankStore.
 //
 // Nothing cross-checks the SQL: this is the only implementation. That is why the
 // two guards in sqlite_test.go — foreign keys are really enforced, and there is

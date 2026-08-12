@@ -1,18 +1,20 @@
 // The shared suites, run against store/sqlite.
 //
 // Almost nothing is written here. What tests this store is store/storetest, and
-// this file is one line per suite. Those suites are written against the Store
-// and Tx interfaces and name no table, so what they pin is the CONTRACT.
+// this file is one line per suite. Those suites are written against the domain's
+// store and transaction interfaces and name no table, so what they pin is the
+// CONTRACT.
 //
-// WHICH SHAPE each suite opens is decided here, and the three are not
-// interchangeable. The five capability suites take newBank, because a bank's
-// schema is the only one holding every table they reach; the clearing house's
-// and the settlement agent's payment suites take openShape, because they are
-// different cases over different tables rather than the same file re-run. What is NOT here is as
-// deliberate: the refusals this package owns (ErrReadOnly, ErrNestedTransaction)
-// and the guards on the driver and the schema are in sqlite_test.go, which is an
-// internal test package because it reads sqlite_master and drives the retry
-// directly.
+// WHICH INSTITUTION each suite opens is decided here, and the three are not
+// interchangeable — nor could they be, since each suite takes that
+// institution's own store type. The five capability suites take newBank, because
+// a bank's schema is the only one holding every table they reach; the clearing
+// house's and the settlement agent's payment suites take a constructor each,
+// because they are different cases over different tables rather than the same
+// file re-run. What is NOT here is as deliberate: the refusals this package owns
+// (ErrReadOnly, ErrNestedTransaction) and the guards on the driver and the
+// schema are in sqlite_test.go, which is an internal test package because it
+// reads sqlite_master and drives the retry directly.
 //
 // It is an external test package for the ordinary reason: store/testenv imports
 // this package, so a test file inside it that imported testenv back would be a

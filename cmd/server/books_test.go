@@ -219,7 +219,7 @@ func (s *recordingStores) openUnit() map[ledger.BookID]bool {
 // bookNoter is what one unit of work notes into: the store, plus the identity of
 // the actor that opened it.
 //
-// It exists so that recordingTx's overrides can stay two statements long. Every
+// It exists so that the recorders' overrides can stay two statements long. Every
 // one of them is `r.rec.note(book)` and TestEveryRecordingTxMethodNotesItsBookThenDelegates
 // holds them to exactly that shape, so the actor cannot be an argument at the
 // call site; it has to travel with the thing being called. A value, not a
@@ -357,17 +357,17 @@ func bookOf(book ledger.BookID) ledger.BookID {
 	return book
 }
 
-// recordingTx is one unit of work over a recordingStore: a payment.Tx that notes
-// the book of every book-scoped call before delegating.
+// recordingBankTx is one unit of work over a bank's store: a payment.BankTx that
+// notes the book of every book-scoped call before delegating.
 //
 // "Every book-scoped call" means all four layers, not just the ledger. A
-// payment.Tx embeds deposit.Tx, which embeds product.Tx, which embeds ledger.Tx,
-// and lending.Tx beside them — and every one of those layers is book-scoped in
-// the same way, because a book IS a bank. Wrapping only ledger.Tx would have
-// left a handler free to read another bank's deposit register, its holds, its
-// catalogue or its loan book without touching a single recorded method, and the
-// TestXTouchesOnly… assertions built on this would have read stronger than they
-// were.
+// payment.BankTx embeds deposit.Tx, which embeds product.Tx, which embeds
+// ledger.Tx, and lending.Tx beside them — and every one of those layers is
+// book-scoped in the same way, because a book IS a bank. Wrapping only ledger.Tx
+// would have left a handler free to read another bank's deposit register, its
+// holds, its catalogue or its loan book without touching a single recorded
+// method, and the TestXTouchesOnly… assertions built on this would have read
+// stronger than they were.
 //
 // It also means both SHAPES of book argument. Most methods take `book BookID`
 // second; AppendAudit and ListAudit carry theirs inside AuditEvent.BookID and
@@ -375,7 +375,7 @@ func bookOf(book ledger.BookID) ledger.BookID {
 // the audit log is not per-book — see structCarriedBooks, which is where a
 // method of that shape is now decided rather than overlooked.
 //
-// A payment.Tx method that writes a row of its institution's own leaves a trace
+// A payment method that writes a row of its institution's own leaves a trace
 // through the ID the row needed and the audit event it wrote, both of which are
 // taken under that institution's book — not through the row itself. See the
 // block above the tests, which spells that out and pins it with a test.
@@ -384,10 +384,11 @@ func bookOf(book ledger.BookID) ledger.BookID {
 // member bank's own record of a cut-off it was told about, so it carries that
 // bank's book and IS recorded, exactly like a ledger or deposit row.
 //
-// It EMBEDS payment.Tx, so everything else is promoted untouched.
+// It EMBEDS payment.BankTx, so everything else is promoted untouched.
 // TestRecordingTxOverridesEveryBookScopedMethod is what keeps the override set
 // exactly right: one that went missing would be silently replaced by the
-// promoted method, which records nothing.
+// promoted method, which records nothing. The two recorders beside it are the
+// other two institutions'.
 type recordingBankTx struct {
 	payment.BankTx
 	rec bookNoter
@@ -695,10 +696,11 @@ func (r *recordingBankTx) GetFacilityTermsAsOf(ctx context.Context, book ledger.
 	return r.BankTx.GetFacilityTermsAsOf(ctx, book, id, day)
 }
 
-// --- payment.Tx ---
+// --- payment.BankTx's own ---
 //
-// Only the settlement advice. Every other method payment.Tx declares is
-// network-scoped — see the comment above recordingTx — and takes no book at all.
+// Only the settlement advice. Every other method a bank's transaction declares
+// of its own is network-scoped — see the comment above recordingBankTx — and
+// takes no book at all.
 
 func (r *recordingBankTx) PutSettlementAdvice(ctx context.Context, book ledger.BookID, a payment.SettlementAdvice) error {
 	r.rec.note(book)
@@ -1058,7 +1060,7 @@ func assertBooksTouched(t *testing.T, who string, got, want []ledger.BookID) {
 // member's book through a method it legitimately holds would still fail here and
 // nowhere else.
 func TestWhichBooksEachBankActuallyReaches(t *testing.T) {
-	h := newHarness(t) // builds a seeded network over a recordingStore
+	h := newHarness(t) // builds a seeded network over the recording stores
 
 	h.rec.reset()
 	h.settle(t, h.submitCreditTransfer(t))
@@ -1825,13 +1827,16 @@ func TestTakingCashInReachesNoOtherInstitution(t *testing.T) {
 // through exactly the method nobody wrapped, and every book assertion in this
 // package would stay green while it did.
 //
-// It WALKS the interface embedding chain from payment.Tx rather than reading a
+// It WALKS each institution's interface embedding chain rather than reading a
 // list of files, for the same reason it parses rather than holding a list of
 // methods: a list is a second copy and a second copy drifts. Wrapping only
 // ledger.Tx would miss deposit, product and lending, which are book-scoped in
 // exactly the same way, so a handler reading another bank's deposit register
-// would pass. Walking means a fifth layer embedded into payment.Tx tomorrow is
-// covered on the day it lands.
+// would pass. Walking means a fifth layer embedded into a bank's transaction
+// tomorrow is covered on the day it lands.
+//
+// It runs once per institution, because there are three chains and a recorder
+// over each.
 //
 // It parses THIS file for the other half rather than using reflect, because
 // reflect cannot tell a method a type declares from one it inherits — which is
@@ -2028,7 +2033,7 @@ func TestWritingAParticipantTouchesNoBankBook(t *testing.T) {
 // statement, so a body that is not those two is a mistake rather than a
 // variation, and this says so with the method's name in it.
 //
-// A consequence worth naming: recordingTx may hold no helper methods, because
+// A consequence worth naming: a recorder may hold no helper methods, because
 // every method on it is checked against this shape. That is deliberate — reach
 // for a free function instead, as bookOf is.
 func TestEveryRecordingTxMethodNotesItsBookThenDelegates(t *testing.T) {
@@ -2097,7 +2102,7 @@ var errProbeDone = errors.New("probe finished")
 
 // TestRecordingStoreRecordsTheBookOfEveryCall is the same claim as the two AST
 // tests, made at RUN time and end to end: every book-scoped method, called
-// through a recordingStore over the store the suite is configured with, leaves
+// through its institution's recording store, leaves
 // its book and no other in touched().
 //
 // The AST tests read source, so between them and reality sit Update, the
@@ -2277,7 +2282,8 @@ func TestWritingANetworkRowRecordsTheNetworkBook(t *testing.T) {
 // bookOf maps an empty book to everyBook, which is exactly right for a filter
 // and an over-report for an append. The reason that over-report never fires is
 // that every AuditEvent the domain constructs sets BookID — so this reads the
-// construction sites and says so, in the packages payment.Tx actually spans.
+// construction sites and says so, in the packages the three chains actually
+// span.
 // Those packages are the ones the chain walk visited, not a list kept by hand.
 //
 // store/storetest is deliberately out of range. It builds deliberately odd
@@ -2637,7 +2643,7 @@ type Tx interface {
 // refusals: the shape that must NOT be refused.
 //
 // A book behind an unexported field is not a blind spot, it is out of reach —
-// recordingTx is written in package main and cannot name it. Refusing it would
+// the recorders are written in package main and cannot name it. Refusing it would
 // be noise, and expensive noise: payment.Bank reaches four books this
 // way, through the live handles whose types keep their book unexported, and a
 // parser that refused those would refuse the real repository on every run.
@@ -2803,7 +2809,8 @@ type chainWalk struct {
 	visited map[string]bool // one package, so dirs holds each once
 }
 
-// txBookCandidates is every method reachable through payment.Tx whose second
+// txBookCandidates is every method reachable through any of the three
+// institutions' transaction types whose second
 // argument carries a book, in either shape.
 //
 // # What counts as carrying a book
@@ -2837,7 +2844,7 @@ type chainWalk struct {
 //     REFUSED. See the three tests above, which construct each shape.
 //
 // Methods carrying no book at all are correctly absent: ledger's Now (the
-// clock), and payment.Tx's readers and writers for payments, mandates, cycles
+// clock), and the readers and writers for payments, mandates, cycles
 // and settlements, which are keyed under their own institution's book.
 //
 // # Why it walks rather than reading a list of files
@@ -2846,7 +2853,7 @@ type chainWalk struct {
 // same way a hand-listed set of methods would: reading ledger/store.go alone
 // would call a decorator complete while deposit, product and lending were
 // entirely unrecorded. Walking the chain means the test's idea of "everything
-// payment.Tx can reach" is Go's.
+// an institution's transaction can reach" is Go's.
 func txBookCandidates(t *testing.T) []bookMethod {
 	t.Helper()
 	return realChainWalk(t).methods
@@ -2892,7 +2899,7 @@ func walkOrFail(t *testing.T, entries ...string) *chainWalk {
 	return w
 }
 
-// bookScopedTxMethods is the subset of the candidates that recordingTx must
+// bookScopedTxMethods is the subset of the candidates a recorder must
 // override: every positional one, and every struct-carried one that
 // structCarriedBooks says really scopes its operation.
 func bookScopedTxMethods(t *testing.T) []bookMethod {
@@ -3196,7 +3203,7 @@ func (w *chainWalk) carriesBook(ref typeRef, visited map[string]bool) bool {
 // exportedField reports whether a struct field is one the decorator could name.
 //
 // The traversal follows exported fields only, and that is a statement about
-// reachability rather than a convenience. recordingTx is written in package main
+// reachability rather than a convenience. The recorders are written in package main
 // and cannot name an unexported field of a type from anywhere else, so a book
 // reachable only through one is not a path the recorder could ever take — there
 // is nothing to "decide", which is what a refusal is for.
@@ -3208,7 +3215,7 @@ func (w *chainWalk) carriesBook(ref typeRef, visited map[string]bool) bool {
 // handler that used one of those handles to read a book would do it by calling
 // through to the Tx — PutTransaction, BookBalance, ListAudit — and every one of
 // those IS recorded. None of the four caches anything; Network.bind builds all
-// four over the same payment.Tx through the view adapters; recordingStore wraps
+// four over the same transaction through the view adapters; the recording stores wrap
 // Update AND View; and the stores are separate packages, so an unexported book
 // cannot scope a store operation from outside its own. The Tx is the choke
 // point; a live handle is a route TO it, not around it.
@@ -3509,7 +3516,7 @@ func flatParams(fn *ast.FuncType) []param {
 	return out
 }
 
-// recordingTxMethods is every method declared DIRECTLY on recordingTx in this
+// recordingTxMethods is every method declared DIRECTLY on one recorder in this
 // file. Declared, not promoted — which is the whole point, and the reason this
 // reads the source instead of asking reflect.
 func recordingTxMethods(t *testing.T, recorder string) []string {

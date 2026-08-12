@@ -11,14 +11,20 @@
 // no dialect: identity allocation, ordering, idempotency, the balance aggregate,
 // the audit log, rollback.
 //
-// WHICH SHAPE runs which case is not uniform, and the split is deliberate. The
-// five capability suites — RunLedger, RunDeposit, RunProduct, RunLending and
-// RunPayment — are a BANK's, because the bank shape is the only one holding
+// WHICH INSTITUTION runs which case is not uniform, and the split is deliberate.
+// The five capability suites — RunLedger, RunDeposit, RunProduct, RunLending and
+// RunPayment — are a BANK's, because a bank's schema is the only one holding
 // every table they reach. The clearing house and the settlement agent have
 // suites of their own, RunClearingHousePayment and RunCentralBankPayment, which
 // are separate cases over the tables those two schemas do hold. Four fifths of
 // this package is the bank's, which is what a bank's schema being four fifths of
 // the tables looks like.
+//
+// Each suite takes ITS institution's store type, so the split is checked by the
+// compiler rather than by where a case was filed: a bank case reaching for a
+// cycle, or a clearing house case reaching for a deposit account, does not
+// build. That is why there are three sets of open/update/view helpers at the
+// foot of payment.go rather than one.
 //
 // Where a case records what a store CANNOT show, it is recording why the case
 // exists: the ephemeral store serialises writers, so it is blind to anything

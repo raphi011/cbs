@@ -1053,7 +1053,7 @@ func (t *tx) GetCycle(ctx context.Context, id payment.CycleID) (payment.Clearing
 
 // GetOpenCycle returns the open cycle for a scheme. The domain keeps at most one
 // open per scheme; the earliest wins if that invariant is ever broken, which is
-// payment.Store's documented answer rather than this query's accident.
+// payment.CsmTx's documented answer rather than this query's accident.
 //
 // The scheme and the status are each bound twice rather than once: a positional
 // placeholder cannot be reused, so the argument is passed again for the

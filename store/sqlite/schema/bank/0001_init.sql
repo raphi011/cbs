@@ -13,6 +13,17 @@
 -- crossing would be a row nobody should have read. Here it is a table that is
 -- not there.
 --
+-- AND IT IS ALSO A TYPE. Each of these three files has a store type over it, and
+-- that store's unit of work names only the tables its own schema creates: a
+-- clearing house's cannot name a deposit account, a bank's cannot name a
+-- clearing cycle, the settlement agent's cannot name a payment. So a crossing is
+-- a build failure before it is a missing table. The DDL is still where the
+-- boundary is DECIDED — the types are read off these files, not the other way
+-- round — and it remains the answer for the one thing a type cannot state: two
+-- schemas holding the SAME table with different columns. See the payments
+-- statement below and its counterpart in csm/0001_init.sql, and
+-- docs/adr/0007-a-store-per-institution.md.
+--
 -- WHERE A COMMENT HAS TO GO, AND WHY IT IS NOT WHERE IT WAS
 --
 -- SQLite keeps the text of a statement in sqlite_master.sql, so a comment

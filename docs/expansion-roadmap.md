@@ -675,12 +675,12 @@ transactions *per facility* and reads each facility row three times, because
 inside an HTTP handler, then downcasts it with `tx.(lending.Tx)` and a
 hand-written error string to reach the lending layer. `payment/bank.go:401` is
 the same five lines with a different prefix. Both error paths are unreachable by
-construction — `payment.Tx` embeds `lending.Tx` — so a static fact is checked at
-runtime, twice. `deposit.Register.Store()` (`register.go:88`) exists only to
+construction — `payment.BankTx` embeds `lending.Tx` — so a static fact is checked
+at runtime, twice. `deposit.Register.Store()` (`register.go:88`) exists only to
 permit this.
 
-The composition belongs on the type that holds the `payment.Store` whose `Tx`
-already spans every layer. **That type has to be named first**: this was designed
+The composition belongs on the type that holds the `payment.BankStore` whose
+transaction already spans every layer. **That type has to be named first**: this was designed
 as `Participant.Repay`, and `payment.Participant` was dissolved into `Bank`,
 `SettlementMember` and `RosterEntry`. `Bank` is the candidate.
 
@@ -744,49 +744,35 @@ Measured, they do not: `api/bank` shares 3 of its 17 methods with `bankOps` and
 `api/centralbank` shares 0 of its 5 with `settlementOps`. `ops.go` stays, with a
 different subject — which of ONE institution's acts a business day performs.
 
-### Separate the store by institution — `plan`
+### Separate the store by institution — `done`
 
-[Design record](specs/2026-08-12-store-per-institution-design.md), which carries
-the method lists, the six tasks and the verification.
+[Design record](specs/2026-08-12-store-per-institution-design.md) and
+[ADR-0007](adr/0007-a-store-per-institution.md), which is the ruling.
 
-The defect ADR-0006 removed from `payment.Network`, still in place one layer
-down. `payment.Tx` is one interface over three schemas, so every shape implements
-every method and `ErrNotInThisShape` refuses at runtime what a type could refuse
-at compile time. Candidate 4 of the same review measured its test coverage:
-emptying `inShape` to `return nil` leaves the whole suite green.
+The defect ADR-0006 removed from `payment.Network`, one layer down. `payment.Tx`
+was one interface over three schemas, so every institution's store implemented
+every method and `ErrNotInThisShape` refused at runtime what a type can refuse at
+compile time. Candidate 4 of the same review measured its test coverage:
+emptying `inShape` to `return nil` left the whole suite green.
 
-It partitions more cleanly than `Network` did. Of 104 guarded methods: 44 are a
-bank's alone, 14 the clearing house's, 12 the settlement agent's, and the three
-overlaps are each one coherent capability — the ledger (22, bank and settlement
-agent), the EBICS queue (8, clearing house and settlement agent), and the payment
-rows (4, bank and clearing house). Nothing spans all three but `audit_events` and
-`id_sequences`, which every schema holds and which are not guarded at all.
+`payment.BankTx`, `CsmTx` and `CentralBankTx` replace it, composed from the
+capabilities two institutions genuinely share — `ledger.CommonTx` (4, all three),
+`ledger.Tx` (22, bank and settlement agent), `ledger.SlotTx` (3, a bank's),
+`PaymentRowsTx` (4, bank and clearing house), `ebics.Tx` (8, the two that are
+dialled). Reach per institution: **74 / 30 / 46** against 108, measured, and
+every crossing is a build failure.
 
-So `BankTx = LedgerTx + PaymentRowsTx + 44`, `CsmTx = EbicsTx + PaymentRowsTx +
-14`, `CentralBankTx = LedgerTx + EbicsTx + 12` — 70 / 26 / 42 against 100 today,
-and every crossing a build failure.
+The shape became a constructor rather than a parameter — `OpenBank`,
+`OpenClearingHouse`, `OpenCentralBank`, each returning the store type whose
+methods that schema can answer — so `inShape` and `ErrNotInThisShape` had no
+callers left and both went. `Shape` survives internally for the migration
+directory, `Reset` and the two payment column lists, which are finer than any
+interface.
 
-`Open` goes with them. It takes the shape as a runtime value and returns one
-`*Store` whatever it is handed, so splitting `Tx` alone would leave the guard
-alive on exactly that seam: open one shape, ask for another's store. Three
-constructors — `OpenBank`, `OpenClearingHouse`, `OpenCentralBank` — close it, and
-then `inShape` and `ErrNotInThisShape` have no callers and both go. `Shape`
-survives internally, for the migration directory and `Reset`.
-
-**It reaches `ledger` too**, which the first pass did not expect. `ledger.Tx`'s
-29 methods are three things: 22 the ledger proper, 3 slot accounts a bank alone
-holds, and `NextID`/`Now`/`AppendAudit`/`ListAudit`, which every institution
-needs. So **the clearing house writes its audit trail through a ledger interface
-and has no ledger** — the four come out as a `CommonTx` every institution embeds,
-because a `CsmTx` embedding `ledger.Tx` for its audit trail would rebuild the
-defect being removed. The pattern is already in the tree: `ledger.Tx`, `deposit.Tx` and
-`lending.Tx` are separate interfaces `payment.Tx` embeds, and this is carrying it
-through to the institution boundary.
-
-`store/storetest` was expected to be the expensive part and is not. Its payment
-suites are already three separate function bodies, one per institution, so the
-interface splits along a line the tests are already drawn on — see the record,
-which also corrects the claim that three shapes each run one shared suite.
+It reached `ledger`, which the first pass did not expect: the clearing house was
+writing its audit trail through a ledger interface and has no ledger. And it
+reached `Network`, which had been holding a payment's row for three institutions
+when only two keep one.
 
 ### Deepen the transport module — `done`
 

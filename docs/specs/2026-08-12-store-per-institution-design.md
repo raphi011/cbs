@@ -1,5 +1,15 @@
 # Design — separating the store by institution
 
+**Built.** The ruling is [ADR-0007](../adr/0007-a-store-per-institution.md); this
+record is the plan it was built from and is kept for the measurements and the
+method lists. Two things came out differently and the ADR carries both:
+`SlotAccountTx` is called `ledger.SlotTx`, because `Book.SlotAccountTx` is
+already a method and a parameter of the same name reads badly; and `OpenBank`
+takes a `BookID` rather than a BIC, because the four layers below payment open a
+bank's schema under a book of their own and know nothing of institutions.
+
+---
+
 Based on `main` at `04c1fca`, which is [ADR-0006](../adr/0006-one-type-per-institution.md)
 landed: `payment.Network` is now three types, one per institution, and an act
 that belongs to one of them cannot be named through another's handle.

@@ -26,6 +26,11 @@
 -- and it posts the whole thing or none of it. The batch is the clearing house's
 -- and the payments in it are the banks'.
 --
+-- Both absences are also missing METHODS: this file's store hands out a
+-- transaction carrying no customer and no payment, so neither a deposit read nor
+-- a payment read compiles here. bank/0001_init.sql carries that argument in
+-- full.
+--
 -- WHERE A COMMENT HAS TO GO
 --
 -- SQLite keeps the text of a statement in sqlite_master.sql, so a comment

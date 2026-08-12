@@ -40,9 +40,12 @@ database, and what keeps the bytes opaque is the interface rather than the
 absence of a table.**
 
 Two tables, in `csm/0001_init.sql` and `centralbank/0001_init.sql` and in no
-other schema, because those are the two institutions that are DIALLED — a member
-bank hosts nothing, so the `Bank` shape refuses both by name
-(`sqlite.ErrNotInThisShape`):
+other schema, because those are the two institutions that are DIALLED. A member
+bank hosts nothing, and cannot ask: `EBICS` is a method on
+`sqlite.ClearingHouseStore` and `sqlite.CentralBankStore` and on no third type,
+so there is nothing to call it on. See
+[ADR-0007](0007-a-store-per-institution.md), which turned that refusal from a
+runtime sentinel into a missing method.
 
 - `ebics_queue` — files addressed to a subscriber and not yet collected
 - `ebics_orders` — every order a subscriber has uploaded, and what became of it
@@ -50,7 +53,8 @@ bank hosts nothing, so the `Bank` shape refuses both by name
 The port they are reached through is **declared by `ebics`**, which imports
 nothing from this repository. Its whole vocabulary is subscribers, order ids,
 order types and opaque payloads; there is nothing in it that can name a payment,
-an amount or an agent, and no method on `payment.Tx` reaches these tables at all.
+an amount or an agent, and no method on any institution's transaction type
+reaches these tables at all.
 So the clearing house looking inside a file it is only carrying is not a query
 somebody might write carelessly — it is a query there is nothing to write with.
 

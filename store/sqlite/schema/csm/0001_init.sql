@@ -12,7 +12,9 @@
 -- cmd/server/books_test.go, which goes on passing if the assertion is deleted. Here it
 -- is a fact about the schema — a statement naming accounts in this database is
 -- not a policy violation, it is a syntax error against a table that does not
--- exist.
+-- exist. It is a fact about the Go types too: this file's store hands out a
+-- transaction with no ledger method on it at all, so the statement is never
+-- written. bank/0001_init.sql carries that argument in full.
 --
 -- WHAT IT DOES HOLD is a routing table, a batch, what it owes, and the wire.
 -- roster_entries says who is a member and in which assets, which is what lets it
@@ -595,7 +597,7 @@ CREATE TABLE ebics_queue (
     -- are unstored: it is that nothing this institution can call reaches this
     -- table. The only reader is the transport, whose whole vocabulary is
     -- subscribers, order ids, order types and payloads — see the ebics package —
-    -- and no method on payment.Tx names this table or these columns. A clearing
+    -- and no institution's transaction type names this table or these columns. A clearing
     -- house looking inside a file it is only carrying would have to be written,
     -- and there is nothing to write it with.
     --
