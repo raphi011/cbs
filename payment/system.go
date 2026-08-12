@@ -294,6 +294,7 @@ func (s *BankNetwork) bind(p Bank) *Bank {
 	p.Deposit = deposit.NewRegister(s.deposits, p.Ledger, p.BookID, s.clock, p.Issuer, p.CustomerSubledger)
 	p.Lending = lending.NewPortfolio(s.lendings, p.Ledger, p.BookID, s.clock, p.CustomerSubledger)
 	p.Catalogue = product.NewCatalogue(s.products, p.Ledger, p.BookID, s.clock)
+	p.store = s.store
 	return &p
 }
 

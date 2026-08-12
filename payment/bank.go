@@ -330,6 +330,18 @@ type Bank struct {
 	// Network.bind. It is this bank's product catalogue: products are
 	// book-scoped, so the same ID in two banks is two products.
 	Catalogue *product.Catalogue `json:"-"`
+
+	// store is this bank's own store, bound with the handles above, and it is
+	// what makes this type the one that can COMPOSE them: a BankTx spans the
+	// ledger, the deposit register and the lending portfolio at once, where each
+	// handle's own store reaches one layer. An act needing two layers in one
+	// unit of work is therefore a method here — see Repay and RunEndOfDay — and
+	// not a caller downcasting somebody else's transaction.
+	//
+	// Unexported because handing it out would hand out the ability to write this
+	// bank's book, which is what the four handles above already say about
+	// themselves.
+	store BankStore
 }
 
 // AccountsFor returns the bank's internal accounts for an asset.
@@ -379,16 +391,43 @@ func (b *Bank) OpenCustomerAccount(ctx context.Context, name string, asset ledge
 // It does not charge or capitalize interest. Both are monthly events on their
 // own calendars.
 func (b *Bank) RunEndOfDay(ctx context.Context, date time.Time) error {
-	return b.Deposit.Store().Update(ctx, func(ctx context.Context, tx deposit.Tx) error {
+	return b.store.Update(ctx, func(ctx context.Context, tx BankTx) error {
 		if err := b.Deposit.RunEndOfDayTx(ctx, tx, date); err != nil {
 			return err
 		}
-		lendingTx, ok := tx.(lending.Tx)
-		if !ok {
-			return fmt.Errorf("payment: store transaction does not span the lending layer")
-		}
-		return b.Lending.RunEndOfDayTx(ctx, lendingTx, date)
+		return b.Lending.RunEndOfDayTx(ctx, tx, date)
 	})
+}
+
+// Repay applies a repayment to one of this bank's facilities out of one of its
+// customers' deposit accounts.
+//
+// It is the act neither layer can own. lending takes a generic counterparty and
+// knows nothing about deposit account status or available balance; deposit knows
+// nothing about a facility. So the funds check and the posting are driven from
+// here, in ONE unit of work — calling the two layers in sequence would let a
+// repayment post after a funds check that passed against a balance another
+// request had since spent.
+func (b *Bank) Repay(ctx context.Context, id lending.FacilityID, from deposit.AccountID,
+	amount ledger.Amount, date time.Time, description string,
+) (ledger.Transaction, error) {
+	var out ledger.Transaction
+	err := b.store.Update(ctx, func(ctx context.Context, tx BankTx) error {
+		acct, err := tx.GetDepositAccount(ctx, b.BookID, from)
+		if err != nil {
+			return err
+		}
+		if err := b.Deposit.CheckWithdrawalTx(ctx, tx, acct.ID, amount); err != nil {
+			return err
+		}
+		pos, err := b.Deposit.PositionTx(ctx, tx, acct.ID)
+		if err != nil {
+			return err
+		}
+		out, err = b.Lending.RepayTx(ctx, tx, id, pos, amount, date, description)
+		return err
+	})
+	return out, err
 }
 
 // positionTx resolves a customer deposit account ID to the position its money

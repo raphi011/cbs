@@ -261,8 +261,9 @@ type DrawFacilityRequest struct {
 	Description  string `json:"description"`
 }
 
-// RepayFacilityRequest is a repayment from a customer's deposit account — see
-// handleRepay, the one handler that spans the deposit and lending layers.
+// RepayFacilityRequest is a repayment from a customer's deposit account. It is
+// the one request whose act spans the deposit and lending layers, and the act is
+// the bank's — see payment.Bank.Repay.
 type RepayFacilityRequest struct {
 	AccountID   string `json:"accountId"`
 	Amount      int64  `json:"amount"`

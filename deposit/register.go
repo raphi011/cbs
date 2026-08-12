@@ -120,9 +120,12 @@ func NewRegister(store Store, book *ledger.Book, id ledger.BookID, clock func() 
 // Issuer returns what this register mints addresses under.
 func (r *Register) Issuer() iban.Issuer { return r.issuer }
 
-// Store returns the underlying store, so a caller that needs to span several
-// layers in one unit of work can open the Update itself and then drive the …Tx
-// methods of each layer with the resulting Tx.
+// Store returns the underlying store, so a caller holding a register can open a
+// unit of work and drive the …Tx methods with it directly.
+//
+// It does NOT span layers. A deposit.Tx reaches this layer and the ledger under
+// it and nothing else; an act needing the lending layer as well belongs to the
+// bank, whose unit of work already spans both — see payment.Bank.Repay.
 func (r *Register) Store() Store { return r.store }
 
 // BookID returns the book this register is scoped to.

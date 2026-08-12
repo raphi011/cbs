@@ -1,8 +1,6 @@
 package bank
 
 import (
-	"context"
-	"fmt"
 	"net/http"
 
 	"github.com/raphi011/cbs/api"
@@ -179,42 +177,16 @@ func (s *surface) handleDraw(r *http.Request, p *payment.Bank, req api.DrawFacil
 	return api.ResolveTransactionDTO(r.Context(), p.Ledger, tx)
 }
 
-// handleRepay applies a repayment from a customer's deposit account.
-//
-// It is the orchestration point the lending package deliberately does not have:
-// lending takes a generic counterparty and knows nothing about deposit account
-// status or available balance, so the check and the posting are driven here,
-// through ONE Tx. Calling the two plain methods in sequence would let a
-// repayment post after the funds check had already passed against a balance
-// another request had since spent.
+// handleRepay applies a repayment from a customer's deposit account. The act
+// spans the deposit and lending layers, so it belongs to the bank — see
+// payment.Bank.Repay, which owns the unit of work both need.
 func (s *surface) handleRepay(r *http.Request, p *payment.Bank, req api.RepayFacilityRequest) (api.TransactionDTO, error) {
 	date, err := api.ParseDay("date", req.Date)
 	if err != nil {
 		return api.TransactionDTO{}, err
 	}
-	fid := lending.FacilityID(r.PathValue("fid"))
-
-	var out ledger.Transaction
-	err = p.Deposit.Store().Update(r.Context(), func(ctx context.Context, tx deposit.Tx) error {
-		acct, err := tx.GetDepositAccount(ctx, p.BookID, deposit.AccountID(req.AccountID))
-		if err != nil {
-			return err
-		}
-		if err := p.Deposit.CheckWithdrawalTx(ctx, tx, acct.ID, ledger.Amount(req.Amount)); err != nil {
-			return err
-		}
-		lendingTx, ok := tx.(lending.Tx)
-		if !ok {
-			return fmt.Errorf("api: store transaction does not span the lending layer")
-		}
-		from, err := p.Deposit.PositionTx(ctx, tx, acct.ID)
-		if err != nil {
-			return err
-		}
-		out, err = p.Lending.RepayTx(ctx, lendingTx, fid, from,
-			ledger.Amount(req.Amount), date, req.Description)
-		return err
-	})
+	out, err := p.Repay(r.Context(), lending.FacilityID(r.PathValue("fid")),
+		deposit.AccountID(req.AccountID), ledger.Amount(req.Amount), date, req.Description)
 	if err != nil {
 		return api.TransactionDTO{}, err
 	}
