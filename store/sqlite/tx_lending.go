@@ -24,9 +24,6 @@ var _ lending.Tx = (*tx)(nil)
 // ---------------------------------------------------------------------------
 
 func (t *tx) PutFacility(ctx context.Context, book ledger.BookID, f lending.Facility) error {
-	if err := t.inShape("facilities"); err != nil {
-		return err
-	}
 	if err := t.own(book); err != nil {
 		return err
 	}
@@ -119,9 +116,6 @@ func scanFacility(row interface{ Scan(...any) error }) (lending.Facility, error)
 }
 
 func (t *tx) GetFacility(ctx context.Context, book ledger.BookID, id lending.FacilityID) (lending.Facility, error) {
-	if err := t.inShape("facilities"); err != nil {
-		return lending.Facility{}, err
-	}
 	if err := t.own(book); err != nil {
 		return lending.Facility{}, err
 	}
@@ -140,9 +134,6 @@ func (t *tx) GetFacility(ctx context.Context, book ledger.BookID, id lending.Fac
 }
 
 func (t *tx) ListFacilities(ctx context.Context, book ledger.BookID) ([]lending.Facility, error) {
-	if err := t.inShape("facilities"); err != nil {
-		return nil, err
-	}
 	if err := t.own(book); err != nil {
 		return nil, err
 	}
@@ -173,9 +164,6 @@ func (t *tx) ListFacilities(ctx context.Context, book ledger.BookID) ([]lending.
 // PutInstallment upserts under (book, facility, seq_no): recording a payment
 // against an instalment replaces it rather than appending a second row.
 func (t *tx) PutInstallment(ctx context.Context, book ledger.BookID, i lending.Installment) error {
-	if err := t.inShape("installments"); err != nil {
-		return err
-	}
 	if err := t.own(book); err != nil {
 		return err
 	}
@@ -228,9 +216,6 @@ func scanInstallment(row interface{ Scan(...any) error }) (lending.Installment, 
 // instalment's position in the contract and is already a total order within a
 // facility. It is book- and facility-scoped like every other listing here.
 func (t *tx) ListInstallments(ctx context.Context, book ledger.BookID, id lending.FacilityID) ([]lending.Installment, error) {
-	if err := t.inShape("installments"); err != nil {
-		return nil, err
-	}
 	if err := t.own(book); err != nil {
 		return nil, err
 	}
@@ -263,9 +248,6 @@ func (t *tx) ListInstallments(ctx context.Context, book ledger.BookID, id lendin
 // compares against — so the write and the as-of read cannot disagree about which
 // day a repricing landed in. Nothing here truncates a date; see that function.
 func (t *tx) PutFacilityTerms(ctx context.Context, book ledger.BookID, row lending.FacilityTerms) error {
-	if err := t.inShape("facility_terms"); err != nil {
-		return err
-	}
 	if err := t.own(book); err != nil {
 		return err
 	}
@@ -320,9 +302,6 @@ func scanFacilityTerms(row interface{ Scan(...any) error }) (lending.FacilityTer
 // an ISO day and therefore lexicographically ordered. Ascending is
 // load-bearing: lending.termsAt binary-searches the slice this returns.
 func (t *tx) ListFacilityTerms(ctx context.Context, book ledger.BookID, id lending.FacilityID) ([]lending.FacilityTerms, error) {
-	if err := t.inShape("facility_terms"); err != nil {
-		return nil, err
-	}
 	if err := t.own(book); err != nil {
 		return nil, err
 	}
@@ -352,9 +331,6 @@ func (t *tx) ListFacilityTerms(ctx context.Context, book ledger.BookID, id lendi
 // is compared against was written the same way, so no timestamp arithmetic
 // happens in the database at all.
 func (t *tx) GetFacilityTermsAsOf(ctx context.Context, book ledger.BookID, id lending.FacilityID, day time.Time) (lending.FacilityTerms, error) {
-	if err := t.inShape("facility_terms"); err != nil {
-		return lending.FacilityTerms{}, err
-	}
 	if err := t.own(book); err != nil {
 		return lending.FacilityTerms{}, err
 	}

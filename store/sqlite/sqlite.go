@@ -96,48 +96,46 @@ import (
 // Shapes
 // ---------------------------------------------------------------------------
 
-// Shape is which of the three schemas a store carries, and therefore which
-// institution it can be.
+// Shape is which of the three schemas a store carries.
 //
 // A shape is a SCHEMA and not a second driver. There is one implementation of
 // every Store and Tx method in this package and it is shared by all three; what
-// differs is which tables are underneath it, which is enough to make a crossing
-// a table that is not there rather than a row nobody should have read. Putting
-// the boundary in the DDL is what makes "the clearing house has no ledger" a
-// fact about the database rather than a claim one test asserts.
+// differs is which tables are underneath it. Putting the boundary in the DDL is
+// what makes "the clearing house has no ledger" a fact about the database rather
+// than a claim one test asserts.
 //
-// The three values are the three institutions — payment.BankNetwork,
-// payment.ClearingHouseNetwork, payment.CentralBankNetwork — and there is no
-// fourth. In particular there is no shape holding every table: one would restore
-// the ability to write a statement that spans two institutions, which is the
-// whole of what a shape removes.
+// It no longer refuses anything, and that is the point: WHICH METHODS AN
+// INSTITUTION HAS IS A TYPE — see BankStore, ClearingHouseStore and
+// CentralBankStore — so a method reaching a table its schema does not create
+// cannot be named, let alone called. What is left here is what a type cannot
+// say: which tables Reset empties, where the migrations live, and the two column
+// lists below.
 //
-// What a shape catches that those types do not is the READ an institution can
-// still name: a payment row is every institution's, so GetPayment is on all
-// three, and a shape is what answers when the table behind it is not there.
+// The three values are the three institutions and there is no fourth. In
+// particular there is no shape holding every table: one would restore the
+// ability to write a statement that spans two institutions.
 type Shape struct {
-	// dir is the directory under schema/ holding this shape's migrations, and
-	// it doubles as the name in a refusal.
+	// dir is the directory under schema/ holding this shape's migrations.
 	dir string
 
-	// holds is every table this shape's schema creates. It is what Reset empties
-	// and what the method guards consult, and it is written out rather than read
-	// from sqlite_master so that a method can be refused BEFORE it reaches SQL —
-	// a named sentinel rather than "no such table: cycles", which is a driver
-	// string and not something a caller can match on.
+	// holds is every table this shape's schema creates. It is what Reset empties,
+	// and it is written out rather than read from sqlite_master so that a table
+	// added to a schema and forgotten here is not possible.
 	holds map[string]struct{}
 
 	// paymentLegs and paymentCycle are the two places where two shapes hold the
 	// SAME table with different columns, and they are the only such places.
 	//
-	// A crossing at table granularity is ErrNotInThisShape and needs nothing
-	// here. These two are finer than that: both the bank and the clearing house
-	// keep a copy of every payment they are a party to, and each copy carries
-	// what that institution KNOWS. A bank has no cycles — it never sees a
-	// cut-off, only a settlement advice quoting a reference it cannot resolve —
-	// and the clearing house posts nothing, so it has no legs and no book to post
-	// them in. Both arguments are written out in the schema files, on the
+	// They are finer than any type: both the bank and the clearing house keep a
+	// copy of every payment they are a party to — that is payment.PaymentRowsTx,
+	// which both have — and each copy carries what that institution KNOWS. A bank
+	// has no cycles, only a settlement advice quoting a reference it cannot
+	// resolve; the clearing house posts nothing, so it has no legs and no book to
+	// post them in. Both arguments are written out in the schema files, on the
 	// payments statement of each.
+	//
+	// So the honest claim is that the TYPE refuses a table an institution does
+	// not have, and the implementation still decides which columns it writes.
 	//
 	// They are fields rather than a test on dir because the alternative is a
 	// string comparison against "bank" in the middle of an INSERT, which is the
@@ -146,7 +144,7 @@ type Shape struct {
 	paymentCycle bool
 }
 
-// String names the shape, for the refusals.
+// String names the shape, for the migration errors.
 func (s Shape) String() string { return s.dir }
 
 // The three shapes. See Shape.
@@ -203,26 +201,6 @@ func shape(dir string, tables ...string) Shape {
 // shape's and not another's. See Shape.
 func (s Shape) withPaymentLegs() Shape  { s.paymentLegs = true; return s }
 func (s Shape) withPaymentCycle() Shape { s.paymentCycle = true; return s }
-
-// ErrNotInThisShape is returned by a method whose table this store's schema does
-// not create: PutCycle on a bank, PutBank on the clearing house, PutPayment on
-// the central bank.
-//
-// It exists because payment.Tx is ONE interface over three schemas. Go has no
-// way to give the clearing house a Tx without PutBank on it, so every shape
-// implements every method and two thirds of them have nothing to write to. What
-// they must not do is fail as SQL. "no such table: banks" is a driver string, it
-// arrives from whichever statement happened to run first, and nothing above the
-// store can match on it — so a crossing would be a 500 with a stack trace
-// instead of a refusal a caller can handle and a test can assert.
-//
-// It is checked BEFORE anything else in the method, including the read-only
-// guard, and that ordering is deliberate. A View is a legitimate thing to open
-// on any store; asking the clearing house to list its cycles inside one is
-// legitimate too; asking it to list its BANKS is not, and it is not more
-// legitimate for being a read. The class of defect this avoids is a guard placed
-// after an early return that leaves its "does not apply" path open.
-var ErrNotInThisShape = errors.New("sqlite: this store's schema holds no such table")
 
 // ErrNotThisStoresBook is returned when a method is handed a BookID this store
 // does not answer for.
@@ -319,8 +297,8 @@ type store struct {
 	db    *sql.DB
 	clock func() time.Time
 
-	// shape is which schema is underneath, and therefore which methods have a
-	// table to answer from. See Shape and ErrNotInThisShape.
+	// shape is which schema is underneath: the migrations that went in, the
+	// tables Reset empties, and the two payment column lists. See Shape.
 	shape Shape
 
 	// book is the ONE BookID this store answers for, and every method taking one

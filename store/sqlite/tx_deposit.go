@@ -30,15 +30,10 @@ var _ deposit.Tx = (*tx)(nil)
 // NextAddressSerial draws from a counter named "iban", beside the book's shared
 // "id" counter in the same table and allocated the same way.
 //
-// inShape("deposit_accounts") and not a table this counter has of its own: the
-// counter is only meaningful where there are accounts to address, and the
-// clearing house's and the settlement agent's shapes have none. A store asked
-// for one there is refused by name rather than handing back a number for a
-// register that cannot exist.
+// The counter has no table of its own and needs none: it is only meaningful
+// where there are accounts to address, and it is on deposit.Tx, so only a
+// bank's unit of work can name it.
 func (t *tx) NextAddressSerial(ctx context.Context, book ledger.BookID) (uint64, error) {
-	if err := t.inShape("deposit_accounts"); err != nil {
-		return 0, err
-	}
 	n, err := t.nextSeq(ctx, book, "iban")
 	if err != nil {
 		return 0, err
@@ -47,9 +42,6 @@ func (t *tx) NextAddressSerial(ctx context.Context, book ledger.BookID) (uint64,
 }
 
 func (t *tx) PutDepositAccount(ctx context.Context, book ledger.BookID, a deposit.Account) error {
-	if err := t.inShape("deposit_accounts"); err != nil {
-		return err
-	}
 	if err := t.own(book); err != nil {
 		return err
 	}
@@ -129,9 +121,6 @@ func scanDepositAccount(row interface{ Scan(...any) error }) (deposit.Account, e
 }
 
 func (t *tx) GetDepositAccount(ctx context.Context, book ledger.BookID, id deposit.AccountID) (deposit.Account, error) {
-	if err := t.inShape("deposit_accounts"); err != nil {
-		return deposit.Account{}, err
-	}
 	if err := t.own(book); err != nil {
 		return deposit.Account{}, err
 	}
@@ -154,9 +143,6 @@ func (t *tx) GetDepositAccount(ctx context.Context, book ledger.BookID, id depos
 }
 
 func (t *tx) ListDepositAccounts(ctx context.Context, book ledger.BookID) ([]deposit.Account, error) {
-	if err := t.inShape("deposit_accounts"); err != nil {
-		return nil, err
-	}
 	if err := t.own(book); err != nil {
 		return nil, err
 	}
@@ -267,9 +253,6 @@ func (t *tx) hydrateIdentifiers(ctx context.Context, book ledger.BookID, account
 // (book_id, scheme) prefix still applies. See the index in the schema, where the
 // alternatives and the reason neither was taken are recorded.
 func (t *tx) ListDepositAccountsByIdentifier(ctx context.Context, book ledger.BookID, ident deposit.Identifier) ([]deposit.Account, error) {
-	if err := t.inShape("deposit_account_identifiers"); err != nil {
-		return nil, err
-	}
 	if err := t.own(book); err != nil {
 		return nil, err
 	}
@@ -310,9 +293,6 @@ func (t *tx) ListDepositAccountsByIdentifier(ctx context.Context, book ledger.Bo
 // ---------------------------------------------------------------------------
 
 func (t *tx) PutHold(ctx context.Context, book ledger.BookID, h deposit.Hold) error {
-	if err := t.inShape("holds"); err != nil {
-		return err
-	}
 	if err := t.own(book); err != nil {
 		return err
 	}
@@ -341,9 +321,6 @@ func (t *tx) PutHold(ctx context.Context, book ledger.BookID, h deposit.Hold) er
 }
 
 func (t *tx) GetHold(ctx context.Context, book ledger.BookID, id deposit.HoldID) (deposit.Hold, error) {
-	if err := t.inShape("holds"); err != nil {
-		return deposit.Hold{}, err
-	}
 	if err := t.own(book); err != nil {
 		return deposit.Hold{}, err
 	}
@@ -369,9 +346,6 @@ func (t *tx) GetHold(ctx context.Context, book ledger.BookID, id deposit.HoldID)
 }
 
 func (t *tx) ListHoldsForAccount(ctx context.Context, book ledger.BookID, id deposit.AccountID) ([]deposit.Hold, error) {
-	if err := t.inShape("holds"); err != nil {
-		return nil, err
-	}
 	if err := t.own(book); err != nil {
 		return nil, err
 	}
@@ -411,9 +385,6 @@ func (t *tx) ListHoldsForAccount(ctx context.Context, book ledger.BookID, id dep
 // expiring exactly at now still counts. Like BookBalance this is an aggregate:
 // an unknown account is 0, not an error.
 func (t *tx) ActiveHoldTotal(ctx context.Context, book ledger.BookID, id deposit.AccountID, now time.Time) (ledger.Amount, error) {
-	if err := t.inShape("holds"); err != nil {
-		return 0, err
-	}
 	if err := t.own(book); err != nil {
 		return 0, err
 	}
@@ -438,9 +409,6 @@ func (t *tx) ActiveHoldTotal(ctx context.Context, book ledger.BookID, id deposit
 // deposit.SnapshotDateKey, which is also what GetSnapshot is handed, so the two
 // agree by construction.
 func (t *tx) PutSnapshot(ctx context.Context, book ledger.BookID, s deposit.Snapshot) error {
-	if err := t.inShape("snapshots"); err != nil {
-		return err
-	}
 	if err := t.own(book); err != nil {
 		return err
 	}
@@ -469,9 +437,6 @@ func (t *tx) PutSnapshot(ctx context.Context, book ledger.BookID, s deposit.Snap
 }
 
 func (t *tx) GetSnapshot(ctx context.Context, book ledger.BookID, id deposit.AccountID, dateKey string) (deposit.Snapshot, error) {
-	if err := t.inShape("snapshots"); err != nil {
-		return deposit.Snapshot{}, err
-	}
 	if err := t.own(book); err != nil {
 		return deposit.Snapshot{}, err
 	}
@@ -500,9 +465,6 @@ func (t *tx) GetSnapshot(ctx context.Context, book ledger.BookID, id deposit.Acc
 // already a total order; the insertion sequence is the tie-break only so that
 // every listing follows one rule.
 func (t *tx) ListSnapshotsForAccount(ctx context.Context, book ledger.BookID, id deposit.AccountID) ([]deposit.Snapshot, error) {
-	if err := t.inShape("snapshots"); err != nil {
-		return nil, err
-	}
 	if err := t.own(book); err != nil {
 		return nil, err
 	}
@@ -542,9 +504,6 @@ func (t *tx) ListSnapshotsForAccount(ctx context.Context, book ledger.BookID, id
 // compares against — so the write and the as-of read cannot disagree about which
 // day a repricing landed in. Nothing here truncates a date; see that function.
 func (t *tx) PutOverdraftTerms(ctx context.Context, book ledger.BookID, row deposit.OverdraftTerms) error {
-	if err := t.inShape("overdraft_terms"); err != nil {
-		return err
-	}
 	if err := t.own(book); err != nil {
 		return err
 	}
@@ -624,9 +583,6 @@ func scanOverdraftTerms(row interface{ Scan(...any) error }) (deposit.OverdraftT
 // which is an ISO day and therefore lexicographically ordered. Ascending is
 // load-bearing: deposit.termsAt binary-searches the slice this returns.
 func (t *tx) ListOverdraftTermsForAccount(ctx context.Context, book ledger.BookID, id deposit.AccountID) ([]deposit.OverdraftTerms, error) {
-	if err := t.inShape("overdraft_terms"); err != nil {
-		return nil, err
-	}
 	if err := t.own(book); err != nil {
 		return nil, err
 	}
@@ -656,9 +612,6 @@ func (t *tx) ListOverdraftTermsForAccount(ctx context.Context, book ledger.BookI
 // is compared against was written the same way, so no timestamp arithmetic
 // happens in the database at all.
 func (t *tx) GetOverdraftTermsAsOf(ctx context.Context, book ledger.BookID, id deposit.AccountID, day time.Time) (deposit.OverdraftTerms, error) {
-	if err := t.inShape("overdraft_terms"); err != nil {
-		return deposit.OverdraftTerms{}, err
-	}
 	if err := t.own(book); err != nil {
 		return deposit.OverdraftTerms{}, err
 	}

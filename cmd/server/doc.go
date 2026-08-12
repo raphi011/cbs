@@ -499,12 +499,13 @@
 //   - payment.Identity narrows by PARTICIPANT. Each institution is built over the
 //     network of the institution it IS, so a bank cannot act as another bank
 //     through a handle it legitimately holds.
-//   - the STORE narrows by DATABASE. A store handed a book it does not answer for
-//     refuses with sqlite.ErrNotThisStoresBook, and a method reaching for a table
-//     its institution's schema does not create is refused with
-//     sqlite.ErrNotInThisShape. This is the one that makes the crossing the
-//     recorder was invented for — one bank reading another's ledger through a
-//     method it holds — have no database left in which it could succeed.
+//   - the STORE narrows by DATABASE. There is one store TYPE per institution and
+//     one unit of work per store type, so a method reaching for a table its
+//     institution's schema does not create cannot be named. What is left at
+//     runtime is the book: a store handed one it does not answer for refuses with
+//     sqlite.ErrNotThisStoresBook. Together they make the crossing the recorder
+//     was invented for — one bank reading another's ledger through a method it
+//     holds — have no database left in which it could succeed.
 //   - the RECORDER in books_test.go watches which books each unit of work
 //     actually reached, which is the question none of the other three answers.
 //     "Did this bank's act touch exactly its own book" is still worth asking

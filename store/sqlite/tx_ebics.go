@@ -11,17 +11,15 @@ import (
 //
 // They are in the clearing house's schema and the settlement agent's and in no
 // other, because those are the two institutions that are DIALLED. A member bank
-// asking for any of this is ErrNotInThisShape, which is the topology made into a
-// refusal: EBICS has no push, so a bank only ever dials out and hosts nothing.
+// cannot ask for any of this: EBICS is a method on those two store types and on
+// no third, which is the topology made into a type. EBICS has no push, so a bank
+// only ever dials out and hosts nothing.
 //
 // This file is the one place in the store that names ebics, and the dependency
 // runs the only way it can: that package declares the port and imports nothing
 // from this repository, so the transport stays unable to name a payment. See
 // ebics.Store.
 
-// EBICS returns this store as an ebics.Store: the transport state of the
-// institution whose database this is.
-//
 // One more adapter for the reason the others exist — Go allows one Update method
 // per type and each Store interface declares a different callback — and the
 // callback is handed the very same *tx, so nothing about the mechanism differs.
@@ -54,9 +52,6 @@ func (e ebicsStore) View(ctx context.Context, fn func(context.Context, ebics.Tx)
 // ordinal is zero-based, because A000 is the first id the protocol's format
 // mints. The subtraction is the whole of the difference between the two.
 func (t *tx) NextOrderSeq(ctx context.Context) (int, error) {
-	if err := t.inShape("ebics_orders"); err != nil {
-		return 0, err
-	}
 	n, err := t.nextSeq(ctx, t.store.book, "ebics_order")
 	if err != nil {
 		return 0, err
@@ -66,9 +61,6 @@ func (t *tx) NextOrderSeq(ctx context.Context) (int, error) {
 
 // AddOrder appends one uploaded order to the log, as received.
 func (t *tx) AddOrder(ctx context.Context, seq int, o ebics.Order) error {
-	if err := t.inShape("ebics_orders"); err != nil {
-		return err
-	}
 	if err := t.write(); err != nil {
 		return err
 	}
@@ -88,9 +80,6 @@ func (t *tx) AddOrder(ctx context.Context, seq int, o ebics.Order) error {
 // answered rows are never deleted, so the index that serves HAC does not serve
 // this and there is nothing for one to select on but the status.
 func (t *tx) ListPendingOrders(ctx context.Context) ([]ebics.Order, error) {
-	if err := t.inShape("ebics_orders"); err != nil {
-		return nil, err
-	}
 	rows, err := t.tx.QueryContext(ctx, `
 		SELECT order_id, subscriber, order_type, payload FROM ebics_orders
 		WHERE status = ? ORDER BY seq`, string(ebics.Received))
@@ -117,9 +106,6 @@ func (t *tx) ListPendingOrders(ctx context.Context) ([]ebics.Order, error) {
 // ebics.ErrUnknownOrder rather than a write that reports success and changes
 // nothing.
 func (t *tx) AnswerOrder(ctx context.Context, id ebics.OrderID, status ebics.OrderStatus, detail string) error {
-	if err := t.inShape("ebics_orders"); err != nil {
-		return err
-	}
 	if err := t.write(); err != nil {
 		return err
 	}
@@ -143,9 +129,6 @@ func (t *tx) AnswerOrder(ctx context.Context, id ebics.OrderID, status ebics.Ord
 // oldest first. The payload is not read: HAC says what the host knows about the
 // ORDER, and the file's contents travel back as a business message or not at all.
 func (t *tx) ListAcknowledgements(ctx context.Context, sub ebics.SubscriberID) ([]ebics.Acknowledgement, error) {
-	if err := t.inShape("ebics_orders"); err != nil {
-		return nil, err
-	}
 	rows, err := t.tx.QueryContext(ctx, `
 		SELECT order_id, order_type, status, detail FROM ebics_orders
 		WHERE subscriber = ? ORDER BY seq`, string(sub))
@@ -169,9 +152,6 @@ func (t *tx) ListAcknowledgements(ctx context.Context, sub ebics.SubscriberID) (
 
 // AddQueuedFile puts one file in a subscriber's download queue.
 func (t *tx) AddQueuedFile(ctx context.Context, seq int, sub ebics.SubscriberID, f ebics.File) error {
-	if err := t.inShape("ebics_queue"); err != nil {
-		return err
-	}
 	if err := t.write(); err != nil {
 		return err
 	}
@@ -186,9 +166,6 @@ func (t *tx) AddQueuedFile(ctx context.Context, seq int, sub ebics.SubscriberID,
 
 // ListQueuedFiles is everything waiting for one subscriber, in enqueue order.
 func (t *tx) ListQueuedFiles(ctx context.Context, sub ebics.SubscriberID) ([]ebics.File, error) {
-	if err := t.inShape("ebics_queue"); err != nil {
-		return nil, err
-	}
 	rows, err := t.tx.QueryContext(ctx, `
 		SELECT order_id, order_type, payload FROM ebics_queue
 		WHERE subscriber = ? ORDER BY seq`, string(sub))
@@ -214,9 +191,6 @@ func (t *tx) ListQueuedFiles(ctx context.Context, sub ebics.SubscriberID) ([]ebi
 // and leaves everything else where it was. The ids come from a slice this store
 // handed the caller a moment earlier in the same transaction.
 func (t *tx) DeleteQueuedFiles(ctx context.Context, ids []ebics.OrderID) error {
-	if err := t.inShape("ebics_queue"); err != nil {
-		return err
-	}
 	if err := t.write(); err != nil {
 		return err
 	}

@@ -60,9 +60,6 @@ var (
 // here is not cosmetic: settlement would resolve an account the bank has given
 // up.
 func (t *tx) PutBank(ctx context.Context, b payment.Bank) error {
-	if err := t.inShape("banks"); err != nil {
-		return err
-	}
 	if err := t.write(); err != nil {
 		return err
 	}
@@ -183,9 +180,6 @@ func (t *tx) bankAssets(ctx context.Context, id payment.ParticipantID) (map[paym
 }
 
 func (t *tx) GetBank(ctx context.Context, id payment.ParticipantID) (payment.Bank, error) {
-	if err := t.inShape("banks"); err != nil {
-		return payment.Bank{}, err
-	}
 	b, err := scanBank(t.tx.QueryRowContext(ctx,
 		"SELECT "+bankColumns+" FROM banks WHERE id = ?", string(id)))
 	if errors.Is(err, sql.ErrNoRows) {
@@ -203,9 +197,6 @@ func (t *tx) GetBank(ctx context.Context, id payment.ParticipantID) (payment.Ban
 }
 
 func (t *tx) ListBanks(ctx context.Context) ([]payment.Bank, error) {
-	if err := t.inShape("banks"); err != nil {
-		return nil, err
-	}
 	rows, err := t.tx.QueryContext(ctx,
 		"SELECT "+bankColumns+" FROM banks ORDER BY created_at ASC NULLS FIRST, seq")
 	if err != nil {
@@ -243,9 +234,6 @@ func (t *tx) ListBanks(ctx context.Context) ([]payment.Bank, error) {
 // account left behind for an asset the member has given up is one a cut-off
 // would still post to.
 func (t *tx) PutSettlementMember(ctx context.Context, m payment.SettlementMember) error {
-	if err := t.inShape("settlement_members"); err != nil {
-		return err
-	}
 	if err := t.write(); err != nil {
 		return err
 	}
@@ -325,9 +313,6 @@ func scanSettlementMember(row interface{ Scan(...any) error }) (payment.Settleme
 }
 
 func (t *tx) GetSettlementMember(ctx context.Context, bic iso20022.BIC) (payment.SettlementMember, error) {
-	if err := t.inShape("settlement_members"); err != nil {
-		return payment.SettlementMember{}, err
-	}
 	m, err := scanSettlementMember(t.tx.QueryRowContext(ctx,
 		"SELECT bic, name, opened_at FROM settlement_members WHERE bic = ?", string(bic)))
 	if errors.Is(err, sql.ErrNoRows) {
@@ -345,9 +330,6 @@ func (t *tx) GetSettlementMember(ctx context.Context, bic iso20022.BIC) (payment
 }
 
 func (t *tx) ListSettlementMembers(ctx context.Context) ([]payment.SettlementMember, error) {
-	if err := t.inShape("settlement_members"); err != nil {
-		return nil, err
-	}
 	rows, err := t.tx.QueryContext(ctx,
 		"SELECT bic, name, opened_at FROM settlement_members ORDER BY opened_at ASC NULLS FIRST, seq")
 	if err != nil {
@@ -386,9 +368,6 @@ func (t *tx) ListSettlementMembers(ctx context.Context) ([]payment.SettlementMem
 // agent had done in between — the same argument NextAddressSerial makes about an
 // account number, and for the same reason: a bank code is a number people quote.
 func (t *tx) NextBankCodeSerial(ctx context.Context, book ledger.BookID, country iban.Country) (uint64, error) {
-	if err := t.inShape("bank_codes"); err != nil {
-		return 0, err
-	}
 	n, err := t.nextSeq(ctx, book, "bank_code:"+string(country))
 	if err != nil {
 		return 0, err
@@ -397,9 +376,6 @@ func (t *tx) NextBankCodeSerial(ctx context.Context, book ledger.BookID, country
 }
 
 func (t *tx) PutBankCode(ctx context.Context, a payment.BankCodeAllocation) error {
-	if err := t.inShape("bank_codes"); err != nil {
-		return err
-	}
 	if err := t.write(); err != nil {
 		return err
 	}
@@ -436,9 +412,6 @@ func scanBankCode(row interface{ Scan(...any) error }) (payment.BankCodeAllocati
 }
 
 func (t *tx) GetBankCode(ctx context.Context, issuer iban.Issuer) (payment.BankCodeAllocation, error) {
-	if err := t.inShape("bank_codes"); err != nil {
-		return payment.BankCodeAllocation{}, err
-	}
 	a, err := scanBankCode(t.tx.QueryRowContext(ctx,
 		"SELECT country, code, bic, allocated_at FROM bank_codes WHERE country = ? AND code = ?",
 		string(issuer.Country), string(issuer.BankCode)))
@@ -461,9 +434,6 @@ func (t *tx) GetBankCode(ctx context.Context, issuer iban.Issuer) (payment.BankC
 // answer at least DETERMINISTIC if one ever did, rather than whichever row the
 // query planner reached first.
 func (t *tx) GetBankCodeForBIC(ctx context.Context, country iban.Country, bic iso20022.BIC) (payment.BankCodeAllocation, error) {
-	if err := t.inShape("bank_codes"); err != nil {
-		return payment.BankCodeAllocation{}, err
-	}
 	a, err := scanBankCode(t.tx.QueryRowContext(ctx, `
 		SELECT country, code, bic, allocated_at FROM bank_codes
 		 WHERE country = ? AND bic = ? ORDER BY seq LIMIT 1`, string(country), string(bic)))
@@ -477,9 +447,6 @@ func (t *tx) GetBankCodeForBIC(ctx context.Context, country iban.Country, bic is
 }
 
 func (t *tx) ListBankCodes(ctx context.Context) ([]payment.BankCodeAllocation, error) {
-	if err := t.inShape("bank_codes"); err != nil {
-		return nil, err
-	}
 	rows, err := t.tx.QueryContext(ctx,
 		"SELECT country, code, bic, allocated_at FROM bank_codes ORDER BY allocated_at ASC NULLS FIRST, seq")
 	if err != nil {
@@ -508,9 +475,6 @@ func (t *tx) ListBankCodes(ctx context.Context) ([]payment.BankCodeAllocation, e
 // see roster_entry_assets in the schema, and storetest's
 // RosterEntryAssetsAreAnOrderedList.
 func (t *tx) PutRosterEntry(ctx context.Context, e payment.RosterEntry) error {
-	if err := t.inShape("roster_entries"); err != nil {
-		return err
-	}
 	if err := t.write(); err != nil {
 		return err
 	}
@@ -591,9 +555,6 @@ func scanRosterEntry(row interface{ Scan(...any) error }) (payment.RosterEntry, 
 }
 
 func (t *tx) GetRosterEntry(ctx context.Context, bic iso20022.BIC) (payment.RosterEntry, error) {
-	if err := t.inShape("roster_entries"); err != nil {
-		return payment.RosterEntry{}, err
-	}
 	e, err := scanRosterEntry(t.tx.QueryRowContext(ctx,
 		"SELECT bic, country, bank_code, admission_ref, admitted_at FROM roster_entries WHERE bic = ?", string(bic)))
 	if errors.Is(err, sql.ErrNoRows) {
@@ -617,9 +578,6 @@ func (t *tx) GetRosterEntry(ctx context.Context, bic iso20022.BIC) (payment.Rost
 // ORDER BY seq is what makes the answer deterministic if a duplicate ever
 // existed, which the act that writes these rows is what prevents.
 func (t *tx) GetRosterEntryByIssuer(ctx context.Context, issuer iban.Issuer) (payment.RosterEntry, error) {
-	if err := t.inShape("roster_entries"); err != nil {
-		return payment.RosterEntry{}, err
-	}
 	e, err := scanRosterEntry(t.tx.QueryRowContext(ctx, `
 		SELECT bic, country, bank_code, admission_ref, admitted_at FROM roster_entries
 		 WHERE country = ? AND bank_code = ? ORDER BY seq LIMIT 1`,
@@ -640,9 +598,6 @@ func (t *tx) GetRosterEntryByIssuer(ctx context.Context, issuer iban.Issuer) (pa
 }
 
 func (t *tx) ListRosterEntries(ctx context.Context) ([]payment.RosterEntry, error) {
-	if err := t.inShape("roster_entries"); err != nil {
-		return nil, err
-	}
 	rows, err := t.tx.QueryContext(ctx,
 		"SELECT bic, country, bank_code, admission_ref, admitted_at FROM roster_entries ORDER BY admitted_at ASC NULLS FIRST, seq")
 	if err != nil {
@@ -689,9 +644,6 @@ func (t *tx) ListRosterEntries(ctx context.Context) ([]payment.RosterEntry, erro
 // stored order is the order the caller was given — the roster's own publication
 // order — rather than an accumulation across refreshes.
 func (t *tx) ReplaceRoutingDirectory(ctx context.Context, entries []payment.DirectoryEntry) error {
-	if err := t.inShape("routing_directory"); err != nil {
-		return err
-	}
 	if err := t.write(); err != nil {
 		return err
 	}
@@ -724,9 +676,6 @@ func scanDirectoryEntry(row interface{ Scan(...any) error }) (payment.DirectoryE
 }
 
 func (t *tx) GetDirectoryEntry(ctx context.Context, issuer iban.Issuer) (payment.DirectoryEntry, error) {
-	if err := t.inShape("routing_directory"); err != nil {
-		return payment.DirectoryEntry{}, err
-	}
 	e, err := scanDirectoryEntry(t.tx.QueryRowContext(ctx, `
 		SELECT country, bank_code, bic, refreshed_at FROM routing_directory
 		 WHERE country = ? AND bank_code = ?`, string(issuer.Country), string(issuer.BankCode)))
@@ -744,9 +693,6 @@ func (t *tx) GetDirectoryEntry(ctx context.Context, issuer iban.Issuer) (payment
 // roster's, rather than in the (country, bank_code) order of the key. What a
 // console shows is a directory as its publisher ordered it.
 func (t *tx) ListDirectoryEntries(ctx context.Context) ([]payment.DirectoryEntry, error) {
-	if err := t.inShape("routing_directory"); err != nil {
-		return nil, err
-	}
 	rows, err := t.tx.QueryContext(ctx,
 		"SELECT country, bank_code, bic, refreshed_at FROM routing_directory ORDER BY seq")
 	if err != nil {
@@ -879,9 +825,6 @@ func upsertSet(columns string, pk string) string {
 }
 
 func (t *tx) PutPayment(ctx context.Context, p payment.Payment) error {
-	if err := t.inShape("payments"); err != nil {
-		return err
-	}
 	if err := t.write(); err != nil {
 		return err
 	}
@@ -923,9 +866,6 @@ func (t *tx) scanPayment(row interface{ Scan(...any) error }) (payment.Payment, 
 }
 
 func (t *tx) GetPayment(ctx context.Context, id payment.PaymentID) (payment.Payment, error) {
-	if err := t.inShape("payments"); err != nil {
-		return payment.Payment{}, err
-	}
 	p, err := t.scanPayment(t.tx.QueryRowContext(ctx,
 		"SELECT "+t.paymentColumns()+" FROM payments WHERE id = ?", string(id)))
 	if errors.Is(err, sql.ErrNoRows) {
@@ -942,9 +882,6 @@ func (t *tx) GetPayment(ctx context.Context, id payment.PaymentID) (payment.Paym
 // empty idempotency key, so it is not even looked up: two payments with no
 // client reference must not deduplicate against each other.
 func (t *tx) GetPaymentByEndToEndID(ctx context.Context, endToEndID string) (payment.Payment, error) {
-	if err := t.inShape("payments"); err != nil {
-		return payment.Payment{}, err
-	}
 	if endToEndID == "" {
 		return payment.Payment{}, payment.ErrPaymentNotFound
 	}
@@ -960,9 +897,6 @@ func (t *tx) GetPaymentByEndToEndID(ctx context.Context, endToEndID string) (pay
 }
 
 func (t *tx) ListPayments(ctx context.Context) ([]payment.Payment, error) {
-	if err := t.inShape("payments"); err != nil {
-		return nil, err
-	}
 	rows, err := t.tx.QueryContext(ctx,
 		"SELECT "+t.paymentColumns()+" FROM payments ORDER BY created_at ASC NULLS FIRST, seq")
 	if err != nil {
@@ -990,9 +924,6 @@ const mandateColumns = `id, debtor_agent, debtor_account, debtor_identifier_sche
 	asset, max_amount, status, created_at`
 
 func (t *tx) PutMandate(ctx context.Context, m payment.Mandate) error {
-	if err := t.inShape("mandates"); err != nil {
-		return err
-	}
 	if err := t.write(); err != nil {
 		return err
 	}
@@ -1035,9 +966,6 @@ func scanMandate(row interface{ Scan(...any) error }) (payment.Mandate, error) {
 }
 
 func (t *tx) GetMandate(ctx context.Context, id payment.MandateID) (payment.Mandate, error) {
-	if err := t.inShape("mandates"); err != nil {
-		return payment.Mandate{}, err
-	}
 	m, err := scanMandate(t.tx.QueryRowContext(ctx,
 		"SELECT "+mandateColumns+" FROM mandates WHERE id = ?", string(id)))
 	if errors.Is(err, sql.ErrNoRows) {
@@ -1050,9 +978,6 @@ func (t *tx) GetMandate(ctx context.Context, id payment.MandateID) (payment.Mand
 }
 
 func (t *tx) ListMandates(ctx context.Context) ([]payment.Mandate, error) {
-	if err := t.inShape("mandates"); err != nil {
-		return nil, err
-	}
 	rows, err := t.tx.QueryContext(ctx,
 		"SELECT "+mandateColumns+" FROM mandates ORDER BY created_at ASC NULLS FIRST, seq")
 	if err != nil {
@@ -1078,9 +1003,6 @@ func (t *tx) ListMandates(ctx context.Context) ([]payment.Mandate, error) {
 const cycleColumns = `c.id, c.scheme, c.status, c.net_positions, c.opened_at, c.closed_at`
 
 func (t *tx) PutCycle(ctx context.Context, c payment.ClearingCycle) error {
-	if err := t.inShape("cycles"); err != nil {
-		return err
-	}
 	if err := t.write(); err != nil {
 		return err
 	}
@@ -1119,9 +1041,6 @@ func (t *tx) PutCycle(ctx context.Context, c payment.ClearingCycle) error {
 }
 
 func (t *tx) GetCycle(ctx context.Context, id payment.CycleID) (payment.ClearingCycle, error) {
-	if err := t.inShape("cycles"); err != nil {
-		return payment.ClearingCycle{}, err
-	}
 	out, err := t.queryCycles(ctx, "WHERE c.id = ?", "", string(id))
 	if err != nil {
 		return payment.ClearingCycle{}, err
@@ -1140,9 +1059,6 @@ func (t *tx) GetCycle(ctx context.Context, id payment.CycleID) (payment.Clearing
 // placeholder cannot be reused, so the argument is passed again for the
 // subquery.
 func (t *tx) GetOpenCycle(ctx context.Context, scheme payment.SchemeID) (payment.ClearingCycle, error) {
-	if err := t.inShape("cycles"); err != nil {
-		return payment.ClearingCycle{}, err
-	}
 	out, err := t.queryCycles(ctx,
 		"WHERE c.scheme = ? AND c.status = ? AND c.id = (SELECT id FROM cycles WHERE scheme = ? AND status = ? ORDER BY opened_at ASC NULLS FIRST, seq LIMIT 1)",
 		"", string(scheme), int64(payment.CycleOpen), string(scheme), int64(payment.CycleOpen))
@@ -1156,9 +1072,6 @@ func (t *tx) GetOpenCycle(ctx context.Context, scheme payment.SchemeID) (payment
 }
 
 func (t *tx) ListCycles(ctx context.Context) ([]payment.ClearingCycle, error) {
-	if err := t.inShape("cycles"); err != nil {
-		return nil, err
-	}
 	return t.queryCycles(ctx, "", "c.opened_at ASC NULLS FIRST, c.seq,")
 }
 
@@ -1223,9 +1136,6 @@ func (t *tx) queryCycles(ctx context.Context, where, order string, args ...any) 
 // commit together or not at all. That is what makes the foreign key on
 // held_file_transactions writable: no caller can produce an orphan.
 func (t *tx) AddHeldFile(ctx context.Context, f payment.HeldFile) error {
-	if err := t.inShape("held_files"); err != nil {
-		return err
-	}
 	if err := t.write(); err != nil {
 		return err
 	}
@@ -1256,9 +1166,6 @@ func (t *tx) AddHeldFile(ctx context.Context, f payment.HeldFile) error {
 // repeat it once per transaction in the share. The two statements are inside one
 // transaction, so they see the same rows.
 func (t *tx) ListHeldFiles(ctx context.Context, id payment.CycleID) ([]payment.HeldFile, error) {
-	if err := t.inShape("held_files"); err != nil {
-		return nil, err
-	}
 	rows, err := t.tx.QueryContext(ctx,
 		"SELECT seq, destination, file FROM held_files WHERE cycle_id = ? ORDER BY seq", string(id))
 	if err != nil {
@@ -1311,9 +1218,6 @@ func (t *tx) ListHeldFiles(ctx context.Context, id payment.CycleID) ([]payment.H
 // DeleteHeldFile discards one share of a cut-off. The positions go with it on
 // the cascade.
 func (t *tx) DeleteHeldFile(ctx context.Context, id payment.CycleID, seq int64) error {
-	if err := t.inShape("held_files"); err != nil {
-		return err
-	}
 	if err := t.write(); err != nil {
 		return err
 	}
@@ -1325,9 +1229,6 @@ func (t *tx) DeleteHeldFile(ctx context.Context, id payment.CycleID, seq int64) 
 }
 
 func (t *tx) PutHeldReturn(ctx context.Context, r payment.HeldReturn) error {
-	if err := t.inShape("held_returns"); err != nil {
-		return err
-	}
 	if err := t.write(); err != nil {
 		return err
 	}
@@ -1345,9 +1246,6 @@ func (t *tx) PutHeldReturn(ctx context.Context, r payment.HeldReturn) error {
 }
 
 func (t *tx) GetHeldReturn(ctx context.Context, id payment.PaymentID) (payment.HeldReturn, error) {
-	if err := t.inShape("held_returns"); err != nil {
-		return payment.HeldReturn{}, err
-	}
 	out := payment.HeldReturn{PaymentID: id}
 	err := t.tx.QueryRowContext(ctx,
 		"SELECT returned_by, file FROM held_returns WHERE payment_id = ?", string(id)).
@@ -1362,9 +1260,6 @@ func (t *tx) GetHeldReturn(ctx context.Context, id payment.PaymentID) (payment.H
 }
 
 func (t *tx) DeleteHeldReturn(ctx context.Context, id payment.PaymentID) error {
-	if err := t.inShape("held_returns"); err != nil {
-		return err
-	}
 	if err := t.write(); err != nil {
 		return err
 	}
@@ -1379,9 +1274,6 @@ func (t *tx) DeleteHeldReturn(ctx context.Context, id payment.PaymentID) error {
 // ---------------------------------------------------------------------------
 
 func (t *tx) PutSettlement(ctx context.Context, s payment.Settlement) error {
-	if err := t.inShape("settlements"); err != nil {
-		return err
-	}
 	if err := t.write(); err != nil {
 		return err
 	}
@@ -1414,9 +1306,6 @@ func (t *tx) PutSettlement(ctx context.Context, s payment.Settlement) error {
 }
 
 func (t *tx) GetSettlement(ctx context.Context, id payment.SettlementID) (payment.Settlement, error) {
-	if err := t.inShape("settlements"); err != nil {
-		return payment.Settlement{}, err
-	}
 	out, err := t.querySettlements(ctx, "WHERE s.id = ?", "", string(id))
 	if err != nil {
 		return payment.Settlement{}, err
@@ -1434,9 +1323,6 @@ func (t *tx) GetSettlement(ctx context.Context, id payment.SettlementID) (paymen
 // two would answer with the FIRST rather than with whichever the planner
 // returned, because the first is the one whose posting stands.
 func (t *tx) GetSettlementByCycle(ctx context.Context, id payment.CycleID) (payment.Settlement, error) {
-	if err := t.inShape("settlements"); err != nil {
-		return payment.Settlement{}, err
-	}
 	out, err := t.querySettlements(ctx, "WHERE s.cycle_id = ?", "s.seq", string(id))
 	if err != nil {
 		return payment.Settlement{}, err
@@ -1448,9 +1334,6 @@ func (t *tx) GetSettlementByCycle(ctx context.Context, id payment.CycleID) (paym
 }
 
 func (t *tx) ListSettlements(ctx context.Context) ([]payment.Settlement, error) {
-	if err := t.inShape("settlements"); err != nil {
-		return nil, err
-	}
 	return t.querySettlements(ctx, "", "s.settled_at ASC NULLS FIRST, s.seq")
 }
 
@@ -1511,9 +1394,6 @@ const settlementAdviceColumns = `book_id, reference, asset, movement, closing_ba
 	status, mirror_tx, advised_at, posted_at`
 
 func (t *tx) PutSettlementAdvice(ctx context.Context, book ledger.BookID, a payment.SettlementAdvice) error {
-	if err := t.inShape("settlement_advices"); err != nil {
-		return err
-	}
 	if err := t.own(book); err != nil {
 		return err
 	}
@@ -1559,9 +1439,6 @@ func scanSettlementAdvice(row interface{ Scan(...any) error }) (payment.Settleme
 }
 
 func (t *tx) GetSettlementAdvice(ctx context.Context, book ledger.BookID, reference string, asset ledger.AssetCode) (payment.SettlementAdvice, error) {
-	if err := t.inShape("settlement_advices"); err != nil {
-		return payment.SettlementAdvice{}, err
-	}
 	if err := t.own(book); err != nil {
 		return payment.SettlementAdvice{}, err
 	}
@@ -1578,9 +1455,6 @@ func (t *tx) GetSettlementAdvice(ctx context.Context, book ledger.BookID, refere
 }
 
 func (t *tx) ListSettlementAdvices(ctx context.Context, book ledger.BookID) ([]payment.SettlementAdvice, error) {
-	if err := t.inShape("settlement_advices"); err != nil {
-		return nil, err
-	}
 	if err := t.own(book); err != nil {
 		return nil, err
 	}
