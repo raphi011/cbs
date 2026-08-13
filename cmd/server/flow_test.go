@@ -12,6 +12,7 @@ import (
 
 	"github.com/raphi011/cbs/api"
 	"github.com/raphi011/cbs/iso20022"
+	"github.com/raphi011/cbs/payment"
 	"github.com/raphi011/cbs/provision"
 	"github.com/raphi011/cbs/store/storetest"
 )
@@ -219,6 +220,39 @@ func TestEveryCrossingTheMeshShowsWasObservedAtBothEnds(t *testing.T) {
 		if c.MsgDefIdr == "" {
 			t.Errorf("%s→%s %s names no message definition", c.From, c.To, c.OrderID)
 		}
+	}
+}
+
+// TestAPublishedFilePairsOnItsMessageID: the roster is minted no order id
+// because nothing was queued for anybody, so the only thing its two ends hold
+// in common is the header its sender put on it.
+func TestAPublishedFilePairsOnItsMessageID(t *testing.T) {
+	const (
+		host   iso20022.BIC = "CSMXFRPPXXX"
+		member iso20022.BIC = "AURODEFFXXX"
+	)
+	published := func(seq int64, dir payment.MessageDirection, other iso20022.BIC, msgID string) payment.Message {
+		return payment.Message{Seq: seq, Direction: dir, Counterparty: other, MsgID: msgID}
+	}
+
+	// The two ends of one published file, each recorded under its own seq.
+	sent := keyOf(host, published(7, payment.MessageSent, member, "HRD-1"))
+	taken := keyOf(member, published(3, payment.MessageReceived, host, "HRD-1"))
+	if sent != taken {
+		t.Errorf("the two halves of one published file keyed as %v and %v; "+
+			"the mesh would show it both resting on the wire and never sent", sent, taken)
+	}
+
+	// And two published files between the same ends stay two crossings.
+	if next := keyOf(member, published(4, payment.MessageReceived, host, "HRD-2")); next == taken {
+		t.Error("two published files between one pair of ends merged into one crossing")
+	}
+
+	// A half with neither an order id nor a message id pairs with nothing, which
+	// is the honest answer rather than a merge with every other such half.
+	blank := keyOf(member, published(9, payment.MessageReceived, host, ""))
+	if blank == keyOf(host, published(5, payment.MessageSent, member, "")) {
+		t.Error("two files with no handle at all paired; nothing says they are the same file")
 	}
 }
 

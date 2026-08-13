@@ -91,8 +91,8 @@ func (d *Deployment) messageLogs() map[iso20022.BIC]messageLog {
 type crossingKey struct {
 	from, to iso20022.BIC
 	order    string
-	// solo separates the crossings that carry no order id at all, which would
-	// otherwise all merge into one per pair of ends.
+	// solo is what stands in for the order id where there was none, so that two
+	// such crossings between one pair of ends do not merge into one.
 	solo string
 }
 
@@ -103,10 +103,10 @@ func (d *Deployment) crossings(ctx context.Context) ([]api.CrossingDTO, error) {
 	logs := d.messageLogs()
 	// Every row, not a page of them: the delivered half of a crossing may be far
 	// newer than the sent half, so a window per institution would report a
-	// delivered file as resting on the wire.
+	// delivered file as resting on the wire. The files themselves are left unread.
 	found := map[crossingKey]*api.CrossingDTO{}
 	for _, holder := range slices.Sorted(maps.Keys(logs)) {
-		messages, err := logs[holder].ListMessages(ctx, payment.MessageFilter{})
+		messages, err := logs[holder].ListMessages(ctx, payment.MessageFilter{WithoutPayload: true})
 		if err != nil {
 			return nil, fmt.Errorf("server: reading %s's message log for the mesh: %w", holder, err)
 		}
@@ -137,7 +137,12 @@ func keyOf(holder iso20022.BIC, m payment.Message) crossingKey {
 		key.from, key.to = m.Counterparty, holder
 	}
 	if m.OrderID == "" {
-		key.solo = fmt.Sprintf("%s-%d", m.Direction, m.Seq)
+		// A published file is minted no order id, so its two halves have only the
+		// sender's own message id in common. One with neither pairs with nothing,
+		// and folding this end's own seq in is what says so.
+		if key.solo = m.MsgID; key.solo == "" {
+			key.solo = fmt.Sprintf("%s-%d", m.Direction, m.Seq)
+		}
 	}
 	return key
 }
@@ -155,7 +160,7 @@ func fill(c *api.CrossingDTO, m payment.Message) {
 	} else {
 		c.SentSeq, c.SentAt = m.Seq, &at
 	}
-	c.MsgDefIdr, c.MsgID, c.PayloadSize = m.MsgDefIdr, m.MsgID, len(m.Payload)
+	c.MsgDefIdr, c.MsgID, c.PayloadSize = m.MsgDefIdr, m.MsgID, m.PayloadSize
 	c.Payments = make([]string, len(m.Payments))
 	for i, id := range m.Payments {
 		c.Payments[i] = string(id)

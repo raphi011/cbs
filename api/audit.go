@@ -36,10 +36,7 @@ func AuditFilterFrom(r *http.Request, book ledger.BookID, scope ledger.Scope) le
 		Scope:    scope,
 		Type:     r.URL.Query().Get("type"),
 		EntityID: r.URL.Query().Get("entity"),
-		Limit:    logDefaultLimit,
-	}
-	if v, err := strconv.Atoi(r.URL.Query().Get("limit")); err == nil && v > 0 {
-		f.Limit = min(v, logMaxLimit)
+		Limit:    LogLimit(r),
 	}
 	if v, err := strconv.ParseInt(r.URL.Query().Get("before"), 10, 64); err == nil && v > 0 {
 		f.Before = v

@@ -43,8 +43,58 @@ func (t *tx) AppendMessage(ctx context.Context, m payment.Message) error {
 // ListMessages returns the messages matching f in ascending Seq order, each
 // carrying the payments it named.
 func (t *tx) ListMessages(ctx context.Context, f payment.MessageFilter) ([]payment.Message, error) {
+	page, args := messagePage(f)
+	// The size is answered whether the file is read or not, and length() of a
+	// blob does not read one. See payment.MessageFilter.WithoutPayload.
+	payload := "payload"
+	if f.WithoutPayload {
+		payload = "NULL"
+	}
+	rows, err := t.tx.QueryContext(ctx, "SELECT seq, direction, counterparty, msg_def_idr, msg_id, order_id, "+
+		payload+", length(payload), occurred_at FROM messages"+page, args...)
+	if err != nil {
+		return nil, fmt.Errorf("sqlite: list messages: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]payment.Message, 0)
+	for rows.Next() {
+		var (
+			m          payment.Message
+			occurredAt nullTime
+		)
+		if err := rows.Scan(&m.Seq, &m.Direction, &m.Counterparty, &m.MsgDefIdr, &m.MsgID,
+			&m.OrderID, &m.Payload, &m.PayloadSize, &occurredAt); err != nil {
+			return nil, fmt.Errorf("sqlite: list messages: %w", err)
+		}
+		m.At = occurredAt.Time
+		out = append(out, m)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("sqlite: list messages: %w", err)
+	}
+	if f.Limit > 0 {
+		for i, j := 0, len(out)-1; i < j; i, j = i+1, j-1 {
+			out[i], out[j] = out[j], out[i]
+		}
+	}
+
+	carried, err := t.listMessagePayments(ctx, page, args)
+	if err != nil {
+		return nil, err
+	}
+	for i := range out {
+		out[i].Payments = carried[out[i].Seq]
+	}
+	return out, nil
+}
+
+// messagePage is the WHERE and ORDER BY that select one page of the log, and
+// the arguments they take. It is built once and used twice: the rows, and the
+// payments those rows carried.
+func messagePage(f payment.MessageFilter) (string, []any) {
 	where := make([]string, 0, 4)
-	args := make([]any, 0, 4)
+	args := make([]any, 0, 5)
 	add := func(clause string, arg any) {
 		args = append(args, arg)
 		where = append(where, clause)
@@ -67,71 +117,40 @@ func (t *tx) ListMessages(ctx context.Context, f payment.MessageFilter) ([]payme
 		add("seq < ?", f.Before)
 	}
 
-	query := "SELECT seq, direction, counterparty, msg_def_idr, msg_id, order_id, payload, occurred_at FROM messages"
+	page := ""
 	if len(where) > 0 {
-		query += " WHERE " + strings.Join(where, " AND ")
+		page = " WHERE " + strings.Join(where, " AND ")
 	}
 	// ListAudit's paging, for its reason: a page is taken newest-first so that
 	// LIMIT keeps the newest matches, and handed back oldest-first.
-	descending := f.Limit > 0
-	if descending {
-		query += " ORDER BY seq DESC LIMIT ?"
+	if f.Limit > 0 {
 		args = append(args, f.Limit)
-	} else {
-		query += " ORDER BY seq"
+		return page + " ORDER BY seq DESC LIMIT ?", args
 	}
-
-	rows, err := t.tx.QueryContext(ctx, query, args...)
-	if err != nil {
-		return nil, fmt.Errorf("sqlite: list messages: %w", err)
-	}
-	defer rows.Close()
-
-	out := make([]payment.Message, 0)
-	for rows.Next() {
-		var (
-			m          payment.Message
-			occurredAt nullTime
-		)
-		if err := rows.Scan(&m.Seq, &m.Direction, &m.Counterparty, &m.MsgDefIdr, &m.MsgID,
-			&m.OrderID, &m.Payload, &occurredAt); err != nil {
-			return nil, fmt.Errorf("sqlite: list messages: %w", err)
-		}
-		m.At = occurredAt.Time
-		out = append(out, m)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("sqlite: list messages: %w", err)
-	}
-	if descending {
-		for i, j := 0, len(out)-1; i < j; i, j = i+1, j-1 {
-			out[i], out[j] = out[j], out[i]
-		}
-	}
-	for i := range out {
-		if out[i].Payments, err = t.listMessagePayments(ctx, out[i].Seq); err != nil {
-			return nil, err
-		}
-	}
-	return out, nil
+	return page + " ORDER BY seq", args
 }
 
-// listMessagePayments is which payments one message carried, in document order.
-func (t *tx) listMessagePayments(ctx context.Context, seq int64) ([]payment.PaymentID, error) {
-	rows, err := t.tx.QueryContext(ctx,
-		"SELECT payment_id FROM message_payments WHERE message_seq = ? ORDER BY position", seq)
+// listMessagePayments is which payments each message on one page carried, in
+// document order, keyed by message. It names the page again rather than the
+// seqs it returned, an id list having no bound the mesh's read would respect.
+func (t *tx) listMessagePayments(ctx context.Context, page string, args []any) (map[int64][]payment.PaymentID, error) {
+	rows, err := t.tx.QueryContext(ctx, "SELECT message_seq, payment_id FROM message_payments"+
+		" WHERE message_seq IN (SELECT seq FROM messages"+page+") ORDER BY message_seq, position", args...)
 	if err != nil {
-		return nil, fmt.Errorf("sqlite: list what message %d carried: %w", seq, err)
+		return nil, fmt.Errorf("sqlite: list what a page of messages carried: %w", err)
 	}
 	defer rows.Close()
 
-	var out []payment.PaymentID
+	out := map[int64][]payment.PaymentID{}
 	for rows.Next() {
-		var id payment.PaymentID
-		if err := rows.Scan(&id); err != nil {
-			return nil, fmt.Errorf("sqlite: list what message %d carried: %w", seq, err)
+		var (
+			seq int64
+			id  payment.PaymentID
+		)
+		if err := rows.Scan(&seq, &id); err != nil {
+			return nil, fmt.Errorf("sqlite: list what a page of messages carried: %w", err)
 		}
-		out = append(out, id)
+		out[seq] = append(out[seq], id)
 	}
 	return out, rows.Err()
 }

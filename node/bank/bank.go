@@ -456,12 +456,13 @@ func (b *Bank) dial(host iso20022.BIC) (*ebics.Client, error) {
 }
 
 // handle works through one collected file, recording it first whatever this
-// bank goes on to make of it: a file that arrived and would not parse is a
-// thing that happened, and this log is the only trace a bank keeps of one.
+// bank goes on to make of it. A failed record is LOGGED and the file still
+// worked: Download emptied the queue, so a return here loses it entirely.
 func (b *Bank) handle(ctx context.Context, host iso20022.BIC, f ebics.File) error {
 	env, perr := iso20022.Unmarshal(f.Payload)
 	if err := node.Record(ctx, b.ops, b.bic, payment.MessageReceived, host, f.OrderID, env, f.Payload); err != nil {
-		return errors.Join(perr, err)
+		b.env.Log.Error("server: a file was collected and not recorded",
+			"bank", b.bic, "from", host, "order", f.OrderID, "error", err)
 	}
 	if perr != nil {
 		return b.answerUnreadable(ctx, host, perr)

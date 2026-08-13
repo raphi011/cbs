@@ -193,7 +193,8 @@ func (c *ClearingHouse) handle(ctx context.Context, order ebics.Order) error {
 func (c *ClearingHouse) handleFile(ctx context.Context, from iso20022.BIC, order ebics.OrderID, raw []byte) error {
 	env, perr := iso20022.Unmarshal(raw)
 	if err := node.Record(ctx, c.ops, c.bic, payment.MessageReceived, from, order, env, raw); err != nil {
-		return errors.Join(perr, err)
+		c.env.Log.Error("server: a file was taken and not recorded",
+			"institution", c.bic, "from", from, "order", order, "error", err)
 	}
 	if perr != nil {
 		return c.answerUnreadable(ctx, from, perr)

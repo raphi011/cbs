@@ -43,8 +43,11 @@ type Message struct {
 
 	At time.Time
 
-	// Payload is the file, as it travelled.
-	Payload []byte
+	// Payload is the file, as it travelled, and it is absent where the listing
+	// asked for it to be left unread. PayloadSize stands in for it either way:
+	// see MessageFilter.WithoutPayload.
+	Payload     []byte
+	PayloadSize int
 
 	// Payments is which payments the file carried, in document order. It is the
 	// join that takes a payment to the file that carried it.
@@ -106,6 +109,11 @@ type MessageFilter struct {
 	// PaymentID narrows to the files that carried one payment.
 	PaymentID PaymentID
 
+	// WithoutPayload leaves the files themselves unread. An index over a log that
+	// keeps every file forever wants Message.PayloadSize and not the bytes, and
+	// the mesh reads every institution's whole log.
+	WithoutPayload bool
+
 	// Before and Limit page the listing. See ledger.AuditFilter, which they are
 	// modelled on: Before is a cursor over Seq, and a Limit takes the NEWEST
 	// matches and still hands them back oldest first.
@@ -149,6 +157,11 @@ func (s *Network) RecordMessageTx(ctx context.Context, tx MessageLogTx, m Messag
 // allocated. A seq is reached from a listing rather than guessed, because it
 // counts one institution's traffic and no two institutions agree on one.
 func (s *Network) GetMessage(ctx context.Context, seq int64) (Message, error) {
+	// A seq below the first is refused here rather than passed on, because
+	// MessageFilter reads one as naming no message at all.
+	if seq <= 0 {
+		return Message{}, fmt.Errorf("%w: %d", ErrMessageNotFound, seq)
+	}
 	found, err := s.ListMessages(ctx, MessageFilter{Seq: seq})
 	if err != nil {
 		return Message{}, err

@@ -54,6 +54,15 @@ a child table naming the payments inside it.
 A bank has no other record of anything; the two hosts gain the outbound half and
 the parsed half they never had.
 
+**A failed record never costs a file, at either end.** The write is LOGGED and
+the act carries on, on the sending side and the receiving side both. Sending, a
+caller told its upload failed would send the same instructions again and the
+file has already arrived. Receiving, the reason is sharper: `Download` empties
+the queue as it hands a file over, so a receive that returned on a failed record
+would drop a settled file that exists nowhere else — reserves moved, and the
+payee's bank never told. A log is a record of what happened and not a gate on
+it.
+
 **It duplicates `ebics_orders.payload` at the two hosts, and that is accepted.**
 The same bytes will sit twice in one database for an inbound file. The two
 tables have different owners, lifetimes and readers: `ebics_orders` is the
@@ -212,6 +221,13 @@ Four things follow, and each was a decision:
   limit is applied to the CROSSINGS, and it never drops one still resting: a
   queue nobody has come for is what this view exists to show.
 
+**The two halves of a crossing pair on the order id, and on the message id
+where there is none.** A published file is minted no order id — the roster is
+the one such file today — so the only thing its two ends hold in common is the
+header its sender put on it. A half with neither pairs with nothing and is
+rendered as the one-ended crossing it is, rather than merging with every other
+half that also has neither.
+
 **A wire is named by the parts its ends play** — a subscriber dials a host, and
 nothing is ever pushed the other way — so a bank the scheme has not admitted is
 in the mesh and on no wire at all. That is the difference between holding a
@@ -258,11 +274,19 @@ first thing that is not one, and the scheduled business day's ticker will be the
 second. Stated once, in the README beside that claim: none runs BELOW
 `cmd/server`, and an institution still does nothing nobody asked it to.
 
-**A mesh read is every row every institution holds, payload included.** That is
-what a truthful answer about what is still in flight costs, and it is the read
-`payment/recon` already makes at whole-deployment scale. It is also why the
-stream carries the events themselves: a page that re-fetched the snapshot per
-file would pay it once per movement.
+**A mesh read is every row every institution holds.** That is what a truthful
+answer about what is still in flight costs, and it is the read `payment/recon`
+already makes at whole-deployment scale. It is also why the stream carries the
+events themselves: a page that re-fetched the snapshot per file would pay it
+once per movement.
+
+**What it does NOT read is the files.** The mesh and every listing want a
+file's SIZE, so the filter leaves the payload unread and the store answers
+`length(payload)` instead — which does not read a blob. Only `GET
+/messages/{seq}`, one document at a time, is handed the bytes. The same read
+takes the payments a whole page carried in ONE query rather than one per row:
+the mesh's page is every row in the database, so a query per row is a query per
+file that ever crossed.
 
 ## What this does not do
 

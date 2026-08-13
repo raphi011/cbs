@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/raphi011/cbs/iso20022"
@@ -143,6 +144,21 @@ func TestAPaymentReachesTheFilesThatCarriedIt(t *testing.T) {
 	// payment id is not something this institution can do, and that is the domain.
 	if ms := messagesOf(t, h.cb().ListMessages, payment.MessageFilter{PaymentID: p.ID}); len(ms) != 0 {
 		t.Errorf("the settlement agent reaches %d files from %s; a cut-off's positions name no payment", len(ms), p.ID)
+	}
+}
+
+// A seq is one an institution's own listing named, and one it never allocated
+// is not found. The first seq is 1, so a zero is a caller that composed one.
+func TestASeqNoListingNamedIsNotFound(t *testing.T) {
+	h := newHarness(t)
+	h.submitCreditTransfer(t)
+	h.day(t)
+
+	for _, seq := range []int64{0, -1} {
+		if m, err := h.bank(h.debtorBIC).GetMessage(context.Background(), seq); !errors.Is(err, payment.ErrMessageNotFound) {
+			t.Errorf("seq %d answered %q (%v), want it not found; a filter reads a seq below the first as no filter at all",
+				seq, m.MsgDefIdr, err)
+		}
 	}
 }
 

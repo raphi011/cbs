@@ -50,7 +50,7 @@ func ToMessageDTO(m payment.Message) MessageDTO {
 		OrderID:      m.OrderID,
 		At:           m.At,
 		Payments:     ids,
-		PayloadSize:  len(m.Payload),
+		PayloadSize:  m.PayloadSize,
 	}
 }
 
@@ -110,7 +110,9 @@ func messageFilterFrom(r *http.Request) (payment.MessageFilter, error) {
 	f := payment.MessageFilter{
 		Counterparty: iso20022.BIC(q.Get("counterparty")),
 		PaymentID:    payment.PaymentID(q.Get("payment")),
-		Limit:        logDefaultLimit,
+		Limit:        LogLimit(r),
+		// A listing is an index, so it never reads the files themselves.
+		WithoutPayload: true,
 	}
 	switch d := payment.MessageDirection(q.Get("direction")); d {
 	case "", payment.MessageSent, payment.MessageReceived:
@@ -118,9 +120,6 @@ func messageFilterFrom(r *http.Request) (payment.MessageFilter, error) {
 	default:
 		return f, BadRequest("invalid direction %q (want %q or %q)",
 			d, payment.MessageSent, payment.MessageReceived)
-	}
-	if v, err := strconv.Atoi(q.Get("limit")); err == nil && v > 0 {
-		f.Limit = min(v, logMaxLimit)
 	}
 	if v, err := strconv.ParseInt(q.Get("before"), 10, 64); err == nil && v > 0 {
 		f.Before = v

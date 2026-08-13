@@ -264,6 +264,37 @@ func runMessageLog(t *testing.T, open func(*testing.T) messageLog) {
 		assertEqual(t, "payments carried", len(got[0].Payments), 0)
 	})
 
+	// An index over a log that keeps every file forever must not carry the files
+	// in it, and the size is what stands in for one.
+	t.Run("AListingLeavesTheFilesUnreadAndStillAnswersTheirSize", func(t *testing.T) {
+		log := open(t)
+
+		sent := sentTo(verdeBIC, "MSG-1", "pay_1")
+		log.update(t, func(ctx context.Context, tx payment.MessageLogTx) error {
+			return tx.AppendMessage(ctx, sent)
+		})
+
+		var index, whole []payment.Message
+		log.view(t, func(ctx context.Context, tx payment.MessageLogTx) error {
+			var err error
+			if index, err = tx.ListMessages(ctx, payment.MessageFilter{WithoutPayload: true}); err != nil {
+				return err
+			}
+			whole, err = tx.ListMessages(ctx, payment.MessageFilter{})
+			return err
+		})
+
+		assertEqual(t, "messages in the index", len(index), 1)
+		if len(index[0].Payload) != 0 {
+			t.Errorf("the index carried %d bytes of the file; it is an index", len(index[0].Payload))
+		}
+		assertEqual(t, "the size the index reports", index[0].PayloadSize, len(sent.Payload))
+		// And it is the same listing otherwise: the payments still come with it.
+		assertEqual(t, "payments carried", len(index[0].Payments), 1)
+		assertEqual(t, "the file the document route reads", string(whole[0].Payload), string(sent.Payload))
+		assertEqual(t, "and it reports the same size", whole[0].PayloadSize, len(sent.Payload))
+	})
+
 	// A log is a record: nothing deletes a row, and only Reset clears it. The
 	// three Reset cases assert the clearing; this asserts the appending.
 	t.Run("AppendingTwiceKeepsBoth", func(t *testing.T) {
