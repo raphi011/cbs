@@ -73,7 +73,7 @@ Four groups, and only the first two are sequenced against each other.
 
 1. **Defects** — small, verified against the current tree, and each one is a
    thing the system gets wrong rather than a thing it does not have.
-2. **The build sequence** — the payments and settlement arc, §1 through §7,
+2. **The build sequence** — the payments and settlement arc, §1 through §8,
    where each item genuinely wants the one before it.
 3. **Domain gaps worth building** — a standing catalogue, ranked by value per
    unit of effort. Take from the top; nothing here blocks anything there.
@@ -155,25 +155,73 @@ reasons that now hold for everything below: it replaced the transport every item
 here is built on, and the business date it brought is a prerequisite the other
 four had each been paying for separately.
 
-1. **7c, the message log.** The last piece of sub-project 7, and it makes every
-   flow already shipped visible. Cheaper after 21, which gives it files to show
-   rather than one message per payment.
-2. **Instant payments.** The one place the settlement orchestrator has to grow.
-3. **Card transactions.** Additive on top of holds and the existing net path.
-4. **Reserve adequacy.** Wanted by both 2 and 3, and worth little before either.
-5. **Crypto**, then **FX** — the two undecided-scope domains, largest last.
+1. **7c, the message log**, and the per-phase stepping that makes it worth
+   watching. The last piece of sub-project 7, and it makes every flow already
+   shipped visible. Cheaper after 21, which gives it files to show rather than
+   one message per payment.
+2. **Scenarios, and a deployment that starts blank.** The seed becomes a base
+   state plus triggerable scenarios, every one of which drives the real doors.
+3. **A scheduled business day.** A time of day, a cursor, intraday windows and a
+   clock that runs — one concept, and 2 has to land first so it has a base date
+   to choose.
+4. **Instant payments.** The one place the settlement orchestrator has to grow.
+5. **Card transactions.** Additive on top of holds and the existing net path.
+6. **Reserve adequacy.** Wanted by both 4 and 5, and worth little before either.
+7. **Crypto**, then **FX** — the two undecided-scope domains, largest last.
 
-### 1. 7c, the message log — `todo`
+### 1. 7c, the message log — `spec`
 
+[`2026-08-13-the-message-log-design.md`](specs/2026-08-13-the-message-log-design.md).
 The last of sub-project 7, and the only reason §7 is not `done`. Envelopes
 persisted so a payment screen can show the XML that actually moved, carried
-through README, hints and quiz.
+through README, hints and quiz — plus the network view the deployment serves and
+the per-phase stepping that makes it worth watching.
 
 Cheap relative to what it exposes: every flow already shipped becomes something a
 reader can watch rather than infer. It is also the natural home for anything that
 wants to explain a `pacs.002` reason code at the point it was returned.
 
-### 2. Instant payments — `todo`
+Two things found while scoping it, both of which changed what it has to build.
+
+**The journal records puts and never collects.** `node.Journal` already sees
+every file an institution uploads or enqueues, in phase order, and `DayReport`
+carries them — but `bank.Collect` journals nothing. So the deployment can say
+when a file was *addressed* to a bank and not when that bank took it, which is
+the gap settle-before-release exists to teach.
+
+**Nothing can be stepped one hop.** `POST /payments/cutoff` on a bank's listener
+produces its `pacs.008` and is unrendered; after it the file sits in the clearing
+house's order log, because `csm.Work` is reachable only from `AdvanceDay`
+(`cmd/server/day.go:220`, its one call site). A reader can submit or run a whole
+day, and nothing in between. Exposing the clearing, settlement and release
+phases as operator acts — the deployment's own, on an operator surface — is what
+turns the log into something a reader watches rather than reads afterwards.
+
+### 2. Scenarios, and a deployment that starts blank — `spec`
+
+[`2026-08-13-scenarios-and-a-blank-slate-design.md`](specs/2026-08-13-scenarios-and-a-blank-slate-design.md).
+Boot leaves banks provisioned, subscribed and prefunded and nothing else; a
+payment, a rejection, a return and a borrower in arrears are scenarios an
+operator triggers. Every scenario drives the doors an operator has and never
+`payment/flow`, whose bypass has already produced one silent defect.
+
+Wants a capital injection that does not exist: vault cash enters only through a
+customer deposit, so a bank with no customers has nothing to lodge.
+
+### 3. A scheduled business day — `spec`
+
+[`2026-08-13-a-scheduled-business-day-design.md`](specs/2026-08-13-a-scheduled-business-day-design.md).
+Intraday windows, a clock that runs at an accelerated rate, and a discrete
+advance that triggers everything due since the last one — one missing concept
+behind all three, which README's transport section and
+the rule that the deployment owns the clock each name independently:
+there is no time of day within a settlement day.
+
+Overturns two standing claims — that no background goroutine runs under this
+process, and that a business day is a sequence of *untimed* phases. The largest piece is a re-entrancy answer
+for every phase, since a catch-up may re-run one.
+
+### 4. Instant payments — `todo`
 
 Real-time **gross** settlement, 24/7. Each payment settles individually and
 immediately instead of being batched into a clearing cycle. (*Instant* and
@@ -199,7 +247,7 @@ the right shape for instant rails, and adopting it for a `Gross` scheme while
 keeping the current shape for `Net` is a real fork in the payment layer, not a
 detail. The earmark primitive already exists: it is a `deposit` hold.
 
-### 3. Card transactions — `todo`
+### 5. Card transactions — `todo`
 
 An **authorise → capture → clear → settle** flow. The authorisation is a
 `deposit` hold (`CreateHold`) reserving the cardholder's available balance;
@@ -214,7 +262,7 @@ front-end work, recorded as out of scope by 6b and unclaimed since.
 Wants the **hold expiry sweep** below first, or ships a hold state machine that
 is less honest than it looks.
 
-### 4. Reserve adequacy — `todo`
+### 6. Reserve adequacy — `todo`
 
 Check a bank's reserves before its net settlement is allowed to post. Motivated
 by both of the two items above and worth little before either: today every
@@ -226,7 +274,7 @@ the `camt.051` that would pull liquidity back the other way. **This system lodge
 cash and never withdraws it**, which is the current reason `camt.051` is refused
 by name in `iso20022/doc.go`.
 
-### 5. Crypto — `todo`
+### 7. Crypto — `todo`
 
 Scope deliberately undecided. Ranges from custody balances denominated in
 non-fiat units — nearly free today, BTC is a known asset at scale 8 and works —
@@ -251,7 +299,7 @@ child table keyed `(participant_id, asset)`; and `interest` is asset-agnostic, s
 a crypto-denominated facility needs no new arithmetic — only an asset inside the
 cap.
 
-### 6. FX / exchange — `todo`
+### 8. FX / exchange — `todo`
 
 Trades against two assets, rate handling, spread recognized as revenue, position
 and exposure accounts, settlement conventions.
