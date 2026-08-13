@@ -685,6 +685,63 @@ CREATE INDEX ebics_orders_subscriber_idx ON ebics_orders (
 );
 
 -- ---------------------------------------------------------------------------
+-- The message log
+-- ---------------------------------------------------------------------------
+
+CREATE TABLE messages (
+    -- THE MESSAGE LOG IS PER INSTITUTION; messages in bank/0001_init.sql carries
+    -- the argument and every column's. What this one holds is what the clearing
+    -- house was sent and what it addressed onward, which at this institution is
+    -- most of the traffic in the system.
+    --
+    -- IT DUPLICATES ebics_orders.payload FOR AN INBOUND FILE, and that is
+    -- accepted rather than overlooked: the same bytes sit twice in this database
+    -- for the length of one hop. The two tables have different owners, lifetimes
+    -- and readers. ebics_orders is the TRANSPORT's — opaque bytes, an order
+    -- status, and the HAC a subscriber downloads — and this one is the
+    -- INSTITUTION's, parsed and joined to the payments inside it. The transport
+    -- must not read a domain table and the domain must not depend on the
+    -- transport's, which is held_files' argument against this same table one
+    -- section up: the two coincide in bytes for one hop and mean different
+    -- things.
+    --
+    -- The alternative was a nullable payload meaning "look in ebics_orders under
+    -- this order id". It is a conditional foreign key; it is true only at an
+    -- institution that happens to be a host, and a member bank hosts nothing; and
+    -- it makes every reader of this table ask which kind of institution it is
+    -- reading before it can render a row.
+    seq          INTEGER PRIMARY KEY,
+    direction    TEXT NOT NULL,
+    counterparty TEXT NOT NULL,
+    msg_def_idr  TEXT NOT NULL,
+    msg_id       TEXT NOT NULL,
+    order_id     TEXT NOT NULL,
+    payload      BLOB NOT NULL,
+    occurred_at  TEXT
+) STRICT;
+
+CREATE INDEX messages_counterparty_idx ON messages (
+    -- See bank/0001_init.sql.
+    counterparty, seq
+);
+
+CREATE TABLE message_payments (
+    -- WHICH PAYMENTS the file above carried; bank/0001_init.sql carries the
+    -- argument. This institution holds a payments row for every payment it
+    -- clears, so the join is at its widest here.
+    message_seq INTEGER NOT NULL,
+    position    INTEGER NOT NULL,
+    payment_id  TEXT NOT NULL,
+    PRIMARY KEY (message_seq, position),
+    FOREIGN KEY (message_seq) REFERENCES messages (seq) ON DELETE CASCADE
+) STRICT;
+
+CREATE INDEX message_payments_payment_idx ON message_payments (
+    -- See bank/0001_init.sql.
+    payment_id, message_seq
+);
+
+-- ---------------------------------------------------------------------------
 -- The audit log
 -- ---------------------------------------------------------------------------
 

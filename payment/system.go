@@ -32,6 +32,10 @@ type Network struct {
 	// is on that institution's own type, because the acts differ.
 	common CommonStore
 
+	// messages is the same database at the width of the message log, which is
+	// every institution's too. See MessageLogStore.
+	messages MessageLogStore
+
 	// schemes is the only thing a Network holds in memory, and it is SHARED by
 	// every network one Networks mints. See schemeRegistry.
 	schemes *schemeRegistry
@@ -117,11 +121,11 @@ func cbAssetsAccountName(asset ledger.AssetCode) string {
 // newNetwork is the core every institution's handle embeds. The scheme registry
 // is supplied so that Networks can hand one registry to every institution it
 // mints; see institutions.go for the three assemblers that call this.
-func newNetwork(common CommonStore, clock func() time.Time, id Identity, schemes *schemeRegistry) core {
+func newNetwork(common CommonStore, messages MessageLogStore, clock func() time.Time, id Identity, schemes *schemeRegistry) core {
 	if id.role == roleUnset {
 		panic("payment: a network needs an identity; a network belonging to no institution has no answer to whose book an act is about")
 	}
-	s := core{clock: clock, id: id, common: common, schemes: schemes}
+	s := core{clock: clock, id: id, common: common, messages: messages, schemes: schemes}
 	s.RegisterScheme(SCT{})
 	s.RegisterScheme(SDD{})
 	return s

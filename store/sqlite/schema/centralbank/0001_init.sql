@@ -609,6 +609,51 @@ CREATE INDEX ebics_orders_subscriber_idx ON ebics_orders (
 );
 
 -- ---------------------------------------------------------------------------
+-- The message log
+-- ---------------------------------------------------------------------------
+
+CREATE TABLE messages (
+    -- THE MESSAGE LOG IS PER INSTITUTION; messages in bank/0001_init.sql carries
+    -- the argument and every column's, and csm/0001_init.sql carries the one for
+    -- keeping bytes this host's ebics_orders already holds. What this one holds
+    -- is the settlement instructions and lodgements this agent was sent and the
+    -- answers and statements it addressed back.
+    seq          INTEGER PRIMARY KEY,
+    direction    TEXT NOT NULL,
+    counterparty TEXT NOT NULL,
+    msg_def_idr  TEXT NOT NULL,
+    msg_id       TEXT NOT NULL,
+    order_id     TEXT NOT NULL,
+    payload      BLOB NOT NULL,
+    occurred_at  TEXT
+) STRICT;
+
+CREATE INDEX messages_counterparty_idx ON messages (
+    -- See bank/0001_init.sql.
+    counterparty, seq
+);
+
+CREATE TABLE message_payments (
+    -- WHICH PAYMENTS the file above carried; bank/0001_init.sql carries the
+    -- argument, including why payment_id has no foreign key. THIS is the schema
+    -- that makes the absence unavoidable: the settlement agent has no payments
+    -- table and never sees a payment as a row, and it still carries files full
+    -- of them — a cut-off's positions net M payments this institution will never
+    -- hold one of. So the join is written here against ids it cannot resolve,
+    -- and resolving one is the SUBMITTING bank's or the clearing house's act.
+    message_seq INTEGER NOT NULL,
+    position    INTEGER NOT NULL,
+    payment_id  TEXT NOT NULL,
+    PRIMARY KEY (message_seq, position),
+    FOREIGN KEY (message_seq) REFERENCES messages (seq) ON DELETE CASCADE
+) STRICT;
+
+CREATE INDEX message_payments_payment_idx ON message_payments (
+    -- See bank/0001_init.sql.
+    payment_id, message_seq
+);
+
+-- ---------------------------------------------------------------------------
 -- The audit log
 -- ---------------------------------------------------------------------------
 

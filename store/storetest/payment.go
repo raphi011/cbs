@@ -790,6 +790,12 @@ func RunPayment(t *testing.T, newStore func(*testing.T, ledger.BookID) payment.B
 			return nil
 		})
 	})
+
+	// The message log, which is the only record a member bank keeps of any file:
+	// it hosts nothing, so it has neither queue nor order log.
+	runMessageLog(t, func(t *testing.T) messageLog {
+		return bankMessageLog(openPayment(t, newStore, bookA))
+	})
 }
 
 // RunClearingHousePayment runs the payment-layer cases whose rows are the
@@ -1295,6 +1301,12 @@ func RunClearingHousePayment(t *testing.T, newStore func(*testing.T) payment.Cle
 			return nil
 		})
 	})
+
+	// The message log, which at the clearing house is most of the traffic in the
+	// system.
+	runMessageLog(t, func(t *testing.T) messageLog {
+		return clearingHouseMessageLog(openClearingHouse(t, newStore))
+	})
 }
 
 // RunCentralBankPayment runs the payment-layer cases whose rows are the CENTRAL
@@ -1514,6 +1526,13 @@ func RunCentralBankPayment(t *testing.T, newStore func(*testing.T) payment.Centr
 			assertEqual(t, "accounts after a reader mutation", len(again.Accounts), 1)
 			return nil
 		})
+	})
+
+	// The message log, which is the settlement agent's own traffic. It carries
+	// payment ids this institution holds no row for, which is the one thing its
+	// copy of the join has that the other two do not.
+	runMessageLog(t, func(t *testing.T) messageLog {
+		return centralBankMessageLog(openCentralBank(t, newStore))
 	})
 }
 

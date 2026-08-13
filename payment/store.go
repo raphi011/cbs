@@ -110,6 +110,7 @@ type BankTx interface {
 	deposit.Tx
 	lending.Tx
 	PaymentRowsTx
+	MessageLogTx
 
 	// A bank's own record of ITSELF, and the only row in this table.
 	PutBank(ctx context.Context, b Bank) error
@@ -140,6 +141,7 @@ type BankTx interface {
 type CsmTx interface {
 	ledger.CommonTx
 	PaymentRowsTx
+	MessageLogTx
 
 	// The cycles this clearing house opens, closes and settles.
 	PutCycle(ctx context.Context, c ClearingCycle) error
@@ -167,6 +169,7 @@ type CsmTx interface {
 // CentralBankTx is the settlement agent's unit of work.
 type CentralBankTx interface {
 	ledger.Tx
+	MessageLogTx
 
 	// The settlement agent's record of the account it opened for a member, keyed
 	// by BIC for the reason a bank's own row is: the BIC is the only identifier
@@ -234,6 +237,45 @@ func (v centralBankCommon) Update(ctx context.Context, fn func(context.Context, 
 }
 
 func (v centralBankCommon) View(ctx context.Context, fn func(context.Context, ledger.CommonTx) error) error {
+	return v.CentralBankStore.View(ctx, func(ctx context.Context, tx CentralBankTx) error { return fn(ctx, tx) })
+}
+
+// bankMessages and the two beside it present an institution's store as the
+// MessageLogStore the Network core keeps. Three adapters rather than one,
+// because Go allows one Update method per type.
+type bankMessages struct{ BankStore }
+
+var _ MessageLogStore = bankMessages{}
+
+func (v bankMessages) Update(ctx context.Context, fn func(context.Context, MessageLogTx) error) error {
+	return v.BankStore.Update(ctx, func(ctx context.Context, tx BankTx) error { return fn(ctx, tx) })
+}
+
+func (v bankMessages) View(ctx context.Context, fn func(context.Context, MessageLogTx) error) error {
+	return v.BankStore.View(ctx, func(ctx context.Context, tx BankTx) error { return fn(ctx, tx) })
+}
+
+type clearingHouseMessages struct{ ClearingHouseStore }
+
+var _ MessageLogStore = clearingHouseMessages{}
+
+func (v clearingHouseMessages) Update(ctx context.Context, fn func(context.Context, MessageLogTx) error) error {
+	return v.ClearingHouseStore.Update(ctx, func(ctx context.Context, tx CsmTx) error { return fn(ctx, tx) })
+}
+
+func (v clearingHouseMessages) View(ctx context.Context, fn func(context.Context, MessageLogTx) error) error {
+	return v.ClearingHouseStore.View(ctx, func(ctx context.Context, tx CsmTx) error { return fn(ctx, tx) })
+}
+
+type centralBankMessages struct{ CentralBankStore }
+
+var _ MessageLogStore = centralBankMessages{}
+
+func (v centralBankMessages) Update(ctx context.Context, fn func(context.Context, MessageLogTx) error) error {
+	return v.CentralBankStore.Update(ctx, func(ctx context.Context, tx CentralBankTx) error { return fn(ctx, tx) })
+}
+
+func (v centralBankMessages) View(ctx context.Context, fn func(context.Context, MessageLogTx) error) error {
 	return v.CentralBankStore.View(ctx, func(ctx context.Context, tx CentralBankTx) error { return fn(ctx, tx) })
 }
 

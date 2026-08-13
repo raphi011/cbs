@@ -23,7 +23,7 @@ func (s *ClearingHouseNetwork) OpenCycleID(ctx context.Context, scheme SchemeID)
 // NetworkWithoutAnIdentity assembles the shared core with the zero Identity,
 // which is what newNetwork panics on.
 func NetworkWithoutAnIdentity(clock func() time.Time) {
-	newNetwork(nil, clock, Identity{}, newSchemeRegistry())
+	newNetwork(nil, nil, clock, Identity{}, newSchemeRegistry())
 }
 
 // The four mis-wired handles: one institution's TYPE over another's IDENTITY.
