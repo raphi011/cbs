@@ -20,6 +20,11 @@ const (
 	HAC OrderType = "HAC" // the acknowledgement file: what became of each order
 	BTD OrderType = "BTD" // everything else waiting in the queue, in order
 
+	// HRD is the routing table a scheme publishes to its members: host data
+	// rather than a payment, and the one file on this transport that is not ISO
+	// 20022. See published, and the design record for why the H family.
+	HRD OrderType = "HRD"
+
 	// C25 is a camt.025 receipt waiting in a queue. It is a LABEL and never a
 	// selector: BTD is what collects it, and asking for it by name is refused like
 	// any other type this host does not offer.
@@ -31,15 +36,24 @@ const (
 // refusal and not a crash.
 var uploads = map[OrderType]bool{CCT: true, CDD: true, CRT: true, CST: true, CSI: true, CLD: true}
 
-// downloads is every order type a subscriber may collect. HAC is here and is
-// answered from the order log rather than from a queue.
+// downloads is every order type a subscriber may collect out of what this host
+// is holding FOR IT. HAC is here and is answered from the order log rather than
+// from a queue.
 var downloads = map[OrderType]bool{C53: true, HAC: true, BTD: true}
+
+// published is every order type answered from a SNAPSHOT the host offers every
+// subscriber alike. Collecting one empties nothing, which is the whole
+// difference from a queue.
+var published = map[OrderType]bool{HRD: true}
 
 // IsUpload reports whether t is a type a subscriber sends.
 func (t OrderType) IsUpload() bool { return uploads[t] }
 
 // IsDownload reports whether t is a type a subscriber collects.
-func (t OrderType) IsDownload() bool { return downloads[t] }
+func (t OrderType) IsDownload() bool { return downloads[t] || published[t] }
+
+// IsPublished reports whether t is answered from a snapshot. See published.
+func (t OrderType) IsPublished() bool { return published[t] }
 
 // OrderID identifies one order at one host: four characters, a letter and then
 // three from 0-9A-Z, which is the protocol's own format.
@@ -89,6 +103,8 @@ type Acknowledgement struct {
 // File is one file waiting in, or collected from, a subscriber's download queue.
 // Payload is opaque to this package and to the institution holding the queue.
 type File struct {
+	// OrderID is empty on a published file: nothing was queued for anybody, so
+	// no id was ever minted. See Server.Published.
 	OrderID   OrderID   `json:"orderId"`
 	OrderType OrderType `json:"orderType"`
 	Payload   []byte    `json:"payload"`

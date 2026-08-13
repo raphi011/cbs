@@ -96,9 +96,9 @@ func TestARevokedMandateIsRefusedSynchronously(t *testing.T) {
 	}
 }
 
-// The chain is eight files, and it is the one place in this package that
-// answers "which bank submits a direct debit" without prose.
-func TestTheDirectDebitChainIsEightFiles(t *testing.T) {
+// The chain is ten files, and it is the one place in this package that answers
+// "which bank submits a direct debit" without prose.
+func TestTheDirectDebitChainIsTenFiles(t *testing.T) {
 	h := newHarness(t)
 	h.submitDirectDebit(t)
 	h.day(t)
@@ -107,6 +107,11 @@ func TestTheDirectDebitChainIsEightFiles(t *testing.T) {
 		from, to iso20022.BIC
 		msgDef   string
 	}{
+		// The day opens with each member collecting the routing table, which is the
+		// one file here that carries no message at all.
+		{h.cfg.ClearingHouseBIC, h.debtorBIC, notAMessage},
+		{h.cfg.ClearingHouseBIC, h.creditorBIC, notAMessage},
+
 		{h.creditorBIC, h.cfg.ClearingHouseBIC, "pacs.003.001.08"},
 		{h.cfg.ClearingHouseBIC, h.cfg.CentralBankBIC, "pacs.009.001.08"},
 		{h.cfg.CentralBankBIC, h.cfg.ClearingHouseBIC, "pacs.002.001.10"},
@@ -124,13 +129,9 @@ func TestTheDirectDebitChainIsEightFiles(t *testing.T) {
 		t.Fatalf("the network carried %d files, want %d", len(seen), len(want))
 	}
 	for i, w := range want {
-		env, err := iso20022.Unmarshal(seen[i].raw)
-		if err != nil {
-			t.Fatalf("message %d does not parse: %v", i, err)
-		}
-		if seen[i].from != w.from || seen[i].to != w.to || env.AppHdr.MsgDefIdr != w.msgDef {
-			t.Errorf("hop %d is %s -> %s (%s), want %s -> %s (%s)",
-				i, seen[i].from, seen[i].to, env.AppHdr.MsgDefIdr, w.from, w.to, w.msgDef)
+		if got := msgDefOf(seen[i].raw); seen[i].from != w.from || seen[i].to != w.to || got != w.msgDef {
+			t.Errorf("hop %d is %s -> %s (%q), want %s -> %s (%q)",
+				i, seen[i].from, seen[i].to, got, w.from, w.to, w.msgDef)
 		}
 	}
 }

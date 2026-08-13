@@ -6,9 +6,11 @@ import (
 	"testing"
 
 	"github.com/raphi011/cbs/deposit"
+	"github.com/raphi011/cbs/ebics"
 	"github.com/raphi011/cbs/iban"
 	"github.com/raphi011/cbs/iso20022"
 	"github.com/raphi011/cbs/ledger"
+	"github.com/raphi011/cbs/node/bank"
 	"github.com/raphi011/cbs/payment"
 )
 
@@ -66,10 +68,10 @@ func TestABankAdmittedAfterTheLastRefreshCannotBePaidUntilTheNextOne(t *testing.
 		t.Errorf("the payer's own copy answers %v for the joining bank's allocation, want ErrBankCodeUnknown", err)
 	}
 
-	// One request, made by the subscriber, and the same instruction goes through.
-	if _, err := h.dep.RefreshDirectory(ctx, h.debtorBIC); err != nil {
-		t.Fatalf("RefreshDirectory: %v", err)
-	}
+	// One collection, made by the subscriber, and the same instruction goes
+	// through. The joining bank is already in the published table: admitting it
+	// is what republished one.
+	h.refresh(t, h.debtorBIC)
 	p, err := h.dep.Submit(ctx, toNora)
 	if err != nil {
 		t.Fatalf("after the refresh, the same payment: %v", err)
@@ -98,12 +100,21 @@ func TestARefreshCarriesTheAllocationAndTheAddressAndNothingElse(t *testing.T) {
 	h := newHarness(t)
 	mark := h.messagesSeen()
 
-	got, err := h.dep.RefreshDirectory(ctx, h.debtorBIC)
-	if err != nil {
-		t.Fatalf("RefreshDirectory: %v", err)
+	got := h.refresh(t, h.debtorBIC)
+
+	// A refresh is ONE file collected, and it is the one file on this transport
+	// that is not an ISO 20022 message: a routing table is host data, not a
+	// conversation between two banks.
+	crossed := h.messagesFrom(mark)
+	if len(crossed) != 1 {
+		t.Fatalf("a refresh put %d files on the wire, want 1", len(crossed))
 	}
-	if n := len(h.messagesFrom(mark)); n != 0 {
-		t.Errorf("a refresh put %d messages on the wire, want 0 — it is a file, not a conversation", n)
+	if _, err := iso20022.Unmarshal(crossed[0].raw); err == nil {
+		t.Error("the routing table parses as an ISO 20022 message, and a routing table is not one")
+	}
+	if crossed[0].to != h.debtorBIC || crossed[0].from != h.cfg.ClearingHouseBIC {
+		t.Errorf("the routing table crossed from %s to %s, want the clearing house to the subscriber",
+			crossed[0].from, crossed[0].to)
 	}
 
 	published, err := h.net.ListRosterEntries(ctx)
@@ -157,9 +168,7 @@ func TestARefreshIsRecordedInTheSubscribersOwnLog(t *testing.T) {
 	h := newHarness(t)
 
 	before := h.directoryEvents(t, h.debtorBIC)
-	if _, err := h.dep.RefreshDirectory(ctx, h.debtorBIC); err != nil {
-		t.Fatalf("RefreshDirectory: %v", err)
-	}
+	h.refresh(t, h.debtorBIC)
 
 	after := h.directoryEvents(t, h.debtorBIC)
 	if len(after) != len(before)+1 {
@@ -188,6 +197,48 @@ func TestARefreshIsRecordedInTheSubscribersOwnLog(t *testing.T) {
 	}
 	if len(csm) != 0 {
 		t.Errorf("the clearing house recorded %d refreshes; it published, it did not act", len(csm))
+	}
+}
+
+// A clearing house that is publishing nothing leaves a member with the copy it
+// already has, which is the difference between STALE and empty: one is a state
+// this scheme models and the other would take every payment down.
+func TestAMemberKeepsItsCopyWhenNothingIsPublished(t *testing.T) {
+	ctx := context.Background()
+	h := newHarness(t)
+
+	before, err := h.bank(h.debtorBIC).ListDirectory(ctx)
+	if err != nil {
+		t.Fatalf("ListDirectory: %v", err)
+	}
+	if len(before) == 0 {
+		t.Fatal("the fixture's subscriber holds no directory to keep")
+	}
+
+	// The host loses what it was offering, which is what a restart before the
+	// first publish looks like from the member's side.
+	h.dep.ClearingHouse().Host().Reset()
+	h.dep.ClearingHouse().Host().Enrol(ebics.SubscriberID(h.debtorBIC))
+
+	b, err := h.dep.Bank(ctx, h.debtorPID)
+	if err != nil {
+		t.Fatalf("opening %s: %v", h.debtorBIC, err)
+	}
+	if _, err := b.RefreshDirectory(ctx); !errors.Is(err, bank.ErrNoRoutingTable) {
+		t.Fatalf("collecting from a host publishing nothing = %v, want ErrNoRoutingTable", err)
+	}
+
+	after, err := h.bank(h.debtorBIC).ListDirectory(ctx)
+	if err != nil {
+		t.Fatalf("ListDirectory after the failed collection: %v", err)
+	}
+	if len(after) != len(before) {
+		t.Errorf("the subscriber holds %d entries after a collection that found nothing, want the %d it had",
+			len(after), len(before))
+	}
+	// And it still routes, which is the whole point of keeping the copy.
+	if _, err := h.dep.Submit(ctx, h.creditTransferRequest(t)); err != nil {
+		t.Errorf("the subscriber cannot route from the copy it kept: %v", err)
 	}
 }
 

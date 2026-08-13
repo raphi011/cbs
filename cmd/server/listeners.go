@@ -90,7 +90,7 @@ func handlerFor(ctx context.Context, dep *Deployment, e entity, log *slog.Logger
 		if err != nil {
 			return nil, err
 		}
-		return bankapi.Routes(bankConsole{b, dep}).Handler(log), nil
+		return bankapi.Routes(b).Handler(log), nil
 	}
 }
 

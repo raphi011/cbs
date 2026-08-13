@@ -60,6 +60,26 @@ func (c *ClearingHouse) EBICS() http.Handler { return c.host }
 // of them, and what each has uploaded.
 func (c *ClearingHouse) Host() *ebics.Server { return c.host }
 
+// PublishRoster offers the scheme's routing table on this institution's own
+// host: every member, as the file a subscriber collects. It is published rather
+// than addressed, so publishing it twice is publishing it once.
+func (c *ClearingHouse) PublishRoster(ctx context.Context) error {
+	ctx = node.WithActor(ctx, c.bic)
+
+	members, err := c.ops.ListRosterEntries(ctx)
+	if err != nil {
+		return fmt.Errorf("server: %s cannot read its own roster to publish it: %w", c.bic, err)
+	}
+	raw, err := payment.RosterFile(c.bic, c.env.Now(), members)
+	if err != nil {
+		return fmt.Errorf("server: %s could not build its routing table: %w", c.bic, err)
+	}
+	if err := c.host.Publish(ebics.HRD, raw); err != nil {
+		return fmt.Errorf("server: %s could not publish its routing table: %w", c.bic, err)
+	}
+	return nil
+}
+
 // ---------------------------------------------------------------------------
 // Queueing
 // ---------------------------------------------------------------------------

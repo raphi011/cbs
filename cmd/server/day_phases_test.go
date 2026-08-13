@@ -22,6 +22,7 @@ func namesOf(list []phase) []string {
 // TestTheDayRunsItsPhasesInOrder is the golden sequence.
 func TestTheDayRunsItsPhasesInOrder(t *testing.T) {
 	want := []string{
+		"publish",
 		"refresh",
 		"bank cut-off",
 		"clearing",

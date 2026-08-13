@@ -523,27 +523,6 @@ already charged across a whole book.
 Deepening opportunities in the code, ranked. Each is a refactor with a stated
 win, and none is urgent.
 
-### A roster download order type — `todo`
-
-The last of [the package-per-institution design](specs/2026-08-13-a-package-per-institution-design.md),
-and the one breach it left open. `RefreshDirectory` reads the clearing house's
-roster IN PROCESS, so the DEPLOYMENT performs it (`cmd/server/console.go`) and a
-`bank.Bank` cannot. That is strictly better than a bank reaching another
-institution's rows, and it is not the answer.
-
-The answer is a download. The clearing house already publishes the roster and
-every member already dials it; what is missing is a published-file concept on
-`ebics.Server` — the shape `HAC` already has, a download answered from
-somewhere other than a queue — a message format for a roster, which would be the
-first file on this transport that is not ISO 20022, a publishing act on the
-clearing house, and a day phase to order the two. `bank.Bank.RefreshDirectory`
-then collects and hands what it collected to `TakeDirectory`, which already
-exists.
-
-It is a domain change as well as a structural one: how a member gets the
-directory it routes by is a bankable fact, so `hint-content.ts` and the quiz
-chapters move with it.
-
 ### A `Day` type in `ledger`
 
 **Not `BusinessDate`.** That term is taken, and correctly: the business date is
@@ -821,6 +800,8 @@ because nothing else in this file points at them.
 | A store per institution | [`2026-08-12-store-per-institution-design.md`](specs/2026-08-12-store-per-institution-design.md) · [ADR-0007](adr/0007-a-store-per-institution.md) |
 | The derived balances leave the store seam | [`2026-08-12-derived-balances-off-the-store-seam-design.md`](specs/2026-08-12-derived-balances-off-the-store-seam-design.md) |
 | The interbank conversation has an owner | [`2026-08-13-the-interbank-conversation-design.md`](specs/2026-08-13-the-interbank-conversation-design.md) · [ADR-0008](adr/0008-a-conversation-belongs-to-the-deployment.md) |
+| A package per institution | [`2026-08-13-a-package-per-institution-design.md`](specs/2026-08-13-a-package-per-institution-design.md) · [ADR-0010](adr/0010-an-institution-holds-what-it-does-the-deployment-holds-the-order.md) |
+| The routing table is collected, not read | [`2026-08-13-a-roster-download-order-type-design.md`](specs/2026-08-13-a-roster-download-order-type-design.md) |
 
 Three more shipped as rulings with no design record of their own:
 [ADR-0005](adr/0005-a-business-day-is-a-declared-sequence.md) (the business day

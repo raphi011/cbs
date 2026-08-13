@@ -84,6 +84,22 @@ func TestNewDeploymentEnrolsEveryMemberOfTheRoster(t *testing.T) {
 	if got := len(dep.subscribers()); got != 2 {
 		t.Errorf("the clearing house holds %d subscribers, want 2", got)
 	}
+
+	// And the routing table is already on offer, for the enrolments' reason: a
+	// host's memory is rebuilt at boot from the rows it is derived from, so a
+	// member that collects before the first business day gets a table and not a
+	// refusal.
+	raw, err := dep.ClearingHouse().Host().Published("AURODEFFXXX", ebics.HRD)
+	if err != nil {
+		t.Fatalf("the clearing house publishes no routing table at boot: %v", err)
+	}
+	table, err := payment.ReadRosterFile(raw)
+	if err != nil {
+		t.Fatalf("the published table does not read: %v", err)
+	}
+	if len(table.Members) != 2 {
+		t.Errorf("the table published at boot carries %d members, want the roster's 2", len(table.Members))
+	}
 }
 
 // A bank whose provisioning stopped halfway gets a view of its own and no

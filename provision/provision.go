@@ -61,8 +61,9 @@ func Bank(ctx context.Context, nets *payment.Networks, spec BankSpec) (*payment.
 	return applicant.RecordMembership(ctx, ack)
 }
 
-// Subscribe delivers the clearing house's published roster to every member in
-// it, so that each of them can route to the others.
+// Subscribe delivers the clearing house's roster to every member in it, so each
+// can route to the others. IN PROCESS, for a caller with no host to publish on:
+// a deployment has one, and there a member collects the file for itself.
 func Subscribe(ctx context.Context, nets *payment.Networks) error {
 	published, err := nets.ClearingHouse().ListRosterEntries(ctx)
 	if err != nil {

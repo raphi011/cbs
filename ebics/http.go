@@ -25,7 +25,8 @@ type Response struct {
 	// OrderID is the id an upload was given.
 	OrderID OrderID `json:"orderId,omitempty"`
 
-	// Files is what a C53 or BTD download collected.
+	// Files is what a download collected: a queue's, or the one file a published
+	// type answers with.
 	Files []File `json:"files,omitempty"`
 
 	// Acknowledgements is the HAC answer.
@@ -67,6 +68,15 @@ func (s *Server) answerRequest(ctx context.Context, sub SubscriberID, req Reques
 			return failed(err)
 		}
 		return &Response{ReturnCode: OK, Acknowledgements: acks}
+
+	// Before the queues, because a published type is a download too and this is
+	// the arm that answers it from a snapshot instead. See Server.Published.
+	case req.OrderType.IsPublished():
+		payload, err := s.Published(sub, req.OrderType)
+		if err != nil {
+			return failed(err)
+		}
+		return &Response{ReturnCode: OK, Files: []File{{OrderType: req.OrderType, Payload: payload}}}
 
 	case req.OrderType.IsDownload():
 		files, err := s.Download(ctx, sub, req.OrderType)

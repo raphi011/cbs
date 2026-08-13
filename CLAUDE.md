@@ -272,10 +272,14 @@ rows — its registry, its routing directory, its register — and refuses an
 instruction the scheme has the other side send (`payment.ErrNotTheSubmittingAgent`).
 `Deployment.Submit` is the ROUTING question and only that.
 
-One known breach remains, recorded and not yet fixed: `RefreshDirectory` reads
-the clearing house's roster in process, so it is performed by the DEPLOYMENT
-(`cmd/server/console.go`) rather than by a `bank.Bank`, which cannot. Closing it
-needs a roster download order type. Do not add a second.
+**And it collects its own routing directory.** The clearing house PUBLISHES its
+roster on its own EBICS host and a member collects it under `HRD` — a snapshot,
+not a queue, so collecting it empties nothing and every member gets the same
+file. It is the one file on this transport that is not ISO 20022, and
+[the design record](docs/specs/2026-08-13-a-roster-download-order-type-design.md)
+argues why a routing table is not one. No crossing is left on this path: nothing
+reads another institution's rows, and the DEPLOYMENT holds only the order —
+publish, then collect, which is the day's opening pair.
 
 ## What is planned, and what was already decided
 

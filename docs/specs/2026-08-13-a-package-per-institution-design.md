@@ -1,9 +1,8 @@
 # Design — a package per institution, and the simulator above them
 
-Based on `main` at `0cffdb6`. Tasks 1 and 2 have landed;
+Based on `main` at `0cffdb6`. Tasks 1, 2 and 3 have landed;
 [ADR-0010](../adr/0010-an-institution-holds-what-it-does-the-deployment-holds-the-order.md)
-is the ruling they produced. Task 3 has its fallback in place and its primary
-form outstanding; task 4 is refused. See *What landed* below.
+is the ruling they produced. Task 4 is refused. See *What landed* below.
 
 The goal is a **modular monolith**: one process that plays every institution,
 built out of parts that each play exactly one. Reading what a clearing house does
@@ -348,13 +347,13 @@ because `SubmitterOf` would otherwise answer one of two addresses that are the
 same one, and "this deployment holds no bank at X" is the wrong thing to say
 about an instruction whose fault is that it stays put.
 
-**Task 3 — the fallback, not the order type.** `Deployment.RefreshDirectory`
-performs it and `bank.Bank` cannot, which is what the fallback below asks for.
-The order type is more than a phase's work: it needs a published-file concept on
-`ebics.Server` (the shape `HAC` already has), a message format for a roster —
-the first file on this transport that is not ISO 20022 — a publishing act on the
-clearing house, a day phase to order the two, and a domain claim for the
-learner-facing layers. It is a sub-project, and it is on the roadmap as one.
+**Task 3 — the fallback first, then the order type.** The fallback landed with
+tasks 1 and 2: `Deployment.RefreshDirectory` performed the refresh and a
+`bank.Bank` could not. The order type was the sub-project it was estimated to
+be, and it shipped next — see
+[its design record](2026-08-13-a-roster-download-order-type-design.md). The
+clearing house publishes its roster under `HRD`, `bank.Bank.RefreshDirectory`
+collects it, and `Deployment.RefreshDirectory` and `bankConsole` are both gone.
 
 ## Documentation layers
 

@@ -82,6 +82,42 @@ func TestAFileGoesUpAndTheAnswerComesBackOnALaterDownload(t *testing.T) {
 }
 
 // TestOrderStatusSeparatesTheThreeAnswers is HAC's whole purpose.
+// TestAPublishedFileComesDownTheOrdinaryDownload is what makes a snapshot cheap
+// for a subscriber: the difference from a queue is entirely the host's.
+func TestAPublishedFileComesDownTheOrdinaryDownload(t *testing.T) {
+	s, c := dial(t)
+
+	// A host publishing nothing is a quiet collection and not a refusal, exactly
+	// as an empty queue is.
+	if files, err := c.Download(ctx, ebics.HRD); err != nil || len(files) != 0 {
+		t.Fatalf("before anything is published: %d files, %v; want nothing waiting", len(files), err)
+	}
+
+	if err := s.Publish(ebics.HRD, []byte("the routing table")); err != nil {
+		t.Fatalf("Publish: %v", err)
+	}
+	files, err := c.Download(ctx, ebics.HRD)
+	if err != nil {
+		t.Fatalf("Download: %v", err)
+	}
+	if len(files) != 1 || string(files[0].Payload) != "the routing table" {
+		t.Fatalf("collected %+v, want the one published file", files)
+	}
+	// And no order id, because nothing was queued for anybody and nothing was
+	// minted.
+	if files[0].OrderID != "" {
+		t.Errorf("the published file came down as order %s; a snapshot is no order", files[0].OrderID)
+	}
+
+	// Reset drops it with the enrolments, and both come back from the rows they
+	// were derived from.
+	s.Reset()
+	s.Enrol(aurora)
+	if files, err := c.Download(ctx, ebics.HRD); err != nil || len(files) != 0 {
+		t.Errorf("after a reset: %d files, %v; want nothing published", len(files), err)
+	}
+}
+
 func TestOrderStatusSeparatesTheThreeAnswers(t *testing.T) {
 	s, c := dial(t)
 

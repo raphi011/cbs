@@ -418,21 +418,38 @@ func (h *harness) provision(t *testing.T, name string, bic iso20022.BIC, assets 
 	return p
 }
 
-// subscribeAll has every member pull the routing directory as it stands, through
-// the same call an operator's refresh makes. It reads the roster to find the
-// members, which is what a deployment can do and no institution may.
+// subscribeAll publishes the routing table and has every member collect it: the
+// day's opening pair, on its own.
 func (h *harness) subscribeAll(t *testing.T) {
 	t.Helper()
+	if err := h.dep.Subscribe(context.Background()); err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+}
+
+// publishRoster is the clearing house offering the table as its roster now
+// stands, with nobody collecting it.
+func (h *harness) publishRoster(t *testing.T) {
+	t.Helper()
+	if err := h.dep.ClearingHouse().PublishRoster(context.Background()); err != nil {
+		t.Fatalf("PublishRoster: %v", err)
+	}
+}
+
+// refresh is ONE member collecting it, which is the act the other assertions
+// about a subscriber's own copy are about.
+func (h *harness) refresh(t *testing.T, bic iso20022.BIC) []payment.DirectoryEntry {
+	t.Helper()
 	ctx := context.Background()
-	entries, err := h.net.ListRosterEntries(ctx)
+	b, err := h.dep.Bank(ctx, payment.ParticipantID(bic))
 	if err != nil {
-		t.Fatalf("ListRosterEntries: %v", err)
+		t.Fatalf("opening %s: %v", bic, err)
 	}
-	for _, e := range entries {
-		if _, err := h.dep.RefreshDirectory(ctx, e.BIC); err != nil {
-			t.Fatalf("RefreshDirectory %s: %v", e.BIC, err)
-		}
+	entries, err := b.RefreshDirectory(ctx)
+	if err != nil {
+		t.Fatalf("RefreshDirectory %s: %v", bic, err)
 	}
+	return entries
 }
 
 // admitWithoutTheRoster builds a bank the SETTLEMENT AGENT has answered and the
@@ -1348,6 +1365,19 @@ func (h *harness) instructionsSentTo(to iso20022.BIC) int {
 // make: they need a message to look at.
 func (h *harness) statusesSentTo(to iso20022.BIC) int {
 	return h.messagesSentTo(to, "pacs.002.001.10")
+}
+
+// notAMessage is what msgDefOf answers for a file carrying no ISO 20022
+// document. The routing table is the only such file on this transport.
+const notAMessage = ""
+
+// msgDefOf is the message definition a tapped file carries.
+func msgDefOf(raw []byte) string {
+	env, err := iso20022.Unmarshal(raw)
+	if err != nil {
+		return notAMessage
+	}
+	return env.AppHdr.MsgDefIdr
 }
 
 // messagesSentTo counts one message definition delivered to one actor. Counted

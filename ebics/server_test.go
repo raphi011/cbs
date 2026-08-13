@@ -269,6 +269,66 @@ func TestEnrollingTwiceIsNothing(t *testing.T) {
 	}
 }
 
+// TestAPublishedFileIsNotConsumedByCollectingIt is the whole difference between
+// a snapshot and a queue.
+func TestAPublishedFileIsNotConsumedByCollectingIt(t *testing.T) {
+	s := host(t)
+	s.Enrol(borea)
+
+	if err := s.Publish(ebics.HRD, []byte("the routing table")); err != nil {
+		t.Fatalf("Publish: %v", err)
+	}
+
+	// The same bytes, twice to one subscriber and once to another. A queue would
+	// have been empty on the second ask.
+	for _, sub := range []ebics.SubscriberID{aurora, aurora, borea} {
+		raw, err := s.Published(sub, ebics.HRD)
+		if err != nil {
+			t.Fatalf("Published for %s: %v", sub, err)
+		}
+		if string(raw) != "the routing table" {
+			t.Errorf("%s collected %q, want the published file", sub, raw)
+		}
+	}
+
+	// And republishing replaces it, because a directory is a snapshot and not a
+	// feed of what changed.
+	if err := s.Publish(ebics.HRD, []byte("a member joined")); err != nil {
+		t.Fatalf("Publish again: %v", err)
+	}
+	if raw, _ := s.Published(aurora, ebics.HRD); string(raw) != "a member joined" {
+		t.Errorf("after republishing, %s collected %q", aurora, raw)
+	}
+}
+
+// TestAPublishedTypeIsNeitherQueuedNorAddressed pins the three refusals that
+// keep a snapshot from being mistaken for a queue.
+func TestAPublishedTypeIsNeitherQueuedNorAddressed(t *testing.T) {
+	s := host(t)
+
+	// Nothing published yet, which is not a failure of the caller's: there is
+	// simply nothing to collect, exactly as an empty queue answers.
+	if _, err := s.Published(aurora, ebics.HRD); ebics.CodeOf(err) != ebics.NoDownloadDataAvailable {
+		t.Errorf("collecting before anything is published: %v, want %s", err, ebics.NoDownloadDataAvailable)
+	}
+	if err := s.Publish(ebics.HRD, []byte("the routing table")); err != nil {
+		t.Fatalf("Publish: %v", err)
+	}
+
+	// A published file is published TO THE SUBSCRIBERS and not to the world.
+	if _, err := s.Published(borea, ebics.HRD); ebics.CodeOf(err) != ebics.InvalidUserOrUserState {
+		t.Errorf("collecting by a stranger: %v, want %s", err, ebics.InvalidUserOrUserState)
+	}
+	// It is addressed to nobody, so it cannot be put in one subscriber's queue.
+	if _, err := s.Enqueue(ctx, aurora, ebics.HRD, nil); ebics.CodeOf(err) != ebics.UnsupportedOrderType {
+		t.Errorf("enqueuing the routing table: %v, want %s", err, ebics.UnsupportedOrderType)
+	}
+	// And nothing else this host offers is a snapshot.
+	if err := s.Publish(ebics.C53, nil); ebics.CodeOf(err) != ebics.UnsupportedOrderType {
+		t.Errorf("publishing a statement: %v, want %s", err, ebics.UnsupportedOrderType)
+	}
+}
+
 // TestASecondHostOverTheSameStoreIsHoldingWhatTheFirstWas is the whole reason
 // this state is rows.
 func TestASecondHostOverTheSameStoreIsHoldingWhatTheFirstWas(t *testing.T) {

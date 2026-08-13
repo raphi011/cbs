@@ -15,6 +15,7 @@ import (
 	"github.com/raphi011/cbs/ledger"
 	"github.com/raphi011/cbs/payment"
 	"github.com/raphi011/cbs/payment/recon"
+	"github.com/raphi011/cbs/provision"
 	"github.com/raphi011/cbs/store/testenv"
 )
 
@@ -54,20 +55,11 @@ func (d *testDeployment) AddBank(context.Context, *payment.Bank) error { return 
 
 func (d *testDeployment) CentralBankBIC() iso20022.BIC { return testCentralBankBIC }
 
-// RefreshDirectory reads the roster at the clearing house and writes the copy
-// at the subscriber, in that order and in two units of work — which is the
-// whole of what the real one does, because a directory is a file delivered and
-// not a message.
-func (d *testDeployment) RefreshDirectory(ctx context.Context, bic iso20022.BIC) ([]payment.DirectoryEntry, error) {
-	published, err := d.nets.ClearingHouse().ListRosterEntries(ctx)
-	if err != nil {
-		return nil, err
-	}
-	subscriber, err := d.nets.Bank(ctx, payment.ParticipantID(bic))
-	if err != nil {
-		return nil, err
-	}
-	return subscriber.RefreshDirectory(ctx, published)
+// Subscribe delivers the roster to every member IN PROCESS. There is no host and
+// no listener here, so what the real one publishes and collects over a wire this
+// one hands over; the rows each member ends up holding are the same.
+func (d *testDeployment) Subscribe(ctx context.Context) error {
+	return provision.Subscribe(ctx, d.nets)
 }
 
 // Submit runs the submitting bank's half and holds the instruction, which is

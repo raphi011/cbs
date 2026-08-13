@@ -32,9 +32,9 @@ func TestCreditTransferReachesAcceptedThroughTheCSM(t *testing.T) {
 	}
 }
 
-// The chain is eight files over one business day, and naming them in order is
-// the point of the package. Nothing here is a function call across a boundary.
-func TestTheCreditTransferChainIsEightFiles(t *testing.T) {
+// The chain is ten files over one business day, and naming them in order is the
+// point of the package. Nothing here is a function call across a boundary.
+func TestTheCreditTransferChainIsTenFiles(t *testing.T) {
 	h := newHarness(t)
 	h.submitCreditTransfer(t)
 	h.day(t)
@@ -43,6 +43,11 @@ func TestTheCreditTransferChainIsEightFiles(t *testing.T) {
 		from, to iso20022.BIC
 		msgDef   string
 	}{
+		// The day opens with each member collecting the routing table, which is the
+		// one file here that carries no message at all.
+		{h.cfg.ClearingHouseBIC, h.debtorBIC, notAMessage},
+		{h.cfg.ClearingHouseBIC, h.creditorBIC, notAMessage},
+
 		{h.debtorBIC, h.cfg.ClearingHouseBIC, "pacs.008.001.08"},
 		{h.cfg.ClearingHouseBIC, h.cfg.CentralBankBIC, "pacs.009.001.08"},
 		{h.cfg.CentralBankBIC, h.cfg.ClearingHouseBIC, "pacs.002.001.10"},
@@ -60,13 +65,9 @@ func TestTheCreditTransferChainIsEightFiles(t *testing.T) {
 		t.Fatalf("the network carried %d files, want %d", len(seen), len(want))
 	}
 	for i, w := range want {
-		env, err := iso20022.Unmarshal(seen[i].raw)
-		if err != nil {
-			t.Fatalf("message %d does not parse: %v", i, err)
-		}
-		if seen[i].from != w.from || seen[i].to != w.to || env.AppHdr.MsgDefIdr != w.msgDef {
-			t.Errorf("hop %d is %s -> %s (%s), want %s -> %s (%s)",
-				i, seen[i].from, seen[i].to, env.AppHdr.MsgDefIdr, w.from, w.to, w.msgDef)
+		if got := msgDefOf(seen[i].raw); seen[i].from != w.from || seen[i].to != w.to || got != w.msgDef {
+			t.Errorf("hop %d is %s -> %s (%q), want %s -> %s (%q)",
+				i, seen[i].from, seen[i].to, got, w.from, w.to, w.msgDef)
 		}
 	}
 }
