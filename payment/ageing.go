@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/raphi011/cbs/calendar"
+	"github.com/raphi011/cbs/internal/unit"
 	"github.com/raphi011/cbs/iso20022"
 	"github.com/raphi011/cbs/ledger"
 )
@@ -71,13 +72,9 @@ func (l AgedLot) Overdue(asOf time.Time) bool {
 
 // AgeClearingSuspense decomposes this bank's clearing suspense by age.
 func (s *BankNetwork) AgeClearingSuspense(ctx context.Context, asset ledger.AssetCode) (AgeingReport, error) {
-	var out AgeingReport
-	err := s.store.View(ctx, func(ctx context.Context, tx BankTx) error {
-		var err error
-		out, err = s.AgeClearingSuspenseTx(ctx, tx, asset)
-		return err
+	return unit.Run(ctx, s.store.View, func(ctx context.Context, tx BankTx) (AgeingReport, error) {
+		return s.AgeClearingSuspenseTx(ctx, tx, asset)
 	})
-	return out, err
 }
 
 // AgeClearingSuspenseTx is AgeClearingSuspense within a caller-supplied unit of
@@ -94,13 +91,9 @@ func (s *BankNetwork) AgeClearingSuspenseTx(ctx context.Context, tx BankTx, asse
 // AgeUnclaimedBalances decomposes this bank's unclaimed balances by age and
 // says what may be done about each part.
 func (s *BankNetwork) AgeUnclaimedBalances(ctx context.Context, asset ledger.AssetCode) (AgeingReport, error) {
-	var out AgeingReport
-	err := s.store.View(ctx, func(ctx context.Context, tx BankTx) error {
-		var err error
-		out, err = s.AgeUnclaimedBalancesTx(ctx, tx, asset)
-		return err
+	return unit.Run(ctx, s.store.View, func(ctx context.Context, tx BankTx) (AgeingReport, error) {
+		return s.AgeUnclaimedBalancesTx(ctx, tx, asset)
 	})
-	return out, err
 }
 
 // AgeUnclaimedBalancesTx is AgeUnclaimedBalances within a caller-supplied unit

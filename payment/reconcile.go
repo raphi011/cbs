@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/raphi011/cbs/internal/unit"
 	"github.com/raphi011/cbs/iso20022"
 	"github.com/raphi011/cbs/ledger"
 )
@@ -61,13 +62,9 @@ const MetadataLodgementRef = "lodgement_ref"
 // Reconcile runs one bank's own reconciliation for one asset and records that
 // it ran.
 func (s *BankNetwork) Reconcile(ctx context.Context, asset ledger.AssetCode) (Reconciliation, error) {
-	var out Reconciliation
-	err := s.store.Update(ctx, func(ctx context.Context, tx BankTx) error {
-		var err error
-		out, err = s.ReconcileTx(ctx, tx, asset)
-		return err
+	return unit.Run(ctx, s.store.Update, func(ctx context.Context, tx BankTx) (Reconciliation, error) {
+		return s.ReconcileTx(ctx, tx, asset)
 	})
-	return out, err
 }
 
 // ReconcileTx is Reconcile within a caller-supplied unit of work.
@@ -192,13 +189,9 @@ func (s *BankNetwork) suspenseIsAged(ctx context.Context, tx BankTx, bank *Bank,
 // first: what each one said its reserve moved by, what the central bank said
 // the account was left at, and the transaction this bank booked from it.
 func (s *BankNetwork) ListSettlementAdvices(ctx context.Context) ([]SettlementAdvice, error) {
-	var out []SettlementAdvice
-	err := s.store.View(ctx, func(ctx context.Context, tx BankTx) error {
-		var err error
-		out, err = s.ListSettlementAdvicesTx(ctx, tx)
-		return err
+	return unit.Run(ctx, s.store.View, func(ctx context.Context, tx BankTx) ([]SettlementAdvice, error) {
+		return s.ListSettlementAdvicesTx(ctx, tx)
 	})
-	return out, err
 }
 
 // ListSettlementAdvicesTx is ListSettlementAdvices within a caller-supplied unit

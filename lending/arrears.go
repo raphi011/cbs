@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/raphi011/cbs/internal/unit"
 	"github.com/raphi011/cbs/ledger"
 )
 
@@ -58,13 +59,9 @@ func calendarDays(from, to time.Time) int {
 //
 // Returns ErrFacilityNotFound.
 func (p *Portfolio) RecomputeArrears(ctx context.Context, id FacilityID, asOf time.Time) (Arrears, error) {
-	var out Arrears
-	err := p.store.Update(ctx, func(ctx context.Context, tx Tx) error {
-		var err error
-		out, err = p.RecomputeArrearsTx(ctx, tx, id, asOf)
-		return err
+	return unit.Run(ctx, p.store.Update, func(ctx context.Context, tx Tx) (Arrears, error) {
+		return p.RecomputeArrearsTx(ctx, tx, id, asOf)
 	})
-	return out, err
 }
 
 // RecomputeArrearsTx is RecomputeArrears within a caller-supplied unit of work.

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/raphi011/cbs/interest"
+	"github.com/raphi011/cbs/internal/unit"
 	"github.com/raphi011/cbs/ledger"
 )
 
@@ -106,13 +107,9 @@ func (p *Portfolio) appendAuditTx(ctx context.Context, tx Tx, eventType, entityI
 // OpenTermLoan opens a term loan: a fixed principal, disbursed once, amortized
 // over termMonths instalments.
 func (p *Portfolio) OpenTermLoan(ctx context.Context, name string, asset ledger.AssetCode, principal ledger.Amount, rate interest.Rate, dc interest.DayCount, method AmortMethod, termMonths int) (Facility, error) {
-	var out Facility
-	err := p.store.Update(ctx, func(ctx context.Context, tx Tx) error {
-		var err error
-		out, err = p.OpenTermLoanTx(ctx, tx, name, asset, principal, rate, dc, method, termMonths)
-		return err
+	return unit.Run(ctx, p.store.Update, func(ctx context.Context, tx Tx) (Facility, error) {
+		return p.OpenTermLoanTx(ctx, tx, name, asset, principal, rate, dc, method, termMonths)
 	})
-	return out, err
 }
 
 // MaxTermMonths is the longest term a loan may be opened for: 600 months, or
@@ -133,13 +130,9 @@ func (p *Portfolio) OpenTermLoanTx(ctx context.Context, tx Tx, name string, asse
 // OpenRevolvingLine opens a revolving credit line: a commitment that may be
 // drawn and repaid repeatedly.
 func (p *Portfolio) OpenRevolvingLine(ctx context.Context, name string, asset ledger.AssetCode, limit ledger.Amount, rate interest.Rate, dc interest.DayCount, minPayment interest.Fraction) (Facility, error) {
-	var out Facility
-	err := p.store.Update(ctx, func(ctx context.Context, tx Tx) error {
-		var err error
-		out, err = p.OpenRevolvingLineTx(ctx, tx, name, asset, limit, rate, dc, minPayment)
-		return err
+	return unit.Run(ctx, p.store.Update, func(ctx context.Context, tx Tx) (Facility, error) {
+		return p.OpenRevolvingLineTx(ctx, tx, name, asset, limit, rate, dc, minPayment)
 	})
-	return out, err
 }
 
 // OpenRevolvingLineTx is OpenRevolvingLine within a caller-supplied unit of work.
@@ -212,13 +205,9 @@ func (p *Portfolio) openTx(ctx context.Context, tx Tx, f Facility, rate interest
 
 // Disburse pays out a term loan's principal in full and generates its schedule.
 func (p *Portfolio) Disburse(ctx context.Context, id FacilityID, counterparty ledger.Position, firstDue time.Time, description string) (ledger.Transaction, error) {
-	var out ledger.Transaction
-	err := p.store.Update(ctx, func(ctx context.Context, tx Tx) error {
-		var err error
-		out, err = p.DisburseTx(ctx, tx, id, counterparty, firstDue, description)
-		return err
+	return unit.Run(ctx, p.store.Update, func(ctx context.Context, tx Tx) (ledger.Transaction, error) {
+		return p.DisburseTx(ctx, tx, id, counterparty, firstDue, description)
 	})
-	return out, err
 }
 
 // DisburseTx is Disburse within a caller-supplied unit of work.
@@ -285,13 +274,9 @@ func (p *Portfolio) DisburseTx(ctx context.Context, tx Tx, id FacilityID, counte
 // repeatedly — that is what revolving means — as long as drawn principal stays
 // within the commitment.
 func (p *Portfolio) Draw(ctx context.Context, id FacilityID, counterparty ledger.Position, amount ledger.Amount, description string) (ledger.Transaction, error) {
-	var out ledger.Transaction
-	err := p.store.Update(ctx, func(ctx context.Context, tx Tx) error {
-		var err error
-		out, err = p.DrawTx(ctx, tx, id, counterparty, amount, description)
-		return err
+	return unit.Run(ctx, p.store.Update, func(ctx context.Context, tx Tx) (ledger.Transaction, error) {
+		return p.DrawTx(ctx, tx, id, counterparty, amount, description)
 	})
-	return out, err
 }
 
 // DrawTx is Draw within a caller-supplied unit of work.
@@ -369,13 +354,9 @@ func (p *Portfolio) advanceTx(ctx context.Context, tx Tx, f Facility, counterpar
 
 // SetFacilityTerms reprices a facility from a given day.
 func (p *Portfolio) SetFacilityTerms(ctx context.Context, id FacilityID, rate interest.Rate, dc interest.DayCount, effectiveFrom time.Time) (FacilityTerms, error) {
-	var out FacilityTerms
-	err := p.store.Update(ctx, func(ctx context.Context, tx Tx) error {
-		var err error
-		out, err = p.SetFacilityTermsTx(ctx, tx, id, rate, dc, effectiveFrom)
-		return err
+	return unit.Run(ctx, p.store.Update, func(ctx context.Context, tx Tx) (FacilityTerms, error) {
+		return p.SetFacilityTermsTx(ctx, tx, id, rate, dc, effectiveFrom)
 	})
-	return out, err
 }
 
 // SetFacilityTermsTx is SetFacilityTerms within a caller-supplied unit of work.

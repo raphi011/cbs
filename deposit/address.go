@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/raphi011/cbs/iban"
+	"github.com/raphi011/cbs/internal/unit"
 	"github.com/raphi011/cbs/ledger"
 )
 
@@ -28,13 +29,9 @@ func (r *Register) mintAddressTx(ctx context.Context, tx Tx) (Identifier, error)
 // ReissueIdentifier gives an account a new IBAN and withdraws its old one,
 // together.
 func (r *Register) ReissueIdentifier(ctx context.Context, id AccountID) (Identifier, error) {
-	var out Identifier
-	err := r.store.Update(ctx, func(ctx context.Context, tx Tx) error {
-		var err error
-		out, err = r.ReissueIdentifierTx(ctx, tx, id)
-		return err
+	return unit.Run(ctx, r.store.Update, func(ctx context.Context, tx Tx) (Identifier, error) {
+		return r.ReissueIdentifierTx(ctx, tx, id)
 	})
-	return out, err
 }
 
 // ReissueIdentifierTx is ReissueIdentifier within a caller-supplied unit of

@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/raphi011/cbs/interest"
+	"github.com/raphi011/cbs/internal/unit"
 	"github.com/raphi011/cbs/ledger"
 )
 
@@ -219,13 +220,9 @@ func (c Charge) Posted() bool { return c.Transaction.ID != "" }
 // ChargeInterest closes a revolving line's billing cycle: it capitalizes the
 // accrued interest into drawn principal and bills the cycle's minimum payment.
 func (p *Portfolio) ChargeInterest(ctx context.Context, id FacilityID, date time.Time) (Charge, error) {
-	var out Charge
-	err := p.store.Update(ctx, func(ctx context.Context, tx Tx) error {
-		var err error
-		out, err = p.ChargeInterestTx(ctx, tx, id, date)
-		return err
+	return unit.Run(ctx, p.store.Update, func(ctx context.Context, tx Tx) (Charge, error) {
+		return p.ChargeInterestTx(ctx, tx, id, date)
 	})
-	return out, err
 }
 
 // ChargeInterestTx is ChargeInterest within a caller-supplied unit of work.

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/raphi011/cbs/internal/unit"
 	"github.com/raphi011/cbs/ledger"
 )
 
@@ -13,16 +14,9 @@ import (
 // Transfer moves amount between two deposit accounts in this bank's book. See
 // TransferTx, which is where the rules are.
 func (r *Register) Transfer(ctx context.Context, from, to AccountID, amount ledger.Amount, description string) (ledger.Transaction, error) {
-	var out ledger.Transaction
-	err := r.store.Update(ctx, func(ctx context.Context, tx Tx) error {
-		var err error
-		out, err = r.TransferTx(ctx, tx, from, to, amount, description)
-		return err
+	return unit.Run(ctx, r.store.Update, func(ctx context.Context, tx Tx) (ledger.Transaction, error) {
+		return r.TransferTx(ctx, tx, from, to, amount, description)
 	})
-	if err != nil {
-		return ledger.Transaction{}, err
-	}
-	return out, nil
 }
 
 // TransferTx is Transfer within a caller-supplied unit of work.

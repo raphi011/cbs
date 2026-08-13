@@ -5,6 +5,8 @@ import (
 	"maps"
 	"slices"
 	"time"
+
+	"github.com/raphi011/cbs/internal/unit"
 )
 
 // ---------------------------------------------------------------------------
@@ -45,13 +47,9 @@ func SubsidiaryBalances(ctx context.Context, tx EntryScanner, book BookID, accou
 // SubsidiaryBalances is every subsidiary under a control account. See the fold
 // above; this is it in its own read-only unit of work, on this book.
 func (s *Book) SubsidiaryBalances(ctx context.Context, account AccountID) ([]SubsidiaryBalance, error) {
-	var out []SubsidiaryBalance
-	err := s.store.View(ctx, func(ctx context.Context, tx Tx) error {
-		var err error
-		out, err = s.SubsidiaryBalancesTx(ctx, tx, account)
-		return err
+	return unit.Run(ctx, s.store.View, func(ctx context.Context, tx Tx) ([]SubsidiaryBalance, error) {
+		return s.SubsidiaryBalancesTx(ctx, tx, account)
 	})
-	return out, err
 }
 
 // SubsidiaryBalancesTx is SubsidiaryBalances within a caller-supplied unit of
@@ -102,13 +100,9 @@ type HistoryRow struct {
 
 // AccountHistory is AccountHistoryTx in its own read-only unit of work.
 func (s *Book) AccountHistory(ctx context.Context, pos Position) (AccountHistory, error) {
-	var out AccountHistory
-	err := s.store.View(ctx, func(ctx context.Context, tx Tx) error {
-		var err error
-		out, err = s.AccountHistoryTx(ctx, tx, pos)
-		return err
+	return unit.Run(ctx, s.store.View, func(ctx context.Context, tx Tx) (AccountHistory, error) {
+		return s.AccountHistoryTx(ctx, tx, pos)
 	})
-	return out, err
 }
 
 // AccountHistoryTx is AccountHistory within a caller-supplied unit of work.

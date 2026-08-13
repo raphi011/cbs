@@ -5,18 +5,15 @@ import (
 	"time"
 
 	"github.com/raphi011/cbs/interest"
+	"github.com/raphi011/cbs/internal/unit"
 	"github.com/raphi011/cbs/ledger"
 )
 
 // Repay applies a payment to a facility, interest before principal.
 func (p *Portfolio) Repay(ctx context.Context, id FacilityID, counterparty ledger.Position, amount ledger.Amount, date time.Time, description string) (ledger.Transaction, error) {
-	var out ledger.Transaction
-	err := p.store.Update(ctx, func(ctx context.Context, tx Tx) error {
-		var err error
-		out, err = p.RepayTx(ctx, tx, id, counterparty, amount, date, description)
-		return err
+	return unit.Run(ctx, p.store.Update, func(ctx context.Context, tx Tx) (ledger.Transaction, error) {
+		return p.RepayTx(ctx, tx, id, counterparty, amount, date, description)
 	})
-	return out, err
 }
 
 // RepayTx is Repay within a caller-supplied unit of work.

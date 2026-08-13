@@ -10,6 +10,7 @@ import (
 
 	"github.com/raphi011/cbs/iban"
 	"github.com/raphi011/cbs/interest"
+	"github.com/raphi011/cbs/internal/unit"
 	"github.com/raphi011/cbs/ledger"
 	"github.com/raphi011/cbs/product"
 )
@@ -88,13 +89,9 @@ func (r *Register) appendAuditTx(ctx context.Context, tx Tx, eventType, entityID
 
 // OpenAccount opens a new customer deposit account in the Active state.
 func (r *Register) OpenAccount(ctx context.Context, name string, asset ledger.AssetCode, productID product.ID, overdraftLimit ledger.Amount, identifiers ...Identifier) (Account, error) {
-	var out Account
-	err := r.store.Update(ctx, func(ctx context.Context, tx Tx) error {
-		var err error
-		out, err = r.OpenAccountTx(ctx, tx, name, asset, productID, overdraftLimit, identifiers...)
-		return err
+	return unit.Run(ctx, r.store.Update, func(ctx context.Context, tx Tx) (Account, error) {
+		return r.OpenAccountTx(ctx, tx, name, asset, productID, overdraftLimit, identifiers...)
 	})
-	return out, err
 }
 
 // OpenAccountTx is OpenAccount within a caller-supplied unit of work.
@@ -235,13 +232,9 @@ func interestIncomeName(asset ledger.AssetCode) string {
 
 // SetOverdraftLimit changes what this customer may go overdrawn by, from a day.
 func (r *Register) SetOverdraftLimit(ctx context.Context, id AccountID, limit ledger.Amount, effectiveFrom time.Time) (OverdraftTerms, error) {
-	var out OverdraftTerms
-	err := r.store.Update(ctx, func(ctx context.Context, tx Tx) error {
-		var err error
-		out, err = r.SetOverdraftLimitTx(ctx, tx, id, limit, effectiveFrom)
-		return err
+	return unit.Run(ctx, r.store.Update, func(ctx context.Context, tx Tx) (OverdraftTerms, error) {
+		return r.SetOverdraftLimitTx(ctx, tx, id, limit, effectiveFrom)
 	})
-	return out, err
 }
 
 // SetOverdraftLimitTx is SetOverdraftLimit within a caller-supplied unit of work.
@@ -254,13 +247,9 @@ func (r *Register) SetOverdraftLimitTx(ctx context.Context, tx Tx, id AccountID,
 // the product's, from a day — or clears one, putting the account back on the
 // product.
 func (r *Register) SetOverdraftPricingOverlay(ctx context.Context, id AccountID, pricing *product.OverdraftPricing, effectiveFrom time.Time) (OverdraftTerms, error) {
-	var out OverdraftTerms
-	err := r.store.Update(ctx, func(ctx context.Context, tx Tx) error {
-		var err error
-		out, err = r.SetOverdraftPricingOverlayTx(ctx, tx, id, pricing, effectiveFrom)
-		return err
+	return unit.Run(ctx, r.store.Update, func(ctx context.Context, tx Tx) (OverdraftTerms, error) {
+		return r.SetOverdraftPricingOverlayTx(ctx, tx, id, pricing, effectiveFrom)
 	})
-	return out, err
 }
 
 // SetOverdraftPricingOverlayTx is SetOverdraftPricingOverlay within a
@@ -281,13 +270,9 @@ func (r *Register) SetOverdraftPricingOverlayTx(ctx context.Context, tx Tx, id A
 
 // ChangeProduct migrates an account onto another product, from a day.
 func (r *Register) ChangeProduct(ctx context.Context, id AccountID, productID product.ID, effectiveFrom time.Time) (OverdraftTerms, error) {
-	var out OverdraftTerms
-	err := r.store.Update(ctx, func(ctx context.Context, tx Tx) error {
-		var err error
-		out, err = r.ChangeProductTx(ctx, tx, id, productID, effectiveFrom)
-		return err
+	return unit.Run(ctx, r.store.Update, func(ctx context.Context, tx Tx) (OverdraftTerms, error) {
+		return r.ChangeProductTx(ctx, tx, id, productID, effectiveFrom)
 	})
-	return out, err
 }
 
 // ChangeProductTx is ChangeProduct within a caller-supplied unit of work.
@@ -405,13 +390,9 @@ func (r *Register) positionTx(ctx context.Context, tx Tx, acct Account) (ledger.
 // Position is where a deposit account's money is in the general ledger, for a
 // layer above that has to post to it.
 func (r *Register) Position(ctx context.Context, id AccountID) (ledger.Position, error) {
-	var out ledger.Position
-	err := r.store.View(ctx, func(ctx context.Context, tx Tx) error {
-		var err error
-		out, err = r.PositionTx(ctx, tx, id)
-		return err
+	return unit.Run(ctx, r.store.View, func(ctx context.Context, tx Tx) (ledger.Position, error) {
+		return r.PositionTx(ctx, tx, id)
 	})
-	return out, err
 }
 
 // ControlAccount is the chart-of-accounts line an asset's customer money is
@@ -640,13 +621,9 @@ func (r *Register) RemoveIdentifierTx(ctx context.Context, tx Tx, id AccountID, 
 
 // ResolveIdentifier returns the account this bank addresses by ident.
 func (r *Register) ResolveIdentifier(ctx context.Context, ident Identifier) (Account, error) {
-	var out Account
-	err := r.store.View(ctx, func(ctx context.Context, tx Tx) error {
-		var err error
-		out, err = r.ResolveIdentifierTx(ctx, tx, ident)
-		return err
+	return unit.Run(ctx, r.store.View, func(ctx context.Context, tx Tx) (Account, error) {
+		return r.ResolveIdentifierTx(ctx, tx, ident)
 	})
-	return out, err
 }
 
 // ResolveIdentifierTx is ResolveIdentifier within a caller-supplied unit of work.
@@ -805,13 +782,9 @@ type CreateHoldRequest struct {
 // CreateHold places an authorization hold on a deposit account, reducing its
 // available balance without affecting the book balance.
 func (r *Register) CreateHold(ctx context.Context, req CreateHoldRequest) (Hold, error) {
-	var out Hold
-	err := r.store.Update(ctx, func(ctx context.Context, tx Tx) error {
-		var err error
-		out, err = r.CreateHoldTx(ctx, tx, req)
-		return err
+	return unit.Run(ctx, r.store.Update, func(ctx context.Context, tx Tx) (Hold, error) {
+		return r.CreateHoldTx(ctx, tx, req)
 	})
-	return out, err
 }
 
 // CreateHoldTx is CreateHold within a caller-supplied unit of work. The
@@ -896,16 +869,9 @@ func (r *Register) ReleaseHoldTx(ctx context.Context, tx Tx, id HoldID) error {
 // Customer money is a Liability; capturing (money leaving the customer) DEBITS
 // the customer's position in the control account and CREDITs the counterparty.
 func (r *Register) CaptureHold(ctx context.Context, id HoldID, counterparty ledger.Position, captureAmount ledger.Amount, description string) (ledger.Transaction, error) {
-	var out ledger.Transaction
-	err := r.store.Update(ctx, func(ctx context.Context, tx Tx) error {
-		var err error
-		out, err = r.CaptureHoldTx(ctx, tx, id, counterparty, captureAmount, description)
-		return err
+	return unit.Run(ctx, r.store.Update, func(ctx context.Context, tx Tx) (ledger.Transaction, error) {
+		return r.CaptureHoldTx(ctx, tx, id, counterparty, captureAmount, description)
 	})
-	if err != nil {
-		return ledger.Transaction{}, err
-	}
-	return out, nil
 }
 
 // CaptureHoldTx is CaptureHold within a caller-supplied unit of work.
@@ -1108,13 +1074,9 @@ func (r *Register) availableTx(ctx context.Context, tx Tx, acct Account) (ledger
 // account on a given business date, overwriting any snapshot for the same
 // account and date. Returns ErrAccountNotFound.
 func (r *Register) TakeEndOfDaySnapshot(ctx context.Context, id AccountID, date time.Time) (Snapshot, error) {
-	var out Snapshot
-	err := r.store.Update(ctx, func(ctx context.Context, tx Tx) error {
-		var err error
-		out, err = r.TakeEndOfDaySnapshotTx(ctx, tx, id, date)
-		return err
+	return unit.Run(ctx, r.store.Update, func(ctx context.Context, tx Tx) (Snapshot, error) {
+		return r.TakeEndOfDaySnapshotTx(ctx, tx, id, date)
 	})
-	return out, err
 }
 
 // TakeEndOfDaySnapshotTx is TakeEndOfDaySnapshot within a caller-supplied unit
@@ -1397,13 +1359,9 @@ func (r *Register) loadForTerms(ctx context.Context, tx Tx, rows []OverdraftTerm
 // ChargeOverdraftInterest capitalizes accrued interest into the account,
 // clearing the receivable.
 func (r *Register) ChargeOverdraftInterest(ctx context.Context, id AccountID, date time.Time) (ledger.Transaction, error) {
-	var out ledger.Transaction
-	err := r.store.Update(ctx, func(ctx context.Context, tx Tx) error {
-		var err error
-		out, err = r.ChargeOverdraftInterestTx(ctx, tx, id, date)
-		return err
+	return unit.Run(ctx, r.store.Update, func(ctx context.Context, tx Tx) (ledger.Transaction, error) {
+		return r.ChargeOverdraftInterestTx(ctx, tx, id, date)
 	})
-	return out, err
 }
 
 // ChargeOverdraftInterestTx is ChargeOverdraftInterest within a caller-supplied
@@ -1487,13 +1445,9 @@ func (r *Register) RunEndOfDayTx(ctx context.Context, tx Tx, date time.Time) err
 // overdrafts, per asset. See the Totals type for why the Asset-side figure is
 // computed here rather than posted anywhere.
 func (r *Register) Totals(ctx context.Context) (Totals, error) {
-	var out Totals
-	err := r.store.View(ctx, func(ctx context.Context, tx Tx) error {
-		var err error
-		out, err = r.TotalsTx(ctx, tx)
-		return err
+	return unit.Run(ctx, r.store.View, func(ctx context.Context, tx Tx) (Totals, error) {
+		return r.TotalsTx(ctx, tx)
 	})
-	return out, err
 }
 
 // TotalsTx is Totals within a caller-supplied unit of work.

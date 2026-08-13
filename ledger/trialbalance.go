@@ -3,6 +3,8 @@ package ledger
 import (
 	"context"
 	"time"
+
+	"github.com/raphi011/cbs/internal/unit"
 )
 
 // ---------------------------------------------------------------------------
@@ -67,13 +69,9 @@ func (b TrialBalance) Balanced() bool {
 
 // TrialBalance is TrialBalanceTx in its own read-only unit of work.
 func (s *Book) TrialBalance(ctx context.Context, asOf time.Time) (TrialBalance, error) {
-	var out TrialBalance
-	err := s.store.View(ctx, func(ctx context.Context, tx Tx) error {
-		var err error
-		out, err = s.TrialBalanceTx(ctx, tx, asOf)
-		return err
+	return unit.Run(ctx, s.store.View, func(ctx context.Context, tx Tx) (TrialBalance, error) {
+		return s.TrialBalanceTx(ctx, tx, asOf)
 	})
-	return out, err
 }
 
 // TrialBalanceTx is TrialBalance within a caller-supplied unit of work.
