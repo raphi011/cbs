@@ -50,6 +50,48 @@ type Message struct {
 	Payments []PaymentID
 }
 
+// PaymentsIn is which payments a document names, in the order it names them.
+// The id on the wire is the SUBMITTING bank's and it crosses unchanged, so
+// every institution's log joins on the same value.
+func PaymentsIn(doc iso20022.Document) []PaymentID {
+	var out []PaymentID
+	add := func(id string) {
+		if id != "" {
+			out = append(out, PaymentID(id))
+		}
+	}
+	switch d := doc.(type) {
+	case *iso20022.Pacs008:
+		for _, tx := range d.FIToFICstmrCdtTrf.CdtTrfTxInf {
+			add(tx.PmtId.TxId)
+		}
+	case *iso20022.Pacs003:
+		for _, tx := range d.FIToFICstmrDrctDbt.DrctDbtTxInf {
+			add(tx.PmtId.TxId)
+		}
+	case *iso20022.Pacs004:
+		for _, tx := range d.PmtRtr.TxInf {
+			add(tx.OrgnlTxId)
+		}
+	case *iso20022.Pacs002:
+		// A status naming no transaction is the FF01 answer to a file that would
+		// not parse. And one answering a pacs.009 names the CUT-OFF rather than a
+		// payment, because that is what a settlement instruction identifies — the
+		// original message definition is the only thing that tells the two apart.
+		orig, reports := ReadStatus(d)
+		if orig.MsgDefIdr == (iso20022.Pacs009{}).MessageDefinitionIdentifier() {
+			return nil
+		}
+		for _, r := range reports {
+			add(r.TxID)
+		}
+	}
+	// A pacs.009, a camt.050, a camt.053 and a camt.025 name NO payment, and that
+	// is the domain rather than a gap: a cut-off's positions are M payments netted
+	// and a statement is one account's movement.
+	return out
+}
+
 // A MessageFilter narrows a message listing. The zero value is this
 // institution's whole traffic, oldest first.
 type MessageFilter struct {

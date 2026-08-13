@@ -73,6 +73,10 @@ func (c *CentralBank) enqueue(ctx context.Context, to iso20022.BIC, env iso20022
 		return fmt.Errorf("server: %s cannot address a %s to %s: %w", c.bic, t, to, err)
 	}
 	c.env.Journal.File(node.FileMoved{From: c.bic, To: to, OrderType: t, OrderID: id, Movement: node.FilePut})
+	// See bank.Bank.upload for why a failed record is logged rather than returned.
+	if err := node.Record(ctx, c.ops, c.bic, payment.MessageSent, to, id, env, raw); err != nil {
+		c.env.Log.Error("server: a file was addressed and not recorded", "institution", c.bic, "to", to, "order", id, "error", err)
+	}
 	return nil
 }
 
@@ -92,7 +96,7 @@ func (c *CentralBank) Work(ctx context.Context) []node.Problem {
 		c.env.Journal.File(node.FileMoved{From: iso20022.BIC(order.Subscriber), To: c.bic,
 			OrderType: order.Type, OrderID: order.ID, Movement: node.FileTaken})
 		answer, detail := c.host.Processed, ""
-		if err := c.handle(ctx, iso20022.BIC(order.Subscriber), order.Payload); err != nil {
+		if err := c.handle(ctx, iso20022.BIC(order.Subscriber), order.ID, order.Payload); err != nil {
 			problems = append(problems, node.Problem{Institution: c.bic, OrderID: order.ID, Detail: err.Error()})
 			answer, detail = c.host.Rejected, err.Error()
 		}
@@ -104,11 +108,15 @@ func (c *CentralBank) Work(ctx context.Context) []node.Problem {
 	return problems
 }
 
-// handle dispatches on the document the bytes carry.
-func (c *CentralBank) handle(ctx context.Context, from iso20022.BIC, raw []byte) error {
-	env, err := iso20022.Unmarshal(raw)
-	if err != nil {
-		return c.answerUnreadable(ctx, from, err)
+// handle dispatches on the document the bytes carry, recording the file first
+// whatever it goes on to make of it. See bank.Bank.handle.
+func (c *CentralBank) handle(ctx context.Context, from iso20022.BIC, order ebics.OrderID, raw []byte) error {
+	env, perr := iso20022.Unmarshal(raw)
+	if err := node.Record(ctx, c.ops, c.bic, payment.MessageReceived, from, order, env, raw); err != nil {
+		return errors.Join(perr, err)
+	}
+	if perr != nil {
+		return c.answerUnreadable(ctx, from, perr)
 	}
 	switch doc := env.Document.(type) {
 	case *iso20022.Pacs009:

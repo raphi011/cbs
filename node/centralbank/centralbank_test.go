@@ -31,15 +31,42 @@ type silentJournal struct{}
 func (silentJournal) File(node.FileMoved)             {}
 func (silentJournal) Outcome(node.TransactionOutcome) {}
 
-// refusing is a settlement agent whose lodgement act fails with one error, and
-// which is otherwise unreachable: the two tests below drive that act alone.
+// refusing is a settlement agent whose lodgement act fails with one error. It
+// keeps what it is asked to record and is otherwise unreachable: the two tests
+// below drive that act alone, and every file this agent addresses goes through
+// the message log on the way out.
 type refusing struct {
 	ops
-	err error
+	err      error
+	recorded []payment.Message
 }
 
-func (o refusing) ReceiveLodgement(context.Context, payment.LodgementInstruction) (payment.LodgementReceipt, error) {
+func (o *refusing) ReceiveLodgement(context.Context, payment.LodgementInstruction) (payment.LodgementReceipt, error) {
 	return payment.LodgementReceipt{}, o.err
+}
+
+func (o *refusing) RecordMessage(_ context.Context, m payment.Message) error {
+	o.recorded = append(o.recorded, m)
+	return nil
+}
+
+// assertRecorded checks one row of the agent's own message log.
+func assertRecorded(t *testing.T, m payment.Message, dir payment.MessageDirection,
+	other iso20022.BIC, msgDef string,
+) {
+	t.Helper()
+	if m.Direction != dir {
+		t.Errorf("the file was recorded as %s, want %s", m.Direction, dir)
+	}
+	if m.Counterparty != other {
+		t.Errorf("the file was recorded against %s, want %s", m.Counterparty, other)
+	}
+	if m.MsgDefIdr != msgDef {
+		t.Errorf("the file was recorded as a %s, want a %s", m.MsgDefIdr, msgDef)
+	}
+	if len(m.Payload) == 0 {
+		t.Error("the file was recorded with no payload; the log keeps the bytes")
+	}
 }
 
 // agent is the settlement agent over a real host with the member and the
@@ -108,7 +135,8 @@ func lodgement(t *testing.T, ref string) (iso20022.AppHdr, *iso20022.Camt050) {
 // found it.
 func TestAStoreFailureAtTheAgentIsNotARefusal(t *testing.T) {
 	broken := errors.New("store: the retry budget ran out")
-	c := agent(t, refusing{err: broken})
+	view := &refusing{err: broken}
+	c := agent(t, view)
 	hdr, doc := lodgement(t, "lodge-store-failure")
 
 	err := c.receiveLodgement(context.Background(), memberBIC, hdr, doc)
@@ -132,7 +160,8 @@ func TestALodgementRefusalIsAJudgement(t *testing.T) {
 	for _, sentinel := range lodgementRefusals {
 		t.Run(sentinel.Error(), func(t *testing.T) {
 			refusal := fmt.Errorf("payment: %s lodges EUR: %w", memberBIC, sentinel)
-			c := agent(t, refusing{err: refusal})
+			view := &refusing{err: refusal}
+			c := agent(t, view)
 			hdr, doc := lodgement(t, "lodge-refused")
 
 			if err := c.receiveLodgement(context.Background(), memberBIC, hdr, doc); err != nil {
@@ -149,6 +178,13 @@ func TestALodgementRefusalIsAJudgement(t *testing.T) {
 			if got := receipt.Rct.RctDtls[0].ReqHdlg[0].StsCd; got != string(iso20022.TransactionStatusRejected) {
 				t.Errorf("the receipt reports %q, want %q", got, iso20022.TransactionStatusRejected)
 			}
+			// And the agent kept its own record of what it addressed, which is the
+			// half of a crossing this institution is the one to write down.
+			if len(view.recorded) != 1 {
+				t.Fatalf("the agent recorded %d files, want the one it addressed", len(view.recorded))
+			}
+			rec := view.recorded[0]
+			assertRecorded(t, rec, payment.MessageSent, memberBIC, iso20022.Camt025{}.MessageDefinitionIdentifier())
 		})
 	}
 }
@@ -158,7 +194,7 @@ func TestALodgementRefusalIsAJudgement(t *testing.T) {
 // sets a code and a text the builder then silently drops — a message saying
 // everything is fine, with the reason it was not deleted on the way out.
 func TestTheSettlementAgentCannotAnswerYesWithAReason(t *testing.T) {
-	c := agent(t, nil)
+	c := agent(t, &refusing{})
 
 	err := c.answer(context.Background(), csmBIC,
 		payment.OriginalMessage{MsgID: node.NotProvided, MsgDefIdr: node.NotProvided},

@@ -23,6 +23,10 @@ type ops interface {
 	// the member's own reserve account, and this institution posts Debit
 	// Settlement Assets / Credit Reserve: <member> in its own book.
 	ReceiveLodgement(ctx context.Context, in payment.LodgementInstruction) (payment.LodgementReceipt, error)
+
+	// This institution's own record of a file it sent or received. It is the same
+	// act at all three institutions; see node.Record.
+	RecordMessage(ctx context.Context, m payment.Message) error
 }
 
 // The settlement agent's type satisfies the settlement agent's interface, and
