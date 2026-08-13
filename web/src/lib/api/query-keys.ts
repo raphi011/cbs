@@ -2,12 +2,12 @@
 // consistent (e.g. funding a participant invalidates that participant's
 // balances). Keys grow as milestones add screens.
 
-import type { AuditQuery } from "../types";
+import type { AuditQuery, MessageQuery } from "../types";
 
-// auditKey appends the filter to an audit key only when there is one, so the
+// narrowedKey appends the filter to a log's key only when there is one, so the
 // unfiltered key stays a prefix of every filtered one and a single
 // invalidateQueries refreshes every page of a log.
-function auditKey(base: readonly string[], q?: AuditQuery) {
+function narrowedKey(base: readonly string[], q?: AuditQuery | MessageQuery) {
   return q && Object.values(q).some((v) => v !== undefined)
     ? ([...base, q] as const)
     : (base as readonly string[]);
@@ -22,7 +22,7 @@ export const qk = {
   reserves: () => ["central-bank", "reserves"] as const,
   reserve: (pid: string) => ["central-bank", "reserves", pid] as const,
   centralBankAudit: (q?: AuditQuery) =>
-    auditKey(["central-bank", "audit"], q),
+    narrowedKey(["central-bank", "audit"], q),
   // Keyed under the central bank rather than shared with the clearing house's
   // cycles(): the same rows read from a different listener, which can be
   // individually down, and for a different reason.
@@ -40,6 +40,16 @@ export const qk = {
   // it is read from that listener: the clock belongs to no institution, and a
   // key that said otherwise would invite a second one per operator.
   clock: () => ["clock"] as const,
+
+  // The day's declared steps. Not keyed by date: which phases a day HAS is
+  // fixed before the process starts, and only which of them run varies.
+  phases: () => ["clock", "phases"] as const,
+
+  // The mesh, keyed under nobody. It is the deployment's read of every
+  // institution at once, so keying it under the listener that serves it would
+  // say it was the settlement agent's — which is the one thing it is not.
+  networkFlow: (limit?: number) =>
+    limit === undefined ? (["network-flow"] as const) : (["network-flow", limit] as const),
 
   // Next-side, not a backend area: which listeners are actually there.
   operators: () => ["operators"] as const,
@@ -66,7 +76,7 @@ export const qk = {
   transaction: (pid: string, tid: string) =>
     ["participants", pid, "transaction", tid] as const,
   ledgerAudit: (pid: string, q?: AuditQuery) =>
-    auditKey(["participants", pid, "audit"], q),
+    narrowedKey(["participants", pid, "audit"], q),
 
   // Deposit layer. Balances, holds and snapshots nest under the account so a
   // single invalidate of ["participants", pid, "deposit-accounts"] refreshes
@@ -94,7 +104,7 @@ export const qk = {
   overdraftTerms: (pid: string, did: string) =>
     ["participants", pid, "deposit-accounts", did, "overdraft-terms"] as const,
   depositAudit: (pid: string, q?: AuditQuery) =>
-    auditKey(["participants", pid, "deposit-audit"], q),
+    narrowedKey(["participants", pid, "deposit-audit"], q),
 
   // Lending layer. The schedule nests under the facility, which nests under
   // the list, so one invalidate of facilities(pid) refreshes a facility's
@@ -136,7 +146,20 @@ export const qk = {
   bankPayments: (pid: string) => ["participants", pid, "payments"] as const,
   cycles: () => ["cycles"] as const,
   cycle: (cid: string) => ["cycles", cid] as const,
-  paymentAudit: (q?: AuditQuery) => auditKey(["payments", "audit"], q),
+  paymentAudit: (q?: AuditQuery) => narrowedKey(["payments", "audit"], q),
+
+  // The clearing house's own message log. Keyed under that institution because
+  // a log is one institution's record of its own traffic: two institutions'
+  // logs are two different answers and a seq means nothing across them. The
+  // unfiltered key is a prefix of every narrowed one, so one invalidate
+  // refreshes a payment's files and the whole listing alike.
+  messages: (q?: MessageQuery) => narrowedKey(["clearing-house", "messages"], q),
+
+  // A document, keyed outside that prefix on purpose: a log row is written once
+  // and never changed, so the one read that carries the bytes must not be
+  // refetched by every invalidate of the listing above it.
+  messageDocument: (seq: number) =>
+    ["clearing-house", "message-document", seq] as const,
   settlements: () => ["settlements"] as const,
   settlement: (sid: string) => ["settlements", sid] as const,
 };

@@ -90,6 +90,10 @@ type Deployment struct {
 	// institution could not process.
 	journal journal
 
+	// hub is every browser watching this deployment work, and it is the journal's
+	// second subscriber. Nothing below cmd/server learns that a browser exists.
+	hub hub
+
 	// populate rebuilds the sample dataset. It must be idempotent: the process
 	// calls it at boot and Reset calls it again after clearing the store.
 	populate func(context.Context, *payment.Networks, seed.Deployment) error
@@ -102,7 +106,7 @@ type Deployment struct {
 	// one identity a bank has.
 	banks map[iso20022.BIC]*bank.Bank
 
-	// resetMu serializes Reset AND AdvanceDay.
+	// resetMu serializes Reset AND anything that runs a phase of a business day.
 	resetMu sync.Mutex
 }
 
@@ -130,6 +134,7 @@ func NewDeployment(ctx context.Context, nets *payment.Networks, hosts Hosts, clo
 		populate: populate,
 		banks:    map[iso20022.BIC]*bank.Bank{},
 	}
+	d.journal.watch = d.hub.publish
 	d.env = node.Env{
 		Now:              d.now,
 		Log:              log,

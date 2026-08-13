@@ -65,6 +65,7 @@ var (
 		"products", "product_versions",
 		"facilities", "installments", "facility_terms",
 		"banks", "bank_assets", "routing_directory", "mandates", "payments", "settlement_advices",
+		"messages", "message_payments",
 		"audit_events", "id_sequences").withPaymentLegs()
 
 	// CSM is the clearing house: a roster, cycles, its own copy of each payment
@@ -75,6 +76,7 @@ var (
 		"payments", "cycles", "cycle_payments",
 		"held_files", "held_file_transactions", "held_returns",
 		"ebics_queue", "ebics_orders",
+		"messages", "message_payments",
 		"audit_events", "id_sequences").withPaymentCycle()
 
 	// CentralBank is the settlement agent: a ledger holding the members' reserve
@@ -87,6 +89,7 @@ var (
 		"bank_codes", "settlement_members", "settlement_member_accounts",
 		"settlements", "settlement_positions",
 		"ebics_queue", "ebics_orders",
+		"messages", "message_payments",
 		"audit_events", "id_sequences")
 )
 

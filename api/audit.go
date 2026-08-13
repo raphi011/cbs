@@ -12,24 +12,31 @@ import (
 // endpoint with several filters: the log is a single table spanning every book
 // and every layer, and a route is just a (BookID, Scope) pair applied to it.
 
-// Pagination bounds shared by every audit endpoint.
+// Pagination bounds shared by the two durable logs, the audit trail and the
+// message log. Both are unbounded by design, so a limit is defaulted and capped
+// rather than optional.
 const (
-	auditDefaultLimit = 100
-	auditMaxLimit     = 1000
+	logDefaultLimit = 100
+	logMaxLimit     = 1000
 )
 
-// AuditFilterFrom parses the shared audit query parameters. A durable log is
-// unbounded, so limit is defaulted and capped rather than optional.
+// LogLimit reads the page size off a request, defaulted and capped. It is the
+// one bound the mesh shares with the two logs, which is why it is named here.
+func LogLimit(r *http.Request) int {
+	if v, err := strconv.Atoi(r.URL.Query().Get("limit")); err == nil && v > 0 {
+		return min(v, logMaxLimit)
+	}
+	return logDefaultLimit
+}
+
+// AuditFilterFrom parses the shared audit query parameters.
 func AuditFilterFrom(r *http.Request, book ledger.BookID, scope ledger.Scope) ledger.AuditFilter {
 	f := ledger.AuditFilter{
 		BookID:   book,
 		Scope:    scope,
 		Type:     r.URL.Query().Get("type"),
 		EntityID: r.URL.Query().Get("entity"),
-		Limit:    auditDefaultLimit,
-	}
-	if v, err := strconv.Atoi(r.URL.Query().Get("limit")); err == nil && v > 0 {
-		f.Limit = min(v, auditMaxLimit)
+		Limit:    LogLimit(r),
 	}
 	if v, err := strconv.ParseInt(r.URL.Query().Get("before"), 10, 64); err == nil && v > 0 {
 		f.Before = v

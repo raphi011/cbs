@@ -1030,3 +1030,45 @@ func TestSeededAccountsCarryTheirIBAN(t *testing.T) {
 		}
 	}
 }
+
+// TestTheSeedSendsNothingAndSoRecordsNothing pins what the seed IS: it plays
+// every institution's half itself and puts no file on any wire, so no payment it
+// builds can be reached from a document and no institution logs one.
+//
+// It is the other half of cmd/server's TestAPaymentReachesTheFilesThatCarriedIt,
+// which drives the transport and finds the files. Both are true at once, and a
+// screen that promised a file for every payment would be wrong on all of these.
+func TestTheSeedSendsNothingAndSoRecordsNothing(t *testing.T) {
+	ctx := context.Background()
+	net := testNetwork(t)
+
+	logs := map[string]func(context.Context, payment.MessageFilter) ([]payment.Message, error){
+		"the clearing house":   net.nets.ClearingHouse().ListMessages,
+		"the settlement agent": net.nets.CentralBank().ListMessages,
+	}
+	for _, p := range listParticipants(t, ctx, net) {
+		logs[string(p.BIC)] = net.bank(p.ID).ListMessages
+	}
+
+	for holder, list := range logs {
+		ms, err := list(ctx, payment.MessageFilter{})
+		if err != nil {
+			t.Fatalf("%s listing its message log: %v", holder, err)
+		}
+		if len(ms) != 0 {
+			t.Errorf("%s logged %d file(s) after the seed; the seed performs each institution's "+
+				"own act and sends nothing, so a file here means a build stopped playing every side",
+				holder, len(ms))
+		}
+	}
+
+	for _, p := range listPayments(t, ctx, net) {
+		for holder, list := range logs {
+			if ms, err := list(ctx, payment.MessageFilter{PaymentID: p.ID}); err != nil {
+				t.Fatalf("%s reaching %s: %v", holder, p.ID, err)
+			} else if len(ms) != 0 {
+				t.Errorf("%s reaches %d file(s) from %s, which never travelled", holder, len(ms), p.ID)
+			}
+		}
+	}
+}

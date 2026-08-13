@@ -37,6 +37,34 @@ func OrderTypeOf(doc iso20022.Document) (ebics.OrderType, error) {
 	}
 }
 
+// A Recorder is the one act the message log asks of an institution. It is here
+// rather than on an ops interface three times because the body below is one
+// body.
+type Recorder interface {
+	RecordMessage(ctx context.Context, m payment.Message) error
+}
+
+// Record puts one envelope in the recording institution's own message log: the
+// header lifted out, the file as it travelled, and the payments the document
+// names. An unreadable file is recorded too, with an empty header.
+func Record(ctx context.Context, r Recorder, self iso20022.BIC, dir payment.MessageDirection,
+	other iso20022.BIC, order ebics.OrderID, env iso20022.Envelope, raw []byte,
+) error {
+	err := r.RecordMessage(ctx, payment.Message{
+		Direction:    dir,
+		Counterparty: other,
+		MsgDefIdr:    env.AppHdr.MsgDefIdr,
+		MsgID:        env.AppHdr.BizMsgIdr,
+		OrderID:      string(order),
+		Payload:      raw,
+		Payments:     payment.PaymentsIn(env.Document),
+	})
+	if err != nil {
+		return fmt.Errorf("server: %s could not record the file it %s %s: %w", self, dir, other, err)
+	}
+	return nil
+}
+
 // ReturnMsgDef is the pacs.004's message name, which two institutions dispatch
 // a pacs.002 by.
 var ReturnMsgDef = iso20022.Pacs004{}.MessageDefinitionIdentifier()

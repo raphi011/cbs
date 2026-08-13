@@ -71,7 +71,7 @@ func NewCentralBankNetwork(store CentralBankStore, clock func() time.Time) *Cent
 
 func newBankNetwork(store BankStore, clock func() time.Time, pid ParticipantID, schemes *schemeRegistry) *BankNetwork {
 	return &BankNetwork{
-		core:     newNetwork(bankCommon{store}, clock, AsBank(pid), schemes),
+		core:     newNetwork(bankCommon{store}, bankMessages{store}, clock, AsBank(pid), schemes),
 		store:    store,
 		ledgers:  ledgerView{store},
 		deposits: depositView{store},
@@ -82,7 +82,7 @@ func newBankNetwork(store BankStore, clock func() time.Time, pid ParticipantID, 
 
 func newClearingHouseNetwork(store ClearingHouseStore, clock func() time.Time, schemes *schemeRegistry) *ClearingHouseNetwork {
 	return &ClearingHouseNetwork{
-		core:  newNetwork(clearingHouseCommon{store}, clock, AsClearingHouse(), schemes),
+		core:  newNetwork(clearingHouseCommon{store}, clearingHouseMessages{store}, clock, AsClearingHouse(), schemes),
 		store: store,
 	}
 }
@@ -90,7 +90,7 @@ func newClearingHouseNetwork(store ClearingHouseStore, clock func() time.Time, s
 func newCentralBankNetwork(store CentralBankStore, clock func() time.Time, schemes *schemeRegistry) *CentralBankNetwork {
 	ledgers := centralBankLedgerView{store}
 	return &CentralBankNetwork{
-		core:        newNetwork(centralBankCommon{store}, clock, AsCentralBank(), schemes),
+		core:        newNetwork(centralBankCommon{store}, centralBankMessages{store}, clock, AsCentralBank(), schemes),
 		store:       store,
 		ledgers:     ledgers,
 		centralBank: ledger.NewBook(ledgers, CentralBankBook, clock),

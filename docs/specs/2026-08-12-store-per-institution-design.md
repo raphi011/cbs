@@ -1,8 +1,8 @@
 # Design — separating the store by institution
 
-**Built.** The ruling is [ADR-0007](../adr/0007-a-store-per-institution.md); this
+**Built.** The ruling is the store-per-institution design; this
 record is the plan it was built from and is kept for the measurements and the
-method lists. Two things came out differently and the ADR carries both:
+method lists. Two things came out differently:
 `SlotAccountTx` is called `ledger.SlotTx`, because `Book.SlotAccountTx` is
 already a method and a parameter of the same name reads badly; and `OpenBank`
 takes a `BookID` rather than a BIC, because the four layers below payment open a
@@ -10,11 +10,11 @@ bank's schema under a book of their own and know nothing of institutions.
 
 ---
 
-Based on `main` at `04c1fca`, which is [ADR-0006](../adr/0006-one-type-per-institution.md)
+Based on `main` at `04c1fca`, which is the rule of one type per institution
 landed: `payment.Network` is now three types, one per institution, and an act
 that belongs to one of them cannot be named through another's handle.
 
-This is the same defect one layer down, and ADR-0006's own Consequences section
+This is the same defect one layer down, and the rule of one type per institution's own Consequences section
 names it: `sqlite.ErrNotInThisShape` refuses at runtime what a type refuses at
 compile time above it.
 
@@ -47,7 +47,7 @@ that answers `ErrNotInThisShape` when the table is not there.
 
 **And nothing checks it.** Emptying `inShape` to `return nil` leaves the entire
 suite green — there is not one assertion that the refusal fires. The mechanism
-that three documents and [ADR-0004](../adr/0004-a-queue-is-a-table-and-stays-opaque.md)
+that three documents and the rule that a queue is a table whose bytes stay opaque
 lean on is, today, a claim.
 
 ## What the partition actually is
@@ -133,7 +133,7 @@ opened as:
 `payment.Store` splits the same way — `Update`/`View` differ only in the `Tx`
 they hand the closure — and `Stores.Bank`, `Stores.ClearingHouse` and
 `Stores.CentralBank` already return one per institution, so their three
-signatures change and the call sites follow. This is the shape ADR-0006 used and
+signatures change and the call sites follow. This is the shape the rule of one type per institution used and
 it worked: 83 receivers moved, and the compiler found every crossing.
 
 **`ebics` needs no work beyond the constructor.** `Set.ClearingHouseEBICS` and
@@ -154,7 +154,7 @@ bank-only method reaches a table that is not there. One mismatch at one seam —
 but a runtime one, which is the thing this design exists to remove.
 
 **So the shape becomes a constructor rather than a parameter**, which is
-[ADR-0006](../adr/0006-one-type-per-institution.md)'s move applied to the
+the rule of one type per institution's move applied to the
 discriminator one layer down:
 
 ```go
@@ -309,7 +309,7 @@ Each of these is a command, not a judgement.
 - `go build ./... && go vet ./... && go test ./...` and `gofmt -l .` — the
   baseline, green before and after.
 - **The crossing is a build failure, per institution.** Three throwaway probes,
-  the shape ADR-0006 used: a file naming `PutCycle` on a `BankTx`, `PutBank` on a
+  the shape the rule of one type per institution used: a file naming `PutCycle` on a `BankTx`, `PutBank` on a
   `CsmTx`, `PutPayment` on a `CentralBankTx`. Each must fail to compile, and the
   probe is deleted after. Nothing else proves the win.
 - **`ErrNotInThisShape` has no callers.**
@@ -335,11 +335,10 @@ it (`CLAUDE.md`, *Domain knowledge stays consistent across layers*).
 - `store/sqlite/schema/{bank,csm,centralbank}/0001_init.sql` — each argues about
   tables the shape does NOT hold. Those arguments stay true and gain a second
   mechanism; `bank/0001_init.sql` is the canonical home per `CLAUDE.md`.
-- [ADR-0004](../adr/0004-a-queue-is-a-table-and-stays-opaque.md) — leans on the
+- the rule that a queue is a table whose bytes stay opaque — leans on the
   shape refusal for the queue. Check whether its Consequences still hold when the
   queue is on two types and no third can name it.
 - `README.md` *Persistence* — states the three-shape mapping.
-- An ADR for this ruling, as ADR-0006 was for the layer above.
 - The learner-facing layers (`hint-content.ts`, quiz chapters 15–16) name no repo
   symbol, so they move only if a DOMAIN claim changes. None does here: which
   institution holds which table is unchanged, and only what enforces it moves.
@@ -361,7 +360,7 @@ and after, no migration.
 exactly this, and it is the cheapest thing on the board — assertions that
 `ErrNotInThisShape` fires, converting a claim into a checked fact. It is
 strictly weaker: a tested runtime refusal is still a runtime refusal, and the
-whole argument of ADR-0006 is that the compiler should be holding this. It is
+whole argument of the rule of one type per institution is that the compiler should be holding this. It is
 worth doing FIRST if phase 2 is not going to start soon, and worth skipping if it
 is, because phase 3 deletes the error outright rather than most of it.
 

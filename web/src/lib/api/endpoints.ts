@@ -8,6 +8,9 @@ import type { OperatorStatus } from "./backend-url";
 import type {
   BusinessDate,
   DayReport,
+  NetworkFlow,
+  Phase,
+  PhaseReport,
   Account,
   AcceptedPayment,
   Asset,
@@ -40,6 +43,9 @@ import type {
   Installment,
   Ledger,
   Mandate,
+  Message,
+  MessageDocument,
+  MessageQuery,
   NameRequest,
   OpenCycleRequest,
   OpenDepositAccountRequest,
@@ -676,6 +682,24 @@ export function paymentAudit(q: AuditQuery = {}): Promise<AuditEvent[]> {
   return request("GET", csm(`/payments/audit${qs({ ...q })}`));
 }
 
+// --- The message log ------------------------------------------------------
+
+// The CLEARING HOUSE's own record of the files it sent and received. All three
+// listeners answer these two routes and each answers about itself alone, so a
+// screen reading another institution's log gets a function of its own rather
+// than an operator parameter here — the same rule ledgerAudit and
+// centralBankAudit already follow.
+export function clearingHouseMessages(q: MessageQuery = {}): Promise<Message[]> {
+  return request("GET", csm(`/messages${qs({ ...q })}`));
+}
+
+// One document, and the only read in this file that is handed a file's bytes:
+// every listing leaves the payload unread and carries its size instead. The seq
+// is one this institution's own listing named.
+export function clearingHouseMessage(seq: number): Promise<MessageDocument> {
+  return request("GET", csm(`/messages/${seq}`));
+}
+
 // --- Payment: clearing cycles ---------------------------------------------
 
 export function listCycles(): Promise<ClearingCycle[]> {
@@ -798,6 +822,40 @@ export function getClock(): Promise<BusinessDate> {
 export function advanceDay(): Promise<DayReport> {
   return request("POST", cb("/clock/day"));
 }
+
+// listPhases is the day as it is declared, in the order it runs. runPhase opens
+// one of those doors and answers with what that phase moved — the clock stays
+// where it stood, which is the difference between stepping a day and advancing
+// one.
+//
+// A phase is named, never parameterised, so the key is the whole of what a door
+// takes and a caller composes derived runs around it rather than splicing.
+export function listPhases(): Promise<Phase[]> {
+  return request("GET", cb("/clock/phases"));
+}
+
+export function runPhase(key: string): Promise<PhaseReport> {
+  return request("POST", cb(`/clock/phases/${encodeURIComponent(key)}`));
+}
+
+// --- The network mesh -------------------------------------------------------
+
+// Every institution, every wire between them, and every file that crossed one.
+// It is SERVED rather than fanned out across the N+2 listeners here, because
+// "may see everything" is the deployment's standing and belongs in its own type
+// system rather than in a browser that merged what nobody may read together.
+//
+// `limit` bounds the crossings that were DELIVERED. A file still resting on a
+// wire is never paged out: a queue nobody has come for is what this view exists
+// to show.
+export function networkFlow(limit?: number): Promise<NetworkFlow> {
+  return request("GET", cb(`/network/flow${qs({ limit })}`));
+}
+
+// networkEventsPath is the same mesh as it happens, and is not a `request`: it
+// is opened by an EventSource rather than fetched, so what this exports is the
+// URL. See useNetworkEvents, which is the one subscriber.
+export const networkEventsPath = `/api${cb("/network/flow/events")}`;
 
 // --- Admin ----------------------------------------------------------------
 

@@ -11,10 +11,18 @@ import {
 } from "@tanstack/react-query";
 
 import { buildKnownAccounts, projectStatement } from "@/lib/statement";
+import { trailOf } from "@/lib/payment-trail";
 import type { StatementRow } from "@/lib/statement";
 import type { AccountType } from "@/lib/enums";
 import { backendFor } from "@/lib/identity";
-import type { Asset, AuditQuery, CreateMandateRequest, DepositAccount, Participant } from "@/lib/types";
+import type {
+  Asset,
+  AuditQuery,
+  CreateMandateRequest,
+  DepositAccount,
+  MessageQuery,
+  Participant,
+} from "@/lib/types";
 
 import * as api from "./endpoints";
 import { qk } from "./query-keys";
@@ -716,6 +724,37 @@ export function usePaymentAudit(q: AuditQuery = {}) {
   });
 }
 
+// Where one payment has been, as the institution serving this audit tells it.
+// The fold is here rather than in the screen because a screen should ask for a
+// trail and not for a log it has to reduce; `steps` is ordered by seq.
+export function usePaymentTrail(payid: string) {
+  const q = usePaymentAudit({ entity: payid });
+  const events = q.data;
+  return { ...q, steps: useMemo(() => trailOf(events ?? []), [events]) };
+}
+
+// --- The message log ------------------------------------------------------
+
+// The clearing house's record of the files it sent and received, narrowed by
+// the query. It carries every file's size and none of their bytes.
+export function useClearingHouseMessages(q: MessageQuery = {}) {
+  return useQuery({
+    queryKey: qk.messages(q),
+    queryFn: () => api.clearingHouseMessages(q),
+  });
+}
+
+// One document. Never refetched: a log row is written once and the file it
+// carries is the file as it travelled.
+export function useClearingHouseMessage(seq: number | null) {
+  return useQuery({
+    queryKey: qk.messageDocument(seq ?? 0),
+    queryFn: () => api.clearingHouseMessage(seq!),
+    enabled: seq !== null,
+    staleTime: Infinity,
+  });
+}
+
 // --- Payment: mandates ----------------------------------------------------
 
 export function useMandates(pid: string) {
@@ -772,6 +811,9 @@ function invalidateNetwork(qc: ReturnType<typeof useQueryClient>) {
   qc.invalidateQueries({ queryKey: qk.centralBankAudit() });
   qc.invalidateQueries({ queryKey: qk.centralBankCycles() });
   qc.invalidateQueries({ queryKey: qk.centralBankSettlements() });
+  // The clearing house's log: a rejection and a return both put a file on a
+  // wire, so an act that moves a payment moves this too.
+  qc.invalidateQueries({ queryKey: qk.messages() });
   qc.invalidateQueries({ queryKey: ["participants"] });
 }
 
@@ -984,6 +1026,43 @@ export function useAdvanceDay() {
   return useMutation({
     mutationFn: api.advanceDay,
     onSuccess: () => qc.invalidateQueries(),
+  });
+}
+
+// The day's declared steps. They are fixed before the process starts, so this
+// is read once and never refetched — only which of them RUN varies by day.
+export function usePhases() {
+  return useQuery({
+    queryKey: qk.phases(),
+    queryFn: api.listPhases,
+    staleTime: Infinity,
+  });
+}
+
+// Open one phase's door, then invalidate every query.
+//
+// Every query, for the same reason advancing a day does: a phase clears, or
+// settles, or accrues, and naming the subset a given phase touches would be
+// naming the whole of the domain one phase at a time.
+export function useRunPhase() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: api.runPhase,
+    onSuccess: () => qc.invalidateQueries(),
+  });
+}
+
+// --- The network mesh -------------------------------------------------------
+
+// Every institution's traffic paired into the crossings both ends observed.
+//
+// It is read WHOLE and not polled: this is every row every institution holds,
+// which is what a truthful answer about what is still in flight costs. What
+// refreshes it is the push channel — see NetworkWatcher.
+export function useNetworkFlow(limit?: number) {
+  return useQuery({
+    queryKey: qk.networkFlow(limit),
+    queryFn: () => api.networkFlow(limit),
   });
 }
 

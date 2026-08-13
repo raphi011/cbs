@@ -31,6 +31,7 @@ func errorStatus(err error) int {
 		errors.Is(err, deposit.ErrIdentifierNotFound),
 		errors.Is(err, payment.ErrParticipantNotFound),
 		errors.Is(err, payment.ErrPaymentNotFound),
+		errors.Is(err, payment.ErrMessageNotFound),
 		errors.Is(err, payment.ErrMandateNotFound),
 		errors.Is(err, payment.ErrCycleNotFound),
 		errors.Is(err, payment.ErrSettlementNotFound),

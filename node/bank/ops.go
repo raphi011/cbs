@@ -88,6 +88,10 @@ type ops interface {
 	// whose subject is this bank rather than a payment.
 	LodgeReserves(ctx context.Context, asset ledger.AssetCode,
 		amount ledger.Amount, mc payment.MessageContext) (payment.LodgementInstruction, iso20022.Envelope, error)
+
+	// This institution's own record of a file it sent or received. It is the same
+	// act at all three institutions; see node.Record.
+	RecordMessage(ctx context.Context, m payment.Message) error
 }
 
 // The bank's type satisfies the bank's interface, and this assertion is what

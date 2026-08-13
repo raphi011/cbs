@@ -14,6 +14,10 @@ func Routes(inst Institution, op Operator) *api.Router {
 	mux.HandleFunc("GET /reserves", api.Handle(http.StatusOK, s.handleListReserves))
 	mux.HandleFunc("GET /reserves/{bic}", api.Handle(http.StatusOK, s.handleGetReserve))
 	mux.HandleFunc("GET /audit", api.Handle(http.StatusOK, s.handleCentralBankAudit))
+	// This institution's own half of every crossing, and one file at a time. The
+	// mesh is not here: a counterparty's half is in the counterparty's database.
+	mux.HandleFunc("GET /messages", api.Handle(http.StatusOK, s.handleListMessages))
+	mux.HandleFunc("GET /messages/{seq}", api.Handle(http.StatusOK, s.handleGetMessage))
 	// Every bank this deployment holds a database for.
 	mux.HandleFunc("GET /members", api.Handle(http.StatusOK, s.handleListParticipants))
 	// There is no POST here, and its absence is the shape of the transport.
@@ -22,7 +26,9 @@ func Routes(inst Institution, op Operator) *api.Router {
 	mux.HandleFunc("GET /assets", api.HandleListAssets)
 	// Reset clears the store and reseeds it.
 	s.registerAdminRoutes(mux)
-	// The business date, and the button that advances it.
+	// The business date, the button that advances it, and a door per phase.
 	s.registerClockRoutes(mux)
+	// And the mesh, which is the deployment's because no institution may give it.
+	s.registerNetworkRoutes(mux)
 	return mux
 }

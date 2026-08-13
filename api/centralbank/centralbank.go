@@ -21,9 +21,8 @@ type Institution interface {
 }
 
 // An Operator is the DEPLOYMENT: a business day drives all N+2 institutions and
-// none of them owns it. These four are served on this listener because that is
-// where the operator's console lives, and on this interface because the type
-// system should say whose acts they are.
+// none of them owns it. Served on this listener because the operator's console
+// is here, and on this interface so the type system says whose acts they are.
 type Operator interface {
 	// Members is every bank the deployment holds a database for, each read out of
 	// its own database.
@@ -36,6 +35,20 @@ type Operator interface {
 	// business day and moves it to the next.
 	BusinessDate() api.BusinessDateDTO
 	AdvanceDay(ctx context.Context) (api.DayReportDTO, error)
+
+	// Phases is the business day as it is declared, in order, and RunPhase runs
+	// one of them without moving the clock. A phase is named, never parameterised.
+	Phases() []api.PhaseDTO
+	RunPhase(ctx context.Context, phase string) (api.PhaseReportDTO, error)
+
+	// NetworkFlow is the mesh: every institution's traffic paired into the
+	// crossings both ends observed. Limit bounds the crossings already delivered.
+	NetworkFlow(ctx context.Context, limit int) (api.NetworkFlowDTO, error)
+
+	// Watch is what the deployment does, as it does it. The channel closes when a
+	// watcher has fallen too far behind to be told the truth, and release must be
+	// called when it goes away.
+	Watch() (events <-chan api.StreamEvent, release func())
 }
 
 // surface is the handler receiver: one institution and the operator whose

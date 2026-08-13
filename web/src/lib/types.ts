@@ -575,11 +575,18 @@ export interface BusinessDate {
 // FileMoved is one file that left one institution for another: uploaded to a
 // host, or put in a subscriber's download queue. The order id is what its host
 // minted for it, and is what the sender would ask about.
+//
+// `movement` is which half of the crossing this is. A file is put where its
+// recipient can reach it in one event and taken by that recipient in another,
+// and the two pair on `from`, `to` and the order id. A put with no take is a
+// file still waiting in a queue — which is what settling before releasing
+// leaves behind, and the one state worth drawing differently.
 export interface FileMoved {
   from: string;
   to: string;
   orderType: string;
   orderId: string;
+  movement: "put" | "taken";
 }
 
 // TransactionOutcome is one institution's decision about one payment.
@@ -617,6 +624,135 @@ export interface DayReport {
   files: FileMoved[];
   outcomes: TransactionOutcome[];
   problems: DayProblem[];
+}
+
+// Phase is one step of the business day, as the door an operator opens it
+// through. `key` is the name spelt for a URL and is the whole of what a door
+// takes: a phase is named, never parameterised, so there is nothing to compose.
+//
+// `settlementOnly` is reported and not enforced — a caller that named a phase
+// has decided it wants it, and a day the scheme is shut simply skips it.
+// `afterClock` says the phase runs once the date has moved.
+export interface Phase {
+  key: string;
+  name: string;
+  settlementOnly: boolean;
+  afterClock: boolean;
+}
+
+// PhaseReport is what one phase moved. There is no `next`, and that absence is
+// the whole difference between stepping a day and advancing one: only advancing
+// moves the clock.
+export interface PhaseReport {
+  phase: Phase;
+  ran: BusinessDate;
+  files: FileMoved[];
+  outcomes: TransactionOutcome[];
+  problems: DayProblem[];
+}
+
+// --- The message log --------------------------------------------------------
+
+// One institution's record of the files it sent and received. Every institution
+// keeps one about its OWN traffic, so a seq names a row in that institution's
+// log and means nothing at any other.
+
+// Which way one envelope went, from the point of view of the institution whose
+// log it is.
+export type MessageDirection = "sent" | "received";
+
+// Message is one file WITHOUT the bytes. A listing is an index over a log that
+// keeps every file forever, so it carries the size in place of the document and
+// one document is fetched at a time.
+export interface Message {
+  seq: number;
+  direction: MessageDirection;
+  counterparty: string;
+  // The envelope's own header: what the file is, and the id its sender put on
+  // it.
+  msgDefIdr: string;
+  msgId: string;
+  // The transport's handle for the crossing, absent where there was none.
+  orderId?: string;
+  at: string;
+  // What the file carried, in document order. A file naming no payment is
+  // ordinary: a routing table and a statement both do.
+  payments: string[];
+  payloadSize: number;
+}
+
+// MessageDocument is one message with the file as it travelled. Nothing on that
+// route checks the document against a schema, and neither does anything here:
+// rendering a document is not validating it.
+export interface MessageDocument extends Message {
+  document: string;
+}
+
+// MessageQuery narrows one institution's log. `payment` is the join that takes
+// a payment to the files that carried it, and the id on the wire is the
+// submitting bank's and crosses unchanged — so every institution's log answers
+// on the same value.
+export interface MessageQuery {
+  limit?: number;
+  before?: number;
+  direction?: MessageDirection;
+  counterparty?: string;
+  payment?: string;
+}
+
+// --- The network mesh -------------------------------------------------------
+
+// Every institution at once, which is a read no institution may make. It is the
+// DEPLOYMENT's, served from the settlement agent's listener beside the clock for
+// the same reason the clock is there, and assembled nowhere in this browser.
+
+// The part an institution plays. A member bank is a subscriber at both hosts;
+// the clearing house is a host and a subscriber; the settlement agent is a host
+// and a subscriber nowhere.
+export type InstitutionRole = "member bank" | "clearing house" | "settlement agent";
+
+export interface Institution {
+  bic: string;
+  name: string;
+  role: InstitutionRole;
+}
+
+// Wire is one EBICS connection, named by the parts its ends play: a subscriber
+// dials a host and nothing is ever pushed the other way. A bank with no wire is
+// one the scheme has not admitted — holding a database is not being reachable.
+export interface Wire {
+  subscriber: string;
+  host: string;
+}
+
+// Crossing is one file between two institutions: the send one end recorded and
+// the take the other did, paired on the transport's order id.
+//
+// `receivedAt` absent is a file RESTING on the wire — a queue nobody has come
+// for, which is settle-before-release drawn. `sentAt` absent is different and
+// worse: a record the sender is missing, not a state a crossing passes through.
+//
+// `sentSeq` and `receivedSeq` name the row in each end's OWN log, which is how a
+// reader gets from here to the document. A seq means nothing at any other
+// institution.
+export interface Crossing {
+  from: string;
+  to: string;
+  msgDefIdr: string;
+  msgId: string;
+  orderId?: string;
+  sentSeq?: number;
+  receivedSeq?: number;
+  sentAt?: string;
+  receivedAt?: string;
+  payments: string[];
+  payloadSize: number;
+}
+
+export interface NetworkFlow {
+  institutions: Institution[];
+  wires: Wire[];
+  crossings: Crossing[];
 }
 
 // --- Lending layer ----------------------------------------------------------

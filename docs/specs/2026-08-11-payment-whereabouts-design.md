@@ -44,7 +44,7 @@ where a payment ought to be. Nothing on it distinguishes the three.
 The friction the reader hit is the subject matter. A payment sits in its bank's
 hub until a cut-off; the clearing house learns of it from a file and not from the
 customer; a cycle batches, nets, then settles; a receiving bank is handed nothing
-until the money is final (ADR-0002). Removing any of that would be removing the
+until the money is final (settle-before-release). Removing any of that would be removing the
 thing this repository exists to teach, and the answer to "it is confusing" is not
 to make a payment appear instantly at the clearing house.
 

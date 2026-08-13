@@ -1,7 +1,7 @@
 # Design — a package per institution, and the simulator above them
 
 Based on `main` at `0cffdb6`. Tasks 1, 2 and 3 have landed;
-[ADR-0010](../adr/0010-an-institution-holds-what-it-does-the-deployment-holds-the-order.md)
+The package-per-institution design
 is the ruling they produced. Task 4 is refused. See *What landed* below.
 
 The goal is a **modular monolith**: one process that plays every institution,
@@ -16,10 +16,10 @@ behind it:
 
 | layer | mechanism | ruling |
 | --- | --- | --- |
-| database | N+2, one per institution; no statement spans two | [ADR-0003](../adr/0003-an-institutions-obligations-live-in-its-database.md) |
-| store | `OpenBank` / `OpenClearingHouse` / `OpenCentralBank` → three types | [ADR-0007](../adr/0007-a-store-per-institution.md) |
-| domain | `BankNetwork` / `ClearingHouseNetwork` / `CentralBankNetwork`, 78 / 34 / 22 acts over 23 shared | [ADR-0006](../adr/0006-one-type-per-institution.md) |
-| transport state | the EBICS queue and order log are tables in `csm/` and `centralbank/` | [ADR-0004](../adr/0004-a-queue-is-a-table-and-stays-opaque.md) |
+| database | N+2, one per institution; no statement spans two | the held-files durability design |
+| store | `OpenBank` / `OpenClearingHouse` / `OpenCentralBank` → three types | the store-per-institution design |
+| domain | `BankNetwork` / `ClearingHouseNetwork` / `CentralBankNetwork`, 78 / 34 / 22 acts over 23 shared | the rule of one type per institution |
+| transport state | the EBICS queue and order log are tables in `csm/` and `centralbank/` | the rule that a queue is a table whose bytes stay opaque |
 | HTTP surface | `api/bank`, `api/csm`, `api/centralbank`, one `Institution` interface each | — |
 | listener | one per institution, its own port, its own `/ebics` | — |
 | **composition root** | **one `package main`, one `Deployment`, all three institutions** | **this record** |
@@ -109,7 +109,7 @@ acts.
 
 ## The rule this record adds
 
-[ADR-0008](../adr/0008-a-conversation-belongs-to-the-deployment.md) already
+The interbank-conversation design already
 settles the same question one layer down: `payment/flow`'s four conversations
 belong to "a caller that IS the deployment: `seed` and the suites, never an
 institution and nothing on the transport path." `payment/recon` opens all N+2
@@ -267,7 +267,7 @@ Task 1 is the modular monolith. Tasks 2 and 3 are what makes the parts honest.
 **It does not split the business day.** The phases, their order, the journal and
 `AdvanceDay` stay in `cmd/server`, whole. See the rule above.
 
-**It does not split `payment`.** ADR-0006 already narrows by TYPE, which is
+**It does not split `payment`.** the rule of one type per institution already narrows by TYPE, which is
 stronger than by package: a bank's handle cannot name `SettleCycle`. Splitting
 `payment` into `payment/bank` and `payment/csm` would break the shared `core`,
 the `Payment` type, the scheme registry and `translate.go`, and buys nothing for
@@ -294,7 +294,7 @@ is what they are for.
 - **A node cannot reach another institution — and the PACKAGE is not what
   refuses it.** The probe was run and it COMPILES: `payment` is one package, so
   a file in `node/bank` can name a `ClearingHouseNetwork`. What a bank cannot do
-  is get hold of one, which is ADR-0006's guarantee by TYPE and is unchanged.
+  is get hold of one, which is the rule of one type per institution's guarantee by TYPE and is unchanged.
   The packages buy readability and a one-way dependency, not a second wall.
 - **A bank refuses another bank's instruction** (task 2).
   `TestABankRefusesAnInstructionTheOtherSideSubmits` posts a direct debit to the
@@ -362,10 +362,8 @@ collects it, and `Deployment.RefreshDirectory` and `bankConsole` are both gone.
   one way. The *N+2 stores* section's "nothing in the domain may read across two
   institutions" gains its counterpart one layer up.
 - `docs/expansion-roadmap.md` — *Structural work*, linking this record.
-- An ADR once task 1 lands, extending
-  [ADR-0008](../adr/0008-a-conversation-belongs-to-the-deployment.md) from a
-  conversation to a business day. Task 2's refusal deserves its own paragraph in
-  it: which bank may submit an instruction is a domain claim, not a layout one.
+- Task 2's refusal deserves its own paragraph here: which bank may submit an
+  instruction is a domain claim, not a layout one.
 - `README.md` — *Persistence* and the architecture sections name `cmd/server` as
   the three institutions. After task 1 it is the deployment and the three are
   `node/`.
@@ -392,7 +390,7 @@ institutions in one package where nothing declares which lines are whose, and a
 back-pointer that makes the question unanswerable by reading.
 
 **Consumer-defined interfaces instead of moving code** — each node declares what
-it needs of the deployment, all three stay in `package main`. This is ADR-0006's
+it needs of the deployment, all three stay in `package main`. This is the rule of one type per institution's
 rejected alternative in the same position: correct, cheap, strictly weaker. It
 narrows what a node may name and leaves one package holding everything, so
 "read the clearing house" is still "read `cmd/server` and filter".

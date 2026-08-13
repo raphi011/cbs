@@ -580,7 +580,7 @@ splits into **5a** (the three structs, mechanically, tests still in `mesh`) and 
 
 Task 9 is listed last and is not done last. Each of tasks 6, 7 and 8 changes a claim
 the learner-facing layers make, and `CLAUDE.md` is explicit that those move together;
-task 9 is the sweep that catches what the per-task edits missed, plus the ADR.
+task 9 is the sweep that catches what the per-task edits missed.
 
 ## Testing
 
@@ -656,8 +656,6 @@ those.
   institution's database, and both belong inside the statement they concern, because
   SQLite drops a comment above one. `TestSchemaArgumentsReachSqliteMaster` is the
   guard.
-- **`docs/adr/`** — referenced by `CLAUDE.md` and does not exist. This sub-project
-  earns the first record: *the deployment owns the clock*.
 - **`docs/sepa-real-world.md`** — currently untracked, and effectively this spec's
   source. It should be committed before task 1.
 - **`docs/expansion-roadmap.md`** — sub-project 21 entered, and the deferred note

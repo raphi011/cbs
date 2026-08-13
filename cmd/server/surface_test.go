@@ -22,6 +22,11 @@ import (
 var allowedOverlaps = []string{
 	"GET /assets",
 	"GET /audit",
+	// Three institutions, three logs, one pattern each answering its own. The
+	// other half of every crossing is in the counterparty's database, so no
+	// listener here answers the mesh however the URL is spelt.
+	"GET /messages",
+	"GET /messages/{seq}",
 	"GET /payments",
 	"GET /payments/{payid}",
 	// Same pattern, same handler family, two logs. A bank's answers about its own

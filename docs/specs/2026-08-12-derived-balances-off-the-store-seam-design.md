@@ -1,7 +1,7 @@
 # Design — moving the derived balances off the store seam
 
 Based on `main` at `15ca75e` plus the six fixes that follow it, and on
-[ADR-0007](../adr/0007-a-store-per-institution.md): there are three transaction
+the store-per-institution design: there are three transaction
 seams, one per institution, and one implementation under all three.
 
 This is the roadmap's *Move the derived balances off the store seam*, which was

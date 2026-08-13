@@ -4,7 +4,7 @@ Based on `main` at `a80282f`. This closes the one breach
 [the package-per-institution design](2026-08-13-a-package-per-institution-design.md)
 left open — its task 3, in the primary form the fallback stood in for — and
 retires the consequence
-[ADR-0010](../adr/0010-an-institution-holds-what-it-does-the-deployment-holds-the-order.md)
+the package-per-institution design
 records under *One breach is left*.
 
 ## The defect, stated once
@@ -129,7 +129,7 @@ the snapshot arrives.
 `*payment.Networks` with no transport at all, and it is the only way
 `store/storetest` — which has no hosts, no listeners and no deployment — can put
 a directory in place. It is a deployment-level caller under
-[ADR-0008](../adr/0008-a-conversation-belongs-to-the-deployment.md), like the seed
+the interbank-conversation design, like the seed
 and the suites, and it is not on the payment path.
 
 ## Verification
@@ -154,8 +154,6 @@ and the suites, and it is not on the payment path.
 
 - `CLAUDE.md` — the *modular monolith* section's "One known breach remains"
   paragraph comes out.
-- `docs/adr/0010` — the *One breach is left* consequence becomes the record that
-  it is closed, and how.
 - `docs/expansion-roadmap.md` — the *A roster download order type* entry moves out
   of *Structural work*.
 - The learner-facing layers: `routing-directory` and `routing-roster` in

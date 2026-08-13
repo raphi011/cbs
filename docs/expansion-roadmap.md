@@ -3,10 +3,10 @@
 What is left to build, in the order it should be built.
 
 This file is forward-looking. What each shipped sub-project decided, reversed and
-learned is in its spec under `docs/specs/` and in `git log`; the index at the bottom is
-only enough to resolve a cross-reference by number. A decision that outlives the
-sub-project that produced it — one a later reader has to know about before
-changing the shape of anything near it — is in [`docs/adr/`](adr/).
+learned is in its spec under `docs/specs/` and in `git log`; the index at the
+bottom is only enough to resolve a cross-reference by number. A design record
+holds the decision, the alternative it rejected and what that cost, and there is
+no separate ruling record.
 
 **Status legend:** `todo` · `spec` (design agreed, spec written) · `plan`
 (implementation plan written) · `wip`
@@ -24,7 +24,7 @@ Three constraints apply to everything below.
   authoritative; `CONTEXT.md`, `web/src/components/hint-content.ts`, the quiz
   chapters under `web/src/lib/quiz/chapters/`, and the schema comments in
   `store/sqlite/schema/` all have to move with it. A decision that outlives its
-  sub-project goes in `docs/adr/`. See `CLAUDE.md`.
+  sub-project goes in its design record. See `CLAUDE.md`.
 - **Nothing requires setup.** A fresh checkout runs the whole suite with no
   database, no Docker and no toolchain. Every new entity still needs to be in
   `store/storetest`.
@@ -54,7 +54,6 @@ Three constraints apply to everything below.
   deployment has is that deployment's business and not a library's.
 - `payment/flow` — the four conversations between institutions, in the order the
   messages travel, for a caller that IS the deployment: the seed and the suites.
-  See [ADR-0008](adr/0008-a-conversation-belongs-to-the-deployment.md).
 - `payment/recon` — the reconciliation harness, test-only by convention: the one
   instrument that opens every institution's database at once, precisely because
   no institution in the system may. Its narrow sibling is `payment.Network.Reconcile`,
@@ -73,7 +72,7 @@ Four groups, and only the first two are sequenced against each other.
 
 1. **Defects** — small, verified against the current tree, and each one is a
    thing the system gets wrong rather than a thing it does not have.
-2. **The build sequence** — the payments and settlement arc, §1 through §7,
+2. **The build sequence** — the payments and settlement arc, §1 through §8,
    where each item genuinely wants the one before it.
 3. **Domain gaps worth building** — a standing catalogue, ranked by value per
    unit of effort. Take from the top; nothing here blocks anything there.
@@ -153,27 +152,107 @@ about what a 500 may disclose.
 **21, EBICS and the business day, has shipped**, and it was first for two
 reasons that now hold for everything below: it replaced the transport every item
 here is built on, and the business date it brought is a prerequisite the other
-four had each been paying for separately.
+four had each been paying for separately. **7c has shipped too**, so the sequence
+starts at 2.
 
-1. **7c, the message log.** The last piece of sub-project 7, and it makes every
-   flow already shipped visible. Cheaper after 21, which gives it files to show
-   rather than one message per payment.
-2. **Instant payments.** The one place the settlement orchestrator has to grow.
-3. **Card transactions.** Additive on top of holds and the existing net path.
-4. **Reserve adequacy.** Wanted by both 2 and 3, and worth little before either.
-5. **Crypto**, then **FX** — the two undecided-scope domains, largest last.
+1. **7c, the message log**, and the per-phase stepping that makes it worth
+   watching. The last piece of sub-project 7, and it makes every flow already
+   shipped visible. Cheaper after 21, which gives it files to show rather than
+   one message per payment.
+2. **Scenarios, and a deployment that starts blank.** The seed becomes a base
+   state plus triggerable scenarios, every one of which drives the real doors.
+3. **A scheduled business day.** A time of day, a cursor, intraday windows and a
+   clock that runs — one concept, and 2 has to land first so it has a base date
+   to choose.
+4. **Instant payments.** The one place the settlement orchestrator has to grow.
+5. **Card transactions.** Additive on top of holds and the existing net path.
+6. **Reserve adequacy.** Wanted by both 4 and 5, and worth little before either.
+7. **Crypto**, then **FX** — the two undecided-scope domains, largest last.
 
-### 1. 7c, the message log — `todo`
+### 1. 7c, the message log — `done`
 
-The last of sub-project 7, and the only reason §7 is not `done`. Envelopes
-persisted so a payment screen can show the XML that actually moved, carried
-through README, hints and quiz.
+[`2026-08-13-the-message-log-design.md`](specs/2026-08-13-the-message-log-design.md).
+The last of sub-project 7, which closes with it. Envelopes persisted so a payment
+screen can show the XML that actually moved, carried through README, hints and
+quiz — plus the network view the deployment serves and the per-phase stepping
+that makes it worth watching.
 
 Cheap relative to what it exposes: every flow already shipped becomes something a
 reader can watch rather than infer. It is also the natural home for anything that
 wants to explain a `pacs.002` reason code at the point it was returned.
 
-### 2. Instant payments — `todo`
+**All seven tasks have shipped**: the journal records the take as well as the
+put, `messages` is a table in all three schemas written at every send and every
+receive, each listener serves its own institution's log with the file behind it,
+every phase of a business day is a door beside the clock, the deployment serves
+the mesh — a snapshot and an event stream — that mesh is drawn in the operator's
+rail on every desktop shell and full size on the lobby, and a payment's detail
+page now carries the trail of what its institution was told beside the files
+that carried it, each one opening the document as it travelled.
+
+Two things found while scoping it changed what it has to build, and the first of
+them is built.
+
+**The journal records the take as well as the put** — task 1.
+`node.FileMoved` carries a movement, and every place a file is taken journals
+one: both `Collect`s, and both hosts' `Work`, where an upload comes out of the
+order log it has been resting in. So a put with no take means one thing, which
+is a file waiting in a queue nobody has come for — the gap settle-before-release
+exists to teach, and the thing the graph draws.
+
+**The push channel narrows a standing claim** — task 5. A watcher's request does
+not return, so this process writes to somebody who did not ask; the README says
+so beside its *no background goroutines* claim, and §3's ticker is the second and
+larger narrowing. What it buys is that a page is not a poller, which matters
+exactly when a clock starts running without a human behind it.
+
+**Nothing could be stepped one hop** — task 4. `csm.Work` was reachable only
+from `AdvanceDay`, so a reader could submit or run a whole day and nothing in
+between. Every phase the day declares is now a door on the operator surface,
+named and never parameterised, and the clock stays where it stood. What it costs
+is that stepping and advancing overlap with nothing recording how far the day
+has got, which is an argument for §3's re-entrancy audit and cursor.
+
+**A stream is only a stream if nothing between the ends holds it** — task 6, and
+found by driving a browser rather than by any test. The Next proxy read every
+response to a string, and a proxy holds the head of a response until its first
+byte, so a watcher of a quiet deployment never connected at all. The proxy
+forwards the body as a stream and an opening stream now announces itself. Both
+are in the design record; a heartbeat against an intermediary's idle timeout is
+NOT built and is the next thing this channel will want.
+
+**Nothing joins a document to a step, and the screen does not pretend one does**
+— task 7. A step is a decision an institution took and a file is what crossed a
+wire; neither names the other, and a day has no chronology inside it to infer the
+pairing from. The trail and the files are two cards. The trail itself was the
+whereabouts design's first task and had never been built, so the viewer brought
+its own scaffolding with it.
+
+### 2. Scenarios, and a deployment that starts blank — `spec`
+
+[`2026-08-13-scenarios-and-a-blank-slate-design.md`](specs/2026-08-13-scenarios-and-a-blank-slate-design.md).
+Boot leaves banks provisioned, subscribed and prefunded and nothing else; a
+payment, a rejection, a return and a borrower in arrears are scenarios an
+operator triggers. Every scenario drives the doors an operator has and never
+`payment/flow`, whose bypass has already produced one silent defect.
+
+Wants a capital injection that does not exist: vault cash enters only through a
+customer deposit, so a bank with no customers has nothing to lodge.
+
+### 3. A scheduled business day — `spec`
+
+[`2026-08-13-a-scheduled-business-day-design.md`](specs/2026-08-13-a-scheduled-business-day-design.md).
+Intraday windows, a clock that runs at an accelerated rate, and a discrete
+advance that triggers everything due since the last one — one missing concept
+behind all three, which README's transport section and
+the rule that the deployment owns the clock each name independently:
+there is no time of day within a settlement day.
+
+Overturns two standing claims — that no background goroutine runs under this
+process, and that a business day is a sequence of *untimed* phases. The largest piece is a re-entrancy answer
+for every phase, since a catch-up may re-run one.
+
+### 4. Instant payments — `todo`
 
 Real-time **gross** settlement, 24/7. Each payment settles individually and
 immediately instead of being batched into a clearing cycle. (*Instant* and
@@ -199,7 +278,7 @@ the right shape for instant rails, and adopting it for a `Gross` scheme while
 keeping the current shape for `Net` is a real fork in the payment layer, not a
 detail. The earmark primitive already exists: it is a `deposit` hold.
 
-### 3. Card transactions — `todo`
+### 5. Card transactions — `todo`
 
 An **authorise → capture → clear → settle** flow. The authorisation is a
 `deposit` hold (`CreateHold`) reserving the cardholder's available balance;
@@ -214,7 +293,7 @@ front-end work, recorded as out of scope by 6b and unclaimed since.
 Wants the **hold expiry sweep** below first, or ships a hold state machine that
 is less honest than it looks.
 
-### 4. Reserve adequacy — `todo`
+### 6. Reserve adequacy — `todo`
 
 Check a bank's reserves before its net settlement is allowed to post. Motivated
 by both of the two items above and worth little before either: today every
@@ -226,7 +305,7 @@ the `camt.051` that would pull liquidity back the other way. **This system lodge
 cash and never withdraws it**, which is the current reason `camt.051` is refused
 by name in `iso20022/doc.go`.
 
-### 5. Crypto — `todo`
+### 7. Crypto — `todo`
 
 Scope deliberately undecided. Ranges from custody balances denominated in
 non-fiat units — nearly free today, BTC is a known asset at scale 8 and works —
@@ -251,7 +330,7 @@ child table keyed `(participant_id, asset)`; and `interest` is asset-agnostic, s
 a crypto-denominated facility needs no new arithmetic — only an asset inside the
 cap.
 
-### 6. FX / exchange — `todo`
+### 8. FX / exchange — `todo`
 
 Trades against two assets, rate handling, spread recognized as revenue, position
 and exposure accounts, settlement conventions.
@@ -299,6 +378,10 @@ Four tasks: a trail per institution's copy read from that institution's own
 audit, the pending section on a bank's own screen, three toasts and two empty
 states that name the act that moves an instruction, and the `accepting` badge on
 the cycles table. Everything it renders is already answerable today.
+
+**The trail has shipped**, on the clearing house's payment detail page, because
+§1's document viewer needed the scaffolding it specified — see that record. The
+other three are untouched, and each would have answered the reader on its own.
 
 `hint-content.ts` explains all of it well and behind a `?` the reader has no
 reason to open; the defect is placement, not content, so no hint body changes.
@@ -422,7 +505,7 @@ the code side, and doing either alone leaves the other's cost in place.
 
 **The roll half shipped with §21**, which gave the deployment a clock, a TARGET
 calendar and an explicit advance that runs a business day — see
-[ADR-0001](adr/0001-the-deployment-owns-the-clock.md). So the first paragraph
+the rule that the deployment owns the clock. So the first paragraph
 above is out of date in one respect and kept because the rest of it is not: there
 IS a business date now, and the worked case — a transfer submitted after cut-off
 before a holiday weekend — is buildable in the seed.
@@ -777,7 +860,7 @@ Sub-project 20 shipped the trial balance with it: the report is the acceptance
 test for the third task, and a row count bounded by the institution rather than
 by the customer base is the observable point of the whole change.
 
-Sub-projects 3, 4 and 7c are the only numbers with work left; §9 was not foreseen
+Sub-projects 3 and 4 are the only numbers with work left; §9 was not foreseen
 and landed inside §8's task sequence, which is why the numbering skips. The last
 row is a TASK number rather than a sub-project one: 19 continues §8's task
 sequence, as the work that sub-project deliberately left, and it is listed here
@@ -796,17 +879,14 @@ because nothing else in this file points at them.
 | Learner-facing docs name no repo symbol | [`2026-08-10-domain-only-learner-docs-design.md`](specs/2026-08-10-domain-only-learner-docs-design.md) |
 | Real IBANs and the routing directory | [`2026-08-10-real-ibans-and-routing-directory-design.md`](specs/2026-08-10-real-ibans-and-routing-directory-design.md) |
 | Admission is deletable | [`2026-08-11-delete-admission-design.md`](specs/2026-08-11-delete-admission-design.md) |
-| What an institution holds when the process ends | [`2026-08-12-held-files-durability-design.md`](specs/2026-08-12-held-files-durability-design.md) · [ADR-0003](adr/0003-an-institutions-obligations-live-in-its-database.md) · [ADR-0004](adr/0004-a-queue-is-a-table-and-stays-opaque.md) |
-| A store per institution | [`2026-08-12-store-per-institution-design.md`](specs/2026-08-12-store-per-institution-design.md) · [ADR-0007](adr/0007-a-store-per-institution.md) |
+| What an institution holds when the process ends | [`2026-08-12-held-files-durability-design.md`](specs/2026-08-12-held-files-durability-design.md) |
+| A store per institution | [`2026-08-12-store-per-institution-design.md`](specs/2026-08-12-store-per-institution-design.md) |
 | The derived balances leave the store seam | [`2026-08-12-derived-balances-off-the-store-seam-design.md`](specs/2026-08-12-derived-balances-off-the-store-seam-design.md) |
-| The interbank conversation has an owner | [`2026-08-13-the-interbank-conversation-design.md`](specs/2026-08-13-the-interbank-conversation-design.md) · [ADR-0008](adr/0008-a-conversation-belongs-to-the-deployment.md) |
-| A package per institution | [`2026-08-13-a-package-per-institution-design.md`](specs/2026-08-13-a-package-per-institution-design.md) · [ADR-0010](adr/0010-an-institution-holds-what-it-does-the-deployment-holds-the-order.md) |
+| The interbank conversation has an owner | [`2026-08-13-the-interbank-conversation-design.md`](specs/2026-08-13-the-interbank-conversation-design.md) |
+| A package per institution | [`2026-08-13-a-package-per-institution-design.md`](specs/2026-08-13-a-package-per-institution-design.md) |
 | The routing table is collected, not read | [`2026-08-13-a-roster-download-order-type-design.md`](specs/2026-08-13-a-roster-download-order-type-design.md) |
 
-Three more shipped as rulings with no design record of their own:
-[ADR-0005](adr/0005-a-business-day-is-a-declared-sequence.md) (the business day
-as a declared sequence), [ADR-0006](adr/0006-one-type-per-institution.md) (one
-type per institution) and
-[ADR-0009](adr/0009-the-doubling-stays-and-the-boilerplate-goes.md) (the
-`X` / `XTx` doubling). Cross-layer composition, the transport deepening and the
-on-us book transfer are in `git log` alone.
+Three more shipped with no design record of their own — the business day as a
+declared sequence, one type per institution, and the `X` / `XTx` doubling. Those,
+cross-layer composition, the transport deepening and the on-us book transfer are
+in `git log` alone.

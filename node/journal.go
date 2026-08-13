@@ -8,13 +8,25 @@ import (
 	"github.com/raphi011/cbs/payment"
 )
 
+// A Movement is which half of a crossing this is. A file put in a queue and not
+// yet taken out of it is one resting on the wire, and telling that from a
+// delivered file is the whole reason a put and a take are two events.
+type Movement string
+
+const (
+	FilePut   Movement = "put"
+	FileTaken Movement = "taken"
+)
+
 // FileMoved is one file that left one institution for another: put on a
-// connection, or put in a subscriber's download queue.
+// connection, put in a subscriber's download queue, or taken out of one. From
+// and To are the crossing's ends, so a put and its take pair on the order id.
 type FileMoved struct {
 	From      iso20022.BIC
 	To        iso20022.BIC
 	OrderType ebics.OrderType
 	OrderID   ebics.OrderID
+	Movement  Movement
 }
 
 // TransactionOutcome is one institution's decision about one payment: what it

@@ -97,6 +97,10 @@ type statusRecorder struct {
 	wroteHeader bool
 }
 
+// Unwrap hands the real writer back to an http.ResponseController, which is
+// what lets a streaming route flush through this chain.
+func (r *statusRecorder) Unwrap() http.ResponseWriter { return r.ResponseWriter }
+
 func (r *statusRecorder) WriteHeader(code int) {
 	if !r.wroteHeader {
 		r.status = code

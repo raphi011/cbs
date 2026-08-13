@@ -58,6 +58,10 @@ type ops interface {
 	HoldReturn(ctx context.Context, r payment.HeldReturn) error
 	GetHeldReturn(ctx context.Context, id payment.PaymentID) (payment.HeldReturn, error)
 	DropHeldReturn(ctx context.Context, id payment.PaymentID) error
+
+	// This institution's own record of a file it sent or received. It is the same
+	// act at all three institutions; see node.Record.
+	RecordMessage(ctx context.Context, m payment.Message) error
 }
 
 // The clearing house's type satisfies the clearing house's interface, and this

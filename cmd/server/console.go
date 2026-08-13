@@ -50,6 +50,33 @@ func (o operator) AdvanceDay(ctx context.Context) (api.DayReportDTO, error) {
 	return toDayReportDTO(report), err
 }
 
+// Phases and RunPhase are the same day one step at a time: every phase the day
+// declares is a door of its own, so a reader can run the clearing and stop.
+func (o operator) Phases() []api.PhaseDTO {
+	out := make([]api.PhaseDTO, 0, len(dayPhases))
+	for _, p := range dayPhases {
+		out = append(out, toPhaseDTO(p))
+	}
+	return out
+}
+
+func (o operator) RunPhase(ctx context.Context, phase string) (api.PhaseReportDTO, error) {
+	report, err := o.d.RunPhase(ctx, phase)
+	if err != nil {
+		return api.PhaseReportDTO{}, err
+	}
+	return toPhaseReportDTO(report), nil
+}
+
+// NetworkFlow and Watch are the mesh: every institution at once, which is the
+// deployment's to answer because no institution may — and then the same thing
+// as it happens.
+func (o operator) NetworkFlow(ctx context.Context, limit int) (api.NetworkFlowDTO, error) {
+	return o.d.NetworkFlow(ctx, limit)
+}
+
+func (o operator) Watch() (<-chan api.StreamEvent, func()) { return o.d.hub.watch() }
+
 // A member bank's own surface needs no console: every act on it is that bank's,
 // and it is a *bank.Bank that serves them.
 var _ bankapi.Institution = (*bank.Bank)(nil)

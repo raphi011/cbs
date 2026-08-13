@@ -7,7 +7,7 @@
 -- because a bank does not know the network exists. It knows its customers, its
 -- counterparties as they arrive in messages, and where to send one.
 --
--- The boundary between institutions IS THE DDL. One schema holding all 31 tables
+-- The boundary between institutions IS THE DDL. One schema holding all 41 tables
 -- would make it a convention instead — measurable only by a recorder watching
 -- which book each unit of work reached, as cmd/server/books_test.go does — and a
 -- crossing would be a row nobody should have read. Here it is a table that is
@@ -21,8 +21,7 @@
 -- boundary is DECIDED — the types are read off these files, not the other way
 -- round — and it remains the answer for the one thing a type cannot state: two
 -- schemas holding the SAME table with different columns. See the payments
--- statement below and its counterpart in csm/0001_init.sql, and
--- docs/adr/0007-a-store-per-institution.md.
+-- statement below and its counterpart in csm/0001_init.sql.
 --
 -- WHERE A COMMENT HAS TO GO, AND WHY IT IS NOT WHERE IT WAS
 --
@@ -1523,10 +1522,11 @@ CREATE TABLE payments (
     -- against a file that will never be built. It is the LAST obligation in this
     -- system a process still takes with it, and it is recorded here rather than
     -- fixed because it is one member bank's own sub-project — a table in this
-    -- database, by the same ruling that made the clearing house's shares rows
-    -- (docs/adr/0003) and the transport's queues rows (docs/adr/0004). Until it
-    -- lands, payment/recon is the instrument for the break: a suspense that has
-    -- not returned to zero is exactly what it looks for.
+    -- database, by the same rule that made the clearing house's shares rows and
+    -- the transport's queues rows: an obligation kept only in a process ends
+    -- when the process does. Until it lands, payment/recon is the instrument for
+    -- the break: a suspense that has not returned to zero is exactly what it
+    -- looks for.
     --
     -- NEITHER SHAPE HAS debtor_participant OR creditor_participant. They would
     -- name each party's bank as a ParticipantID beside an agent column naming the
@@ -1864,6 +1864,104 @@ CREATE TABLE settlement_advices (
     seq             INTEGER NOT NULL,
     PRIMARY KEY (book_id, reference, asset)
 ) STRICT;
+
+-- ---------------------------------------------------------------------------
+-- The message log
+-- ---------------------------------------------------------------------------
+
+CREATE TABLE messages (
+    -- THE MESSAGE LOG IS PER INSTITUTION, and this table is in all three shapes
+    -- for the audit log's reason: what a bank's log holds is the files this bank
+    -- sent and collected, in its own database, and there is no cross-institution
+    -- view because no institution may have one. What crossed is an event both
+    -- endpoints observed and each records its own half, so one crossing is two
+    -- rows in two databases and neither is the other's copy.
+    --
+    -- WHAT IT CLOSES IS TOTAL AT A MEMBER BANK. EBICS has no push, so a bank
+    -- hosts nothing: it has neither ebics_queue nor ebics_orders, which is the
+    -- topology and not an omission, and until this table it kept NO record of any
+    -- file at all. What it uploaded and what it collected existed nowhere once
+    -- the call returned. At the two hosts the log is narrower in what it adds —
+    -- they already keep every upload — and the argument for keeping the bytes
+    -- twice there is in csm/0001_init.sql, beside the table it duplicates.
+    --
+    -- ROWS ARE NEVER DELETED, as in audit_events and ebics_orders. A deployment
+    -- left running writes a file per bank per settlement day and nothing here
+    -- bounds it; Reset clears it with everything else. A bound would be a
+    -- RETENTION decision with a domain consequence rather than a tuning knob.
+    --
+    -- seq is a total order over this institution's whole traffic, which is what
+    -- makes it the cursor a listing pages on. It is the primary key and is still
+    -- not AUTOINCREMENT, for the reason audit_events.seq states.
+    seq          INTEGER PRIMARY KEY,
+    -- Which way it went, read from the institution that recorded it: 'sent' or
+    -- 'received'. It is not derivable from the counterparty — a bank both sends
+    -- to and collects from the same clearing house all day.
+    direction    TEXT NOT NULL,
+    -- The BIC at the other end. NO foreign key to banks or to
+    -- routing_directory: a log must be appendable whatever else is or is not in
+    -- the database, which is audit_events' argument, and the counterparty of a
+    -- file is a fact about a crossing that happened rather than a claim that the
+    -- other party is still on anybody's list.
+    counterparty TEXT NOT NULL,
+    -- The envelope's own header: what the file IS, and the id its sender put on
+    -- it. Both are also inside payload, and they are lifted out because a
+    -- LISTING would otherwise parse every file to render a row. held_files
+    -- refuses the same duplication and is right to: nothing lists a held share.
+    msg_def_idr  TEXT NOT NULL,
+    msg_id       TEXT NOT NULL,
+    -- The transport's handle for the crossing, and '' where there was none — a
+    -- published snapshot is minted no id, because nothing was queued for
+    -- anybody. It is RECORDED and never looked up: the institution was handed it
+    -- by the call it made, and no institution reads the transport's tables.
+    --
+    -- NO order_type beside it. It is a function of msg_def_idr (see
+    -- node.OrderTypeOf), and a stored function of a stored column is a third
+    -- copy that can only drift.
+    order_id     TEXT NOT NULL,
+    -- The file, as it travelled. Not the document: iso20022.Marshal takes an
+    -- ENVELOPE, and a header is most of what a reader wants to see.
+    payload      BLOB NOT NULL,
+    -- WHEN THIS INSTITUTION SAW IT, by this institution's clock. There is no
+    -- PHASE column beside it, and its absence is the boundary: a business day's
+    -- phases are the DEPLOYMENT's declared sequence and an institution does not
+    -- know a deployment exists. A phase stamped into an institution's own table
+    -- would be that institution recording something it cannot know.
+    occurred_at  TEXT
+) STRICT;
+
+CREATE INDEX messages_counterparty_idx ON messages (
+    -- The two shapes a listing has: everything, and one counterparty's traffic.
+    -- seq is carried so the cursor and the ordering come out of the index.
+    counterparty, seq
+);
+
+CREATE TABLE message_payments (
+    -- WHICH PAYMENTS the file above carried, as positions in it. It is the join
+    -- that takes a payment to the documents that carried it, which is the whole
+    -- reason the log is worth keeping rather than a directory of files.
+    --
+    -- payment_id carries NO foreign key, and here that is not a choice: the
+    -- settlement agent has no payments table at all, so the constraint could not
+    -- be written in one of the three schemas that creates this one. Where it
+    -- COULD be written it still is not, for held_file_transactions' reason — a
+    -- record of what crossed must be recordable whatever else is in the
+    -- database.
+    --
+    -- The parent foreign key stays, under the exemption stated on subledgers:
+    -- the store writes both sides within one statement sequence, so no caller
+    -- can produce an orphan.
+    message_seq INTEGER NOT NULL,
+    position    INTEGER NOT NULL,
+    payment_id  TEXT NOT NULL,
+    PRIMARY KEY (message_seq, position),
+    FOREIGN KEY (message_seq) REFERENCES messages (seq) ON DELETE CASCADE
+) STRICT;
+
+CREATE INDEX message_payments_payment_idx ON message_payments (
+    -- "Which files carried this payment", which is the read the join exists for.
+    payment_id, message_seq
+);
 
 -- ---------------------------------------------------------------------------
 -- The audit log

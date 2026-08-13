@@ -5,6 +5,7 @@ import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
 import { formatBusinessDate } from "@/lib/dates";
+import { describeMovements } from "@/lib/movements";
 import { useAdvanceDay, useClock } from "@/lib/api/hooks";
 import { describeError } from "@/lib/api/errors";
 import type { DayReport } from "@/lib/types";
@@ -90,7 +91,8 @@ export function BusinessDay() {
 }
 
 // describeDay is the one line the toast carries: what the day did, in the terms
-// the report is made of.
+// the report is made of. A phase's door says the same thing the same way; see
+// describeMovements.
 //
 // A day the scheme was shut says so instead of counting zeros. That is the
 // lesson rather than an empty result — interest still accrued, and nothing
@@ -100,12 +102,5 @@ function describeDay(report: DayReport): string {
     const why = report.ran.closure ?? "weekend";
     return `TARGET closed (${why}) — interest accrued, nothing cleared`;
   }
-  const parts = [
-    `${report.files.length} ${report.files.length === 1 ? "file" : "files"}`,
-    `${report.outcomes.length} ${report.outcomes.length === 1 ? "decision" : "decisions"}`,
-  ];
-  if (report.problems.length > 0) {
-    parts.push(`${report.problems.length} unprocessed`);
-  }
-  return parts.join(" · ");
+  return describeMovements(report);
 }

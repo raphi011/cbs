@@ -30,7 +30,7 @@ Stack: Next.js 16 (App Router) · React 19 · Tailwind v4 (no config file; token
 
 ## Architecture
 
-**Proxy / no CORS by construction.** `src/app/api/[...path]/route.ts` forwards every request to the Go backend. The browser only ever calls same-origin `/api/...`, so CORS is impossible and a downed backend surfaces as a clean 502.
+**Proxy / no CORS by construction.** `src/app/api/[...path]/route.ts` forwards every request to the Go backend. The browser only ever calls same-origin `/api/...`, so CORS is impossible and a downed backend surfaces as a clean 502. It forwards the response **body as a stream**, not as a string: `GET /central-bank/network/flow/events` is an SSE channel, and reading it to a string held it until the connection closed. The origin's `Cache-Control` and `X-Accel-Buffering` cross with it, and the request's abort signal goes upstream so a closed tab releases the watcher.
 
 **There is no single backend.** Each entity has a listener of its own (see the operator-split API spec): `:8081` the central bank, `:8082` the clearing house, then one per member bank in address order. A request therefore has to say which one it is for, and the first segment after `/api` is the operator key — `central-bank`, `clearing-house`, or `bank/<pid>`, which the proxy strips before forwarding. **Build those paths with `cb()`, `csm()` and `bank(pid, …)` from `src/lib/api/operator.ts`; never hand-write one.** A bank's port is resolved from its position in the **central bank's** `GET /members` list — the operator's read of the deployment, which the clearing house cannot answer because it holds a roster and no banks table — and both that list and `cmd/server`'s `plan()` come from the same `stores.Banks()`, so the positions agree by construction and `make dev` needs no configuration; `BACKENDS` (JSON, operator key → base URL) overrides it. Which banks a deployment has is fixed before the process starts and there is no route that adds one, because a bank added at runtime would have **no listener until the server restarts**; the proxy says so rather than hanging for any operator key it cannot resolve. The port derivation itself lives in `src/lib/api/backend-url.ts`, shared by the proxy and by `app/api/operators/route.ts`, which probes every operator so the lobby can tell an un-provisioned bank from a running one.
 
@@ -55,9 +55,18 @@ Old `/participants/…` links are forwarded by `app/participants/[...rest]/page.
 The central bank, the clearing house and a bank's back office share one
 `ConsoleShell` from `components/shell/`, parameterised by identity; the
 customer's shell has no left panel, a different-enough arrangement that it
-doesn't join that group. `plain-shell` is the lobby's and Learn's.
+doesn't join that group. `plain-shell` is the lobby's and Learn's. **The right
+rail carries the network above the concept panel** — `NetworkRail` from
+`components/network/`, desktop only, suppressed on the lobby, which carries
+`NetworkView` at full size instead. That rail is the OPERATOR's frame around a
+persona, never a persona's own chrome: a bank's screens must not grow it.
 
-**Reusable primitives — don't rebuild these** (`src/components/`): `Hint` (the `?` popover, registry in `hint-content.ts`), `Money`/`MoneyInput`/`AmountCell`, `DataTable`, `EnumBadge`, `ConfirmAction`, `Combobox` + domain pickers in `pickers/` (`ParticipantPicker`, `DepositAccountPicker`, `GLAccountPicker`) — use these for ID entry, never free-text. `PageHeader`, `FieldLabel`, `IdText` (monospace ID display), `ErrorState`.
+**Reusable primitives — don't rebuild these** (`src/components/`): `Hint` (the `?` popover, registry in `hint-content.ts`), `Money`/`MoneyInput`/`AmountCell`, `DataTable`, `EnumBadge`, `ConfirmAction`, `Combobox` + domain pickers in `pickers/` (`ParticipantPicker`, `DepositAccountPicker`, `GLAccountPicker`) — use these for ID entry, never free-text. `PageHeader`, `FieldLabel`, `IdText` (monospace ID display), `ErrorState`. The
+network's own pieces live in `components/network/` — `FlowGraph`, `CrossingList`,
+`PhaseStepper`, and one app-wide `EventSource` mounted in `Providers`; their
+rules are pure functions in `lib/network-graph.ts` and tested there, which is the
+only mechanical guard the rendering has. `components/payment/` is the same shape
+for a payment's trail and its documents, over `lib/payment-trail.ts`.
 
 ## Backend contract gotchas (cause real failures)
 

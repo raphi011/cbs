@@ -166,7 +166,13 @@ func (b *Bank) upload(ctx context.Context, to iso20022.BIC, c *ebics.Client, env
 	if err != nil {
 		return "", fmt.Errorf("server: %s could not upload a %s to %s: %w", b.bic, t, to, err)
 	}
-	b.env.Journal.File(node.FileMoved{From: b.bic, To: to, OrderType: t, OrderID: id})
+	b.env.Journal.File(node.FileMoved{From: b.bic, To: to, OrderType: t, OrderID: id, Movement: node.FilePut})
+	// Recorded after the file has gone, because the host mints the order id. A
+	// failure here is LOGGED rather than returned: a caller told its upload failed
+	// would send the same instructions again, and the file has already arrived.
+	if err := node.Record(ctx, b.ops, b.bic, payment.MessageSent, to, id, env, raw); err != nil {
+		b.env.Log.Error("server: a file was sent and not recorded", "bank", b.bic, "to", to, "order", id, "error", err)
+	}
 	return id, nil
 }
 
@@ -425,6 +431,9 @@ func (b *Bank) Collect(ctx context.Context, host iso20022.BIC, t ebics.OrderType
 
 	var problems []node.Problem
 	for _, f := range files {
+		// Journalled before it is worked: taking the file is the crossing, and
+		// failing to read it is a problem about a file this bank already has.
+		b.env.Journal.File(node.FileMoved{From: host, To: b.bic, OrderType: f.OrderType, OrderID: f.OrderID, Movement: node.FileTaken})
 		if err := b.handle(ctx, host, f); err != nil {
 			problems = append(problems, node.Problem{Institution: b.bic, OrderID: f.OrderID, Detail: err.Error()})
 		}
@@ -445,11 +454,17 @@ func (b *Bank) dial(host iso20022.BIC) (*ebics.Client, error) {
 	}
 }
 
-// handle works through one collected file.
+// handle works through one collected file, recording it first whatever this
+// bank goes on to make of it. A failed record is LOGGED and the file still
+// worked: Download emptied the queue, so a return here loses it entirely.
 func (b *Bank) handle(ctx context.Context, host iso20022.BIC, f ebics.File) error {
-	env, err := iso20022.Unmarshal(f.Payload)
-	if err != nil {
-		return b.answerUnreadable(ctx, host, err)
+	env, perr := iso20022.Unmarshal(f.Payload)
+	if err := node.Record(ctx, b.ops, b.bic, payment.MessageReceived, host, f.OrderID, env, f.Payload); err != nil {
+		b.env.Log.Error("server: a file was collected and not recorded",
+			"bank", b.bic, "from", host, "order", f.OrderID, "error", err)
+	}
+	if perr != nil {
+		return b.answerUnreadable(ctx, host, perr)
 	}
 	switch doc := env.Document.(type) {
 	case *iso20022.Pacs008:

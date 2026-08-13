@@ -3,9 +3,9 @@
 Based on `main` at `21c804c`, and on the architecture review of 12 August, whose
 third card this is. The two cards before it have landed —
 [the business day](2026-08-11-ebics-and-the-business-day-design.md) as a declared
-sequence ([ADR-0005](../adr/0005-a-business-day-is-a-declared-sequence.md)) and
-one type per institution ([ADR-0006](../adr/0006-one-type-per-institution.md),
-[ADR-0007](../adr/0007-a-store-per-institution.md)) — and this one is what they
+sequence (the rule that a business day is a declared sequence) and
+one type per institution (the rule of one type per institution,
+the store-per-institution design) — and this one is what they
 leave exposed: the acts are each owned now, and the ORDER they go in is not.
 
 ## The defect, stated once
@@ -125,8 +125,8 @@ func Settle(ctx context.Context, nets *payment.Networks, id payment.CycleID, age
 ```
 
 **Every act stays in its own unit of work**, which is the whole of what
-[ADR-0003](../adr/0003-an-institutions-obligations-live-in-its-database.md) and
-[ADR-0004](../adr/0004-a-queue-is-a-table-and-stays-opaque.md) require: this
+the held-files durability design and
+the rule that a queue is a table whose bytes stay opaque require: this
 package calls the institutions in order and opens nothing itself. It holds no
 store, no transaction and no lock.
 
@@ -139,7 +139,7 @@ institution may have.
 
 **Why not in `payment`.** A `payment` symbol that drove three institutions in
 sequence would be reachable from a holder of one, which is exactly the crossing
-ADR-0006 and ADR-0007 made unrepresentable one layer down. The suite is
+the rule of one type per institution and the store-per-institution design made unrepresentable one layer down. The suite is
 `package payment_test`, so a subpackage costs it nothing.
 
 ## Phasing
@@ -168,7 +168,7 @@ Each phase leaves the tree green and deletes what it replaces.
    `settleCycle` — stay, because the tests about the split call the halves
    directly.
 4. **The ruling and the docs.** — `done`.
-   [ADR-0008](../adr/0008-a-conversation-belongs-to-the-deployment.md),
+   the interbank-conversation design,
    `CLAUDE.md`'s store section, and the roadmap entry.
 
 ## What this does not do

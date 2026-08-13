@@ -24,6 +24,13 @@ const (
 	clearingHouseKey = "clearing-house"
 )
 
+// And what each is called wherever a deployment names one. A bank's name is its
+// own row's.
+const (
+	centralBankName   = "Central bank"
+	clearingHouseName = "Clearing house"
+)
+
 // ebicsPath is where a host's file-transfer endpoint sits on its own listener.
 const ebicsPath = "/ebics"
 
@@ -39,8 +46,8 @@ type entity struct {
 // hostPlan is the two institutions' listeners, on the base port and the next.
 func hostPlan(base int) []entity {
 	return []entity{
-		{key: centralBankKey, name: "Central bank", addr: addrFor(base)},
-		{key: clearingHouseKey, name: "Clearing house", addr: addrFor(base + 1)},
+		{key: centralBankKey, name: centralBankName, addr: addrFor(base)},
+		{key: clearingHouseKey, name: clearingHouseName, addr: addrFor(base + 1)},
 	}
 }
 
