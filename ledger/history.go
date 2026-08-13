@@ -2,6 +2,8 @@ package ledger
 
 import (
 	"context"
+	"maps"
+	"slices"
 	"time"
 )
 
@@ -19,7 +21,29 @@ type SubsidiaryBalance struct {
 
 // SubsidiaryBalances is every subsidiary under a control account, ordered by
 // subsidiary, with the ones that net to zero left out — a customer who has
-// repaid is not a row in what the bank owes.
+// repaid is not a row in what the bank owes. One scan of the pool answers it,
+// which is the difference between this and a balance per subsidiary.
+func SubsidiaryBalances(ctx context.Context, tx Tx, book BookID, account AccountID, normal Direction) ([]SubsidiaryBalance, error) {
+	bySubsidiary := map[string]Amount{}
+	for e, err := range tx.ScanEntries(ctx, book, account.Total(), EntryFilter{}) {
+		if err != nil {
+			return nil, err
+		}
+		bySubsidiary[e.Subsidiary] += signed(e, normal)
+	}
+
+	out := make([]SubsidiaryBalance, 0, len(bySubsidiary))
+	for _, id := range slices.Sorted(maps.Keys(bySubsidiary)) {
+		if bySubsidiary[id] == 0 {
+			continue
+		}
+		out = append(out, SubsidiaryBalance{Subsidiary: id, Balance: bySubsidiary[id]})
+	}
+	return out, nil
+}
+
+// SubsidiaryBalances is every subsidiary under a control account. See the fold
+// above; this is it in its own read-only unit of work, on this book.
 func (s *Book) SubsidiaryBalances(ctx context.Context, account AccountID) ([]SubsidiaryBalance, error) {
 	var out []SubsidiaryBalance
 	err := s.store.View(ctx, func(ctx context.Context, tx Tx) error {
@@ -40,7 +64,7 @@ func (s *Book) SubsidiaryBalancesTx(ctx context.Context, tx Tx, account AccountI
 	if !acct.Control {
 		return []SubsidiaryBalance{}, nil
 	}
-	return tx.SubsidiaryBalances(ctx, s.id, account, acct.Type.NormalBalance())
+	return SubsidiaryBalances(ctx, tx, s.id, account, acct.Type.NormalBalance())
 }
 
 // AccountHistory is every transaction that touched one account, in book order,

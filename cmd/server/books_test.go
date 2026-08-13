@@ -349,11 +349,6 @@ func (r *recordingBankTx) ListAccounts(ctx context.Context, book ledger.BookID) 
 	return r.BankTx.ListAccounts(ctx, book)
 }
 
-func (r *recordingBankTx) SubsidiaryBalances(ctx context.Context, book ledger.BookID, account ledger.AccountID, normal ledger.Direction) ([]ledger.SubsidiaryBalance, error) {
-	r.rec.note(book)
-	return r.BankTx.SubsidiaryBalances(ctx, book, account, normal)
-}
-
 func (r *recordingBankTx) PutSlotAccount(ctx context.Context, book ledger.BookID, row ledger.SlotAccount) error {
 	r.rec.note(book)
 	return r.BankTx.PutSlotAccount(ctx, book, row)
@@ -493,11 +488,6 @@ func (r *recordingBankTx) GetHold(ctx context.Context, book ledger.BookID, id de
 func (r *recordingBankTx) ListHoldsForAccount(ctx context.Context, book ledger.BookID, id deposit.AccountID) ([]deposit.Hold, error) {
 	r.rec.note(book)
 	return r.BankTx.ListHoldsForAccount(ctx, book, id)
-}
-
-func (r *recordingBankTx) ActiveHoldTotal(ctx context.Context, book ledger.BookID, id deposit.AccountID, now time.Time) (ledger.Amount, error) {
-	r.rec.note(book)
-	return r.BankTx.ActiveHoldTotal(ctx, book, id, now)
 }
 
 func (r *recordingBankTx) PutSnapshot(ctx context.Context, book ledger.BookID, s deposit.Snapshot) error {
@@ -681,11 +671,6 @@ func (r *recordingCentralBankTx) GetAccount(ctx context.Context, book ledger.Boo
 func (r *recordingCentralBankTx) ListAccounts(ctx context.Context, book ledger.BookID) ([]ledger.Account, error) {
 	r.rec.note(book)
 	return r.CentralBankTx.ListAccounts(ctx, book)
-}
-
-func (r *recordingCentralBankTx) SubsidiaryBalances(ctx context.Context, book ledger.BookID, account ledger.AccountID, normal ledger.Direction) ([]ledger.SubsidiaryBalance, error) {
-	r.rec.note(book)
-	return r.CentralBankTx.SubsidiaryBalances(ctx, book, account, normal)
 }
 
 func (r *recordingCentralBankTx) LockAccounts(ctx context.Context, book ledger.BookID, ids []ledger.AccountID) error {

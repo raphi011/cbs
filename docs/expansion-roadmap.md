@@ -765,9 +765,9 @@ emptying `inShape` to `return nil` left the whole suite green.
 
 `payment.BankTx`, `CsmTx` and `CentralBankTx` replace it, composed from the
 capabilities two institutions genuinely share — `ledger.CommonTx` (3, all three),
-`ledger.Tx` (23, bank and settlement agent), `ledger.SlotTx` (3, a bank's),
+`ledger.Tx` (22, bank and settlement agent), `ledger.SlotTx` (3, a bank's),
 `PaymentRowsTx` (4, bank and clearing house), `ebics.Tx` (8, the two that are
-dialled). Reach per institution: **71 / 21 / 35** against 108, measured, and
+dialled). Reach per institution: **69 / 21 / 34** against 108, measured, and
 every crossing is a build failure.
 
 The shape became a constructor rather than a parameter — `OpenBank`,
@@ -868,10 +868,13 @@ compounds, one balance per account in the chart.
 **Phase 2 is done too.** `ValueDateBalance` and `ValueDatedSeries` left the seam
 with the day arithmetic: `substr(value_date, 1, 10)` and the `GROUP BY` are
 gone, and `ledger.DayStart` is now the only answer to which day an entry is in.
-Reach is 71 / 21 / 35, which is where the numbers above come from; the
-73 / 29 / 45 this file, `CLAUDE.md` and ADR-0007 all carried was wrong before
-either phase started. Left: `SubsidiaryBalances`, `ActiveHoldTotal`,
-`GetOpenCycle`, the listing orders, and the shared-suite move.
+The 73 / 29 / 45 this file, `CLAUDE.md` and ADR-0007 all carried was wrong
+before either phase started.
+
+**Phases 3 and 4 are done.** `SubsidiaryBalances` is a grouped fold and the
+`HAVING` is gone; `ActiveHoldTotal` folds the account's holds and
+`deposit.Hold.ActiveAt` is the expiry rule, written once. Reach is
+**69 / 21 / 34**.
 
 ### `Scheme` — an interface with seven constant returns
 

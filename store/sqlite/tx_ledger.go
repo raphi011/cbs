@@ -744,35 +744,3 @@ func (t *tx) ScanEntries(ctx context.Context, book ledger.BookID, pos ledger.Pos
 		}
 	}
 }
-
-// SubsidiaryBalances groups a control account's entries by subsidiary. See
-// ledger.Tx for the contract.
-func (t *tx) SubsidiaryBalances(ctx context.Context, book ledger.BookID, account ledger.AccountID, normal ledger.Direction) ([]ledger.SubsidiaryBalance, error) {
-	if err := t.own(book); err != nil {
-		return nil, err
-	}
-	rows, err := t.tx.QueryContext(ctx, `
-		SELECT e.subsidiary_id,
-		       SUM(CASE WHEN e.direction = ? THEN e.amount ELSE -e.amount END) AS balance
-		FROM entries e WHERE e.book_id = ? AND e.account_id = ?
-		GROUP BY e.subsidiary_id HAVING balance != 0
-		ORDER BY e.subsidiary_id`,
-		int64(normal), string(book), string(account))
-	if err != nil {
-		return nil, fmt.Errorf("sqlite: subsidiary balances %s: %w", account, err)
-	}
-	defer rows.Close()
-
-	out := make([]ledger.SubsidiaryBalance, 0)
-	for rows.Next() {
-		var row ledger.SubsidiaryBalance
-		if err := rows.Scan(&row.Subsidiary, &row.Balance); err != nil {
-			return nil, fmt.Errorf("sqlite: subsidiary balances %s: %w", account, err)
-		}
-		out = append(out, row)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("sqlite: subsidiary balances %s: %w", account, err)
-	}
-	return out, nil
-}

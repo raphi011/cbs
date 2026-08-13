@@ -341,7 +341,7 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Ban
 
 			// And the same detail asked for the other way round: the caller that does
 			// not know the subsidiaries yet.
-			breakdown, err := tx.SubsidiaryBalances(ctx, bookA, pooled, ledger.Credit)
+			breakdown, err := ledger.SubsidiaryBalances(ctx, tx, bookA, pooled, ledger.Credit)
 			if err != nil {
 				return err
 			}

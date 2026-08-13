@@ -1075,7 +1075,7 @@ func (r *Register) balanceTx(ctx context.Context, tx Tx, acct Account) (Balance,
 	if err != nil {
 		return Balance{}, err
 	}
-	holds, err := tx.ActiveHoldTotal(ctx, r.bookID, acct.ID, r.now())
+	holds, err := ActiveHoldTotal(ctx, tx, r.bookID, acct.ID, r.now())
 	if err != nil {
 		return Balance{}, err
 	}

@@ -46,8 +46,6 @@ type Tx interface {
 	PutHold(ctx context.Context, book ledger.BookID, h Hold) error
 	GetHold(ctx context.Context, book ledger.BookID, id HoldID) (Hold, error)
 	ListHoldsForAccount(ctx context.Context, book ledger.BookID, id AccountID) ([]Hold, error)
-	// ActiveHoldTotal sums active, non-expired holds as at `now`.
-	ActiveHoldTotal(ctx context.Context, book ledger.BookID, id AccountID, now time.Time) (ledger.Amount, error)
 
 	PutSnapshot(ctx context.Context, book ledger.BookID, s Snapshot) error
 	GetSnapshot(ctx context.Context, book ledger.BookID, id AccountID, dateKey string) (Snapshot, error)

@@ -64,7 +64,7 @@ settlement agent and each answers for a constant.
 
 **A crossing is a build failure.** `PutCycle` on a `BankTx`, `PutBank` on a
 `CsmTx`, `PutPayment` or `GetDepositAccount` on a `CentralBankTx`: each fails to
-compile. Reach from one store goes 108 methods to **71 / 21 / 35**, measured — `NumMethod`
+compile. Reach from one store goes 108 methods to **69 / 21 / 34**, measured — `NumMethod`
 on the three seams, which is how to re-take it.
 
 **The implementation did not split.** One `tx` struct, one store body, one set of

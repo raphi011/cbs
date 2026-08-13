@@ -105,6 +105,13 @@ type Hold struct {
 	CreatedAt   time.Time
 }
 
+// ActiveAt reports whether this hold reduces the available balance as at now:
+// still Active, and not past an expiry. A hold with no expiry never expires,
+// and one expiring exactly at now has not yet.
+func (h Hold) ActiveAt(now time.Time) bool {
+	return h.Status == HoldActive && (h.ExpiresAt.IsZero() || !h.ExpiresAt.Before(now))
+}
+
 // Balance represents the balances of a deposit account.
 type Balance struct {
 	Book  ledger.Amount // book balance of this account's position

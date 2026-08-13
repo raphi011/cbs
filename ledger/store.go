@@ -111,10 +111,4 @@ type Tx interface {
 	// promised order. A balance is the fold over it, and BookBalance is that fold
 	// — the store yields rows and the domain does the arithmetic.
 	ScanEntries(ctx context.Context, book BookID, pos Position, f EntryFilter) iter.Seq2[Entry, error]
-
-	// SubsidiaryBalances is the balance of every subsidiary under an account, in
-	// one query rather than one BookBalance per subsidiary: the caller does not
-	// know the subsidiaries before it asks, which is the whole difference between
-	// this and reading a Position.
-	SubsidiaryBalances(ctx context.Context, book BookID, account AccountID, normal Direction) ([]SubsidiaryBalance, error)
 }

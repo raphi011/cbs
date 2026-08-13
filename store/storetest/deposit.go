@@ -764,14 +764,14 @@ func RunDeposit(t *testing.T, newStore func(*testing.T, ledger.BookID) deposit.S
 		})
 
 		viewDeposit(t, s, func(ctx context.Context, tx deposit.Tx) error {
-			total, err := tx.ActiveHoldTotal(ctx, bookA, "dep_1", now)
+			total, err := deposit.ActiveHoldTotal(ctx, tx, bookA, "dep_1", now)
 			if err != nil {
 				return err
 			}
 			assertEqual(t, "active hold total", total, ledger.Amount(300))
 
 			// The other account in the same book has only its own hold.
-			other, err := tx.ActiveHoldTotal(ctx, bookA, "dep_2", now)
+			other, err := deposit.ActiveHoldTotal(ctx, tx, bookA, "dep_2", now)
 			if err != nil {
 				return err
 			}
@@ -779,7 +779,7 @@ func RunDeposit(t *testing.T, newStore func(*testing.T, ledger.BookID) deposit.S
 
 			// Like BookBalance this is an aggregate: an unknown account is 0,
 			// not an error.
-			unknown, err := tx.ActiveHoldTotal(ctx, bookA, "dep_nope", now)
+			unknown, err := deposit.ActiveHoldTotal(ctx, tx, bookA, "dep_nope", now)
 			if err != nil {
 				return err
 			}
@@ -790,7 +790,7 @@ func RunDeposit(t *testing.T, newStore func(*testing.T, ledger.BookID) deposit.S
 		// Expiry is evaluated against the `now` passed in, not against the
 		// store's clock: rewind past hld_5's expiry and it counts again.
 		viewDeposit(t, s, func(ctx context.Context, tx deposit.Tx) error {
-			total, err := tx.ActiveHoldTotal(ctx, bookA, "dep_1", yesterday.Add(-time.Hour))
+			total, err := deposit.ActiveHoldTotal(ctx, tx, bookA, "dep_1", yesterday.Add(-time.Hour))
 			if err != nil {
 				return err
 			}
@@ -801,7 +801,7 @@ func RunDeposit(t *testing.T, newStore func(*testing.T, ledger.BookID) deposit.S
 		// A hold expiring exactly at `now` has not expired yet — expiry is
 		// strictly before now, the same boundary the Register used.
 		viewDeposit(t, s, func(ctx context.Context, tx deposit.Tx) error {
-			total, err := tx.ActiveHoldTotal(ctx, bookA, "dep_1", tomorrow)
+			total, err := deposit.ActiveHoldTotal(ctx, tx, bookA, "dep_1", tomorrow)
 			if err != nil {
 				return err
 			}
@@ -979,7 +979,7 @@ func RunDeposit(t *testing.T, newStore func(*testing.T, ledger.BookID) deposit.S
 			}
 			assertEqual(t, "snapshots after reset", len(snaps), 0)
 
-			total, err := tx.ActiveHoldTotal(ctx, bookA, "dep_1", early)
+			total, err := deposit.ActiveHoldTotal(ctx, tx, bookA, "dep_1", early)
 			if err != nil {
 				return err
 			}

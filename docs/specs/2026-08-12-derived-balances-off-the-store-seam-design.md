@@ -163,10 +163,13 @@ starting without the one before it.
    is what the SQL did, over the same rows. Two edges the SQL expressed by
    accident are now stated: a zero bound is before nothing, and a window that
    does not end after it starts holds no days.
-3. **`SubsidiaryBalances`.** Needs a grouped fold and the zero-netting rule; the
-   `HAVING` goes.
-4. **`ActiveHoldTotal`.** `deposit.Tx` grows a hold scan; the expiry rule becomes
-   the deposit layer's, which is whose it is.
+3. **`SubsidiaryBalances`.** — `done`. A grouped fold over one scan of the
+   pool; the `GROUP BY`, the `HAVING` and the `ORDER BY` are gone, and a
+   subsidiary netting to zero is dropped in Go.
+4. **`ActiveHoldTotal`.** — `done`, and without the hold scan this document
+   asked for. `ListHoldsForAccount` already answers with the same rows, so the
+   fold reads it and `deposit.Tx` LOSES a method rather than trading one for
+   another. `deposit.Hold.ActiveAt` is the expiry rule, written once.
 5. **`GetOpenCycle` and the listing orders.** Smallest and last, because they are
    the ones a reviewer is most likely to argue are fine where they are.
 6. **The shared suite.** Cases in `store/storetest` that pin a computation become

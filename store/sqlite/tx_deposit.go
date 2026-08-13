@@ -331,24 +331,6 @@ func (t *tx) ListHoldsForAccount(ctx context.Context, book ledger.BookID, id dep
 	return out, rows.Err()
 }
 
-// ActiveHoldTotal sums the holds that currently reduce an account's available
-// balance: still Active, and not past their expiry as at now.
-func (t *tx) ActiveHoldTotal(ctx context.Context, book ledger.BookID, id deposit.AccountID, now time.Time) (ledger.Amount, error) {
-	if err := t.own(book); err != nil {
-		return 0, err
-	}
-	var total ledger.Amount
-	err := t.tx.QueryRowContext(ctx, `
-		SELECT COALESCE(SUM(amount), 0) FROM holds
-		WHERE book_id = ? AND account_id = ? AND status = ?
-		  AND (expires_at IS NULL OR expires_at >= ?)`,
-		string(book), string(id), int64(deposit.HoldActive), formatTime(now)).Scan(&total)
-	if err != nil {
-		return 0, fmt.Errorf("sqlite: active hold total for %s: %w", id, err)
-	}
-	return total, nil
-}
-
 // ---------------------------------------------------------------------------
 // End-of-day snapshots
 // ---------------------------------------------------------------------------
