@@ -275,80 +275,16 @@ func (b *builder) reject(id payment.PaymentID, code iso20022.StatusReason, reaso
 	must(flow.Reject(b.ctx, b.nets, id, code, reason))
 }
 
-// returnPayment runs all three institutions' halves of an R-transaction,
-// leaving the payment Returned, both customers put back where they were and
-// both banks' clearing suspense at zero.
+// returnPayment is flow.Return, leaving the payment Returned, both customers
+// put back where they were and both banks' clearing suspense at zero.
 func (b *builder) returnPayment(id payment.PaymentID, reason string) {
-	p := must(b.csm().GetPayment(b.ctx, id))
-	scheme, ok := b.csm().Scheme(p.Scheme)
-	if !ok {
-		check(fmt.Errorf("seed: no scheme %q to return %s under: %w", p.Scheme, id, payment.ErrSchemeNotFound))
-	}
-	returner := payment.ReturnerOf(scheme, p.DebtorDetails.Agent, p.CreditorDetails.Agent)
-	other := payment.CounterpartyOf(returner, p.DebtorDetails.Agent, p.CreditorDetails.Agent)
-	must(b.bank(returner).PostReturnLeg(b.ctx, id, reason))
-	statements := must(b.cb().SettleReturn(b.ctx, payment.ReturnInstruction{
-		PaymentID:     p.ID,
-		EndToEndID:    p.EndToEndID,
-		DebtorAgent:   p.DebtorDetails.Agent,
-		CreditorAgent: p.CreditorDetails.Agent,
-		Amount:        p.Amount,
-		Asset:         scheme.Asset(),
-		Reason:        reason,
-	}))
-	b.advise(statements)
-	// The OTHER bank's leg, which is the SECOND one and therefore the one that
-	// takes that bank's copy to Returned.
-	must(b.bank(other).PostReturnLeg(b.ctx, id, reason))
-	// So the returner's copy and the clearing house's are moved by what they are
-	// TOLD, which in the running system is the settlement agent's ACSC relayed on. The seed
-	// has no message and says the same thing directly.
-	must(b.bank(returner).CompleteReturn(b.ctx, id))
-	must(b.csm().CompleteReturn(b.ctx, id))
+	must(flow.Return(b.ctx, b.nets, id, reason))
 }
 
-// advise books each member's mirror leg from the statement the settlement agent
-// produced, in that member's own book and in a unit of work of its own.
-func (b *builder) advise(statements []payment.SettlementStatement) {
-	for _, st := range statements {
-		must(b.bank(st.Agent).PostSettlementAdvice(b.ctx, payment.AdvisedMovement{
-			Account:        st.Account,
-			Asset:          st.Asset,
-			Movement:       st.Movement,
-			ClosingBalance: st.ClosingBalance,
-			Reference:      st.Reference,
-			ValueDate:      st.ValueDate,
-		}))
-	}
-}
-
-// settle runs all three institutions' halves of a cut-off, leaving the cycle
-// Settled, every payment Settled and every bank's clearing suspense back at
-// zero.
+// settle is flow.Settle, leaving the cycle Settled, every payment Settled and
+// every bank's clearing suspense back at zero.
 func (b *builder) settle(id payment.CycleID) {
-	// What the pacs.009 would have carried, built where the clearing house builds
-	// it — off the CLOSED CYCLE, which is that institution's own row.
-	closed := must(b.csm().GetCycle(b.ctx, id))
-	scheme, ok := b.csm().Scheme(closed.Scheme)
-	if !ok {
-		check(fmt.Errorf("seed: no scheme %q to settle %s under: %w", closed.Scheme, id, payment.ErrSchemeNotFound))
-	}
-	legs := payment.SettlementLegsOf(closed, scheme.Asset(), b.dep.CentralBankBIC())
-
-	_, statements := must2(b.cb().SettleCycle(b.ctx, id, legs))
-	b.advise(statements)
-
-	// The CLEARING HOUSE's own copies move first, and they are also the payment
-	// list — which the settlement does not carry: a settlement agent answers about
-	// net positions per MEMBER and holds no way to enumerate the batch.
-	for _, p := range must(b.csm().SettleAtCSM(b.ctx, id)) {
-		// Then both banks, each on its own copy, and only the payee's bank pays
-		// anybody.
-		must(b.bank(p.CreditorDetails.Agent).SettleAtBank(b.ctx, p.ID))
-		if other := p.DebtorDetails.Agent; other != p.CreditorDetails.Agent {
-			must(b.bank(other).SettleAtBank(b.ctx, p.ID))
-		}
-	}
+	must(flow.Settle(b.ctx, b.nets, id, b.dep.CentralBankBIC()))
 }
 
 // initSCT submits a credit transfer.

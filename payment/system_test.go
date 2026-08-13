@@ -359,14 +359,8 @@ func runCycle(t *testing.T, sys *testSystem, scheme SchemeID, submit func()) Set
 	closed, err := sys.CloseCycle(ctx, cyc.ID)
 	assertNoError(t, err)
 
-	var st Settlement
-	if len(SettlementLegsOf(closed, sys.assetOf(closed.Scheme), testCentralBankBIC)) > 0 {
-		var statements []SettlementStatement
-		st, statements, err = sys.settleCycle(ctx, cyc.ID)
-		assertNoError(t, err)
-		bookTheAdvices(t, sys, statements)
-	}
-	payTheCreditors(t, sys, cyc.ID)
+	st, err := flow.Settle(ctx, sys.nets, closed.ID, testCentralBankBIC)
+	assertNoError(t, err)
 	return st
 }
 
@@ -379,63 +373,10 @@ func (s *testSystem) assetOf(id SchemeID) ledger.AssetCode {
 	return ""
 }
 
-// returnWholePayment is every institution's half of an R-transaction, in order
-// and each in its OWN unit of work.
+// returnWholePayment is flow.Return: every institution's half of an
+// R-transaction, in order and each in its OWN unit of work.
 func returnWholePayment(ctx context.Context, sys *testSystem, id PaymentID, reason string) (Payment, error) {
-	p, err := sys.GetPayment(ctx, id)
-	if err != nil {
-		return Payment{}, err
-	}
-	scheme, ok := sys.Scheme(p.Scheme)
-	if !ok || !scheme.AllowsReturn() {
-		return Payment{}, ErrSchemeUnsupportedReturn
-	}
-	returner := ReturnerOf(scheme, p.DebtorDetails.Agent, p.CreditorDetails.Agent)
-	other := CounterpartyOf(returner, p.DebtorDetails.Agent, p.CreditorDetails.Agent)
-	if _, err := sys.bank(returner).PostReturnLeg(ctx, id, reason); err != nil {
-		return Payment{}, err
-	}
-	statements, err := sys.cb().SettleReturn(ctx, ReturnInstruction{
-		PaymentID:     p.ID,
-		EndToEndID:    p.EndToEndID,
-		DebtorAgent:   p.DebtorDetails.Agent,
-		CreditorAgent: p.CreditorDetails.Agent,
-		Amount:        p.Amount,
-		Asset:         scheme.Asset(),
-		Reason:        reason,
-	})
-	if err != nil {
-		return Payment{}, err
-	}
-	for _, st := range statements {
-		if _, err := sys.bank(st.Agent).PostSettlementAdvice(ctx, AdvisedMovement{
-			Account:        st.Account,
-			Asset:          st.Asset,
-			Movement:       st.Movement,
-			ClosingBalance: st.ClosingBalance,
-			Reference:      st.Reference,
-			ValueDate:      st.ValueDate,
-		}); err != nil {
-			return Payment{}, err
-		}
-	}
-	// The OTHER bank's leg is the SECOND one and takes that bank's copy to
-	// Returned; see PostReturnLegTx on position in the conversation.
-	out, err := sys.bank(other).PostReturnLeg(ctx, id, reason)
-	if err != nil {
-		return Payment{}, err
-	}
-	// And the two institutions that learn it only by being told: the bank that
-	// ASKED for the return, whose leg was the first and so not the one that closes
-	// the payment, and the clearing house, which carried the pacs.004 and posts
-	// nothing.
-	if _, err := sys.bank(returner).CompleteReturn(ctx, id); err != nil {
-		return Payment{}, err
-	}
-	if _, err := sys.CompleteReturn(ctx, id); err != nil {
-		return Payment{}, err
-	}
-	return out, nil
+	return flow.Return(ctx, sys.nets, id, reason)
 }
 
 // bookTheAdvices is every member's half of a cut-off: each books the mirror leg
@@ -4107,46 +4048,11 @@ func settledCollection(t *testing.T, sys *testSystem, debtorBank *Bank, debtorAc
 	return pay
 }
 
-// returnTheWholeWay plays every institution in a return, in the order the
-// messages travel: the returning bank posts its own leg and sends, the
-// settlement agent reverses the reserves and states each member's account, both
-// members book their reserve mirrors, and the other bank posts the leg it was
-// sent.
+// returnTheWholeWay is returnWholePayment for a fixture that cannot carry on
+// past a failure, and it fails the test rather than answering with an error.
 func returnTheWholeWay(t *testing.T, sys *testSystem, p Payment, reason string) Payment {
 	t.Helper()
-	ctx := context.Background()
-	scheme, ok := sys.Scheme(p.Scheme)
-	if !ok {
-		t.Fatalf("payment %s is under unregistered scheme %s", p.ID, p.Scheme)
-	}
-	returner := ReturnerOf(scheme, p.DebtorDetails.Agent, p.CreditorDetails.Agent)
-	other := CounterpartyOf(returner, p.DebtorDetails.Agent, p.CreditorDetails.Agent)
-
-	_, err := sys.bank(returner).PostReturnLeg(ctx, p.ID, reason)
-	assertNoError(t, err)
-
-	debtorBank := mustGetBank(t, ctx, sys, ParticipantID(p.DebtorDetails.Agent))
-	creditorBank := mustGetBank(t, ctx, sys, ParticipantID(p.CreditorDetails.Agent))
-	statements, err := sys.cb().SettleReturn(ctx, ReturnInstruction{
-		PaymentID:     p.ID,
-		EndToEndID:    p.EndToEndID,
-		DebtorAgent:   debtorBank.BIC,
-		CreditorAgent: creditorBank.BIC,
-		Amount:        p.Amount,
-		Asset:         scheme.Asset(),
-		Reason:        reason,
-	})
-	assertNoError(t, err)
-	bookTheAdvices(t, sys, statements)
-
-	out, err := sys.bank(other).PostReturnLeg(ctx, p.ID, reason)
-	assertNoError(t, err)
-	// The two institutions that learn it only by being told: the RETURNER, whose own
-	// leg was the first and so not the one that closes the payment, and the clearing
-	// house, which carried the pacs.004 and posts nothing.
-	_, err = sys.bank(returner).CompleteReturn(ctx, p.ID)
-	assertNoError(t, err)
-	_, err = sys.CompleteReturn(ctx, p.ID)
+	out, err := returnWholePayment(context.Background(), sys, p.ID, reason)
 	assertNoError(t, err)
 	return out
 }

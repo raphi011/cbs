@@ -95,6 +95,145 @@ func Reject(ctx context.Context, nets *payment.Networks, id payment.PaymentID,
 	return out, nil
 }
 
+// Return is every institution's half of an R-transaction, in the order the
+// messages travel: the returning bank posts and sends, the settlement agent
+// reverses the reserves, both members book their mirrors, the other bank posts.
+func Return(ctx context.Context, nets *payment.Networks, id payment.PaymentID, reason string) (payment.Payment, error) {
+	csm := nets.ClearingHouse()
+	p, err := csm.GetPayment(ctx, id)
+	if err != nil {
+		return payment.Payment{}, err
+	}
+	scheme, ok := csm.Scheme(p.Scheme)
+	if !ok {
+		return payment.Payment{}, fmt.Errorf("flow: no scheme %q to return %s under: %w",
+			p.Scheme, id, payment.ErrSchemeNotFound)
+	}
+	if !scheme.AllowsReturn() {
+		return payment.Payment{}, payment.ErrSchemeUnsupportedReturn
+	}
+	returnerBIC := payment.ReturnerOf(scheme, p.DebtorDetails.Agent, p.CreditorDetails.Agent)
+	returner, err := bank(ctx, nets, returnerBIC)
+	if err != nil {
+		return payment.Payment{}, err
+	}
+	other, err := bank(ctx, nets, payment.CounterpartyOf(returnerBIC, p.DebtorDetails.Agent, p.CreditorDetails.Agent))
+	if err != nil {
+		return payment.Payment{}, err
+	}
+	if _, err := returner.PostReturnLeg(ctx, id, reason); err != nil {
+		return payment.Payment{}, err
+	}
+	statements, err := nets.CentralBank().SettleReturn(ctx, payment.ReturnInstruction{
+		PaymentID:     p.ID,
+		EndToEndID:    p.EndToEndID,
+		DebtorAgent:   p.DebtorDetails.Agent,
+		CreditorAgent: p.CreditorDetails.Agent,
+		Amount:        p.Amount,
+		Asset:         scheme.Asset(),
+		Reason:        reason,
+	})
+	if err != nil {
+		return payment.Payment{}, err
+	}
+	if err := advise(ctx, nets, statements); err != nil {
+		return payment.Payment{}, err
+	}
+
+	// The OTHER bank's leg is the SECOND one, and so the one that takes that
+	// bank's copy to Returned.
+	out, err := other.PostReturnLeg(ctx, id, reason)
+	if err != nil {
+		return payment.Payment{}, err
+	}
+
+	// The two institutions that learn it by being TOLD: the bank that asked, whose
+	// leg was the first and did not close the payment, and the clearing house,
+	// which carried the pacs.004 and posts nothing.
+	if _, err := returner.CompleteReturn(ctx, id); err != nil {
+		return payment.Payment{}, err
+	}
+	if _, err := csm.CompleteReturn(ctx, id); err != nil {
+		return payment.Payment{}, err
+	}
+	return out, nil
+}
+
+// Settle is every institution's half of a CLOSED cut-off: the settlement agent
+// moves the reserves, each member books its mirror, and the clearing house's
+// copies move before both banks'. The settlement is zero if there was nothing
+// to settle.
+func Settle(ctx context.Context, nets *payment.Networks, id payment.CycleID, agent iso20022.BIC) (payment.Settlement, error) {
+	csm := nets.ClearingHouse()
+	closed, err := csm.GetCycle(ctx, id)
+	if err != nil {
+		return payment.Settlement{}, err
+	}
+	scheme, ok := csm.Scheme(closed.Scheme)
+	if !ok {
+		return payment.Settlement{}, fmt.Errorf("flow: no scheme %q to settle %s under: %w",
+			closed.Scheme, id, payment.ErrSchemeNotFound)
+	}
+
+	// What the pacs.009 would carry, built where the clearing house builds it —
+	// off the closed cycle, which is that institution's own row.
+	var settlement payment.Settlement
+	if legs := payment.SettlementLegsOf(closed, scheme.Asset(), agent); len(legs) > 0 {
+		st, statements, err := nets.CentralBank().SettleCycle(ctx, id, legs)
+		if err != nil {
+			return payment.Settlement{}, err
+		}
+		if err := advise(ctx, nets, statements); err != nil {
+			return payment.Settlement{}, err
+		}
+		settlement = st
+	}
+
+	// The clearing house's own copies move first, and they are also the payment
+	// list — which the settlement does not carry: a settlement agent answers about
+	// net positions per MEMBER and holds no way to enumerate the batch.
+	settled, err := csm.SettleAtCSM(ctx, id)
+	if err != nil {
+		return payment.Settlement{}, err
+	}
+	for _, p := range settled {
+		// Then both banks, each on its own copy, and only the payee's bank pays
+		// anybody.
+		for _, bic := range agentsOf(p) {
+			b, err := bank(ctx, nets, bic)
+			if err != nil {
+				return payment.Settlement{}, err
+			}
+			if _, err := b.SettleAtBank(ctx, p.ID); err != nil {
+				return payment.Settlement{}, err
+			}
+		}
+	}
+	return settlement, nil
+}
+
+// advise books each member's mirror leg from the statement the settlement agent
+// produced, in that member's own book and in a unit of work of its own.
+func advise(ctx context.Context, nets *payment.Networks, statements []payment.SettlementStatement) error {
+	for _, st := range statements {
+		b, err := bank(ctx, nets, st.Agent)
+		if err != nil {
+			return err
+		}
+		if _, err := b.PostSettlementAdvice(ctx, payment.AdvisedMovement{
+			Account:        st.Account,
+			Asset:          st.Asset,
+			Movement:       st.Movement,
+			ClosingBalance: st.ClosingBalance,
+			Reference:      st.Reference,
+			ValueDate:      st.ValueDate,
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // relayedFrom is the instruction the other two institutions are sent about a
 // payment its own bank has just submitted.
 func relayedFrom(p payment.Payment) payment.InitiatePaymentRequest {
