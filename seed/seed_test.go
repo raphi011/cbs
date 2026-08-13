@@ -301,10 +301,11 @@ func TestEveryPaymentInAnOpenCycleWasUploaded(t *testing.T) {
 			// The bank that INSTRUCTED it, which is the only one holding a copy
 			// before finality: the receiving bank learns of a payment when its
 			// output file is released, and nothing has settled here.
-			submitter := p.DebtorDetails.Agent
-			if p.Scheme == payment.SchemeSEPADD {
-				submitter = p.CreditorDetails.Agent
+			scheme, ok := net.Scheme(p.Scheme)
+			if !ok {
+				t.Fatalf("payment %s names scheme %q, which the clearing house does not have", id, p.Scheme)
 			}
+			submitter := payment.SubmitterOf(scheme, p.DebtorDetails.Agent, p.CreditorDetails.Agent)
 			own, err := net.bank(payment.ParticipantID(submitter)).GetPayment(ctx, id)
 			if err != nil {
 				t.Errorf("%s is in open cycle %s and %s, which submitted it, holds no copy: %v", id, c.ID, submitter, err)

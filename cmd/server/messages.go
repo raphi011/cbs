@@ -69,24 +69,17 @@ func pick[T any](all []T, idx []int) []T {
 	return out
 }
 
-// submitterOf is the party whose bank hands a payment to the clearing house.
+// The three parts a payment's two agents play, each named here for the act this
+// package performs and each decided by payment.
+
 func submitterOf(scheme payment.Scheme, debtorAgent, creditorAgent iso20022.BIC) iso20022.BIC {
-	if scheme.Direction() == payment.Pull {
-		return creditorAgent
-	}
-	return debtorAgent
+	return payment.SubmitterOf(scheme, debtorAgent, creditorAgent)
 }
 
-// receiverOf is the bank a released output file is addressed to: the other one.
 func receiverOf(scheme payment.Scheme, debtorAgent, creditorAgent iso20022.BIC) iso20022.BIC {
-	if scheme.Direction() == payment.Pull {
-		return debtorAgent
-	}
-	return creditorAgent
+	return payment.ReceiverOf(scheme, debtorAgent, creditorAgent)
 }
 
-// returnerOf is the party whose bank sends a settled payment back:
-// submitterOf's counterpart in both senses, the other party and the other role.
 func returnerOf(scheme payment.Scheme, debtorAgent, creditorAgent iso20022.BIC) iso20022.BIC {
 	return payment.ReturnerOf(scheme, debtorAgent, creditorAgent)
 }

@@ -260,16 +260,19 @@ func (b *builder) lodge(p *payment.Bank, amount ledger.Amount) {
 	must(b.cb().ReceiveLodgement(b.ctx, in))
 }
 
-// initiate runs all three halves of an initiation — the submitting bank's, the
-// receiving bank's and the clearing house's — leaving the payment Accepted in
-// its scheme's open cycle.
+// submitterOf is payment's rule, over a scheme resolved in the clearing house's
+// registry. An id the registry does not hold is read as a push.
 func (b *builder) submitterOf(scheme payment.SchemeID, debtorAgent, creditorAgent iso20022.BIC) iso20022.BIC {
-	if s, ok := b.csm().Scheme(scheme); ok && s.Direction() == payment.Pull {
-		return creditorAgent
+	s, ok := b.csm().Scheme(scheme)
+	if !ok {
+		return debtorAgent
 	}
-	return debtorAgent
+	return payment.SubmitterOf(s, debtorAgent, creditorAgent)
 }
 
+// initiate runs all four halves of an initiation — the submitting bank's, the
+// receiving bank's, the clearing house's and the submitting bank's again —
+// leaving the payment Accepted in its scheme's open cycle.
 func (b *builder) initiate(req payment.InitiatePaymentRequest) payment.Payment {
 	submitter := b.submitterOf(req.Scheme, req.DebtorDetails.Agent, req.CreditorDetails.Agent)
 	p := must(b.bank(submitter).SubmitPayment(b.ctx, req))
@@ -282,10 +285,7 @@ func (b *builder) initiate(req payment.InitiatePaymentRequest) payment.Payment {
 	// The RECEIVING bank answers, and it is the other one. Naming it is what picks
 	// the network AcceptInbound resolves the address in — its own register and no
 	// other — and the seed is playing that bank as well as the submitting one.
-	receiver := p.CreditorDetails.Agent
-	if receiver == submitter {
-		receiver = p.DebtorDetails.Agent
-	}
+	receiver := payment.CounterpartyOf(submitter, p.DebtorDetails.Agent, p.CreditorDetails.Agent)
 	check(b.bank(receiver).AcceptInbound(b.ctx, p.ID, relayed))
 	// And the CLEARING HOUSE, which has to be carrying the payment before it can
 	// take it into a cycle. In the running system this is the moment it routes the
@@ -318,10 +318,7 @@ func (b *builder) returnPayment(id payment.PaymentID, reason string) {
 		check(fmt.Errorf("seed: no scheme %q to return %s under: %w", p.Scheme, id, payment.ErrSchemeNotFound))
 	}
 	returner := payment.ReturnerOf(scheme, p.DebtorDetails.Agent, p.CreditorDetails.Agent)
-	other := p.DebtorDetails.Agent
-	if other == returner {
-		other = p.CreditorDetails.Agent
-	}
+	other := payment.CounterpartyOf(returner, p.DebtorDetails.Agent, p.CreditorDetails.Agent)
 	must(b.bank(returner).PostReturnLeg(b.ctx, id, reason))
 	statements := must(b.cb().SettleReturn(b.ctx, payment.ReturnInstruction{
 		PaymentID:     p.ID,

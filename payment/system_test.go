@@ -424,10 +424,7 @@ func returnWholePayment(ctx context.Context, sys *testSystem, id PaymentID, reas
 		return Payment{}, ErrSchemeUnsupportedReturn
 	}
 	returner := ReturnerOf(scheme, p.DebtorDetails.Agent, p.CreditorDetails.Agent)
-	other := p.DebtorDetails.Agent
-	if other == returner {
-		other = p.CreditorDetails.Agent
-	}
+	other := CounterpartyOf(returner, p.DebtorDetails.Agent, p.CreditorDetails.Agent)
 	if _, err := sys.bank(returner).PostReturnLeg(ctx, id, reason); err != nil {
 		return Payment{}, err
 	}
@@ -4156,10 +4153,7 @@ func returnTheWholeWay(t *testing.T, sys *testSystem, p Payment, reason string) 
 		t.Fatalf("payment %s is under unregistered scheme %s", p.ID, p.Scheme)
 	}
 	returner := ReturnerOf(scheme, p.DebtorDetails.Agent, p.CreditorDetails.Agent)
-	other := p.DebtorDetails.Agent
-	if other == returner {
-		other = p.CreditorDetails.Agent
-	}
+	other := CounterpartyOf(returner, p.DebtorDetails.Agent, p.CreditorDetails.Agent)
 
 	_, err := sys.bank(returner).PostReturnLeg(ctx, p.ID, reason)
 	assertNoError(t, err)
@@ -4403,23 +4397,23 @@ func relayedFrom(p Payment) InitiatePaymentRequest {
 	}
 }
 
-// receiverOf is the bank that ANSWERS a payment: the payee's on a push, the
-// payer's on a pull. AcceptInboundTx runs at the receiving bank, which resolves
-// the counterparty in its OWN register and so has to be told which bank it is.
+// receiverOf is payment's rule over the clearing house's registry.
+// AcceptInboundTx runs at the receiving bank, which resolves the counterparty in
+// its OWN register and so has to be told which bank it is.
 func receiverOf(n *testSystem, p Payment) iso20022.BIC {
 	scheme, ok := n.Scheme(p.Scheme)
-	if ok && scheme.Direction() == Pull {
-		return p.DebtorDetails.Agent
+	if !ok {
+		return p.CreditorDetails.Agent
 	}
-	return p.CreditorDetails.Agent
+	return ReceiverOf(scheme, p.DebtorDetails.Agent, p.CreditorDetails.Agent)
 }
 
-// submitterOfReq is the bank that SUBMITS a request.
+// submitterOfReq is the bank that SUBMITS a request. A request naming no
+// submitting agent gets a BIC no fixture holds, so the failure names itself.
 func submitterOfReq(n *testSystem, req InitiatePaymentRequest) iso20022.BIC {
-	scheme, ok := n.Scheme(req.Scheme)
 	side := req.DebtorDetails.Agent
-	if ok && scheme.Direction() == Pull {
-		side = req.CreditorDetails.Agent
+	if scheme, ok := n.Scheme(req.Scheme); ok {
+		side = SubmitterOf(scheme, req.DebtorDetails.Agent, req.CreditorDetails.Agent)
 	}
 	if side == "" {
 		return "THIS REQUEST NAMES NO SUBMITTING AGENT"

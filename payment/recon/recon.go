@@ -635,12 +635,18 @@ func (s *snapshot) partiesHoldTheirCopy(rep *Report) {
 // receiverOf is the bank a released file is addressed to, and what it was never
 // able to do with the instruction it did not get.
 func receiverOf(s *snapshot, p payment.Payment) (iso20022.BIC, string) {
-	if scheme, ok := s.schemeOf(p.Scheme); ok && scheme.Direction() == payment.Pull {
-		return p.DebtorDetails.Agent,
-			"its payer was never debited and the collection settled against money it never took"
+	const uncredited = "its payee is uncredited and the amount is stranded in clearing suspense"
+	scheme, ok := s.schemeOf(p.Scheme)
+	if !ok {
+		// No scheme row to decide the parts by, so the payee's bank: every scheme
+		// this deployment holds but the collections is a push.
+		return p.CreditorDetails.Agent, uncredited
 	}
-	return p.CreditorDetails.Agent,
-		"its payee is uncredited and the amount is stranded in clearing suspense"
+	bic := payment.ReceiverOf(scheme, p.DebtorDetails.Agent, p.CreditorDetails.Agent)
+	if scheme.Direction() == payment.Pull {
+		return bic, "its payer was never debited and the collection settled against money it never took"
+	}
+	return bic, uncredited
 }
 
 // admissionWroteItsThreeRows holds one admission's three rows against each

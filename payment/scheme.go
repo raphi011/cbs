@@ -73,12 +73,37 @@ func validateFunds(ctx context.Context, p *Payment, sc SchemeContext) error {
 	return part.Deposit.CheckWithdrawalTx(ctx, sc.Tx, p.Debtor.Account, p.Amount)
 }
 
-// ReturnerOf is the party whose bank sends a settled payment back.
-func ReturnerOf(scheme Scheme, debtorAgent, creditorAgent iso20022.BIC) iso20022.BIC {
+// Which of a payment's two agents plays which part. One rule — the submitting
+// side is the payer's bank on a push and the payee's on a pull — and the acts
+// that name the other side are its complement.
+
+// SubmitterOf is the party whose bank hands a payment to the clearing house.
+func SubmitterOf(scheme Scheme, debtorAgent, creditorAgent iso20022.BIC) iso20022.BIC {
 	if scheme.Direction() == Pull {
-		return debtorAgent
+		return creditorAgent
 	}
-	return creditorAgent
+	return debtorAgent
+}
+
+// ReceiverOf is the bank that ANSWERS a payment and the address a released
+// output file carries: the other one.
+func ReceiverOf(scheme Scheme, debtorAgent, creditorAgent iso20022.BIC) iso20022.BIC {
+	return CounterpartyOf(SubmitterOf(scheme, debtorAgent, creditorAgent), debtorAgent, creditorAgent)
+}
+
+// ReturnerOf is the party whose bank sends a settled payment back, which is the
+// receiving side under the name of a different act.
+func ReturnerOf(scheme Scheme, debtorAgent, creditorAgent iso20022.BIC) iso20022.BIC {
+	return ReceiverOf(scheme, debtorAgent, creditorAgent)
+}
+
+// CounterpartyOf is a payment's other agent, and self again when one bank is
+// both sides of it.
+func CounterpartyOf(self, debtorAgent, creditorAgent iso20022.BIC) iso20022.BIC {
+	if self == debtorAgent {
+		return creditorAgent
+	}
+	return debtorAgent
 }
 
 // ---------------------------------------------------------------------------
