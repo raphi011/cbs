@@ -49,7 +49,7 @@ func (s *surface) handleInitiatePayment(r *http.Request, req api.InitiatePayment
 		}
 		submitting.Agent = agent
 	}
-	p, err := s.inst.Submit(r.Context(), dom)
+	p, err := s.op.Submit(r.Context(), dom)
 	if err != nil {
 		return api.PaymentDTO{}, err
 	}
@@ -100,7 +100,7 @@ func (s *surface) handleRejectPayment(r *http.Request, req api.ReasonRequest) (a
 // handleReturnPayment sends a settled payment back.
 func (s *surface) handleReturnPayment(r *http.Request, req api.ReasonRequest) (api.SubmittedPaymentDTO, error) {
 	id := payment.PaymentID(r.PathValue("payid"))
-	if err := s.inst.Return(r.Context(), id, iso20022.ReturnReasonNotSpecifiedAgentGenerated, req.Reason); err != nil {
+	if err := s.op.Return(r.Context(), id, iso20022.ReturnReasonNotSpecifiedAgentGenerated, req.Reason); err != nil {
 		return api.SubmittedPaymentDTO{}, err
 	}
 	return api.SubmittedPaymentDTO{PaymentID: string(id)}, nil

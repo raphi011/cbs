@@ -24,7 +24,7 @@ func (s *surface) handleReset(r *http.Request) (map[string]string, error) {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), resetTimeout)
 	defer cancel()
 
-	if err := s.inst.Reset(ctx); err != nil {
+	if err := s.op.Reset(ctx); err != nil {
 		s.inst.Log().Error("application state reset failed", "error", err)
 		return nil, err
 	}

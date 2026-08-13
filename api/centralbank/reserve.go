@@ -13,7 +13,7 @@ import (
 // handleListParticipants answers every bank this deployment holds a database
 // for, each read out of its own database, ascending by address.
 func (s *surface) handleListParticipants(r *http.Request) ([]api.ParticipantDTO, error) {
-	banks, err := s.inst.Members(r.Context())
+	banks, err := s.op.Members(r.Context())
 	if err != nil {
 		return nil, err
 	}

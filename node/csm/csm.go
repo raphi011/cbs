@@ -1,4 +1,6 @@
-package main
+// Package csm is the clearing house: every payment in the network, the cycles,
+// the schemes, the roster, and the EBICS host every member bank dials.
+package csm
 
 import (
 	"context"
@@ -10,20 +12,20 @@ import (
 	"github.com/raphi011/cbs/ebics"
 	"github.com/raphi011/cbs/iso20022"
 	"github.com/raphi011/cbs/ledger"
+	"github.com/raphi011/cbs/node"
 	"github.com/raphi011/cbs/payment"
 )
 
-// A ClearingHouse is the CSM: every payment in the network, the cycles, the
-// schemes, the roster, and the EBICS host every member bank dials. It satisfies
-// csm.Institution, which api/csm declares; see Deployment.
+// A ClearingHouse is the CSM. It knows the environment it runs in and nothing
+// about the deployment that built it.
 type ClearingHouse struct {
-	d *Deployment
+	env node.Env
 
 	// net is this institution's whole view, and it has ONE caller: Network,
 	// which api/csm's surface reads every request through. Everything else here
 	// goes through ops.
 	net *payment.ClearingHouseNetwork
-	ops csmOps
+	ops ops
 
 	bic iso20022.BIC
 
@@ -39,21 +41,24 @@ type ClearingHouse struct {
 	// WHAT THIS INSTITUTION IS HOLDING is in its DATABASE, and no field here.
 }
 
+// New builds the clearing house over its own network, with the host its members
+// dial and its own connection to the settlement agent.
+func New(env node.Env, net *payment.ClearingHouseNetwork, bic iso20022.BIC, host *ebics.Server, cb *ebics.Client) *ClearingHouse {
+	return &ClearingHouse{env: env, net: net, ops: net, bic: bic, host: host, cb: cb}
+}
+
 func (c *ClearingHouse) Network() *payment.ClearingHouseNetwork { return c.net }
-func (c *ClearingHouse) Log() *slog.Logger                      { return c.d.log }
+func (c *ClearingHouse) BIC() iso20022.BIC                      { return c.bic }
+func (c *ClearingHouse) Log() *slog.Logger                      { return c.env.Log }
 
 // EBICS is this institution's file-transfer endpoint, mounted on its own
 // listener. It is one URL that everything POSTs to, which is the protocol's own
 // shape; see ebics.Server.ServeHTTP.
 func (c *ClearingHouse) EBICS() http.Handler { return c.host }
 
-func (c *ClearingHouse) Submit(ctx context.Context, req payment.InitiatePaymentRequest) (payment.Payment, error) {
-	return c.d.Submit(ctx, req)
-}
-
-func (c *ClearingHouse) Return(ctx context.Context, id payment.PaymentID, reason iso20022.ReturnReason, text string) error {
-	return c.d.Return(ctx, id, reason, text)
-}
+// Host is the transport state itself: who is enrolled, what is queued for each
+// of them, and what each has uploaded.
+func (c *ClearingHouse) Host() *ebics.Server { return c.host }
 
 // ---------------------------------------------------------------------------
 // Queueing
@@ -62,7 +67,7 @@ func (c *ClearingHouse) Return(ctx context.Context, id payment.PaymentID, reason
 // enqueue addresses one document to one subscriber by putting it in that
 // subscriber's download queue.
 func (c *ClearingHouse) enqueue(ctx context.Context, to iso20022.BIC, env iso20022.Envelope) error {
-	t, err := orderTypeOf(env.Document)
+	t, err := node.OrderTypeOf(env.Document)
 	if err != nil {
 		return err
 	}
@@ -74,15 +79,15 @@ func (c *ClearingHouse) enqueue(ctx context.Context, to iso20022.BIC, env iso200
 	if err != nil {
 		return fmt.Errorf("server: %s cannot address a %s to %s: %w", c.bic, t, to, err)
 	}
-	c.d.journal.file(FileMoved{From: c.bic, To: to, OrderType: t, OrderID: id})
+	c.env.Journal.File(node.FileMoved{From: c.bic, To: to, OrderType: t, OrderID: id})
 	return nil
 }
 
 // upload puts a document on this institution's own connection to the settlement
-// agent. See Bank.upload, which is the same act one institution over.
+// agent. See bank.Bank.upload, which is the same act one institution over.
 func (c *ClearingHouse) upload(ctx context.Context, env iso20022.Envelope) error {
-	to := c.d.cfg.CentralBankBIC
-	t, err := orderTypeOf(env.Document)
+	to := c.env.CentralBankBIC
+	t, err := node.OrderTypeOf(env.Document)
 	if err != nil {
 		return err
 	}
@@ -94,7 +99,7 @@ func (c *ClearingHouse) upload(ctx context.Context, env iso20022.Envelope) error
 	if err != nil {
 		return fmt.Errorf("server: %s could not upload a %s to %s: %w", c.bic, t, to, err)
 	}
-	c.d.journal.file(FileMoved{From: c.bic, To: to, OrderType: t, OrderID: id})
+	c.env.Journal.File(node.FileMoved{From: c.bic, To: to, OrderType: t, OrderID: id})
 	return nil
 }
 
@@ -102,43 +107,43 @@ func (c *ClearingHouse) upload(ctx context.Context, env iso20022.Envelope) error
 // Working through what has arrived
 // ---------------------------------------------------------------------------
 
-// work runs this institution through everything its members have uploaded and
+// Work runs this institution through everything its members have uploaded and
 // not yet been answered about, oldest first.
-func (c *ClearingHouse) work(ctx context.Context) []Problem {
-	ctx = withActor(ctx, c.bic)
+func (c *ClearingHouse) Work(ctx context.Context) []node.Problem {
+	ctx = node.WithActor(ctx, c.bic)
 
 	pending, err := c.host.Pending(ctx)
 	if err != nil {
-		return []Problem{{Institution: c.bic, Detail: fmt.Sprintf("reading the orders waiting to be worked through: %v", err)}}
+		return []node.Problem{{Institution: c.bic, Detail: fmt.Sprintf("reading the orders waiting to be worked through: %v", err)}}
 	}
-	var problems []Problem
+	var problems []node.Problem
 	for _, order := range pending {
 		answer, detail := c.host.Processed, ""
 		if err := c.handle(ctx, order); err != nil {
-			problems = append(problems, Problem{Institution: c.bic, OrderID: order.ID, Detail: err.Error()})
+			problems = append(problems, node.Problem{Institution: c.bic, OrderID: order.ID, Detail: err.Error()})
 			answer, detail = c.host.Rejected, err.Error()
 		}
 		if err := answer(ctx, order.ID, detail); err != nil {
-			problems = append(problems, Problem{Institution: c.bic, OrderID: order.ID,
+			problems = append(problems, node.Problem{Institution: c.bic, OrderID: order.ID,
 				Detail: fmt.Sprintf("recording what became of this order: %v", err)})
 		}
 	}
 	return problems
 }
 
-// collect downloads the settlement agent's answers and works through them.
-func (c *ClearingHouse) collect(ctx context.Context) []Problem {
-	ctx = withActor(ctx, c.bic)
+// Collect downloads the settlement agent's answers and works through them.
+func (c *ClearingHouse) Collect(ctx context.Context) []node.Problem {
+	ctx = node.WithActor(ctx, c.bic)
 
-	from := c.d.cfg.CentralBankBIC
+	from := c.env.CentralBankBIC
 	files, err := c.cb.Download(ctx, ebics.BTD)
 	if err != nil {
-		return []Problem{{Institution: c.bic, Detail: fmt.Sprintf("collecting from %s: %v", from, err)}}
+		return []node.Problem{{Institution: c.bic, Detail: fmt.Sprintf("collecting from %s: %v", from, err)}}
 	}
-	var problems []Problem
+	var problems []node.Problem
 	for _, f := range files {
 		if err := c.handleFile(ctx, from, f.Payload); err != nil {
-			problems = append(problems, Problem{Institution: c.bic, OrderID: f.OrderID, Detail: err.Error()})
+			problems = append(problems, node.Problem{Institution: c.bic, OrderID: f.OrderID, Detail: err.Error()})
 		}
 	}
 	return problems
@@ -166,9 +171,9 @@ func (c *ClearingHouse) handleFile(ctx context.Context, from iso20022.BIC, raw [
 		// Three kinds of status arrive here, and it takes two questions to tell them
 		// apart.
 		switch {
-		case from != c.d.cfg.CentralBankBIC:
+		case from != c.env.CentralBankBIC:
 			return c.receiveUnreadable(from, doc)
-		case isAbout(doc, returnMsgDef):
+		case node.IsAbout(doc, node.ReturnMsgDef):
 			return c.receiveReturnStatus(ctx, from, doc)
 		default:
 			return c.receiveSettlementStatus(ctx, from, doc)
@@ -179,9 +184,9 @@ func (c *ClearingHouse) handleFile(ctx context.Context, from iso20022.BIC, raw [
 }
 
 // answerUnreadable queues an FF01 for the subscriber whose file would not parse.
-// See unreadable.
+// See node.Unreadable.
 func (c *ClearingHouse) answerUnreadable(ctx context.Context, from iso20022.BIC, cause error) error {
-	env, err := unreadable(c.d.messageContext(c.bic, from), cause)
+	env, err := node.Unreadable(c.env.MessageContext(c.bic, from), cause)
 	if err != nil {
 		return errors.Join(fmt.Errorf("server: %s could not build the FF01 for %s: %w", c.bic, from, err), cause)
 	}
@@ -284,7 +289,7 @@ func (c *ClearingHouse) takeRecorded(ctx context.Context, from iso20022.BIC, raw
 			}
 			cycle = accepted.CycleID
 			taken = append(taken, payment.HeldTransaction{Position: i, PaymentID: accepted.ID})
-			c.d.journal.outcome(TransactionOutcome{
+			c.env.Journal.Outcome(node.TransactionOutcome{
 				DecidedBy: c.bic, Payment: accepted.ID,
 				Status: iso20022.TransactionStatusAccepted,
 			})
@@ -323,7 +328,7 @@ func (c *ClearingHouse) refuse(ctx context.Context, p payment.Payment,
 		*errs = append(*errs, fmt.Errorf("server: %s answered %s for %s and could not record it: %w",
 			c.bic, code, p.ID, err))
 	}
-	c.d.journal.outcome(TransactionOutcome{
+	c.env.Journal.Outcome(node.TransactionOutcome{
 		DecidedBy: c.bic, Payment: p.ID,
 		Status: iso20022.TransactionStatusRejected, Code: code, Text: text,
 	})
@@ -376,9 +381,9 @@ func (c *ClearingHouse) releaseFiles(ctx context.Context, cycle payment.CycleID,
 			AppHdr: iso20022.AppHdr{
 				Fr:        iso20022.NewAgent(c.bic),
 				To:        iso20022.NewAgent(f.Destination),
-				BizMsgIdr: c.d.nextMsgID(c.bic),
+				BizMsgIdr: c.env.NextMsgID(c.bic),
 				MsgDefIdr: part.MessageDefinitionIdentifier(),
-				CreDt:     iso20022.ISODateTime{Time: c.d.now()},
+				CreDt:     iso20022.ISODateTime{Time: c.env.Now()},
 			},
 			Document: part,
 		}); err != nil {
@@ -435,7 +440,7 @@ func (c *ClearingHouse) unhanded(cycle payment.CycleID, settled []payment.Paymen
 		errs = append(errs, fmt.Errorf(
 			"server: %s settled %s in cycle %s and built no file for %s, which is the bank that has to apply it: "+
 				"the reserves behind it are final and that bank has not been told the payment exists",
-			c.bic, p.ID, cycle, receiverOf(scheme, p.DebtorDetails.Agent, p.CreditorDetails.Agent)))
+			c.bic, p.ID, cycle, payment.ReceiverOf(scheme, p.DebtorDetails.Agent, p.CreditorDetails.Agent)))
 	}
 	return errs
 }
@@ -460,10 +465,10 @@ func (c *ClearingHouse) relayReturn(ctx context.Context, from iso20022.BIC, env 
 	return c.upload(ctx, iso20022.Envelope{
 		AppHdr: iso20022.AppHdr{
 			Fr:        iso20022.NewAgent(c.bic),
-			To:        iso20022.NewAgent(c.d.cfg.CentralBankBIC),
-			BizMsgIdr: c.d.nextMsgID(c.bic),
+			To:        iso20022.NewAgent(c.env.CentralBankBIC),
+			BizMsgIdr: c.env.NextMsgID(c.bic),
 			MsgDefIdr: env.AppHdr.MsgDefIdr,
-			CreDt:     iso20022.ISODateTime{Time: c.d.now()},
+			CreDt:     iso20022.ISODateTime{Time: c.env.Now()},
 		},
 		// The document travels unchanged, for relay's reason: it is what the
 		// returning bank said and is not this institution's to rewrite.
@@ -494,9 +499,9 @@ func (c *ClearingHouse) releaseReturn(ctx context.Context, held payment.HeldRetu
 		AppHdr: iso20022.AppHdr{
 			Fr:        iso20022.NewAgent(c.bic),
 			To:        iso20022.NewAgent(to),
-			BizMsgIdr: c.d.nextMsgID(c.bic),
-			MsgDefIdr: returnMsgDef,
-			CreDt:     iso20022.ISODateTime{Time: c.d.now()},
+			BizMsgIdr: c.env.NextMsgID(c.bic),
+			MsgDefIdr: node.ReturnMsgDef,
+			CreDt:     iso20022.ISODateTime{Time: c.env.Now()},
 		},
 		Document: doc,
 	})
@@ -527,7 +532,7 @@ func (c *ClearingHouse) tell(ctx context.Context, p payment.Payment, orig paymen
 		return fmt.Errorf("server: %s decided %s and holds no %q scheme to say who submitted it: %w",
 			c.bic, p.ID, p.Scheme, payment.ErrSchemeNotFound)
 	}
-	return c.forward(ctx, submitterOf(scheme, p.DebtorDetails.Agent, p.CreditorDetails.Agent), orig, r)
+	return c.forward(ctx, payment.SubmitterOf(scheme, p.DebtorDetails.Agent, p.CreditorDetails.Agent), orig, r)
 }
 
 // forward queues the status for one bank. Which bank, and how many of them, is
@@ -540,7 +545,7 @@ func (c *ClearingHouse) forward(ctx context.Context, to iso20022.BIC, orig payme
 // than making: it names the institution that decided, so the pacs.002's Orgtr
 // does not say the clearing house.
 func (c *ClearingHouse) forwardDecision(ctx context.Context, to, decidedBy iso20022.BIC, orig payment.OriginalMessage, rs []payment.TransactionStatusReport) error {
-	mc := c.d.messageContext(c.bic, to)
+	mc := c.env.MessageContext(c.bic, to)
 	mc.DecidedBy = decidedBy
 	env, err := payment.StatusMessage(orig, rs, mc)
 	if err != nil {
@@ -551,7 +556,7 @@ func (c *ClearingHouse) forwardDecision(ctx context.Context, to, decidedBy iso20
 
 // Reject is the clearing house declining a payment because an operator said so.
 func (c *ClearingHouse) Reject(ctx context.Context, id payment.PaymentID, code iso20022.StatusReason, text string) (payment.Payment, error) {
-	ctx = withActor(ctx, c.bic)
+	ctx = node.WithActor(ctx, c.bic)
 
 	p, err := c.ops.RejectAtCSM(ctx, id, code, text)
 	if err != nil {
@@ -564,12 +569,12 @@ func (c *ClearingHouse) Reject(ctx context.Context, id payment.PaymentID, code i
 		Code:       code,
 		Text:       text,
 	}
-	c.d.journal.outcome(TransactionOutcome{DecidedBy: c.bic, Payment: p.ID, Status: r.Status, Code: code, Text: text})
+	c.env.Journal.Outcome(node.TransactionOutcome{DecidedBy: c.bic, Payment: p.ID, Status: r.Status, Code: code, Text: text})
 	// The rejection is a fact and the queueing may still fail, so the payment
-	// comes back BESIDE the error rather than being swallowed — closeCycle's
+	// comes back BESIDE the error rather than being swallowed — CloseCycle's
 	// shape, and the same half-happened outcome: a payment that is Rejected and
 	// whose payer has not been given their money back.
-	if err := c.tell(ctx, p, payment.OriginalMessage{MsgID: notProvided, MsgDefIdr: notProvided}, r); err != nil {
+	if err := c.tell(ctx, p, payment.OriginalMessage{MsgID: node.NotProvided, MsgDefIdr: node.NotProvided}, r); err != nil {
 		return p, fmt.Errorf("server: %s rejected %s and could not say so: %w", c.bic, p.ID, err)
 	}
 	return p, nil
@@ -582,7 +587,7 @@ func (c *ClearingHouse) Reject(ctx context.Context, id payment.PaymentID, code i
 // CloseCycle is the clearing house reaching a cut-off: it nets the batch, and
 // then asks the central bank to discharge it.
 func (c *ClearingHouse) CloseCycle(ctx context.Context, id payment.CycleID) (payment.ClearingCycle, error) {
-	ctx = withActor(ctx, c.bic)
+	ctx = node.WithActor(ctx, c.bic)
 
 	closed, err := c.ops.CloseCycle(ctx, id)
 	if err != nil {
@@ -597,7 +602,7 @@ func (c *ClearingHouse) CloseCycle(ctx context.Context, id payment.CycleID) (pay
 // Settle is the clearing house uploading a settlement instruction AGAIN, for a
 // cycle the central bank refused.
 func (c *ClearingHouse) Settle(ctx context.Context, id payment.CycleID) (payment.ClearingCycle, error) {
-	ctx = withActor(ctx, c.bic)
+	ctx = node.WithActor(ctx, c.bic)
 
 	cycle, err := c.ops.GetCycle(ctx, id)
 	if err != nil {
@@ -615,37 +620,37 @@ func (c *ClearingHouse) Settle(ctx context.Context, id payment.CycleID) (payment
 	return cycle, nil
 }
 
-// closeOpenCycles is the clearing house reaching its cut-off on a business day:
+// CloseOpenCycles is the clearing house reaching its cut-off on a business day:
 // every cycle standing open is netted, and its positions are uploaded.
-func (c *ClearingHouse) closeOpenCycles(ctx context.Context) []Problem {
-	ctx = withActor(ctx, c.bic)
+func (c *ClearingHouse) CloseOpenCycles(ctx context.Context) []node.Problem {
+	ctx = node.WithActor(ctx, c.bic)
 
 	cycles, err := c.ops.ListCycles(ctx)
 	if err != nil {
-		return []Problem{{Institution: c.bic, Detail: fmt.Sprintf("reading the cycles to cut off: %v", err)}}
+		return []node.Problem{{Institution: c.bic, Detail: fmt.Sprintf("reading the cycles to cut off: %v", err)}}
 	}
-	var problems []Problem
+	var problems []node.Problem
 	for _, cycle := range cycles {
 		if cycle.Status != payment.CycleOpen {
 			continue
 		}
 		if _, err := c.CloseCycle(ctx, cycle.ID); err != nil {
-			problems = append(problems, Problem{Institution: c.bic, Detail: err.Error()})
+			problems = append(problems, node.Problem{Institution: c.bic, Detail: err.Error()})
 		}
 	}
 	return problems
 }
 
-// openCycles gives every registered scheme a cycle for the next clearing day.
-func (c *ClearingHouse) openCycles(ctx context.Context) []Problem {
-	ctx = withActor(ctx, c.bic)
+// OpenCycles gives every registered scheme a cycle for the next clearing day.
+func (c *ClearingHouse) OpenCycles(ctx context.Context) []node.Problem {
+	ctx = node.WithActor(ctx, c.bic)
 
-	var problems []Problem
+	var problems []node.Problem
 	for _, scheme := range c.ops.ListSchemes() {
 		switch _, err := c.ops.OpenCycle(ctx, scheme.ID()); {
 		case err == nil, errors.Is(err, payment.ErrCycleAlreadyOpen):
 		default:
-			problems = append(problems, Problem{
+			problems = append(problems, node.Problem{
 				Institution: c.bic,
 				Detail:      fmt.Sprintf("opening a cycle for %s: %v", scheme.ID(), err),
 			})
@@ -663,7 +668,7 @@ func (c *ClearingHouse) instructSettlement(ctx context.Context, closed payment.C
 			c.bic, closed.ID, closed.Scheme, payment.ErrSchemeNotFound)
 	}
 	// BEFORE the legs are counted, because a cut-off with no leg is still
-	// discharged: settleUninstructed does it, and everything a settlement releases
+	// discharged: SettleUninstructed does it, and everything a settlement releases
 	// is released then too.
 	if err := c.unhandable(ctx, closed); err != nil {
 		return err
@@ -672,7 +677,7 @@ func (c *ClearingHouse) instructSettlement(ctx context.Context, closed payment.C
 	if len(legs) == 0 {
 		return nil
 	}
-	env, err := payment.SettlementMessage(legs, c.d.messageContext(c.bic, c.d.cfg.CentralBankBIC))
+	env, err := payment.SettlementMessage(legs, c.env.MessageContext(c.bic, c.env.CentralBankBIC))
 	if err != nil {
 		return fmt.Errorf("server: %s could not build the settlement instruction for %s: %w", c.bic, closed.ID, err)
 	}
@@ -709,19 +714,19 @@ func (c *ClearingHouse) unhandable(ctx context.Context, cycle payment.ClearingCy
 // settlementLegs turns a cycle's net positions into the legs of an instruction:
 // one per member with something to discharge, each against the CENTRAL BANK.
 func (c *ClearingHouse) settlementLegs(closed payment.ClearingCycle, asset ledger.AssetCode) []payment.SettlementLeg {
-	return payment.SettlementLegsOf(closed, asset, c.d.cfg.CentralBankBIC)
+	return payment.SettlementLegsOf(closed, asset, c.env.CentralBankBIC)
 }
 
-// settleUninstructed discharges the cut-offs no settlement agent will ever
+// SettleUninstructed discharges the cut-offs no settlement agent will ever
 // answer for.
-func (c *ClearingHouse) settleUninstructed(ctx context.Context) []Problem {
-	ctx = withActor(ctx, c.bic)
+func (c *ClearingHouse) SettleUninstructed(ctx context.Context) []node.Problem {
+	ctx = node.WithActor(ctx, c.bic)
 
 	cycles, err := c.ops.ListCycles(ctx)
 	if err != nil {
-		return []Problem{{Institution: c.bic, Detail: fmt.Sprintf("reading the cycles nothing was instructed for: %v", err)}}
+		return []node.Problem{{Institution: c.bic, Detail: fmt.Sprintf("reading the cycles nothing was instructed for: %v", err)}}
 	}
-	var problems []Problem
+	var problems []node.Problem
 	for _, cycle := range cycles {
 		if cycle.Status != payment.CycleClosed || !payment.NetsToNothing(cycle) {
 			continue
@@ -729,19 +734,19 @@ func (c *ClearingHouse) settleUninstructed(ctx context.Context) []Problem {
 		// The same refusal instructSettlement makes, for a cut-off that moves no
 		// reserve at all.
 		if err := c.unhandable(ctx, cycle); err != nil {
-			problems = append(problems, Problem{Institution: c.bic, Detail: err.Error()})
+			problems = append(problems, node.Problem{Institution: c.bic, Detail: err.Error()})
 			continue
 		}
 		// The original message is named as unavailable, by Reject's convention and
 		// for its reason: there is no settlement instruction to refer back to, and
 		// inventing a message id no institution sent would be worse than saying so.
 		if err := c.tellSettled(ctx, cycle.ID,
-			payment.OriginalMessage{MsgID: notProvided, MsgDefIdr: notProvided},
+			payment.OriginalMessage{MsgID: node.NotProvided, MsgDefIdr: node.NotProvided},
 			payment.TransactionStatusReport{
 				TxID:   string(cycle.ID),
 				Status: iso20022.TransactionStatusSettlementCompleted,
 			}); err != nil {
-			problems = append(problems, Problem{Institution: c.bic, Detail: err.Error()})
+			problems = append(problems, node.Problem{Institution: c.bic, Detail: err.Error()})
 		}
 	}
 	return problems
@@ -760,7 +765,7 @@ func (c *ClearingHouse) receiveSettlementStatus(ctx context.Context, from iso200
 			return fmt.Errorf("server: %s got a settlement status from %s naming no cycle", c.bic, from)
 		}
 		if r.Status != iso20022.TransactionStatusSettlementCompleted {
-			c.d.log.Error("server: settlement refused",
+			c.env.Log.Error("server: settlement refused",
 				"clearing house", c.bic, "settlement agent", from,
 				"cycle", r.TxID, "status", r.Status, "code", r.Code, "reason", r.Text)
 			continue
@@ -792,8 +797,8 @@ func (c *ClearingHouse) tellSettled(ctx context.Context, id payment.CycleID, ori
 			return errors.Join(released, fmt.Errorf("server: %s was told %s settled and holds no %q scheme to say who submitted %s: %w",
 				c.bic, id, p.Scheme, p.ID, payment.ErrSchemeNotFound))
 		}
-		c.d.journal.outcome(TransactionOutcome{DecidedBy: c.bic, Payment: p.ID, Status: r.Status})
-		if err := c.forward(ctx, submitterOf(scheme, p.DebtorDetails.Agent, p.CreditorDetails.Agent), orig,
+		c.env.Journal.Outcome(node.TransactionOutcome{DecidedBy: c.bic, Payment: p.ID, Status: r.Status})
+		if err := c.forward(ctx, payment.SubmitterOf(scheme, p.DebtorDetails.Agent, p.CreditorDetails.Agent), orig,
 			payment.TransactionStatusReport{
 				EndToEndID: endToEndOf(p),
 				TxID:       string(p.ID),
@@ -827,7 +832,7 @@ func (c *ClearingHouse) receiveReturnStatus(ctx context.Context, from iso20022.B
 			return fmt.Errorf("server: %s was told about the return of %s and holds no %q scheme to say who asked: %w",
 				c.bic, p.ID, p.Scheme, payment.ErrSchemeNotFound)
 		}
-		returner := returnerOf(scheme, p.DebtorDetails.Agent, p.CreditorDetails.Agent)
+		returner := payment.ReturnerOf(scheme, p.DebtorDetails.Agent, p.CreditorDetails.Agent)
 		// The SETTLEMENT AGENT decided this, not the clearing house, and the message
 		// says so. It is the one hop in this system where the sender and the
 		// originator are different institutions; see forwardDecision.
@@ -866,7 +871,7 @@ func (c *ClearingHouse) receiveReturnStatus(ctx context.Context, from iso20022.B
 // convention where there is none.
 func endToEndOf(p payment.Payment) string {
 	if p.EndToEndID == "" {
-		return notProvided
+		return node.NotProvided
 	}
 	return p.EndToEndID
 }

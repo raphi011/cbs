@@ -14,6 +14,7 @@ import (
 
 	"github.com/raphi011/cbs/api"
 	"github.com/raphi011/cbs/calendar"
+	"github.com/raphi011/cbs/node/csm"
 
 	"github.com/raphi011/cbs/deposit"
 	"github.com/raphi011/cbs/ebics"
@@ -239,14 +240,14 @@ func TestResetThrowsTheQueuesAwayWithTheRows(t *testing.T) {
 	payer := payerRoutes(t, srv)
 	postJSON(t, payer, "/payments", validSubmission(t, srv))
 	doJSON(t, payer, "POST", "/payments/cutoff", "", http.StatusAccepted)
-	if pending := pendingAt(t, srv.dep.ClearingHouse().host); pending == 0 {
+	if pending := pendingAt(t, srv.dep.ClearingHouse().Host()); pending == 0 {
 		t.Fatal("the cut-off left no file at the clearing house, so this test would pass on nothing")
 	}
 	rec := post(t, srv.CentralBankRoutes(), "/admin/reset")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("reset = %d", rec.Code)
 	}
-	if pending := pendingAt(t, srv.dep.ClearingHouse().host); pending != 0 {
+	if pending := pendingAt(t, srv.dep.ClearingHouse().Host()); pending != 0 {
 		t.Fatalf("%d files survived the reset; each describes a payment no institution now holds", pending)
 	}
 }
@@ -600,7 +601,7 @@ func TestAResetKeepsEveryBindingAListenerMadeAtStartup(t *testing.T) {
 	if _, err := client.Upload(ctx, ebics.CCT, []byte("<a file this test never asks anybody to read/>")); err != nil {
 		t.Fatalf("%s uploading to the host its listener mounts: %v", bic, err)
 	}
-	if got := pendingAt(t, csm.host); got != 1 {
+	if got := pendingAt(t, csm.Host()); got != 1 {
 		t.Errorf("the clearing house has %d files to work through, and one was just uploaded to the host its listener mounts", got)
 	}
 }
@@ -616,7 +617,7 @@ func TestAResetThrowsAwayTheSharesTheClearingHouseHolds(t *testing.T) {
 	// A return placed by hand, because the seed carries none and a return this
 	// deployment really relays is answered in the same business day — there is no
 	// moment a test could catch one waiting.
-	if err := csm.ops.HoldReturn(ctx, payment.HeldReturn{
+	if err := csm.Network().HoldReturn(ctx, payment.HeldReturn{
 		PaymentID: "pay_sentinel", ReturnedBy: srv.dep.cfg.ClearingHouseBIC, File: []byte("<Envelope/>"),
 	}); err != nil {
 		t.Fatalf("HoldReturn: %v", err)
@@ -637,24 +638,24 @@ func TestAResetThrowsAwayTheSharesTheClearingHouseHolds(t *testing.T) {
 	if got := heldTransactions(t, csm); got != seeded {
 		t.Errorf("the clearing house holds shares over %d transactions after the reset and a fresh build leaves %d; the difference survived, addressed against cycle ids the store will mint again", got, seeded)
 	}
-	if _, err := csm.ops.GetHeldReturn(ctx, "pay_sentinel"); !errors.Is(err, payment.ErrHeldReturnNotFound) {
+	if _, err := csm.Network().GetHeldReturn(ctx, "pay_sentinel"); !errors.Is(err, payment.ErrHeldReturnNotFound) {
 		t.Errorf("a held return survived the reset (%v); it names a payment no institution now holds", err)
 	}
 }
 
 // heldTransactions counts the transactions the clearing house is holding shares
 // for, across every cycle.
-func heldTransactions(t *testing.T, c *ClearingHouse) int {
+func heldTransactions(t *testing.T, c *csm.ClearingHouse) int {
 	t.Helper()
 
 	ctx := context.Background()
-	cycles, err := c.ops.ListCycles(ctx)
+	cycles, err := c.Network().ListCycles(ctx)
 	if err != nil {
 		t.Fatalf("ListCycles: %v", err)
 	}
 	var n int
 	for _, cycle := range cycles {
-		files, err := c.ops.ListHeldFiles(ctx, cycle.ID)
+		files, err := c.Network().ListHeldFiles(ctx, cycle.ID)
 		if err != nil {
 			t.Fatalf("ListHeldFiles(%s): %v", cycle.ID, err)
 		}

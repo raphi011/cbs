@@ -16,6 +16,10 @@ import (
 	"github.com/raphi011/cbs/ebics"
 	"github.com/raphi011/cbs/iso20022"
 	"github.com/raphi011/cbs/ledger"
+	"github.com/raphi011/cbs/node"
+	"github.com/raphi011/cbs/node/bank"
+	"github.com/raphi011/cbs/node/centralbank"
+	"github.com/raphi011/cbs/node/csm"
 	"github.com/raphi011/cbs/payment"
 	"github.com/raphi011/cbs/seed"
 )
@@ -56,7 +60,8 @@ type Hosts interface {
 }
 
 // A Deployment is every institution this process holds, the clock they all
-// read, and the business day that drives them.
+// read, and the business day that drives them. Nothing under node/ knows this
+// type exists.
 type Deployment struct {
 	// nets mints one Network per institution. It is what the institutions below
 	// bind from, and what Reset clears the store through.
@@ -70,9 +75,13 @@ type Deployment struct {
 	cfg Config
 	log *slog.Logger
 
+	// env is what every institution is handed at construction, and the whole of
+	// what one may know about the process it runs in.
+	env node.Env
+
 	// The two hosts, built once.
-	csm *ClearingHouse
-	cb  *CentralBank
+	csm *csm.ClearingHouse
+	cb  *centralbank.CentralBank
 
 	// seq numbers the messages this deployment emits. See nextMsgID.
 	seq atomic.Uint64
@@ -92,7 +101,7 @@ type Deployment struct {
 	// banks is every member bank this process holds a database for, by ADDRESS. A
 	// bank's ParticipantID is its BIC (payment.AsBank), so this is keyed by the
 	// one identity a bank has.
-	banks map[iso20022.BIC]*Bank
+	banks map[iso20022.BIC]*bank.Bank
 
 	// resetMu serializes Reset AND AdvanceDay.
 	resetMu sync.Mutex
@@ -120,19 +129,21 @@ func NewDeployment(ctx context.Context, nets *payment.Networks, hosts Hosts, clo
 		cfg:      cfg,
 		log:      log,
 		populate: populate,
-		banks:    map[iso20022.BIC]*Bank{},
+		banks:    map[iso20022.BIC]*bank.Bank{},
 	}
-	d.cb = &CentralBank{
-		d: d, net: nets.CentralBank(), ops: nets.CentralBank(),
-		bic: cfg.CentralBankBIC, host: ebics.NewServer(hosts.CentralBankEBICS()),
+	d.env = node.Env{
+		Now:              d.now,
+		Log:              log,
+		Journal:          &d.journal,
+		NextMsgID:        d.nextMsgID,
+		CentralBankBIC:   cfg.CentralBankBIC,
+		ClearingHouseBIC: cfg.ClearingHouseBIC,
 	}
-	d.csm = &ClearingHouse{
-		d: d, net: nets.ClearingHouse(), ops: nets.ClearingHouse(),
-		bic:  cfg.ClearingHouseBIC,
-		host: ebics.NewServer(hosts.ClearingHouseEBICS()),
-		cb:   ebics.NewClient(ebics.SubscriberID(cfg.ClearingHouseBIC), cfg.CentralBankURL),
-	}
-	d.cb.host.Enrol(ebics.SubscriberID(cfg.ClearingHouseBIC))
+	d.cb = centralbank.New(d.env, nets.CentralBank(), cfg.CentralBankBIC, ebics.NewServer(hosts.CentralBankEBICS()))
+	d.csm = csm.New(d.env, nets.ClearingHouse(), cfg.ClearingHouseBIC,
+		ebics.NewServer(hosts.ClearingHouseEBICS()),
+		ebics.NewClient(ebics.SubscriberID(cfg.ClearingHouseBIC), cfg.CentralBankURL))
+	d.cb.Host().Enrol(ebics.SubscriberID(cfg.ClearingHouseBIC))
 
 	bics, err := nets.Stores().Banks(ctx)
 	if err != nil {
@@ -155,7 +166,7 @@ func NewDeployment(ctx context.Context, nets *payment.Networks, hosts Hosts, clo
 
 // memberBICs is every address the clearing house's roster names.
 func (d *Deployment) memberBICs(ctx context.Context) (map[iso20022.BIC]bool, error) {
-	entries, err := d.csm.ops.ListRosterEntries(ctx)
+	entries, err := d.csm.Network().ListRosterEntries(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("server: reading the clearing house's roster: %w", err)
 	}
@@ -170,13 +181,13 @@ func (d *Deployment) memberBICs(ctx context.Context) (map[iso20022.BIC]bool, err
 // nothing, so a reseed of a bank that is already a subscriber is not a special
 // case.
 func (d *Deployment) enrol(bic iso20022.BIC) {
-	d.csm.host.Enrol(ebics.SubscriberID(bic))
-	d.cb.host.Enrol(ebics.SubscriberID(bic))
+	d.csm.Host().Enrol(ebics.SubscriberID(bic))
+	d.cb.Host().Enrol(ebics.SubscriberID(bic))
 }
 
 // mintBank opens one bank's database and gives it its two connections — or
 // hands back the Bank this deployment already holds for that address.
-func (d *Deployment) mintBank(ctx context.Context, bic iso20022.BIC) (*Bank, error) {
+func (d *Deployment) mintBank(ctx context.Context, bic iso20022.BIC) (*bank.Bank, error) {
 	d.mu.Lock()
 	held, ok := d.banks[bic]
 	d.mu.Unlock()
@@ -188,11 +199,9 @@ func (d *Deployment) mintBank(ctx context.Context, bic iso20022.BIC) (*Bank, err
 	if err != nil {
 		return nil, fmt.Errorf("server: opening %s's store: %w", bic, err)
 	}
-	b := &Bank{
-		d: d, net: net, ops: net, bic: bic,
-		csm: ebics.NewClient(ebics.SubscriberID(bic), d.cfg.ClearingHouseURL),
-		cb:  ebics.NewClient(ebics.SubscriberID(bic), d.cfg.CentralBankURL),
-	}
+	b := bank.New(d.env, net, bic,
+		ebics.NewClient(ebics.SubscriberID(bic), d.cfg.ClearingHouseURL),
+		ebics.NewClient(ebics.SubscriberID(bic), d.cfg.CentralBankURL))
 	// Under the lock a second time, because opening the database above is I/O and
 	// two requests for a bank neither of them found may have run it at once. The
 	// loser's Bank is discarded, so the invariant above holds however they raced.
@@ -211,14 +220,14 @@ func (d *Deployment) Log() *slog.Logger { return d.log }
 // ClearingHouse and CentralBank are the two institutions this process
 // configures. Each is built once, so a listener holds the same value the day
 // engine drives.
-func (d *Deployment) ClearingHouse() *ClearingHouse { return d.csm }
-func (d *Deployment) CentralBank() *CentralBank     { return d.cb }
+func (d *Deployment) ClearingHouse() *csm.ClearingHouse     { return d.csm }
+func (d *Deployment) CentralBank() *centralbank.CentralBank { return d.cb }
 
 // CentralBankBIC is the address settlement instructions are uploaded to.
 func (d *Deployment) CentralBankBIC() iso20022.BIC { return d.cfg.CentralBankBIC }
 
 // Bank is one member bank's own view, over that bank's own database.
-func (d *Deployment) Bank(ctx context.Context, pid payment.ParticipantID) (*Bank, error) {
+func (d *Deployment) Bank(ctx context.Context, pid payment.ParticipantID) (*bank.Bank, error) {
 	bic := iso20022.BIC(pid)
 	d.mu.Lock()
 	b, ok := d.banks[bic]
@@ -230,10 +239,10 @@ func (d *Deployment) Bank(ctx context.Context, pid payment.ParticipantID) (*Bank
 }
 
 // banksInOrder is every bank this deployment holds, ascending by address.
-func (d *Deployment) banksInOrder() []*Bank {
+func (d *Deployment) banksInOrder() []*bank.Bank {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	out := make([]*Bank, 0, len(d.banks))
+	out := make([]*bank.Bank, 0, len(d.banks))
 	for _, bic := range slices.Sorted(maps.Keys(d.banks)) {
 		out = append(out, d.banks[bic])
 	}
@@ -243,10 +252,10 @@ func (d *Deployment) banksInOrder() []*Bank {
 // subscribers is every bank enrolled at the clearing house, ascending by
 // address: the members, and the only banks a clearing day has anything to say
 // about.
-func (d *Deployment) subscribers() []*Bank {
-	var out []*Bank
+func (d *Deployment) subscribers() []*bank.Bank {
+	var out []*bank.Bank
 	for _, b := range d.banksInOrder() {
-		if d.csm.host.Enrolled(ebics.SubscriberID(b.bic)) {
+		if d.csm.Host().Enrolled(ebics.SubscriberID(b.BIC())) {
 			out = append(out, b)
 		}
 	}
@@ -266,6 +275,29 @@ func (d *Deployment) AddBank(ctx context.Context, p *payment.Bank) error {
 	return nil
 }
 
+// Members is every bank this deployment holds a database for, each read out of
+// its own database, ascending by address.
+func (d *Deployment) Members(ctx context.Context) ([]*payment.Bank, error) {
+	bics, err := d.nets.Stores().Banks(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]*payment.Bank, 0, len(bics))
+	for _, bic := range bics {
+		id := payment.ParticipantID(bic)
+		net, err := d.nets.Bank(ctx, id)
+		if err != nil {
+			return nil, err
+		}
+		p, err := net.GetBank(ctx, id)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, p)
+	}
+	return out, nil
+}
+
 // now is the instant every header this process writes is stamped from, and it
 // is the deployment's business date.
 func (d *Deployment) now() time.Time { return d.clock.Now() }
@@ -276,12 +308,6 @@ func (d *Deployment) nextMsgID(from iso20022.BIC) string {
 	return fmt.Sprintf("%s-%d", from, d.seq.Add(1))
 }
 
-// messageContext is the header every message this deployment builds carries: who
-// to, from whom, under which id, at what business date.
-func (d *Deployment) messageContext(from, to iso20022.BIC) payment.MessageContext {
-	return payment.MessageContext{From: from, To: to, MsgID: d.nextMsgID(from), Now: d.now()}
-}
-
 // ---------------------------------------------------------------------------
 // The doors: everything that comes into this system from outside a business day
 // ---------------------------------------------------------------------------
@@ -289,7 +315,7 @@ func (d *Deployment) messageContext(from, to iso20022.BIC) payment.MessageContex
 // Submit runs the submitting bank's half synchronously and hands the
 // instruction to that bank's hub.
 func (d *Deployment) Submit(ctx context.Context, req payment.InitiatePaymentRequest) (payment.Payment, error) {
-	scheme, ok := d.csm.ops.Scheme(req.Scheme)
+	scheme, ok := d.csm.Network().Scheme(req.Scheme)
 	if !ok {
 		return payment.Payment{}, fmt.Errorf("server: no scheme %q, so no bank submits it: %w", req.Scheme, payment.ErrSchemeNotFound)
 	}
@@ -312,7 +338,7 @@ func (d *Deployment) Submit(ctx context.Context, req payment.InitiatePaymentRequ
 		if side.agent == "" {
 			continue
 		}
-		if _, err := d.csm.ops.GetRosterEntryByBIC(ctx, side.agent); err != nil {
+		if _, err := d.csm.Network().GetRosterEntryByBIC(ctx, side.agent); err != nil {
 			if errors.Is(err, payment.ErrRosterEntryNotFound) {
 				return payment.Payment{}, fmt.Errorf("server: the %s, %s, is not a member of %s: %w",
 					side.role, side.agent, req.Scheme, payment.ErrBankNotAdmitted)
@@ -321,7 +347,7 @@ func (d *Deployment) Submit(ctx context.Context, req payment.InitiatePaymentRequ
 		}
 	}
 
-	b, err := d.member(submitterOf(scheme, req.DebtorDetails.Agent, req.CreditorDetails.Agent))
+	b, err := d.member(payment.SubmitterOf(scheme, req.DebtorDetails.Agent, req.CreditorDetails.Agent))
 	if err != nil {
 		return payment.Payment{}, err
 	}
@@ -332,10 +358,10 @@ func (d *Deployment) Submit(ctx context.Context, req payment.InitiatePaymentRequ
 		counterparty = req.Debtor
 	}
 	if counterparty.Identifier != (deposit.Identifier{}) {
-		switch _, err := b.ops.ResolveIdentifier(withActor(ctx, b.bic), counterparty.Identifier); {
+		switch _, err := b.Network().ResolveIdentifier(node.WithActor(ctx, b.BIC()), counterparty.Identifier); {
 		case err == nil:
 			return payment.Payment{}, fmt.Errorf("server: %s holds both the payer's account and the payee's for this instruction: %w",
-				b.bic, payment.ErrOnUsPayment)
+				b.BIC(), payment.ErrOnUsPayment)
 		case errors.Is(err, deposit.ErrIdentifierNotFound):
 			// The ordinary case: the payee is somebody else's customer, which is
 			// the only thing this bank can conclude and the only thing it needs to.
@@ -343,26 +369,26 @@ func (d *Deployment) Submit(ctx context.Context, req payment.InitiatePaymentRequ
 			return payment.Payment{}, err
 		}
 	}
-	return b.submit(ctx, req)
+	return b.Submit(ctx, req)
 }
 
 // Return sends a settled payment back: the R-transaction, and the last thing
 // that can happen to a payment.
 func (d *Deployment) Return(ctx context.Context, id payment.PaymentID, reason iso20022.ReturnReason, text string) error {
 	// The routing question, and only that: which bank's instruction is this?
-	p, err := d.csm.ops.GetPayment(ctx, id)
+	p, err := d.csm.Network().GetPayment(ctx, id)
 	if err != nil {
 		return err
 	}
-	scheme, ok := d.csm.ops.Scheme(p.Scheme)
+	scheme, ok := d.csm.Network().Scheme(p.Scheme)
 	if !ok {
 		return fmt.Errorf("server: no scheme %q, so no bank returns %s: %w", p.Scheme, p.ID, payment.ErrSchemeNotFound)
 	}
-	b, err := d.member(returnerOf(scheme, p.DebtorDetails.Agent, p.CreditorDetails.Agent))
+	b, err := d.member(payment.ReturnerOf(scheme, p.DebtorDetails.Agent, p.CreditorDetails.Agent))
 	if err != nil {
 		return err
 	}
-	return b.returnPayment(ctx, id, reason, text)
+	return b.Return(ctx, id, reason, text)
 }
 
 // Lodge is a member bank moving its own vault cash onto reserve at the central
@@ -374,13 +400,13 @@ func (d *Deployment) Lodge(ctx context.Context, bic iso20022.BIC, asset ledger.A
 	if err != nil {
 		return payment.LodgementInstruction{}, err
 	}
-	return b.lodge(ctx, asset, amount)
+	return b.Lodge(ctx, asset, amount)
 }
 
 // RefreshDirectory is one member bank subscribing: it takes the roster the
 // clearing house publishes and replaces that bank's own copy with it.
 func (d *Deployment) RefreshDirectory(ctx context.Context, bic iso20022.BIC) ([]payment.DirectoryEntry, error) {
-	published, err := d.csm.ops.ListRosterEntries(ctx)
+	published, err := d.csm.Network().ListRosterEntries(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("server: reading the published roster for %s: %w", bic, err)
 	}
@@ -388,12 +414,12 @@ func (d *Deployment) RefreshDirectory(ctx context.Context, bic iso20022.BIC) ([]
 	if err != nil {
 		return nil, err
 	}
-	return subscriber.ops.RefreshDirectory(withActor(ctx, bic), published)
+	return subscriber.TakeDirectory(ctx, published)
 }
 
 // member is the bank this deployment holds for an address, refusing one it does
 // not.
-func (d *Deployment) member(bic iso20022.BIC) (*Bank, error) {
+func (d *Deployment) member(bic iso20022.BIC) (*bank.Bank, error) {
 	d.mu.Lock()
 	b, ok := d.banks[bic]
 	d.mu.Unlock()
@@ -410,11 +436,11 @@ func (d *Deployment) Reset(ctx context.Context) error {
 	defer d.resetMu.Unlock()
 
 	for _, b := range d.banksInOrder() {
-		b.clearHub()
+		b.ClearHub()
 	}
-	d.csm.host.Reset()
-	d.cb.host.Reset()
-	d.cb.host.Enrol(ebics.SubscriberID(d.cfg.ClearingHouseBIC))
+	d.csm.Host().Reset()
+	d.cb.Host().Reset()
+	d.cb.Host().Enrol(ebics.SubscriberID(d.cfg.ClearingHouseBIC))
 	d.journal.take()
 
 	if err := d.nets.Stores().Reset(ctx); err != nil {

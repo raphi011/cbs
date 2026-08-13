@@ -49,11 +49,11 @@ type server struct {
 }
 
 func (s *server) CentralBankRoutes() http.Handler {
-	return cbapi.Routes(s.dep.CentralBank()).Handler(s.dep.Log())
+	return cbapi.Routes(s.dep.CentralBank(), operator{s.dep}).Handler(s.dep.Log())
 }
 
 func (s *server) ClearingHouseRoutes() http.Handler {
-	return csmapi.Routes(s.dep.ClearingHouse()).Handler(s.dep.Log())
+	return csmapi.Routes(s.dep.ClearingHouse(), operator{s.dep}).Handler(s.dep.Log())
 }
 
 // BankRoutes binds one member bank's surface. It takes a context and can fail
@@ -63,7 +63,7 @@ func (s *server) BankRoutes(ctx context.Context, pid payment.ParticipantID) (htt
 	if err != nil {
 		return nil, err
 	}
-	return bankapi.Routes(b).Handler(s.dep.Log()), nil
+	return bankapi.Routes(bankConsole{b, s.dep}).Handler(s.dep.Log()), nil
 }
 
 func cbSurface(s *server) http.Handler  { return s.CentralBankRoutes() }

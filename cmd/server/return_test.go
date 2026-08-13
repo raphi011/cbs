@@ -11,6 +11,7 @@ import (
 	"github.com/raphi011/cbs/deposit"
 	"github.com/raphi011/cbs/iso20022"
 	"github.com/raphi011/cbs/ledger"
+	"github.com/raphi011/cbs/node"
 	"github.com/raphi011/cbs/payment"
 )
 
@@ -498,7 +499,7 @@ func TestARefusedReturnNamesTheSettlementAgentAsTheOriginator(t *testing.T) {
 func TestTheSettlementAgentsAnswerQuotesTheReferenceTheBankSent(t *testing.T) {
 	for _, tc := range []struct{ name, e2e, want string }{
 		{"a payment with a client reference", "INV-42", "INV-42"},
-		{"a payment with none", "", notProvided},
+		{"a payment with none", "", node.NotProvided},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newHarness(t)
@@ -532,36 +533,6 @@ func TestTheSettlementAgentsAnswerQuotesTheReferenceTheBankSent(t *testing.T) {
 					tx.OrgnlEndToEndId, tc.want)
 			}
 		})
-	}
-}
-
-// TestTheSettlementAgentCannotAnswerYesWithAReason: a pacs.002 carries
-// StsRsnInf only for a rejection, so a cause passed beside SettlementCompleted
-// sets a code and a text the builder then silently drops — a message saying
-// everything is fine, with the reason it was not deleted on the way out.
-func TestTheSettlementAgentCannotAnswerYesWithAReason(t *testing.T) {
-	h := newHarness(t)
-	cb := &CentralBank{d: h.dep, net: h.cb(), ops: h.cb(), bic: h.cfg.CentralBankBIC, host: h.dep.CentralBank().host}
-
-	err := cb.answer(context.Background(), h.cfg.ClearingHouseBIC,
-		payment.OriginalMessage{MsgID: notProvided, MsgDefIdr: notProvided},
-		notProvided, "cyc_x",
-		iso20022.TransactionStatusSettlementCompleted,
-		payment.ErrCycleNotFound)
-	if err != nil {
-		t.Fatalf("answer: %v", err)
-	}
-	// The cycle id is invented, so whatever the clearing house makes of this
-	// message it will have nothing to look up.
-	_ = h.workErr(t)
-
-	status := h.lastStatusTo(t, h.cfg.ClearingHouseBIC)
-	tx := status.FIToFIPmtStsRpt.TxInfAndSts[0]
-	if tx.TxSts != iso20022.TransactionStatusRejected {
-		t.Fatalf("an answer built with a cause reports %v, want RJCT — the reason is dropped on any other status", tx.TxSts)
-	}
-	if tx.StsRsnInf == nil || tx.StsRsnInf.Rsn.Cd == nil {
-		t.Fatalf("the rejection carries no reason code: %#v", tx.StsRsnInf)
 	}
 }
 

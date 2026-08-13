@@ -7,6 +7,7 @@ import (
 
 	"github.com/raphi011/cbs/ebics"
 	"github.com/raphi011/cbs/iso20022"
+	"github.com/raphi011/cbs/node/bank"
 	"github.com/raphi011/cbs/payment"
 )
 
@@ -36,7 +37,7 @@ func TestAnInstructionWaitsInTheHubUntilACutOff(t *testing.T) {
 	}
 	pending := h.pending(t, h.debtorBIC)
 	if len(pending) != 1 || pending[0].ID != p.ID {
-		t.Fatalf("the payer's bank is holding %v, want just %s", idsOf(pending), p.ID)
+		t.Fatalf("the payer's bank is holding %v, want just %s", paymentIDs(pending), p.ID)
 	}
 	// And the counterparty has not been told, which is the difference the hub
 	// makes visible: the payment is Initiated, and so is a payment that has been
@@ -313,19 +314,25 @@ func TestAFileOfManyReachesFinality(t *testing.T) {
 // Two files that could not go out come back in the order the hub took them.
 func TestTwoFilesThatCouldNotGoOutComeBackInTheOrderTheyWereTaken(t *testing.T) {
 	h := newHarnessWithTwoAssets(t)
+	ctx := context.Background()
 
-	euro := h.submitCreditTransfer(t)
-	dollar := h.submitCreditTransferInUSD(t)
+	// The same member bank over the same database, dialling a clearing house
+	// nothing is listening on. Its own hub is what the two instructions go into,
+	// so the cut-off below is this bank's and its keeping is visible here.
+	payer := bank.New(h.dep.env, h.bank(h.debtorBIC), h.debtorBIC,
+		ebics.NewClient(ebics.SubscriberID(h.debtorBIC), "http://127.0.0.1:1/ebics"),
+		ebics.NewClient(ebics.SubscriberID(h.debtorBIC), h.cfg.CentralBankURL))
 
-	// The payer's bank loses its connection to the clearing house, and nothing
-	// else about the deployment changes.
-	payer, err := h.dep.member(h.debtorBIC)
+	euro, err := payer.Submit(ctx, h.creditTransferRequestTo(t, h.creditorIBAN))
 	if err != nil {
-		t.Fatalf("member %s: %v", h.debtorBIC, err)
+		t.Fatalf("Submit in EUR: %v", err)
 	}
-	payer.csm = ebics.NewClient(ebics.SubscriberID(h.debtorBIC), "http://127.0.0.1:1/ebics")
+	dollar, err := payer.Submit(ctx, h.dollarsTo(t, h.creditorUSDAcct))
+	if err != nil {
+		t.Fatalf("Submit in USD: %v", err)
+	}
 
-	orders, problems := payer.cutoff(context.Background())
+	orders, problems := payer.RunCutoff(ctx)
 	if len(orders) != 0 {
 		t.Fatalf("%d files went out over a connection nothing is listening on", len(orders))
 	}
@@ -335,10 +342,23 @@ func TestTwoFilesThatCouldNotGoOutComeBackInTheOrderTheyWereTaken(t *testing.T) 
 
 	want := []payment.PaymentID{euro.ID, dollar.ID}
 	var got []payment.PaymentID
-	for _, p := range h.pending(t, h.debtorBIC) {
+	held, err := payer.Pending(ctx)
+	if err != nil {
+		t.Fatalf("reading the hub: %v", err)
+	}
+	for _, p := range held {
 		got = append(got, p.ID)
 	}
 	if !slices.Equal(got, want) {
 		t.Errorf("the hub holds %v after both files were kept, want %v — the order it took them in", got, want)
 	}
+}
+
+// paymentIDs is a list of payments as the ids a failure message names them by.
+func paymentIDs(ps []payment.Payment) []payment.PaymentID {
+	out := make([]payment.PaymentID, 0, len(ps))
+	for _, p := range ps {
+		out = append(out, p.ID)
+	}
+	return out
 }

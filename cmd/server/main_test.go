@@ -25,17 +25,21 @@ func TestTheSeedLeavesNoPaymentHalfProcessed(t *testing.T) {
 	net := nets.ClearingHouse()
 
 	for _, b := range srv.dep.banksInOrder() {
-		if got := b.queued(); len(got) != 0 {
+		got, err := b.Pending(ctx)
+		if err != nil {
+			t.Fatalf("%s reading its hub: %v", b.BIC(), err)
+		}
+		if len(got) != 0 {
 			t.Errorf("%s's hub holds %d instructions the build never uploaded: %v; their payers are debited and no file carries them",
-				b.bic, len(got), got)
+				b.BIC(), len(got), paymentIDs(got))
 		}
 	}
 	for _, host := range []struct {
 		at iso20022.BIC
 		s  *ebics.Server
 	}{
-		{srv.dep.cfg.ClearingHouseBIC, srv.dep.ClearingHouse().host},
-		{srv.dep.cfg.CentralBankBIC, srv.dep.CentralBank().host},
+		{srv.dep.cfg.ClearingHouseBIC, srv.dep.ClearingHouse().Host()},
+		{srv.dep.cfg.CentralBankBIC, srv.dep.CentralBank().Host()},
 	} {
 		if got := pendingAt(t, host.s); got != 0 {
 			t.Errorf("%d files are waiting unworked at %s; the build uploaded them and left before that institution read them",

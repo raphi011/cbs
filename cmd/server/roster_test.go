@@ -64,10 +64,10 @@ func TestNewDeploymentEnrolsEveryMemberOfTheRoster(t *testing.T) {
 		if _, err := dep.member(bic); err != nil {
 			t.Errorf("no view of %s: %v", bic, err)
 		}
-		if !dep.ClearingHouse().host.Enrolled(ebics.SubscriberID(bic)) {
+		if !dep.ClearingHouse().Host().Enrolled(ebics.SubscriberID(bic)) {
 			t.Errorf("%s has no download queue at the clearing house, so nothing can be addressed to it", bic)
 		}
-		if !dep.CentralBank().host.Enrolled(ebics.SubscriberID(bic)) {
+		if !dep.CentralBank().Host().Enrolled(ebics.SubscriberID(bic)) {
 			t.Errorf("%s has no download queue at the settlement agent, so it can never be sent a statement", bic)
 		}
 	}
@@ -75,7 +75,7 @@ func TestNewDeploymentEnrolsEveryMemberOfTheRoster(t *testing.T) {
 	// And the clearing house is a subscriber at the settlement agent, exactly as
 	// a member bank is: it uploads settlement instructions and collects the
 	// answers, and without a queue it would never hear one.
-	if !dep.CentralBank().host.Enrolled(ebics.SubscriberID(testConfig.ClearingHouseBIC)) {
+	if !dep.CentralBank().Host().Enrolled(ebics.SubscriberID(testConfig.ClearingHouseBIC)) {
 		t.Error("the clearing house has no download queue at the settlement agent")
 	}
 
@@ -110,13 +110,13 @@ func TestABankTheRosterDoesNotNameGetsAViewAndNoQueue(t *testing.T) {
 	if _, err := dep.member("NORDSESSXXX"); err != nil {
 		t.Errorf("the half-provisioned bank has no view of its own: %v", err)
 	}
-	if dep.ClearingHouse().host.Enrolled(ebics.SubscriberID("NORDSESSXXX")) {
+	if dep.ClearingHouse().Host().Enrolled(ebics.SubscriberID("NORDSESSXXX")) {
 		t.Error("a half-provisioned bank was given a download queue; the roster is what says who is a member")
 	}
 	// So a file addressed to it has nowhere to go, and the clearing house is the
 	// institution that says so — off the queues it holds, which are the routing
 	// table.
-	if _, err := dep.ClearingHouse().host.Enqueue(context.Background(), ebics.SubscriberID("NORDSESSXXX"), ebics.CCT, []byte("x")); err == nil {
+	if _, err := dep.ClearingHouse().Host().Enqueue(context.Background(), ebics.SubscriberID("NORDSESSXXX"), ebics.CCT, []byte("x")); err == nil {
 		t.Error("a file was addressed to a bank no scheme has admitted")
 	} else if ebics.CodeOf(err) != ebics.InvalidUserOrUserState {
 		t.Errorf("the refusal is %v, want the transport's one membership answer", err)
@@ -127,7 +127,7 @@ func TestABankTheRosterDoesNotNameGetsAViewAndNoQueue(t *testing.T) {
 	if err := dep.AddBank(ctx, nordhaven); err != nil {
 		t.Errorf("the half-provisioned bank cannot be given its place: %v", err)
 	}
-	if !dep.ClearingHouse().host.Enrolled(ebics.SubscriberID("NORDSESSXXX")) {
+	if !dep.ClearingHouse().Host().Enrolled(ebics.SubscriberID("NORDSESSXXX")) {
 		t.Error("AddBank did not enrol the bank it admitted")
 	}
 }

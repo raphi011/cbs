@@ -18,7 +18,7 @@ func (s *surface) registerClockRoutes(mux *api.Router) {
 
 // handleGetClock is what day this deployment is on.
 func (s *surface) handleGetClock(r *http.Request) (api.BusinessDateDTO, error) {
-	return s.inst.BusinessDate(), nil
+	return s.op.BusinessDate(), nil
 }
 
 // handleAdvanceDay runs one business day and moves the clock to the next.
@@ -26,7 +26,7 @@ func (s *surface) handleAdvanceDay(r *http.Request) (api.DayReportDTO, error) {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), dayTimeout)
 	defer cancel()
 
-	report, err := s.inst.AdvanceDay(ctx)
+	report, err := s.op.AdvanceDay(ctx)
 	if err != nil {
 		// The report comes back beside the error, because a day that failed at some
 		// phase still moved everything up to it.

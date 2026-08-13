@@ -1,4 +1,6 @@
-package main
+// Package bank is one member bank: its own book, its own address, the two
+// connections it dials out on, and everything it does with what it collects.
+package bank
 
 import (
 	"context"
@@ -12,13 +14,14 @@ import (
 	"github.com/raphi011/cbs/ebics"
 	"github.com/raphi011/cbs/iso20022"
 	"github.com/raphi011/cbs/ledger"
+	"github.com/raphi011/cbs/node"
 	"github.com/raphi011/cbs/payment"
 )
 
-// A Bank is one member bank: its own book, its own address, the two connections
-// it dials out on, and everything it does with what it collects.
+// A Bank is one member bank. It knows the environment it runs in and nothing
+// about the deployment that built it.
 type Bank struct {
-	d *Deployment
+	env node.Env
 
 	// net is this bank's whole view of the domain, and it has ONE caller:
 	// Network, which api/bank's surface reads every request through. Everything
@@ -27,7 +30,7 @@ type Bank struct {
 
 	// ops is the same network NARROWED. A bank that called SettleCycle through
 	// it does not compile; see ops.go for what that is worth and what it is not.
-	ops bankOps
+	ops ops
 
 	bic iso20022.BIC
 
@@ -43,16 +46,15 @@ type Bank struct {
 	hub   []payment.PaymentID
 }
 
+// New builds one member bank over its own network, with the two connections it
+// dials out on.
+func New(env node.Env, net *payment.BankNetwork, bic iso20022.BIC, csm, cb *ebics.Client) *Bank {
+	return &Bank{env: env, net: net, ops: net, bic: bic, csm: csm, cb: cb}
+}
+
 func (b *Bank) Network() *payment.BankNetwork { return b.net }
 func (b *Bank) BIC() iso20022.BIC             { return b.bic }
-func (b *Bank) Log() *slog.Logger             { return b.d.log }
-
-// Submit runs this bank's own half of a customer's instruction and puts it in
-// this bank's hub. Which bank's half that is belongs to the deployment, because
-// on a collection it is not this one; see Deployment.Submit.
-func (b *Bank) Submit(ctx context.Context, req payment.InitiatePaymentRequest) (payment.Payment, error) {
-	return b.d.Submit(ctx, req)
-}
+func (b *Bank) Log() *slog.Logger             { return b.env.Log }
 
 // Pending is what this bank's hub is holding: the instructions it has taken and
 // will put in its next file, oldest first.
@@ -66,26 +68,37 @@ func (b *Bank) Pending(ctx context.Context) ([]payment.Payment, error) {
 // Cutoff is this bank reaching its cut-off: everything waiting becomes one file
 // per scheme, uploaded to the clearing house, and the order ids come back.
 func (b *Bank) Cutoff(ctx context.Context) ([]ebics.OrderID, error) {
-	ids, problems := b.cutoff(ctx)
-	return ids, joinProblemDetails(problems)
+	ids, problems := b.RunCutoff(ctx)
+	return ids, node.JoinProblemDetails(problems)
 }
 
-// Lodge moves this bank's own vault cash onto its reserve at the central bank.
-// The acting bank is this one and is not an argument.
+// Lodge moves this bank's own vault cash onto its reserve at the central bank:
+// the asking half of a lodgement, and the file that asks. The acting bank is
+// this one and is not an argument.
 func (b *Bank) Lodge(ctx context.Context, asset ledger.AssetCode, amount ledger.Amount) (payment.LodgementInstruction, error) {
-	return b.lodge(ctx, asset, amount)
+	ctx = node.WithActor(ctx, b.bic)
+
+	to := b.env.CentralBankBIC
+	in, env, err := b.ops.LodgeReserves(ctx, asset, amount, b.env.MessageContext(b.bic, to))
+	if err != nil {
+		return payment.LodgementInstruction{}, err
+	}
+	if _, err := b.upload(ctx, to, b.cb, env); err != nil {
+		return in, fmt.Errorf("server: %s posted its lodgement %s and could not upload it: %w", b.bic, in.Ref, err)
+	}
+	return in, nil
 }
 
-// RefreshDirectory replaces this bank's copy of the scheme's routing directory
-// with the roster the clearing house publishes.
-func (b *Bank) RefreshDirectory(ctx context.Context) ([]payment.DirectoryEntry, error) {
-	return b.d.RefreshDirectory(ctx, b.bic)
+// TakeDirectory replaces this bank's copy of the scheme's routing directory
+// with the roster it has been handed.
+func (b *Bank) TakeDirectory(ctx context.Context, published []payment.RosterEntry) ([]payment.DirectoryEntry, error) {
+	return b.ops.RefreshDirectory(node.WithActor(ctx, b.bic), published)
 }
 
-// runEndOfDay is this bank's own end of day: overdraft interest accrued,
+// RunEndOfDay is this bank's own end of day: overdraft interest accrued,
 // facility interest accrued, arrears recomputed, in one unit of work.
-func (b *Bank) runEndOfDay(ctx context.Context, date time.Time) error {
-	ctx = withActor(ctx, b.bic)
+func (b *Bank) RunEndOfDay(ctx context.Context, date time.Time) error {
+	ctx = node.WithActor(ctx, b.bic)
 
 	p, err := b.ops.GetBank(ctx, payment.ParticipantID(b.bic))
 	if err != nil {
@@ -104,7 +117,7 @@ func (b *Bank) runEndOfDay(ctx context.Context, date time.Time) error {
 // upload marshals an envelope and puts it on one of this bank's two
 // connections.
 func (b *Bank) upload(ctx context.Context, to iso20022.BIC, c *ebics.Client, env iso20022.Envelope) (ebics.OrderID, error) {
-	t, err := orderTypeOf(env.Document)
+	t, err := node.OrderTypeOf(env.Document)
 	if err != nil {
 		return "", err
 	}
@@ -116,13 +129,13 @@ func (b *Bank) upload(ctx context.Context, to iso20022.BIC, c *ebics.Client, env
 	if err != nil {
 		return "", fmt.Errorf("server: %s could not upload a %s to %s: %w", b.bic, t, to, err)
 	}
-	b.d.journal.file(FileMoved{From: b.bic, To: to, OrderType: t, OrderID: id})
+	b.env.Journal.File(node.FileMoved{From: b.bic, To: to, OrderType: t, OrderID: id})
 	return id, nil
 }
 
-// submit is a bank taking its own customer's instruction into its hub.
-func (b *Bank) submit(ctx context.Context, req payment.InitiatePaymentRequest) (payment.Payment, error) {
-	ctx = withActor(ctx, b.bic)
+// Submit is a bank taking its own customer's instruction into its hub.
+func (b *Bank) Submit(ctx context.Context, req payment.InitiatePaymentRequest) (payment.Payment, error) {
+	ctx = node.WithActor(ctx, b.bic)
 
 	p, err := b.ops.TakeInstruction(ctx, req)
 	if err != nil {
@@ -156,8 +169,8 @@ func (b *Bank) requeue(ids []payment.PaymentID) {
 	b.hub = append(ids, b.hub...)
 }
 
-// clearHub throws away everything this bank has taken and not yet cut off.
-func (b *Bank) clearHub() {
+// ClearHub throws away everything this bank has taken and not yet cut off.
+func (b *Bank) ClearHub() {
 	b.hubMu.Lock()
 	defer b.hubMu.Unlock()
 	b.hub = nil
@@ -165,7 +178,7 @@ func (b *Bank) clearHub() {
 
 // pending reads the rows behind a list of queued ids, in the order they were taken.
 func (b *Bank) pending(ctx context.Context, ids []payment.PaymentID) ([]payment.Payment, error) {
-	ctx = withActor(ctx, b.bic)
+	ctx = node.WithActor(ctx, b.bic)
 
 	out := make([]payment.Payment, 0, len(ids))
 	for _, id := range ids {
@@ -178,10 +191,10 @@ func (b *Bank) pending(ctx context.Context, ids []payment.PaymentID) ([]payment.
 	return out, nil
 }
 
-// cutoff is this bank reaching its cut-off: the hub is emptied into one file
+// RunCutoff is this bank reaching its cut-off: the hub is emptied into one file
 // per batch, and each file is uploaded to the clearing house.
-func (b *Bank) cutoff(ctx context.Context) ([]ebics.OrderID, []Problem) {
-	ctx = withActor(ctx, b.bic)
+func (b *Bank) RunCutoff(ctx context.Context) ([]ebics.OrderID, []node.Problem) {
+	ctx = node.WithActor(ctx, b.bic)
 
 	ids := b.queued()
 	if len(ids) == 0 {
@@ -190,21 +203,21 @@ func (b *Bank) cutoff(ctx context.Context) ([]ebics.OrderID, []Problem) {
 	ps, err := b.pending(ctx, ids)
 	if err != nil {
 		b.requeue(ids)
-		return nil, []Problem{{Institution: b.bic, Detail: err.Error()}}
+		return nil, []node.Problem{{Institution: b.bic, Detail: err.Error()}}
 	}
 
-	to := b.d.cfg.ClearingHouseBIC
+	to := b.env.ClearingHouseBIC
 	var orders []ebics.OrderID
-	var problems []Problem
+	var problems []node.Problem
 	// kept accumulates across the files rather than going back one at a time, so
 	// two files that both failed return to the hub in the order this bank took
 	// their instructions. See requeue.
 	var kept []payment.PaymentID
 	for _, batch := range batched(ps) {
-		env, err := b.ops.InstructionMessage(ctx, batch, b.d.messageContext(b.bic, to))
+		env, err := b.ops.InstructionMessage(ctx, batch, b.env.MessageContext(b.bic, to))
 		if err != nil {
 			kept = append(kept, idsOf(batch)...)
-			problems = append(problems, Problem{
+			problems = append(problems, node.Problem{
 				Institution: b.bic,
 				Detail:      fmt.Sprintf("building the cut-off file for %s: %v", batch[0].Scheme, err),
 			})
@@ -213,7 +226,7 @@ func (b *Bank) cutoff(ctx context.Context) ([]ebics.OrderID, []Problem) {
 		id, err := b.upload(ctx, to, b.csm, env)
 		if err != nil {
 			kept = append(kept, idsOf(batch)...)
-			problems = append(problems, Problem{Institution: b.bic, Detail: err.Error()})
+			problems = append(problems, node.Problem{Institution: b.bic, Detail: err.Error()})
 			continue
 		}
 		orders = append(orders, id)
@@ -224,7 +237,7 @@ func (b *Bank) cutoff(ctx context.Context) ([]ebics.OrderID, []Problem) {
 
 // batched groups a hub's instructions into the files they will travel in: one
 // per scheme and settlement date, in the order the instructions were taken. See
-// cutoff for why those two.
+// RunCutoff for why those two.
 func batched(ps []payment.Payment) [][]payment.Payment {
 	type key struct {
 		scheme payment.SchemeID
@@ -254,10 +267,10 @@ func idsOf(ps []payment.Payment) []payment.PaymentID {
 	return out
 }
 
-// returnPayment is a bank sending a settled payment back: the R-transaction's
-// first hop.
-func (b *Bank) returnPayment(ctx context.Context, id payment.PaymentID, reason iso20022.ReturnReason, text string) error {
-	ctx = withActor(ctx, b.bic)
+// Return is a bank sending a settled payment back: the R-transaction's first
+// hop.
+func (b *Bank) Return(ctx context.Context, id payment.PaymentID, reason iso20022.ReturnReason, text string) error {
+	ctx = node.WithActor(ctx, b.bic)
 
 	p, err := b.ops.GetPayment(ctx, id)
 	if err != nil {
@@ -268,8 +281,8 @@ func (b *Bank) returnPayment(ctx context.Context, id payment.PaymentID, reason i
 			b.bic, p.ID, p.Status, payment.ErrInvalidStateTransition)
 	}
 
-	to := b.d.cfg.ClearingHouseBIC
-	env, err := b.ops.ReturnMessage(p, reason, text, b.d.messageContext(b.bic, to))
+	to := b.env.ClearingHouseBIC
+	env, err := b.ops.ReturnMessage(p, reason, text, b.env.MessageContext(b.bic, to))
 	if err != nil {
 		return fmt.Errorf("server: %s could not build the return of %s: %w", b.bic, p.ID, err)
 	}
@@ -295,43 +308,44 @@ func returnReasonOf(env iso20022.Envelope) string {
 	return payment.ReturnReason(doc.PmtRtr.TxInf[0].RtrRsnInf)
 }
 
-// lodge is a bank moving its own vault cash onto reserve: the asking half of a
-// lodgement, and the file that asks.
-func (b *Bank) lodge(ctx context.Context, asset ledger.AssetCode, amount ledger.Amount) (payment.LodgementInstruction, error) {
-	ctx = withActor(ctx, b.bic)
-
-	to := b.d.cfg.CentralBankBIC
-	in, env, err := b.ops.LodgeReserves(ctx, asset, amount, b.d.messageContext(b.bic, to))
-	if err != nil {
-		return payment.LodgementInstruction{}, err
-	}
-	if _, err := b.upload(ctx, to, b.cb, env); err != nil {
-		return in, fmt.Errorf("server: %s posted its lodgement %s and could not upload it: %w", b.bic, in.Ref, err)
-	}
-	return in, nil
-}
-
 // ---------------------------------------------------------------------------
 // Collecting
 // ---------------------------------------------------------------------------
 
-// collect downloads everything waiting for this bank at one host and works
-// through it, in the order the host queued it.
-func (b *Bank) collect(ctx context.Context, host iso20022.BIC, c *ebics.Client, t ebics.OrderType) []Problem {
-	ctx = withActor(ctx, b.bic)
+// Collect downloads everything waiting for this bank at one of the two hosts it
+// dials and works through it, in the order the host queued it.
+func (b *Bank) Collect(ctx context.Context, host iso20022.BIC, t ebics.OrderType) []node.Problem {
+	ctx = node.WithActor(ctx, b.bic)
 
+	c, err := b.dial(host)
+	if err != nil {
+		return []node.Problem{{Institution: b.bic, Detail: err.Error()}}
+	}
 	files, err := c.Download(ctx, t)
 	if err != nil {
-		return []Problem{{Institution: b.bic, Detail: fmt.Sprintf("collecting %s from %s: %v", t, host, err)}}
+		return []node.Problem{{Institution: b.bic, Detail: fmt.Sprintf("collecting %s from %s: %v", t, host, err)}}
 	}
 
-	var problems []Problem
+	var problems []node.Problem
 	for _, f := range files {
 		if err := b.handle(ctx, host, f); err != nil {
-			problems = append(problems, Problem{Institution: b.bic, OrderID: f.OrderID, Detail: err.Error()})
+			problems = append(problems, node.Problem{Institution: b.bic, OrderID: f.OrderID, Detail: err.Error()})
 		}
 	}
 	return problems
+}
+
+// dial is this bank's connection to one of the two hosts, and the whole of its
+// address book: an address it has no connection to is not somewhere it can go.
+func (b *Bank) dial(host iso20022.BIC) (*ebics.Client, error) {
+	switch host {
+	case b.env.ClearingHouseBIC:
+		return b.csm, nil
+	case b.env.CentralBankBIC:
+		return b.cb, nil
+	default:
+		return nil, fmt.Errorf("server: %s dials the clearing house and the settlement agent, and %s is neither", b.bic, host)
+	}
 }
 
 // handle works through one collected file.
@@ -359,14 +373,14 @@ func (b *Bank) handle(ctx context.Context, host iso20022.BIC, f ebics.File) erro
 }
 
 // answerUnreadable tells the clearing house that a file it queued for this bank
-// could not be parsed. See unreadable, and collect's doc for the one host this
-// bank cannot answer.
+// could not be parsed. See node.Unreadable, and Collect's doc for the one host
+// this bank cannot answer.
 func (b *Bank) answerUnreadable(ctx context.Context, host iso20022.BIC, cause error) error {
-	if host != b.d.cfg.ClearingHouseBIC {
+	if host != b.env.ClearingHouseBIC {
 		return fmt.Errorf("server: %s collected %d unreadable bytes from %s and has no connection to answer on: %w",
 			b.bic, 0, host, cause)
 	}
-	env, err := unreadable(b.d.messageContext(b.bic, host), cause)
+	env, err := node.Unreadable(b.env.MessageContext(b.bic, host), cause)
 	if err != nil {
 		return errors.Join(fmt.Errorf("server: %s could not build the FF01 for %s: %w", b.bic, host, err), cause)
 	}
@@ -433,14 +447,14 @@ func (b *Bank) sendBack(ctx context.Context, in payment.InboundTransaction, caus
 		return fmt.Errorf("server: %s cannot apply %s and cannot record holding it: %w",
 			b.bic, in.ID, errors.Join(cause, err))
 	}
-	b.d.journal.outcome(TransactionOutcome{
+	b.env.Journal.Outcome(node.TransactionOutcome{
 		DecidedBy: b.bic,
 		Payment:   in.ID,
 		Status:    iso20022.TransactionStatusSettlementCompleted,
 		Code:      payment.ReasonFor(cause),
 		Text:      cause.Error(),
 	})
-	if err := b.returnPayment(ctx, in.ID, payment.ReturnReasonFor(cause), cause.Error()); err != nil {
+	if err := b.Return(ctx, in.ID, payment.ReturnReasonFor(cause), cause.Error()); err != nil {
 		return fmt.Errorf("server: %s cannot apply %s and cannot send it back: %w",
 			b.bic, in.ID, errors.Join(cause, err))
 	}
@@ -449,7 +463,7 @@ func (b *Bank) sendBack(ctx context.Context, in payment.InboundTransaction, caus
 
 // receiveStatus is a bank learning what became of a payment it is party to.
 func (b *Bank) receiveStatus(ctx context.Context, doc *iso20022.Pacs002) error {
-	if isAbout(doc, returnMsgDef) {
+	if node.IsAbout(doc, node.ReturnMsgDef) {
 		return b.receiveReturnStatus(ctx, doc)
 	}
 	_, reports := payment.ReadStatus(doc)
@@ -519,7 +533,7 @@ func (b *Bank) receiveReturnStatus(ctx context.Context, doc *iso20022.Pacs002) e
 			}
 			continue
 		}
-		b.d.log.Error("server: return refused",
+		b.env.Log.Error("server: return refused",
 			"bank", b.bic, "payment", r.TxID, "code", r.Code, "reason", r.Text)
 		if err := b.ops.ReverseReturnLeg(ctx, payment.PaymentID(r.TxID), rejectionText(r)); err != nil {
 			return fmt.Errorf("server: %s could not unwind its leg of the refused return of %s: %w", b.bic, r.TxID, err)
@@ -553,11 +567,11 @@ func (b *Bank) receiveLodgementReceipt(from iso20022.BIC, doc *iso20022.Camt025)
 		return fmt.Errorf("server: %s could not read the lodgement receipt %s sent it: %w", b.bic, from, err)
 	}
 	if r.Accepted() {
-		b.d.log.Info("server: lodgement accepted",
+		b.env.Log.Info("server: lodgement accepted",
 			"bank", b.bic, "from", from, "lodgement", r.Ref)
 		return nil
 	}
-	b.d.log.Error("server: lodgement refused, and this bank's reserve mirror is now overstated",
+	b.env.Log.Error("server: lodgement refused, and this bank's reserve mirror is now overstated",
 		"bank", b.bic, "from", from, "lodgement", r.Ref, "reason", r.Reason,
 		"note", "LodgeReservesTx's guard is meant to make this unreachable; see Bank.receiveLodgementReceipt")
 	return nil

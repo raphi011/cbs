@@ -12,6 +12,7 @@ import (
 	cbapi "github.com/raphi011/cbs/api/centralbank"
 	csmapi "github.com/raphi011/cbs/api/csm"
 	"github.com/raphi011/cbs/iso20022"
+	"github.com/raphi011/cbs/node/bank"
 
 	"github.com/raphi011/cbs/payment"
 )
@@ -34,9 +35,9 @@ func surfaces(t *testing.T) map[string][]string {
 	t.Helper()
 	s := newServer(t, nil)
 	return map[string][]string{
-		"central-bank":   cbapi.Routes(s.dep.CentralBank()).Patterns(),
-		"clearing-house": csmapi.Routes(s.dep.ClearingHouse()).Patterns(),
-		"bank":           bankapi.Routes(mustForBank(t, s, testBankBIC)).Patterns(),
+		"central-bank":   cbapi.Routes(s.dep.CentralBank(), operator{s.dep}).Patterns(),
+		"clearing-house": csmapi.Routes(s.dep.ClearingHouse(), operator{s.dep}).Patterns(),
+		"bank":           bankapi.Routes(bankConsole{mustForBank(t, s, testBankBIC), s.dep}).Patterns(),
 	}
 }
 
@@ -589,7 +590,7 @@ const testBankBIC payment.ParticipantID = "BNKADEFFXXX"
 
 // mustForBank binds one bank out of the deployment, failing the test if its
 // database will not open. See Deployment.Bank.
-func mustForBank(t *testing.T, s *server, pid payment.ParticipantID) *Bank {
+func mustForBank(t *testing.T, s *server, pid payment.ParticipantID) *bank.Bank {
 	t.Helper()
 	b, err := s.dep.Bank(context.Background(), pid)
 	if err != nil {

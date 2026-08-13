@@ -25,6 +25,7 @@ import (
 	"github.com/raphi011/cbs/iso20022"
 	"github.com/raphi011/cbs/ledger"
 	"github.com/raphi011/cbs/lending"
+	"github.com/raphi011/cbs/node"
 	"github.com/raphi011/cbs/payment"
 	"github.com/raphi011/cbs/product"
 	"github.com/raphi011/cbs/store/sqlite"
@@ -187,7 +188,7 @@ func (n bookNoter) note(book ledger.BookID) { n.store.note(n.actor, n.unit, book
 // opened with. A unit of work opened by nobody in particular has no actor, and
 // its books still land in the whole-store set and in its own unit.
 func (s *recordingStores) noterFor(ctx context.Context, unit map[ledger.BookID]bool) bookNoter {
-	who, _ := actorOf(ctx)
+	who, _ := node.ActorOf(ctx)
 	return bookNoter{store: s, actor: who, unit: unit}
 }
 

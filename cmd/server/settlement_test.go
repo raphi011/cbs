@@ -11,6 +11,7 @@ import (
 	"github.com/raphi011/cbs/ebics"
 	"github.com/raphi011/cbs/iso20022"
 	"github.com/raphi011/cbs/ledger"
+	"github.com/raphi011/cbs/node/csm"
 	"github.com/raphi011/cbs/payment"
 	"github.com/raphi011/cbs/payment/recon"
 )
@@ -724,7 +725,7 @@ func TestACutOffThatCouldNotBeReleasedIsRefusedBeforeTheReservesMove(t *testing.
 	if target.ID == "" {
 		t.Fatal("the seeded dataset holds no open cycle with payments in it; this test has nothing to lose the shares of")
 	}
-	files, err := csm.ops.ListHeldFiles(ctx, target.ID)
+	files, err := csm.Network().ListHeldFiles(ctx, target.ID)
 	if err != nil {
 		t.Fatalf("ListHeldFiles: %v", err)
 	}
@@ -818,7 +819,7 @@ func TestACutOffThatNetsToNothingAndCannotBeReleasedIsRefusedToo(t *testing.T) {
 
 	// The state this is about: the payments are in the cut-off and the shares
 	// behind them are not. See the test above for what reaches it.
-	files, err := csm.ops.ListHeldFiles(ctx, target.ID)
+	files, err := csm.Network().ListHeldFiles(ctx, target.ID)
 	if err != nil {
 		t.Fatalf("ListHeldFiles: %v", err)
 	}
@@ -878,16 +879,16 @@ func TestAShareThatCouldNotBeHandedOverIsStillHeld(t *testing.T) {
 	// The payee's bank loses its enrolment between the cut-off and the release,
 	// so the share standing for it has nowhere to go. Enrolment is what creates a
 	// queue, which is why this is the failure a receiving bank can really have.
-	csm.host.Reset()
+	csm.Host().Reset()
 	for _, bic := range []iso20022.BIC{h.debtorBIC, third.BIC} {
-		csm.host.Enrol(ebics.SubscriberID(bic))
+		csm.Host().Enrol(ebics.SubscriberID(bic))
 	}
 
 	if err := h.workErr(t); err == nil {
 		t.Fatal("the release reported nothing; a share it could not hand over is a fault the day has to carry")
 	}
 
-	files, err := csm.ops.ListHeldFiles(ctx, target.ID)
+	files, err := csm.Network().ListHeldFiles(ctx, target.ID)
 	if err != nil {
 		t.Fatalf("ListHeldFiles: %v", err)
 	}
@@ -908,15 +909,15 @@ func TestAShareThatCouldNotBeHandedOverIsStillHeld(t *testing.T) {
 // dropEveryShare composes the state a process ending between accepting a file's
 // transactions into a cycle and recording the shares behind them would leave: a
 // cut-off holding payments no output file stands for.
-func dropEveryShare(t *testing.T, c *ClearingHouse, id payment.CycleID) {
+func dropEveryShare(t *testing.T, c *csm.ClearingHouse, id payment.CycleID) {
 	t.Helper()
 	ctx := context.Background()
-	files, err := c.ops.ListHeldFiles(ctx, id)
+	files, err := c.Network().ListHeldFiles(ctx, id)
 	if err != nil {
 		t.Fatalf("ListHeldFiles: %v", err)
 	}
 	for _, f := range files {
-		if err := c.ops.DropHeldFile(ctx, id, f.Seq); err != nil {
+		if err := c.Network().DropHeldFile(ctx, id, f.Seq); err != nil {
 			t.Fatalf("DropHeldFile %s/%d: %v", id, f.Seq, err)
 		}
 	}

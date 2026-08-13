@@ -8,8 +8,8 @@ import (
 
 // Routes is the settlement layer's surface: reserves, its own audit, the
 // deployment's bank list, and the reset that rebuilds the sample dataset.
-func Routes(inst Institution) *api.Router {
-	s := &surface{inst: inst}
+func Routes(inst Institution, op Operator) *api.Router {
+	s := &surface{inst: inst, op: op}
 	mux := api.NewRouter()
 	mux.HandleFunc("GET /reserves", api.Handle(http.StatusOK, s.handleListReserves))
 	mux.HandleFunc("GET /reserves/{bic}", api.Handle(http.StatusOK, s.handleGetReserve))

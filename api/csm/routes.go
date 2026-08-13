@@ -8,8 +8,8 @@ import (
 
 // Routes is the CSM's surface: every payment in the network, the clearing
 // cycles, the schemes and the routing directory.
-func Routes(inst Institution) *api.Router {
-	s := &surface{inst: inst}
+func Routes(inst Institution, op Operator) *api.Router {
+	s := &surface{inst: inst, op: op}
 	mux := api.NewRouter()
 	// GET /members is not here.
 	mux.HandleFunc("GET /schemes", api.Handle(http.StatusOK, s.handleListSchemes))

@@ -132,7 +132,7 @@ func TestACutOffSettledAfterARestartStillReachesEveryReceivingBank(t *testing.T)
 	// The clearing house's own answer, before any of it is driven: it is still
 	// holding a share for every payment in every cut-off it closed.
 	for _, id := range closed {
-		files, err := r.dep.ClearingHouse().ops.ListHeldFiles(ctx, id)
+		files, err := r.dep.ClearingHouse().Network().ListHeldFiles(ctx, id)
 		if err != nil {
 			t.Fatalf("ListHeldFiles %s: %v", id, err)
 		}
@@ -143,7 +143,7 @@ func TestACutOffSettledAfterARestartStillReachesEveryReceivingBank(t *testing.T)
 	// And the settlement agent is still holding the instruction, which is the half
 	// no guard could have covered: nothing refuses a batch whose instruction has
 	// simply vanished, because no institution is waiting for anything.
-	pending, err := r.dep.CentralBank().host.Pending(ctx)
+	pending, err := r.dep.CentralBank().Host().Pending(ctx)
 	if err != nil {
 		t.Fatalf("reading the settlement agent's work list: %v", err)
 	}
@@ -220,7 +220,7 @@ func (r *restartable) queuedForTheMembers(t *testing.T) int {
 	var n int
 	err := r.set.ClearingHouseEBICS().View(ctx, func(ctx context.Context, tx ebics.Tx) error {
 		for _, b := range r.dep.banksInOrder() {
-			files, err := tx.ListQueuedFiles(ctx, ebics.SubscriberID(b.bic))
+			files, err := tx.ListQueuedFiles(ctx, ebics.SubscriberID(b.BIC()))
 			if err != nil {
 				return err
 			}

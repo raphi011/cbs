@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -10,8 +9,7 @@ import (
 	"github.com/raphi011/cbs/api"
 	"github.com/raphi011/cbs/calendar"
 	"github.com/raphi011/cbs/ebics"
-	"github.com/raphi011/cbs/iso20022"
-	"github.com/raphi011/cbs/payment"
+	"github.com/raphi011/cbs/node"
 )
 
 // A BusinessDate is the day this deployment stands on and whether anything
@@ -41,63 +39,29 @@ func (d *Deployment) BusinessDate() BusinessDate { return businessDateOf(d.clock
 // The journal, and the report it becomes
 // ---------------------------------------------------------------------------
 
-// FileMoved is one file that left one institution for another: put on a
-// connection, or put in a subscriber's download queue.
-type FileMoved struct {
-	From      iso20022.BIC
-	To        iso20022.BIC
-	OrderType ebics.OrderType
-	OrderID   ebics.OrderID
-}
-
-// TransactionOutcome is one institution's decision about one payment: what it
-// said, and what it said it in.
-type TransactionOutcome struct {
-	DecidedBy iso20022.BIC
-	Payment   payment.PaymentID
-	Status    iso20022.TransactionStatus
-	Code      iso20022.StatusReason
-	Text      string
-}
-
-// Problem is a file an institution could not process.
-type Problem struct {
-	Institution iso20022.BIC
-	OrderID     ebics.OrderID
-	Detail      string
-}
-
-// joinProblemDetails renders a set of problems as one error, for the doors that
-// reach a phase of the day out of turn and have a caller to tell.
-func joinProblemDetails(ps []Problem) error {
-	var errs []error
-	for _, p := range ps {
-		errs = append(errs, errors.New(p.Detail))
-	}
-	return errors.Join(errs...)
-}
-
-// journal accumulates what this deployment has done since the last advance.
+// journal accumulates what this deployment has done since the last advance. It
+// is the node.Journal every institution is handed, and the three slices are
+// what a day report is made of.
 type journal struct {
 	mu       sync.Mutex
-	files    []FileMoved
-	outcomes []TransactionOutcome
-	problems []Problem
+	files    []node.FileMoved
+	outcomes []node.TransactionOutcome
+	problems []node.Problem
 }
 
-func (j *journal) file(f FileMoved) {
+func (j *journal) File(f node.FileMoved) {
 	j.mu.Lock()
 	defer j.mu.Unlock()
 	j.files = append(j.files, f)
 }
 
-func (j *journal) outcome(o TransactionOutcome) {
+func (j *journal) Outcome(o node.TransactionOutcome) {
 	j.mu.Lock()
 	defer j.mu.Unlock()
 	j.outcomes = append(j.outcomes, o)
 }
 
-func (j *journal) problem(ps ...Problem) {
+func (j *journal) problem(ps ...node.Problem) {
 	if len(ps) == 0 {
 		return
 	}
@@ -107,7 +71,7 @@ func (j *journal) problem(ps ...Problem) {
 }
 
 // take empties the journal and hands back everything in it.
-func (j *journal) take() ([]FileMoved, []TransactionOutcome, []Problem) {
+func (j *journal) take() ([]node.FileMoved, []node.TransactionOutcome, []node.Problem) {
 	j.mu.Lock()
 	defer j.mu.Unlock()
 
@@ -123,9 +87,9 @@ type DayReport struct {
 	Ran  BusinessDate
 	Next BusinessDate
 
-	Files    []FileMoved
-	Outcomes []TransactionOutcome
-	Problems []Problem
+	Files    []node.FileMoved
+	Outcomes []node.TransactionOutcome
+	Problems []node.Problem
 }
 
 // toBusinessDateDTO and toDayReportDTO render the deployment's own values onto
@@ -201,7 +165,7 @@ type phase struct {
 	// on. It is read by AdvanceDay alone: a derived sequence names the phases it
 	// wants outright, its caller having already decided that it wants them.
 	settlementOnly bool
-	run            func(ctx context.Context, d *Deployment) []Problem
+	run            func(ctx context.Context, d *Deployment) []node.Problem
 }
 
 // beforeClock is the business day, in the order it runs, up to the clock move.
@@ -211,11 +175,11 @@ var beforeClock = []phase{
 		// Every member takes the published roster. It is the FIRST thing, so a bank
 		// admitted since the last advance can be addressed by its neighbours today
 		// rather than after somebody remembers to call the route.
-		run: func(ctx context.Context, d *Deployment) []Problem {
-			var ps []Problem
+		run: func(ctx context.Context, d *Deployment) []node.Problem {
+			var ps []node.Problem
 			for _, b := range d.banksInOrder() {
-				if _, err := b.RefreshDirectory(ctx); err != nil {
-					ps = append(ps, Problem{Institution: b.bic, Detail: err.Error()})
+				if _, err := d.RefreshDirectory(ctx, b.BIC()); err != nil {
+					ps = append(ps, node.Problem{Institution: b.BIC(), Detail: err.Error()})
 				}
 			}
 			return ps
@@ -225,10 +189,10 @@ var beforeClock = []phase{
 		id: phaseBankCutoff, name: "bank cut-off", settlementOnly: true,
 		// Every member reaches its own cut-off: the morning's instructions leave each
 		// bank's hub as one file per scheme, uploaded to the clearing house.
-		run: func(ctx context.Context, d *Deployment) []Problem {
-			var ps []Problem
+		run: func(ctx context.Context, d *Deployment) []node.Problem {
+			var ps []node.Problem
 			for _, b := range d.subscribers() {
-				_, problems := b.cutoff(ctx)
+				_, problems := b.RunCutoff(ctx)
 				ps = append(ps, problems...)
 			}
 			return ps
@@ -240,25 +204,25 @@ var beforeClock = []phase{
 		// recorded, each transaction validated and taken into the open cycle for its
 		// scheme, each submitting bank answered per transaction — and each receiving
 		// bank's share of the file BUILT AND HELD.
-		run: func(ctx context.Context, d *Deployment) []Problem { return d.csm.work(ctx) },
+		run: func(ctx context.Context, d *Deployment) []node.Problem { return d.csm.Work(ctx) },
 	},
 	{
 		id: phaseClearingHouseCutoff, name: "clearing-house cut-off", settlementOnly: true,
 		// The clearing house's own cut-off: every open cycle is netted and its
 		// positions uploaded to the settlement agent.
-		run: func(ctx context.Context, d *Deployment) []Problem { return d.csm.closeOpenCycles(ctx) },
+		run: func(ctx context.Context, d *Deployment) []node.Problem { return d.csm.CloseOpenCycles(ctx) },
 	},
 	{
 		id: phaseDischarge, name: "discharge", settlementOnly: true,
 		// And the cut-offs that instructed nothing are discharged where they stand.
-		run: func(ctx context.Context, d *Deployment) []Problem { return d.csm.settleUninstructed(ctx) },
+		run: func(ctx context.Context, d *Deployment) []node.Problem { return d.csm.SettleUninstructed(ctx) },
 	},
 	{
 		id: phaseSettlement, name: "settlement", settlementOnly: true,
 		// The settlement agent works through everything uploaded to it: cut-offs
 		// discharged, returns executed, lodgements credited. This is the only
 		// phase in which central-bank reserves move.
-		run: func(ctx context.Context, d *Deployment) []Problem { return d.cb.work(ctx) },
+		run: func(ctx context.Context, d *Deployment) []node.Problem { return d.cb.Work(ctx) },
 	},
 	{
 		id: phaseRelease, name: "release", settlementOnly: true,
@@ -266,19 +230,19 @@ var beforeClock = []phase{
 		// becomes the output files its receiving banks have been waiting for and an
 		// ACSC apiece for the banks that submitted, and each settled RETURN becomes
 		// the pacs.004 the other bank has been waiting for.
-		run: func(ctx context.Context, d *Deployment) []Problem { return d.csm.collect(ctx) },
+		run: func(ctx context.Context, d *Deployment) []node.Problem { return d.csm.Collect(ctx) },
 	},
 	{
 		id: phaseCollection, name: "collection", settlementOnly: true,
 		// Each member collects, THE SETTLEMENT AGENT FIRST. The order is load-bearing
 		// and is the only thing that guarantees the mirror leg is booked before the
 		// creditor legs draw on it — see CentralBank.advise, which argues it.
-		run: func(ctx context.Context, d *Deployment) []Problem {
-			var ps []Problem
+		run: func(ctx context.Context, d *Deployment) []node.Problem {
+			var ps []node.Problem
 			for _, b := range d.subscribers() {
-				ps = append(ps, b.collect(ctx, d.cfg.CentralBankBIC, b.cb, ebics.C53)...)
-				ps = append(ps, b.collect(ctx, d.cfg.CentralBankBIC, b.cb, ebics.BTD)...)
-				ps = append(ps, b.collect(ctx, d.cfg.ClearingHouseBIC, b.csm, ebics.BTD)...)
+				ps = append(ps, b.Collect(ctx, d.cfg.CentralBankBIC, ebics.C53)...)
+				ps = append(ps, b.Collect(ctx, d.cfg.CentralBankBIC, ebics.BTD)...)
+				ps = append(ps, b.Collect(ctx, d.cfg.ClearingHouseBIC, ebics.BTD)...)
 			}
 			return ps
 		},
@@ -288,11 +252,11 @@ var beforeClock = []phase{
 		// Every bank's own end of day, on EVERY date and not only a settlement day:
 		// interest accrues over a weekend, which is the entire reason day-count
 		// conventions exist.
-		run: func(ctx context.Context, d *Deployment) []Problem {
-			var ps []Problem
+		run: func(ctx context.Context, d *Deployment) []node.Problem {
+			var ps []node.Problem
 			for _, b := range d.banksInOrder() {
-				if err := b.runEndOfDay(ctx, d.clock.Now()); err != nil {
-					ps = append(ps, Problem{Institution: b.bic, Detail: err.Error()})
+				if err := b.RunEndOfDay(ctx, d.clock.Now()); err != nil {
+					ps = append(ps, node.Problem{Institution: b.BIC(), Detail: err.Error()})
 				}
 			}
 			return ps
@@ -306,7 +270,7 @@ var afterClock = []phase{
 		id: phaseOpenCycles, name: "open cycles",
 		// On a day that cleared, the cut-off left none open; on a day that did not,
 		// the ones standing are still open and this is a no-op.
-		run: func(ctx context.Context, d *Deployment) []Problem { return d.csm.openCycles(ctx) },
+		run: func(ctx context.Context, d *Deployment) []node.Problem { return d.csm.OpenCycles(ctx) },
 	},
 }
 
@@ -315,10 +279,10 @@ var afterClock = []phase{
 // phase the day does not declare.
 var collectClearingHouseOnly = phase{
 	id: phaseCollectClearingHouse, name: "collection · clearing house BTD", settlementOnly: true,
-	run: func(ctx context.Context, d *Deployment) []Problem {
-		var ps []Problem
+	run: func(ctx context.Context, d *Deployment) []node.Problem {
+		var ps []node.Problem
 		for _, b := range d.subscribers() {
-			ps = append(ps, b.collect(ctx, d.cfg.ClearingHouseBIC, b.csm, ebics.BTD)...)
+			ps = append(ps, b.Collect(ctx, d.cfg.ClearingHouseBIC, ebics.BTD)...)
 		}
 		return ps
 	},
@@ -358,8 +322,8 @@ func onSettlementDay(list []phase, settles bool) []phase {
 }
 
 // runPhases runs a sequence and hands back everything it could not do.
-func runPhases(ctx context.Context, d *Deployment, list []phase) []Problem {
-	var ps []Problem
+func runPhases(ctx context.Context, d *Deployment, list []phase) []node.Problem {
+	var ps []node.Problem
 	for _, p := range list {
 		ps = append(ps, p.run(ctx, d)...)
 	}
@@ -411,5 +375,5 @@ func (d *Deployment) AdvanceDay(ctx context.Context) (DayReport, error) {
 func (d *Deployment) CarryToClearing(ctx context.Context) error {
 	problems := runPhases(ctx, d, carryToClearingPhases)
 	d.journal.take()
-	return joinProblemDetails(problems)
+	return node.JoinProblemDetails(problems)
 }

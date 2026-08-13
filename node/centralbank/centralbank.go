@@ -1,4 +1,6 @@
-package main
+// Package centralbank is the settlement agent: the only institution that moves
+// reserves, and the EBICS host the clearing house and every member bank dial.
+package centralbank
 
 import (
 	"context"
@@ -7,24 +9,23 @@ import (
 	"log/slog"
 	"net/http"
 
-	"github.com/raphi011/cbs/api"
 	"github.com/raphi011/cbs/ebics"
 	"github.com/raphi011/cbs/iso20022"
 	"github.com/raphi011/cbs/ledger"
+	"github.com/raphi011/cbs/node"
 	"github.com/raphi011/cbs/payment"
 )
 
-// A CentralBank is the settlement agent: the third institution, the only one
-// that moves reserves, and the EBICS host the clearing house and every member
-// bank dial.
+// A CentralBank is the settlement agent. It knows the environment it runs in
+// and nothing about the deployment that built it.
 type CentralBank struct {
-	d *Deployment
+	env node.Env
 
 	// net is this institution's whole view, and it has ONE caller: Network,
 	// which api/centralbank's surface reads every request through. Everything
 	// else here goes through ops.
 	net *payment.CentralBankNetwork
-	ops settlementOps
+	ops ops
 
 	bic iso20022.BIC
 
@@ -33,63 +34,33 @@ type CentralBank struct {
 	host *ebics.Server
 }
 
+// New builds the settlement agent over its own network, with the host its
+// subscribers dial.
+func New(env node.Env, net *payment.CentralBankNetwork, bic iso20022.BIC, host *ebics.Server) *CentralBank {
+	return &CentralBank{env: env, net: net, ops: net, bic: bic, host: host}
+}
+
 func (c *CentralBank) Network() *payment.CentralBankNetwork { return c.net }
-func (c *CentralBank) Log() *slog.Logger                    { return c.d.log }
+func (c *CentralBank) BIC() iso20022.BIC                    { return c.bic }
+func (c *CentralBank) Log() *slog.Logger                    { return c.env.Log }
 
 // EBICS is this institution's file-transfer endpoint, mounted on its own
 // listener. See ebics.Server.ServeHTTP.
 func (c *CentralBank) EBICS() http.Handler { return c.host }
 
-// Reset is the deployment's, served here because this is where the operator's
-// console is. See Deployment.Reset.
-func (c *CentralBank) Reset(ctx context.Context) error { return c.d.Reset(ctx) }
-
-// AdvanceDay is the deployment's too, and for the same reason: a business day
-// drives all N+2, and a deployment is not an institution. See
-// Deployment.AdvanceDay.
-func (c *CentralBank) AdvanceDay(ctx context.Context) (api.DayReportDTO, error) {
-	report, err := c.d.AdvanceDay(ctx)
-	return toDayReportDTO(report), err
-}
-
-// BusinessDate is what day this deployment is on, and why it is or is not a
-// settlement day. See Deployment.BusinessDate.
-func (c *CentralBank) BusinessDate() api.BusinessDateDTO {
-	return toBusinessDateDTO(c.d.BusinessDate())
-}
-
-// Members answers every bank this deployment holds a database for, each read
-// out of its own database, ascending by address.
-func (c *CentralBank) Members(ctx context.Context) ([]*payment.Bank, error) {
-	bics, err := c.d.nets.Stores().Banks(ctx)
-	if err != nil {
-		return nil, err
-	}
-	out := make([]*payment.Bank, 0, len(bics))
-	for _, bic := range bics {
-		id := payment.ParticipantID(bic)
-		net, err := c.d.nets.Bank(ctx, id)
-		if err != nil {
-			return nil, err
-		}
-		p, err := net.GetBank(ctx, id)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, p)
-	}
-	return out, nil
-}
+// Host is the transport state itself: who is enrolled, what is queued for each
+// of them, and what each has uploaded.
+func (c *CentralBank) Host() *ebics.Server { return c.host }
 
 // ---------------------------------------------------------------------------
 // Queueing, and working through what has arrived
 // ---------------------------------------------------------------------------
 
 // enqueue addresses one document to one subscriber by putting it in that
-// subscriber's download queue. See ClearingHouse.enqueue, which is the same act
-// one institution over.
+// subscriber's download queue. See csm.ClearingHouse.enqueue, which is the same
+// act one institution over.
 func (c *CentralBank) enqueue(ctx context.Context, to iso20022.BIC, env iso20022.Envelope) error {
-	t, err := orderTypeOf(env.Document)
+	t, err := node.OrderTypeOf(env.Document)
 	if err != nil {
 		return err
 	}
@@ -101,29 +72,29 @@ func (c *CentralBank) enqueue(ctx context.Context, to iso20022.BIC, env iso20022
 	if err != nil {
 		return fmt.Errorf("server: %s cannot address a %s to %s: %w", c.bic, t, to, err)
 	}
-	c.d.journal.file(FileMoved{From: c.bic, To: to, OrderType: t, OrderID: id})
+	c.env.Journal.File(node.FileMoved{From: c.bic, To: to, OrderType: t, OrderID: id})
 	return nil
 }
 
-// work runs this institution through the orders uploaded to it and not yet
-// answered, oldest first. See ClearingHouse.work, which has the same shape and
-// the same reason for answering every order on its acknowledgement.
-func (c *CentralBank) work(ctx context.Context) []Problem {
-	ctx = withActor(ctx, c.bic)
+// Work runs this institution through the orders uploaded to it and not yet
+// answered, oldest first. See csm.ClearingHouse.Work, which has the same shape
+// and the same reason for answering every order on its acknowledgement.
+func (c *CentralBank) Work(ctx context.Context) []node.Problem {
+	ctx = node.WithActor(ctx, c.bic)
 
 	pending, err := c.host.Pending(ctx)
 	if err != nil {
-		return []Problem{{Institution: c.bic, Detail: fmt.Sprintf("reading the orders waiting to be worked through: %v", err)}}
+		return []node.Problem{{Institution: c.bic, Detail: fmt.Sprintf("reading the orders waiting to be worked through: %v", err)}}
 	}
-	var problems []Problem
+	var problems []node.Problem
 	for _, order := range pending {
 		answer, detail := c.host.Processed, ""
 		if err := c.handle(ctx, iso20022.BIC(order.Subscriber), order.Payload); err != nil {
-			problems = append(problems, Problem{Institution: c.bic, OrderID: order.ID, Detail: err.Error()})
+			problems = append(problems, node.Problem{Institution: c.bic, OrderID: order.ID, Detail: err.Error()})
 			answer, detail = c.host.Rejected, err.Error()
 		}
 		if err := answer(ctx, order.ID, detail); err != nil {
-			problems = append(problems, Problem{Institution: c.bic, OrderID: order.ID,
+			problems = append(problems, node.Problem{Institution: c.bic, OrderID: order.ID,
 				Detail: fmt.Sprintf("recording what became of this order: %v", err)})
 		}
 	}
@@ -149,9 +120,9 @@ func (c *CentralBank) handle(ctx context.Context, from iso20022.BIC, raw []byte)
 }
 
 // answerUnreadable queues an FF01 for the subscriber whose file would not parse.
-// See unreadable.
+// See node.Unreadable.
 func (c *CentralBank) answerUnreadable(ctx context.Context, from iso20022.BIC, cause error) error {
-	env, err := unreadable(c.d.messageContext(c.bic, from), cause)
+	env, err := node.Unreadable(c.env.MessageContext(c.bic, from), cause)
 	if err != nil {
 		return errors.Join(fmt.Errorf("server: %s could not build the FF01 for %s: %w", c.bic, from, err), cause)
 	}
@@ -171,11 +142,11 @@ func (c *CentralBank) receiveSettlement(from iso20022.BIC, hdr iso20022.AppHdr, 
 	legs, err := payment.ReadSettlement(doc)
 	if err != nil {
 		// A count that does not match what arrived.
-		return c.answer(ctx, from, orig, notProvided, notProvided, iso20022.TransactionStatusRejected, err)
+		return c.answer(ctx, from, orig, node.NotProvided, node.NotProvided, iso20022.TransactionStatusRejected, err)
 	}
 	id, err := cycleOf(legs)
 	if err != nil {
-		return c.answer(ctx, from, orig, notProvided, notProvided, iso20022.TransactionStatusRejected, err)
+		return c.answer(ctx, from, orig, node.NotProvided, node.NotProvided, iso20022.TransactionStatusRejected, err)
 	}
 
 	// The legs travel on, because they ARE the instruction: this institution
@@ -197,7 +168,7 @@ func (c *CentralBank) receiveSettlement(from iso20022.BIC, hdr iso20022.AppHdr, 
 // advise puts each member's own reserve statement in that member's queue.
 func (c *CentralBank) advise(ctx context.Context, statements []payment.SettlementStatement) error {
 	for _, st := range statements {
-		env, err := payment.StatementMessage(st, c.d.messageContext(c.bic, st.Agent))
+		env, err := payment.StatementMessage(st, c.env.MessageContext(c.bic, st.Agent))
 		if err != nil {
 			return fmt.Errorf("server: %s could not build the statement for %s: %w", c.bic, st.Agent, err)
 		}
@@ -313,7 +284,7 @@ func isLodgementRefusal(err error) bool {
 
 // acknowledgeLodgement queues the camt.025 for the member that asked.
 func (c *CentralBank) acknowledgeLodgement(ctx context.Context, to iso20022.BIC, r payment.LodgementReceipt) error {
-	env, err := payment.LodgementReceiptMessage(r, c.d.messageContext(c.bic, to))
+	env, err := payment.LodgementReceiptMessage(r, c.env.MessageContext(c.bic, to))
 	if err != nil {
 		return fmt.Errorf("server: %s could not build its camt.025 for %s: %w", c.bic, to, err)
 	}
@@ -324,7 +295,7 @@ func (c *CentralBank) acknowledgeLodgement(ctx context.Context, to iso20022.BIC,
 // RETURNING BANK quoted it, or the EPC's convention where there is none.
 func returnedEndToEnd(tx iso20022.ReturnTransaction) string {
 	if tx.OrgnlEndToEndId == "" {
-		return notProvided
+		return node.NotProvided
 	}
 	return tx.OrgnlEndToEndId
 }
@@ -359,20 +330,20 @@ func (c *CentralBank) answer(ctx context.Context, to iso20022.BIC, orig payment.
 		report.Code = payment.ReasonFor(cause)
 		report.Text = cause.Error()
 	}
-	c.d.journal.outcome(TransactionOutcome{
+	c.env.Journal.Outcome(node.TransactionOutcome{
 		DecidedBy: c.bic,
 		Payment:   payment.PaymentID(txid),
 		Status:    report.Status,
 		Code:      report.Code,
 		Text:      report.Text,
 	})
-	env, err := payment.StatusMessage(orig, []payment.TransactionStatusReport{report}, c.d.messageContext(c.bic, to))
+	env, err := payment.StatusMessage(orig, []payment.TransactionStatusReport{report}, c.env.MessageContext(c.bic, to))
 	if err != nil {
 		return errors.Join(fmt.Errorf("server: %s could not build its pacs.002 for %s: %w", c.bic, to, err), cause)
 	}
 	// The cause is NOT returned once it has been answered, for the reason
-	// Bank.answer gives: a refusal the counterparty was told about is completed
-	// work, and returning it as well would make every AM04 a line in the report
-	// too.
+	// bank.Bank.answer gives: a refusal the counterparty was told about is
+	// completed work, and returning it as well would make every AM04 a line in
+	// the report too.
 	return c.enqueue(ctx, to, env)
 }

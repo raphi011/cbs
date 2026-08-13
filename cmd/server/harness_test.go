@@ -19,6 +19,7 @@ import (
 	"github.com/raphi011/cbs/iban"
 	"github.com/raphi011/cbs/iso20022"
 	"github.com/raphi011/cbs/ledger"
+	"github.com/raphi011/cbs/node"
 	"github.com/raphi011/cbs/payment"
 	"github.com/raphi011/cbs/provision"
 	"github.com/raphi011/cbs/store/storetest"
@@ -812,7 +813,7 @@ var workThroughPhases = only(beforeClock,
 // workThrough returns what could not be done rather than journalling it, which is
 // the one way a test sequence differs from a day. The files and outcomes it moves DO
 // reach the journal, so a later AdvanceDay reports them and never these problems.
-func workThrough(d *Deployment) []Problem {
+func workThrough(d *Deployment) []node.Problem {
 	return runPhases(context.Background(), d, workThroughPhases)
 }
 
@@ -835,7 +836,7 @@ func (h *harness) workErr(t *testing.T) error {
 
 // joinProblems renders a day's problems as one error, so that a test can match
 // on what an institution said about a file it could not get through.
-func joinProblems(ps []Problem) error {
+func joinProblems(ps []node.Problem) error {
 	var errs []error
 	for _, p := range ps {
 		errs = append(errs, fmt.Errorf("%s could not process %s: %s", p.Institution, p.OrderID, p.Detail))
@@ -1179,7 +1180,7 @@ func (h *harness) upload(t *testing.T, from, to iso20022.BIC, env iso20022.Envel
 	if err != nil {
 		t.Fatalf("marshalling for %s: %v", to, err)
 	}
-	orderType, err := orderTypeOf(env.Document)
+	orderType, err := node.OrderTypeOf(env.Document)
 	if err != nil {
 		t.Fatalf("no order type for a %T: %v", env.Document, err)
 	}
@@ -1215,9 +1216,9 @@ func (h *harness) hostOf(t *testing.T, bic iso20022.BIC) *ebics.Server {
 	t.Helper()
 	switch bic {
 	case h.cfg.ClearingHouseBIC:
-		return h.dep.ClearingHouse().host
+		return h.dep.ClearingHouse().Host()
 	case h.cfg.CentralBankBIC:
-		return h.dep.CentralBank().host
+		return h.dep.CentralBank().Host()
 	default:
 		t.Fatalf("%s is a member bank and hosts nothing; nothing is pushed at one", bic)
 		return nil

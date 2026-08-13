@@ -81,16 +81,16 @@ func handlerFor(ctx context.Context, dep *Deployment, e entity, log *slog.Logger
 	switch e.key {
 	case centralBankKey:
 		cb := dep.CentralBank()
-		return withEBICS(cbapi.Routes(cb).Handler(log), cb.EBICS()), nil
+		return withEBICS(cbapi.Routes(cb, operator{dep}).Handler(log), cb.EBICS()), nil
 	case clearingHouseKey:
 		csm := dep.ClearingHouse()
-		return withEBICS(csmapi.Routes(csm).Handler(log), csm.EBICS()), nil
+		return withEBICS(csmapi.Routes(csm, operator{dep}).Handler(log), csm.EBICS()), nil
 	default:
 		b, err := dep.Bank(ctx, e.pid)
 		if err != nil {
 			return nil, err
 		}
-		return bankapi.Routes(b).Handler(log), nil
+		return bankapi.Routes(bankConsole{b, dep}).Handler(log), nil
 	}
 }
 
