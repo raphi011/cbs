@@ -5,6 +5,7 @@ import Link from "next/link";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 import { codeOf, forReading } from "@/lib/network-graph";
+import { formatSize, shortDefinition } from "@/lib/message";
 import { formatDate } from "@/lib/dates";
 import type { Crossing } from "@/lib/types";
 
@@ -113,25 +114,12 @@ function Payments({ ids }: { ids: string[] }) {
   );
 }
 
-// A message definition identifier is a family, a variant and a version —
-// "pacs.008.001.10". The family and the variant are what names the document;
-// the version is what an implementer needs and a reader does not.
-function shortDefinition(msgDefIdr: string): string {
-  if (!msgDefIdr) return "file";
-  const parts = msgDefIdr.split(".");
-  return parts.length >= 2 ? `${parts[0]}.${parts[1]}` : msgDefIdr;
-}
-
 // A payment id is minted per book, so it carries the book's own address and a
 // counter — and the address is already on the row, twice. What tells two
 // payments in one file apart is the counter, so that is what is shown.
 function shortPayment(id: string): string {
   const parts = id.split("_");
   return parts.length > 1 ? parts[parts.length - 1] : id;
-}
-
-function formatSize(bytes: number): string {
-  return bytes < 1024 ? `${bytes} B` : `${(bytes / 1024).toFixed(1)} kB`;
 }
 
 // A crossing has no id of its own: it is a pair of rows in two institutions'

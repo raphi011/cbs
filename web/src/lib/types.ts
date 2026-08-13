@@ -651,6 +651,55 @@ export interface PhaseReport {
   problems: DayProblem[];
 }
 
+// --- The message log --------------------------------------------------------
+
+// One institution's record of the files it sent and received. Every institution
+// keeps one about its OWN traffic, so a seq names a row in that institution's
+// log and means nothing at any other.
+
+// Which way one envelope went, from the point of view of the institution whose
+// log it is.
+export type MessageDirection = "sent" | "received";
+
+// Message is one file WITHOUT the bytes. A listing is an index over a log that
+// keeps every file forever, so it carries the size in place of the document and
+// one document is fetched at a time.
+export interface Message {
+  seq: number;
+  direction: MessageDirection;
+  counterparty: string;
+  // The envelope's own header: what the file is, and the id its sender put on
+  // it.
+  msgDefIdr: string;
+  msgId: string;
+  // The transport's handle for the crossing, absent where there was none.
+  orderId?: string;
+  at: string;
+  // What the file carried, in document order. A file naming no payment is
+  // ordinary: a routing table and a statement both do.
+  payments: string[];
+  payloadSize: number;
+}
+
+// MessageDocument is one message with the file as it travelled. Nothing on that
+// route checks the document against a schema, and neither does anything here:
+// rendering a document is not validating it.
+export interface MessageDocument extends Message {
+  document: string;
+}
+
+// MessageQuery narrows one institution's log. `payment` is the join that takes
+// a payment to the files that carried it, and the id on the wire is the
+// submitting bank's and crosses unchanged — so every institution's log answers
+// on the same value.
+export interface MessageQuery {
+  limit?: number;
+  before?: number;
+  direction?: MessageDirection;
+  counterparty?: string;
+  payment?: string;
+}
+
 // --- The network mesh -------------------------------------------------------
 
 // Every institution at once, which is a read no institution may make. It is the

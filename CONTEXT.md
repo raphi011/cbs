@@ -114,6 +114,12 @@ Every order a host has been sent and what it made of each. What `HAC` answers
 from, and the hosting institution's own work list.
 _Avoid_: audit log — that is an institution's record of its own decisions
 
+**Message log**:
+One institution's record of the files it sent and received, and the only record
+a member bank has of any file at all.
+_Avoid_: order log — that is a host's, and transport's; audit log — decisions,
+not documents
+
 **Subscriber**:
 A party enrolled at a host, which is what gives it a queue. A bank is a
 subscriber at two hosts; the settlement agent is a subscriber nowhere.

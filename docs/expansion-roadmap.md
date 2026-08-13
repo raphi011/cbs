@@ -152,7 +152,8 @@ about what a 500 may disclose.
 **21, EBICS and the business day, has shipped**, and it was first for two
 reasons that now hold for everything below: it replaced the transport every item
 here is built on, and the business date it brought is a prerequisite the other
-four had each been paying for separately.
+four had each been paying for separately. **7c has shipped too**, so the sequence
+starts at 2.
 
 1. **7c, the message log**, and the per-phase stepping that makes it worth
    watching. The last piece of sub-project 7, and it makes every flow already
@@ -168,26 +169,26 @@ four had each been paying for separately.
 6. **Reserve adequacy.** Wanted by both 4 and 5, and worth little before either.
 7. **Crypto**, then **FX** — the two undecided-scope domains, largest last.
 
-### 1. 7c, the message log — `wip`
+### 1. 7c, the message log — `done`
 
 [`2026-08-13-the-message-log-design.md`](specs/2026-08-13-the-message-log-design.md).
-The last of sub-project 7, and the only reason §7 is not `done`. Envelopes
-persisted so a payment screen can show the XML that actually moved, carried
-through README, hints and quiz — plus the network view the deployment serves and
-the per-phase stepping that makes it worth watching.
+The last of sub-project 7, which closes with it. Envelopes persisted so a payment
+screen can show the XML that actually moved, carried through README, hints and
+quiz — plus the network view the deployment serves and the per-phase stepping
+that makes it worth watching.
 
 Cheap relative to what it exposes: every flow already shipped becomes something a
 reader can watch rather than infer. It is also the natural home for anything that
 wants to explain a `pacs.002` reason code at the point it was returned.
 
-**Tasks 1–6 have shipped**: the journal records the take as well as the put,
-`messages` is a table in all three schemas written at every send and every
+**All seven tasks have shipped**: the journal records the take as well as the
+put, `messages` is a table in all three schemas written at every send and every
 receive, each listener serves its own institution's log with the file behind it,
 every phase of a business day is a door beside the clock, the deployment serves
-the mesh — a snapshot and an event stream — and that mesh is now drawn, in the
-operator's rail on every desktop shell and full size on the lobby, with the phase
-doors beside it and the files that crossed listed under it. **Task 7 is what is
-left**: the document viewer, and it is frontend.
+the mesh — a snapshot and an event stream — that mesh is drawn in the operator's
+rail on every desktop shell and full size on the lobby, and a payment's detail
+page now carries the trail of what its institution was told beside the files
+that carried it, each one opening the document as it travelled.
 
 Two things found while scoping it changed what it has to build, and the first of
 them is built.
@@ -219,6 +220,13 @@ byte, so a watcher of a quiet deployment never connected at all. The proxy
 forwards the body as a stream and an opening stream now announces itself. Both
 are in the design record; a heartbeat against an intermediary's idle timeout is
 NOT built and is the next thing this channel will want.
+
+**Nothing joins a document to a step, and the screen does not pretend one does**
+— task 7. A step is a decision an institution took and a file is what crossed a
+wire; neither names the other, and a day has no chronology inside it to infer the
+pairing from. The trail and the files are two cards. The trail itself was the
+whereabouts design's first task and had never been built, so the viewer brought
+its own scaffolding with it.
 
 ### 2. Scenarios, and a deployment that starts blank — `spec`
 
@@ -370,6 +378,10 @@ Four tasks: a trail per institution's copy read from that institution's own
 audit, the pending section on a bank's own screen, three toasts and two empty
 states that name the act that moves an instruction, and the `accepting` badge on
 the cycles table. Everything it renders is already answerable today.
+
+**The trail has shipped**, on the clearing house's payment detail page, because
+§1's document viewer needed the scaffolding it specified — see that record. The
+other three are untouched, and each would have answered the reader on its own.
 
 `hint-content.ts` explains all of it well and behind a `?` the reader has no
 reason to open; the defect is placement, not content, so no hint body changes.
@@ -848,7 +860,7 @@ Sub-project 20 shipped the trial balance with it: the report is the acceptance
 test for the third task, and a row count bounded by the institution rather than
 by the customer base is the observable point of the whole change.
 
-Sub-projects 3, 4 and 7c are the only numbers with work left; §9 was not foreseen
+Sub-projects 3 and 4 are the only numbers with work left; §9 was not foreseen
 and landed inside §8's task sequence, which is why the numbering skips. The last
 row is a TASK number rather than a sub-project one: 19 continues §8's task
 sequence, as the work that sub-project deliberately left, and it is listed here

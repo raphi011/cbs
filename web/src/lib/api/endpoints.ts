@@ -43,6 +43,9 @@ import type {
   Installment,
   Ledger,
   Mandate,
+  Message,
+  MessageDocument,
+  MessageQuery,
   NameRequest,
   OpenCycleRequest,
   OpenDepositAccountRequest,
@@ -677,6 +680,24 @@ export function returnPayment(
 // /payments rather than /participants/{pid}.
 export function paymentAudit(q: AuditQuery = {}): Promise<AuditEvent[]> {
   return request("GET", csm(`/payments/audit${qs({ ...q })}`));
+}
+
+// --- The message log ------------------------------------------------------
+
+// The CLEARING HOUSE's own record of the files it sent and received. All three
+// listeners answer these two routes and each answers about itself alone, so a
+// screen reading another institution's log gets a function of its own rather
+// than an operator parameter here — the same rule ledgerAudit and
+// centralBankAudit already follow.
+export function clearingHouseMessages(q: MessageQuery = {}): Promise<Message[]> {
+  return request("GET", csm(`/messages${qs({ ...q })}`));
+}
+
+// One document, and the only read in this file that is handed a file's bytes:
+// every listing leaves the payload unread and carries its size instead. The seq
+// is one this institution's own listing named.
+export function clearingHouseMessage(seq: number): Promise<MessageDocument> {
+  return request("GET", csm(`/messages/${seq}`));
 }
 
 // --- Payment: clearing cycles ---------------------------------------------

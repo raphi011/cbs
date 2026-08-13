@@ -14,7 +14,14 @@ import { buildKnownAccounts, projectStatement } from "@/lib/statement";
 import type { StatementRow } from "@/lib/statement";
 import type { AccountType } from "@/lib/enums";
 import { backendFor } from "@/lib/identity";
-import type { Asset, AuditQuery, CreateMandateRequest, DepositAccount, Participant } from "@/lib/types";
+import type {
+  Asset,
+  AuditQuery,
+  CreateMandateRequest,
+  DepositAccount,
+  MessageQuery,
+  Participant,
+} from "@/lib/types";
 
 import * as api from "./endpoints";
 import { qk } from "./query-keys";
@@ -716,6 +723,28 @@ export function usePaymentAudit(q: AuditQuery = {}) {
   });
 }
 
+// --- The message log ------------------------------------------------------
+
+// The clearing house's record of the files it sent and received, narrowed by
+// the query. It carries every file's size and none of their bytes.
+export function useClearingHouseMessages(q: MessageQuery = {}) {
+  return useQuery({
+    queryKey: qk.messages(q),
+    queryFn: () => api.clearingHouseMessages(q),
+  });
+}
+
+// One document. Never refetched: a log row is written once and the file it
+// carries is the file as it travelled.
+export function useClearingHouseMessage(seq: number | null) {
+  return useQuery({
+    queryKey: qk.messageDocument(seq ?? 0),
+    queryFn: () => api.clearingHouseMessage(seq!),
+    enabled: seq !== null,
+    staleTime: Infinity,
+  });
+}
+
 // --- Payment: mandates ----------------------------------------------------
 
 export function useMandates(pid: string) {
@@ -772,6 +801,9 @@ function invalidateNetwork(qc: ReturnType<typeof useQueryClient>) {
   qc.invalidateQueries({ queryKey: qk.centralBankAudit() });
   qc.invalidateQueries({ queryKey: qk.centralBankCycles() });
   qc.invalidateQueries({ queryKey: qk.centralBankSettlements() });
+  // The clearing house's log: a rejection and a return both put a file on a
+  // wire, so an act that moves a payment moves this too.
+  qc.invalidateQueries({ queryKey: qk.messages() });
   qc.invalidateQueries({ queryKey: ["participants"] });
 }
 

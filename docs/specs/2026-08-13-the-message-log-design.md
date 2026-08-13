@@ -319,6 +319,39 @@ Neither is a heartbeat. Nothing here keeps a long-idle connection alive against 
 intermediary's idle timeout; on loopback there is none, and adding a ticker is a
 change with an argument of its own.
 
+### 7. A payment's trail and its documents sit side by side
+
+The viewer hangs off a trail that was specified and never built: the whereabouts
+design's own first task, `usePaymentTrail` over `paymentAudit({ entity })` and a
+`PaymentTrail` component. So this is two things, and the trail is the one the
+viewer needs.
+
+**Nothing joins a step to a file, and the screen does not pretend one does.** A
+step is a decision an institution took and a file is what crossed a wire; no
+audit event names a message and no message names an event. §5 closes the other
+route: every row of one business day carries the same instant, so there is no
+chronology inside a day to infer the pairing from. The rejected alternative was
+a table in the browser mapping a message definition and a direction onto a
+lifecycle step — a `pacs.008` received means accepted, and so on. It is true at
+the clearing house, false at a bank where the same file is SENT at the cut-off,
+and it would put a domain rule in the layer that renders. So the trail and the
+files are two cards and neither claims the other's order.
+
+**The trail names the act in the words of the button that runs it**, which is
+the topbar's *Advance day* and not the phase doors §4 added. A door is named by
+phase, and saying which phase moves a payment out of a given status is the same
+invented mapping one layer along.
+
+**An empty log means two things and the empty state says both.** A payment can
+be waiting for its bank's next cut-off, or it can have come from the sample
+dataset, which builds a deployment by playing every institution rather than by
+sending anything — so nothing it left behind ever crossed a wire. An empty state
+that promised a file would be wrong on every seeded payment there is.
+
+**It reads the clearing house's log and nobody else's**, which is the whereabouts
+design's decision 2 unchanged. The same component takes a bank's audit and a
+bank's log the day a bank grows a payment detail page of its own.
+
 ## What it costs
 
 **Every message is stored forever.** Rows are never deleted, as in
@@ -398,12 +431,14 @@ quiz chapters on the transport and the clearing cycle. `CONTEXT.md` gains
 is that an institution keeps a record of the files it sent and received — never a
 table, a route or a component.
 
-**`CONTEXT.md` does not gain "message log", and task 6 is what decided it.** The
-term names ONE institution's record of its own traffic, and what the UI shows is
-the mesh — every institution's halves paired into the crossings both ends
-observed, which is not any institution's log. The screen says *network*, a line
-is a *wire*, and what travels one is a *file*. A per-institution log reaching the
-UI would be the change that makes the term due.
+**`CONTEXT.md` gains "message log", and task 7 is what made it due.** The mesh is
+every institution's halves paired into the crossings both ends observed, which is
+not any institution's log, so while that was the only place a log reached the UI
+the term named nothing on a screen. A payment's detail page reads ONE
+institution's log by that institution's own seq, and the entry's work is to
+separate it from the ORDER log, which is a host's transport record, and from the
+audit log, which is decisions rather than documents. The screen still says
+*network*, a line is a *wire*, and what travels one is a *file*.
 
 No new hint keys either: `payment-hub`, `download-queue` and `bulk-file` carry
 the mechanism, and the graph is where a reader now meets them.
@@ -436,11 +471,28 @@ enough to clear the clearing house at 3, 4 and 5 banks, the two directions of
 travel rest at opposite ends, and a crossing between two ends that share no wire
 is dropped rather than drawn.
 
+The trail's are in `web/src/lib/payment-trail.ts` under the same guard: a trail
+orders by seq and not by the timestamps, which tie within a day; an event the
+step table does not name still becomes a step, because a trail with a hole in it
+is worse than one with a bare type in it; every step names a hint key that
+exists, which nothing else checks; and a payment that is finished is waiting on
+nobody. What names a file and how big it is are two rules three screens share, so
+they are in `web/src/lib/message.ts` rather than in the first screen that needed
+them.
+
 What no test reaches is the rendering, and there is still no component runner.
 The drawing, the doors and the stream were driven in a browser against a real
 binary instead: a payment initiated and a phase stepped from OUTSIDE the browser
 moved the picture with no interaction in it, and the payment's two copies
 disagreed on screen — `Initiated` at its bank, `Accepted` at the clearing house —
 with the `pacs.002` that would settle the argument drawn resting on the wire.
-A narrow viewport was not verified in a browser; the rail is desktop-only by
-construction and the lobby's view is a responsive grid.
+
+The trail and the viewer were driven the same way, and the sequence is the whole
+teaching point: an Accepted payment showed two files and a trail stopping at
+*waiting here*, and stepping the clearing-house cut-off, discharge, settlement
+and release from OUTSIDE the browser moved it — the trail grew *Cleared* and
+*Settled*, and a third file appeared, the `pacs.008` the clearing house released
+to the payee's bank once the reserves had moved. Both directions of a document
+were opened; a payment the sample dataset placed shows an empty log and says why.
+The rail is desktop-only by construction, and at 644px the two cards stack, the
+dialog fits and the document scrolls inside its own box.

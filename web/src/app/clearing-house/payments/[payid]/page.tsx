@@ -14,6 +14,8 @@ import { ErrorState } from "@/components/error-state";
 import { Hint } from "@/components/hint";
 import { Money } from "@/components/money";
 import { ConfirmAction } from "@/components/forms/confirm-action";
+import { PaymentTrail } from "@/components/payment/payment-trail";
+import { PaymentDocuments } from "@/components/payment/message-log";
 import {
   useAssetLookup,
   usePayment,
@@ -216,6 +218,14 @@ export default function PaymentDetailPage() {
                 )}
               </CardContent>
             </Card>
+          </div>
+
+          {/* Where it has been, and what carried it. Both are the CLEARING
+              HOUSE's own records: its trail is what it was told and its files
+              are what crossed its wires, and neither is merged with a bank's. */}
+          <div className="grid items-start gap-4 md:grid-cols-2">
+            <PaymentTrail payid={p.id} status={p.status} institution="the clearing house" />
+            <PaymentDocuments payid={p.id} />
           </div>
         </>
       )}
