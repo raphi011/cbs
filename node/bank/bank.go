@@ -106,10 +106,30 @@ func (b *Bank) routes(ctx context.Context, bic iso20022.BIC) (bool, error) {
 	return false, nil
 }
 
-// TakeDirectory replaces this bank's copy of the scheme's routing directory
-// with the roster it has been handed.
-func (b *Bank) TakeDirectory(ctx context.Context, published []payment.RosterEntry) ([]payment.DirectoryEntry, error) {
-	return b.ops.RefreshDirectory(node.WithActor(ctx, b.bic), published)
+// ErrNoRoutingTable is a clearing house that is publishing none. The subscriber
+// keeps the copy it has: a stale directory is a state this system models and an
+// empty one is not one a host that has not published yet should cause.
+var ErrNoRoutingTable = errors.New("server: the clearing house publishes no routing table")
+
+// RefreshDirectory is this bank subscribing: it collects the routing table the
+// clearing house publishes and replaces its own copy with it. Nothing here reads
+// the clearing house's rows.
+func (b *Bank) RefreshDirectory(ctx context.Context) ([]payment.DirectoryEntry, error) {
+	ctx = node.WithActor(ctx, b.bic)
+
+	from := b.env.ClearingHouseBIC
+	files, err := b.csm.Download(ctx, ebics.HRD)
+	if err != nil {
+		return nil, fmt.Errorf("server: %s could not collect the routing table from %s: %w", b.bic, from, err)
+	}
+	if len(files) != 1 {
+		return nil, fmt.Errorf("server: %s collected %d routing tables from %s: %w", b.bic, len(files), from, ErrNoRoutingTable)
+	}
+	table, err := payment.ReadRosterFile(files[0].Payload)
+	if err != nil {
+		return nil, fmt.Errorf("server: %s could not read the routing table %s publishes: %w", b.bic, from, err)
+	}
+	return b.ops.RefreshDirectory(ctx, table.Members)
 }
 
 // RunEndOfDay is this bank's own end of day: overdraft interest accrued,

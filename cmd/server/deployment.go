@@ -160,6 +160,11 @@ func NewDeployment(ctx context.Context, nets *payment.Networks, hosts Hosts, clo
 			d.enrol(bic)
 		}
 	}
+	// And the routing table, for the enrolments' reason: what a host holds in
+	// memory is rebuilt at boot out of the rows it is derived from.
+	if err := d.csm.PublishRoster(ctx); err != nil {
+		return nil, err
+	}
 	return d, nil
 }
 
@@ -271,7 +276,10 @@ func (d *Deployment) AddBank(ctx context.Context, p *payment.Bank) error {
 		return err
 	}
 	d.enrol(p.BIC)
-	return nil
+	// The roster has changed, so the table the members collect has to say so:
+	// otherwise a bank admitted this morning is missing from a snapshot taken
+	// before it existed, whatever its neighbours do.
+	return d.csm.PublishRoster(ctx)
 }
 
 // Members is every bank this deployment holds a database for, each read out of
@@ -362,20 +370,6 @@ func (d *Deployment) Lodge(ctx context.Context, bic iso20022.BIC, asset ledger.A
 		return payment.LodgementInstruction{}, err
 	}
 	return b.Lodge(ctx, asset, amount)
-}
-
-// RefreshDirectory is one member bank subscribing: it takes the roster the
-// clearing house publishes and replaces that bank's own copy with it.
-func (d *Deployment) RefreshDirectory(ctx context.Context, bic iso20022.BIC) ([]payment.DirectoryEntry, error) {
-	published, err := d.csm.Network().ListRosterEntries(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("server: reading the published roster for %s: %w", bic, err)
-	}
-	subscriber, err := d.Bank(ctx, payment.ParticipantID(bic))
-	if err != nil {
-		return nil, err
-	}
-	return subscriber.TakeDirectory(ctx, published)
 }
 
 // member is the bank this deployment holds for an address, refusing one it does

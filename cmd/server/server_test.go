@@ -63,7 +63,7 @@ func (s *server) BankRoutes(ctx context.Context, pid payment.ParticipantID) (htt
 	if err != nil {
 		return nil, err
 	}
-	return bankapi.Routes(bankConsole{b, s.dep}).Handler(s.dep.Log()), nil
+	return bankapi.Routes(b).Handler(s.dep.Log()), nil
 }
 
 func cbSurface(s *server) http.Handler  { return s.CentralBankRoutes() }

@@ -14,10 +14,10 @@ type Deployment interface {
 	// and no place can neither send nor be sent to.
 	AddBank(context.Context, *payment.Bank) error
 
-	// RefreshDirectory is one bank subscribing: it replaces that bank's copy of
-	// the scheme's routing directory with the roster the clearing house
-	// publishes. Two databases, and no bank may open the other's.
-	RefreshDirectory(context.Context, iso20022.BIC) ([]payment.DirectoryEntry, error)
+	// Subscribe is the clearing house publishing its routing table and every
+	// member collecting it, in that order. Two databases, and no bank may open
+	// the other's.
+	Subscribe(context.Context) error
 
 	// CentralBankBIC names the settlement agent, which has no roster row to be
 	// read from: it is not a member of the scheme it settles. A settlement

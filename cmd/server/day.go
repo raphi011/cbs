@@ -141,7 +141,8 @@ func toDayReportDTO(r DayReport) api.DayReportDTO {
 type phaseID int
 
 const (
-	phaseRefresh phaseID = iota
+	phasePublishRoster phaseID = iota
+	phaseRefresh
 	phaseBankCutoff
 	phaseClearing
 	phaseClearingHouseCutoff
@@ -171,14 +172,26 @@ type phase struct {
 // beforeClock is the business day, in the order it runs, up to the clock move.
 var beforeClock = []phase{
 	{
+		id: phasePublishRoster, name: "publish", settlementOnly: true,
+		// The clearing house offers the scheme's routing table. BEFORE the refresh,
+		// because a member collects what is published and a bank admitted since the
+		// last advance is in this file rather than in yesterday's.
+		run: func(ctx context.Context, d *Deployment) []node.Problem {
+			if err := d.csm.PublishRoster(ctx); err != nil {
+				return []node.Problem{{Institution: d.cfg.ClearingHouseBIC, Detail: err.Error()}}
+			}
+			return nil
+		},
+	},
+	{
 		id: phaseRefresh, name: "refresh", settlementOnly: true,
-		// Every member takes the published roster. It is the FIRST thing, so a bank
+		// Every member collects it. It is the FIRST thing a member does, so a bank
 		// admitted since the last advance can be addressed by its neighbours today
 		// rather than after somebody remembers to call the route.
 		run: func(ctx context.Context, d *Deployment) []node.Problem {
 			var ps []node.Problem
-			for _, b := range d.banksInOrder() {
-				if _, err := d.RefreshDirectory(ctx, b.BIC()); err != nil {
+			for _, b := range d.subscribers() {
+				if _, err := b.RefreshDirectory(ctx); err != nil {
 					ps = append(ps, node.Problem{Institution: b.BIC(), Detail: err.Error()})
 				}
 			}
@@ -338,6 +351,10 @@ var carryToClearingPhases = append(
 	collectClearingHouseOnly,
 )
 
+// subscribePhases is the day's opening pair on its own: what a deployment does
+// once before anything can be routed at all.
+var subscribePhases = only(beforeClock, phasePublishRoster, phaseRefresh)
+
 // ---------------------------------------------------------------------------
 // The day itself
 // ---------------------------------------------------------------------------
@@ -367,6 +384,13 @@ func (d *Deployment) AdvanceDay(ctx context.Context) (DayReport, error) {
 		Outcomes: outcomes,
 		Problems: problems,
 	}, err
+}
+
+// Subscribe is the clearing house publishing its routing table and every member
+// collecting it, in that order. The order is the DEPLOYMENT's: neither
+// institution knows the other performs half of it.
+func (d *Deployment) Subscribe(ctx context.Context) error {
+	return node.JoinProblemDetails(runPhases(ctx, d, subscribePhases))
 }
 
 // CarryToClearing moves the morning's files and stops before anything settles:

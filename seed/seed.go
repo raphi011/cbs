@@ -151,10 +151,10 @@ func (b *builder) provision(name string, bic iso20022.BIC, country iban.Country,
 	return bank
 }
 
-// subscribe is one bank pulling the scheme's routing directory, through the
+// subscribe is every member pulling the scheme's routing directory, through the
 // same door an operator's POST /directory/banks/refresh goes through.
-func (b *builder) subscribe(p *payment.Bank) {
-	must(b.dep.RefreshDirectory(b.ctx, p.BIC))
+func (b *builder) subscribe() {
+	check(b.dep.Subscribe(b.ctx))
 }
 
 // seedAsset is the asset the whole sample scenario is denominated in.
@@ -343,9 +343,7 @@ func (b *builder) build() {
 	soleil := b.provision("Crédit Soleil", "SOLEFRPPXXX", iban.FR, euro)
 
 	// --- Each bank subscribes to the routing directory ---------------------
-	for _, p := range []*payment.Bank{aurora, verde, nord, soleil} {
-		b.subscribe(p)
-	}
+	b.subscribe()
 
 	// --- Each bank's catalogue ---------------------------------------------
 	// Before any account, because every deposit account is opened FROM a product:

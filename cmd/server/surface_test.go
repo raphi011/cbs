@@ -37,7 +37,7 @@ func surfaces(t *testing.T) map[string][]string {
 	return map[string][]string{
 		"central-bank":   cbapi.Routes(s.dep.CentralBank(), operator{s.dep}).Patterns(),
 		"clearing-house": csmapi.Routes(s.dep.ClearingHouse(), operator{s.dep}).Patterns(),
-		"bank":           bankapi.Routes(bankConsole{mustForBank(t, s, testBankBIC), s.dep}).Patterns(),
+		"bank":           bankapi.Routes(mustForBank(t, s, testBankBIC)).Patterns(),
 	}
 }
 
