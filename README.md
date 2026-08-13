@@ -1257,7 +1257,9 @@ It reads no store to sort. A clearing house that had to look a payment up to dec
 
 #### Advancing the clock runs a business day
 
-**The deployment owns a clock, and there are no background goroutines under this process at all.** No timers, no pollers, no actor loops. HTTP requests *queue* work — a customer's instruction joins their bank's hub, an operator's cut-off becomes an instruction uploaded to the settlement agent — and `POST /clock/day` drains all of it **synchronously**, on one goroutine, in the order a business day runs in.
+**The deployment owns a clock, and no background goroutine runs below `cmd/server`.** No timers, no pollers, no actor loops: an institution does nothing nobody asked it to. HTTP requests *queue* work — a customer's instruction joins their bank's hub, an operator's cut-off becomes an instruction uploaded to the settlement agent — and `POST /clock/day` drains all of it **synchronously**, on one goroutine, in the order a business day runs in.
+
+**What narrows that claim is the [event stream](#the-central-bank--8081).** A watcher's request does not return, so this process now writes to somebody who did not ask — on that request's own goroutine, above every institution, and nothing below `cmd/server` learns that a browser exists. A clock that *ticked* on its own would be a genuine background goroutine and is not built.
 
 That is simpler than a set of concurrent actors *and* more faithful, and those two rarely point the same way. Bulk clearing genuinely is store-and-forward against a cut-off clock; concurrency between the institutions would be modelling a liveness that bulk SEPA does not have.
 
@@ -2081,6 +2083,8 @@ The settlement layer. Reserves move in its book and nowhere else.
 | `GET /clock` | the deployment's business date, and the closure if TARGET is shut |
 | `POST /clock/day` | run one business day and move to the next; answers with the day's report |
 | `GET /clock/phases`, `POST /clock/phases/{phase}` | the day's phases in the order it runs them, and one of them on its own |
+| `GET /network/flow` | the **mesh**: every institution, the wires between them, and the files that crossed one |
+| `GET /network/flow/events` | the same mesh as it happens — an event stream, and the one route here that does not close |
 | `POST /admin/reset` | clear every store and rebuild the sample dataset |
 
 **The clock routes are the OPERATOR's, and they are here for `POST /admin/reset`'s reason.** Advancing the day drives all N+2 institutions, so it is an act over a *deployment* and a deployment is not an institution — and it takes the same lock the reset takes, because there is one deployment behind every port. It is **one-way**: only a reset rewinds it, which puts the button nearer `Reset` than to anything else on a console. On a day TARGET is shut it still advances; nothing clears, the readout says why, and that is the lesson rather than a state to be prevented.
@@ -2090,6 +2094,14 @@ The settlement layer. Reserves move in its book and nowhere else.
 A phase is **named and never parameterised**: the key is the phase's own name spelt for a URL, `GET /clock/phases` is where the names come from, and a name the day does not declare is a `400`. There is no route that runs a range of them, and none that runs a phase narrowed to one queue — a caller wanting a shorter run opens the doors it wants, in the order the day declares them. `settlementOnly` is in the listing rather than enforced by the door: on a day the scheme is shut `POST /clock/day` skips the clearing phases, and an operator who names one has already decided they want it.
 
 **Stepping and advancing overlap, and nothing stops them.** A phase run by hand and then a `POST /clock/day` runs that phase twice, because nothing records how far the day has got. Today that is survivable rather than safe — a cut-off empties the hub it drains, the clearing house works through a pending list, and the end-of-day advancement guards make a second close a no-op — and it is why a clock that ticks on its own needs a durable cursor before anything may fire a phase with no human behind it.
+
+**The mesh is the OPERATOR's, and no institution can be asked for it.** `GET /messages` on each listener answers that institution's own half of every crossing, and the other half is in the counterparty's database — so a whole picture cannot be assembled from any one console, or from three of them without asserting they agree. `GET /network/flow` is that picture: every institution and the part it plays, the wires between them, and each file paired out of the two logs that recorded it. It is here for `POST /clock/day`'s reason and with `payment/recon`'s standing — a deployment may open every institution at once *precisely because* no institution may.
+
+This does not contradict the refusal to merge a payment's status across three databases, and the distinction is the domain's. **A status is a copy**, and three copies legitimately disagree; merging them would assert an order between two `seq` counters that have none. **A crossing is an event both endpoints observed**, and there is one truth about whether a file went from one institution to another.
+
+**A crossing with a send and no take is a file resting on a wire** — put where the recipient can reach it, with nobody having come for it. That is what a page of the mesh must never drop, so the limit bounds the crossings that *arrived* and leaves every in-flight one in however long the log has grown. A crossing is ordered by its **send**, because it spans an interval rather than standing at an instant: within one institution its own `seq` orders its traffic, and between two the business date is all there is, the clock not moving within a day.
+
+**And it does not have to be asked.** `GET /network/flow/events` is an SSE stream carrying the same three lists a day's report carries — a `file`, an `outcome` or a `problem` at a time — so a page shows a file move without polling. It is a second **subscriber** on the journal and never a second consumer: the journal is emptied by whoever reports, and a watcher is told as each event is written rather than reading what a report would have taken. A watcher that cannot keep up is dropped rather than waited for, because nothing an institution does may block on a browser; its `EventSource` reconnects and reads the snapshot again. A reset is not on this stream — the journal is its only feed — so a console that clears the world re-reads it.
 
 **`GET /cycles` was here and is not.** A cycle is the clearing house's row: this institution holds no cycles table, is told a set of positions and a reference, and records what it discharged. The route was invisible while one database served every institution and is a missing table now. It is on the clearing house, where the cut-off is.
 

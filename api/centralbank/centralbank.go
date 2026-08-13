@@ -41,6 +41,15 @@ type Operator interface {
 	// one of them without moving the clock. A phase is named, never parameterised.
 	Phases() []api.PhaseDTO
 	RunPhase(ctx context.Context, phase string) (api.PhaseReportDTO, error)
+
+	// NetworkFlow is the mesh: every institution's traffic paired into the
+	// crossings both ends observed. Limit bounds the crossings already delivered.
+	NetworkFlow(ctx context.Context, limit int) (api.NetworkFlowDTO, error)
+
+	// Watch is what the deployment does, as it does it. The channel closes when a
+	// watcher has fallen too far behind to be told the truth, and release must be
+	// called when it goes away.
+	Watch() (events <-chan api.StreamEvent, release func())
 }
 
 // surface is the handler receiver: one institution and the operator whose

@@ -20,6 +20,15 @@ const (
 	logMaxLimit     = 1000
 )
 
+// LogLimit reads the page size off a request, defaulted and capped. It is the
+// one bound the mesh shares with the two logs, which is why it is named here.
+func LogLimit(r *http.Request) int {
+	if v, err := strconv.Atoi(r.URL.Query().Get("limit")); err == nil && v > 0 {
+		return min(v, logMaxLimit)
+	}
+	return logDefaultLimit
+}
+
 // AuditFilterFrom parses the shared audit query parameters.
 func AuditFilterFrom(r *http.Request, book ledger.BookID, scope ledger.Scope) ledger.AuditFilter {
 	f := ledger.AuditFilter{

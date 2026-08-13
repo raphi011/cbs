@@ -114,6 +114,15 @@ and the honest answer is that the deployment ran the phases in a declared order
 is the timeline. This is the same cost the whereabouts design priced, resolved
 the only way it can be.
 
+**And a crossing is ordered by its SEND**, because it spans an interval rather
+than standing at an instant: a total order over crossings does not exist, and
+trying to build one from the two chains produces genuine cycles — A sends,
+B sends back, and each end's log disagrees about which came first without either
+being wrong. So the mesh orders by the send, with the sender and its own `seq`
+breaking the tie the business date leaves (the clock does not move within a
+day). The order things actually happened in is the STREAM's, which is the
+journal's own; the snapshot carries state.
+
 ### 3. Stepping, and the events that make it live
 
 **Every phase becomes an operator act.** The day already declares them
@@ -174,6 +183,40 @@ only replays what *this tab* triggered is wrong most of the time.
 outcome. The broadcast is a second subscriber on it — no institution changes, and
 nothing below `cmd/server` learns that a browser exists.
 
+**It taps the journal at WRITE time, and that is the decision the rest of this
+section falls out of.** `take` empties the journal and every report calls it, so
+a broadcast that READ the journal would be a second consumer racing the report
+for the same events. A watcher is told inside `File`, `Outcome` and `problem`
+instead, under the journal's own lock, so it is told in the order the journal
+was and nothing is taken from anybody. Reading a copy was rejected: it needs the
+journal to keep what it has already reported, which is the one thing `take`
+exists to prevent.
+
+Four things follow, and each was a decision:
+
+- **A slow watcher is dropped rather than waited for.** Nothing an institution
+  does may block on a browser, so a full buffer closes that watcher's channel;
+  its `EventSource` reconnects and reads the snapshot again, which is a whole
+  picture rather than one with holes in it.
+- **The stream is the day's report arriving without a request** — the same three
+  shapes `POST /clock/day` and `POST /clock/phases/{phase}` answer with, one SSE
+  event each. Inventing a mesh-shaped event was rejected: an order type is the
+  TRANSPORT's fact and a message definition the DOCUMENT's, neither derives the
+  other, and the two halves already pair on the order id.
+- **A reset is not an event on this stream.** The journal is its only feed, and a
+  reset is an operator's act from a tab that knows it made one. A second feed
+  would be a second concept for one button.
+- **The mesh reads every institution's whole log rather than a page of each.**
+  The delivered half of a crossing can be far newer than the sent half, so a
+  window per institution would report a delivered file as resting on a wire. The
+  limit is applied to the CROSSINGS, and it never drops one still resting: a
+  queue nobody has come for is what this view exists to show.
+
+**A wire is named by the parts its ends play** — a subscriber dials a host, and
+nothing is ever pushed the other way — so a bank the scheme has not admitted is
+in the mesh and on no wire at all. That is the difference between holding a
+database and being reachable, drawn.
+
 ### 4. It is rendered in the operator's frame
 
 The graph goes in the chrome — the top-right rail that already holds the concept
@@ -208,9 +251,18 @@ retention decision with a domain consequence rather than a tuning knob.
 documentation change: chapters 15 and 16, the README's *Persistence* section, and
 the schema comments themselves, which carry the domain argument.
 
-**The push channel is a one-way door.** the rule that the deployment owns the clock's *"no background goroutines"*
-already narrows under the scheduled business day; an SSE hub narrows it again.
-Both are the same narrowing and should be stated once, wherever it lands first.
+**The push channel is a one-way door**, and the narrowing lands HERE. The rule
+that the deployment owns the clock claims *"no background goroutines under this
+process at all"*; a connection held open on a request's own goroutine is the
+first thing that is not one, and the scheduled business day's ticker will be the
+second. Stated once, in the README beside that claim: none runs BELOW
+`cmd/server`, and an institution still does nothing nobody asked it to.
+
+**A mesh read is every row every institution holds, payload included.** That is
+what a truthful answer about what is still in flight costs, and it is the read
+`payment/recon` already makes at whole-deployment scale. It is also why the
+stream carries the events themselves: a page that re-fetched the snapshot per
+file would pay it once per movement.
 
 ## What this does not do
 
@@ -236,8 +288,9 @@ Both are the same narrowing and should be stated once, wherever it lands first.
 3. **`GET /messages` per listener**, plus the payment join so a payment detail
    page can ask which files carried it.
 4. **The phase doors**, on the operator surface.
-5. **`GET /network/flow`** and the SSE endpoint, both on the operator surface,
-   fed from the journal.
+5. **`GET /network/flow`** and the SSE endpoint, both on the operator surface.
+   The snapshot pairs every institution's log into the crossings both ends
+   observed; the stream is the journal's own events, and a second subscriber.
 6. **The graph**: the rail section, the lobby view, and the movement list that
    clicks through to a payment's trail.
 7. **The document viewer**, hung off the whereabouts design's `PaymentTrail`.
@@ -270,4 +323,9 @@ table, a route or a component.
 - **No institution can read another's messages.** The listener test: a bank's
   `GET /messages` answers only its own, and there is no route on any
   institution's surface that answers the mesh.
+- **A broadcast does not consume what a report needs**, and neither takes the
+  other's events. Asserted over a stepped phase: what a watcher was told and what
+  the phase reported are the same list.
+- **A file resting on a wire is never paged out**, whatever the limit, and a
+  watcher that falls too far behind is dropped rather than waited for.
 - **`payment/recon` unaffected.** The log records; it decides nothing.

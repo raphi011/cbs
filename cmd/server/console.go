@@ -68,6 +68,15 @@ func (o operator) RunPhase(ctx context.Context, phase string) (api.PhaseReportDT
 	return toPhaseReportDTO(report), nil
 }
 
+// NetworkFlow and Watch are the mesh: every institution at once, which is the
+// deployment's to answer because no institution may — and then the same thing
+// as it happens.
+func (o operator) NetworkFlow(ctx context.Context, limit int) (api.NetworkFlowDTO, error) {
+	return o.d.NetworkFlow(ctx, limit)
+}
+
+func (o operator) Watch() (<-chan api.StreamEvent, func()) { return o.d.hub.watch() }
+
 // A member bank's own surface needs no console: every act on it is that bank's,
 // and it is a *bank.Bank that serves them.
 var _ bankapi.Institution = (*bank.Bank)(nil)

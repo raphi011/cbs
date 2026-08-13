@@ -49,18 +49,33 @@ type journal struct {
 	files    []node.FileMoved
 	outcomes []node.TransactionOutcome
 	problems []node.Problem
+
+	// watch is a second SUBSCRIBER, told as each event is recorded. It is not a
+	// second consumer: take empties the journal below and this does not, so a
+	// report and a broadcast never take events from each other.
+	watch func(api.StreamEvent)
+}
+
+// tell is called under the lock, so a watcher is told in the order the journal
+// was.
+func (j *journal) tell(name string, data any) {
+	if j.watch != nil {
+		j.watch(api.StreamEvent{Name: name, Data: data})
+	}
 }
 
 func (j *journal) File(f node.FileMoved) {
 	j.mu.Lock()
 	defer j.mu.Unlock()
 	j.files = append(j.files, f)
+	j.tell(api.EventFile, toFileMovedDTO(f))
 }
 
 func (j *journal) Outcome(o node.TransactionOutcome) {
 	j.mu.Lock()
 	defer j.mu.Unlock()
 	j.outcomes = append(j.outcomes, o)
+	j.tell(api.EventOutcome, toTransactionOutcomeDTO(o))
 }
 
 func (j *journal) problem(ps ...node.Problem) {
@@ -70,6 +85,9 @@ func (j *journal) problem(ps ...node.Problem) {
 	j.mu.Lock()
 	defer j.mu.Unlock()
 	j.problems = append(j.problems, ps...)
+	for _, p := range ps {
+		j.tell(api.EventProblem, toProblemDTO(p))
+	}
 }
 
 // take empties the journal and hands back everything in it.
@@ -125,24 +143,38 @@ func toMovementsDTO(files []node.FileMoved, outcomes []node.TransactionOutcome,
 		Problems: make([]api.ProblemDTO, 0, len(problems)),
 	}
 	for _, f := range files {
-		out.Files = append(out.Files, api.FileMovedDTO{
-			From: string(f.From), To: string(f.To),
-			OrderType: string(f.OrderType), OrderID: string(f.OrderID),
-			Movement: string(f.Movement),
-		})
+		out.Files = append(out.Files, toFileMovedDTO(f))
 	}
 	for _, o := range outcomes {
-		out.Outcomes = append(out.Outcomes, api.TransactionOutcomeDTO{
-			DecidedBy: string(o.DecidedBy), Payment: string(o.Payment),
-			Status: string(o.Status), Code: string(o.Code), Text: o.Text,
-		})
+		out.Outcomes = append(out.Outcomes, toTransactionOutcomeDTO(o))
 	}
 	for _, p := range problems {
-		out.Problems = append(out.Problems, api.ProblemDTO{
-			Institution: string(p.Institution), OrderID: string(p.OrderID), Detail: p.Detail,
-		})
+		out.Problems = append(out.Problems, toProblemDTO(p))
 	}
 	return out
+}
+
+// The three shapes a report is made of, one at a time. A watcher is pushed
+// these singly and a report carries them in lists, so each renders once here.
+func toFileMovedDTO(f node.FileMoved) api.FileMovedDTO {
+	return api.FileMovedDTO{
+		From: string(f.From), To: string(f.To),
+		OrderType: string(f.OrderType), OrderID: string(f.OrderID),
+		Movement: string(f.Movement),
+	}
+}
+
+func toTransactionOutcomeDTO(o node.TransactionOutcome) api.TransactionOutcomeDTO {
+	return api.TransactionOutcomeDTO{
+		DecidedBy: string(o.DecidedBy), Payment: string(o.Payment),
+		Status: string(o.Status), Code: string(o.Code), Text: o.Text,
+	}
+}
+
+func toProblemDTO(p node.Problem) api.ProblemDTO {
+	return api.ProblemDTO{
+		Institution: string(p.Institution), OrderID: string(p.OrderID), Detail: p.Detail,
+	}
 }
 
 // ---------------------------------------------------------------------------

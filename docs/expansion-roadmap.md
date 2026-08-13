@@ -180,11 +180,12 @@ Cheap relative to what it exposes: every flow already shipped becomes something 
 reader can watch rather than infer. It is also the natural home for anything that
 wants to explain a `pacs.002` reason code at the point it was returned.
 
-**Tasks 1–4 have shipped**: the journal records the take as well as the put,
+**Tasks 1–5 have shipped**: the journal records the take as well as the put,
 `messages` is a table in all three schemas written at every send and every
 receive, each listener serves its own institution's log with the file behind it,
-and every phase of a business day is a door beside the clock. Tasks 5–7 are what
-is left — the mesh the deployment serves, the graph and the document viewer.
+every phase of a business day is a door beside the clock, and the deployment
+serves the mesh — a snapshot and an event stream. Tasks 6 and 7 are what is left,
+the graph and the document viewer, and both are frontend.
 
 Two things found while scoping it changed what it has to build, and the first of
 them is built.
@@ -195,6 +196,12 @@ one: both `Collect`s, and both hosts' `Work`, where an upload comes out of the
 order log it has been resting in. So a put with no take means one thing, which
 is a file waiting in a queue nobody has come for — the gap settle-before-release
 exists to teach, and the thing the graph draws.
+
+**The push channel narrows a standing claim** — task 5. A watcher's request does
+not return, so this process writes to somebody who did not ask; the README says
+so beside its *no background goroutines* claim, and §3's ticker is the second and
+larger narrowing. What it buys is that a page is not a poller, which matters
+exactly when a clock starts running without a human behind it.
 
 **Nothing could be stepped one hop** — task 4. `csm.Work` was reachable only
 from `AdvanceDay`, so a reader could submit or run a whole day and nothing in

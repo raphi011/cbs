@@ -28,5 +28,7 @@ func Routes(inst Institution, op Operator) *api.Router {
 	s.registerAdminRoutes(mux)
 	// The business date, the button that advances it, and a door per phase.
 	s.registerClockRoutes(mux)
+	// And the mesh, which is the deployment's because no institution may give it.
+	s.registerNetworkRoutes(mux)
 	return mux
 }
