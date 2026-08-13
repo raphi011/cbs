@@ -169,10 +169,10 @@ One run of the day engine: every phase, on one date, settlement day or not.
 _Avoid_: settlement day, clearing day
 
 **Phase**:
-One named step of a business day, in a declared order: refresh, bank cut-off,
-clearing, clearing-house cut-off, discharge, settlement, release, collection, end
-of day, then the date moves and cycles open. All but the last two run only on a
-settlement day.
+One named step of a business day, in a declared order: publish, refresh, bank
+cut-off, clearing, clearing-house cut-off, discharge, settlement, release,
+collection, end of day, then the date moves and cycles open. All but the last two
+run only on a settlement day.
 _Avoid_: step, stage, phase number
 
 **Closure**:

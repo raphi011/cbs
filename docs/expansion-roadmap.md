@@ -180,11 +180,11 @@ Cheap relative to what it exposes: every flow already shipped becomes something 
 reader can watch rather than infer. It is also the natural home for anything that
 wants to explain a `pacs.002` reason code at the point it was returned.
 
-**Tasks 1–3 have shipped**, which is the sub-project: the journal records the
-take as well as the put, `messages` is a table in all three schemas written at
-every send and every receive, and each listener serves its own institution's log
-with the file behind it. Tasks 4–7 are what is left — the phase doors, the mesh
-the deployment serves, the graph and the document viewer.
+**Tasks 1–4 have shipped**: the journal records the take as well as the put,
+`messages` is a table in all three schemas written at every send and every
+receive, each listener serves its own institution's log with the file behind it,
+and every phase of a business day is a door beside the clock. Tasks 5–7 are what
+is left — the mesh the deployment serves, the graph and the document viewer.
 
 Two things found while scoping it changed what it has to build, and the first of
 them is built.
@@ -196,13 +196,12 @@ order log it has been resting in. So a put with no take means one thing, which
 is a file waiting in a queue nobody has come for — the gap settle-before-release
 exists to teach, and the thing the graph draws.
 
-**Nothing can be stepped one hop.** `POST /payments/cutoff` on a bank's listener
-produces its `pacs.008` and is unrendered; after it the file sits in the clearing
-house's order log, because `csm.Work` is reachable only from `AdvanceDay`
-(`cmd/server/day.go:220`, its one call site). A reader can submit or run a whole
-day, and nothing in between. Exposing the clearing, settlement and release
-phases as operator acts — the deployment's own, on an operator surface — is what
-turns the log into something a reader watches rather than reads afterwards.
+**Nothing could be stepped one hop** — task 4. `csm.Work` was reachable only
+from `AdvanceDay`, so a reader could submit or run a whole day and nothing in
+between. Every phase the day declares is now a door on the operator surface,
+named and never parameterised, and the clock stays where it stood. What it costs
+is that stepping and advancing overlap with nothing recording how far the day
+has got, which is an argument for §3's re-entrancy audit and cursor.
 
 ### 2. Scenarios, and a deployment that starts blank — `spec`
 

@@ -1280,6 +1280,8 @@ The schedule, on a day the scheme settles:
 
 Two things it deliberately does not do. It **does not interleave**: each phase completes for every institution before the next begins, because real clearing is exactly this batched and a system that interleaved would be inventing concurrency it does not have. And it **does not run a cycle on a day TARGET is shut**.
 
+**Every line of that list is also a door**, so the day can be run a step at a time and stopped between any two of them — which is the only way to see a file *waiting* rather than a file that has arrived. See [the central bank's routes](#the-central-bank--8081).
+
 Three orderings in that list are load-bearing rather than presentational:
 
 - **The directory refresh is the day's first phase**, so a bank admitted since the last advance can be paid by its neighbours *today* rather than after somebody remembers to call the route. It is two phases and their order is the content: the clearing house **publishes** the table, and only then does every member collect it — a member collecting first would take yesterday's. It visits every **subscriber**, because a bank the roster does not name has no queue at the clearing house and nothing to collect from; admitting it is what republishes the table it is now in.
@@ -2078,9 +2080,16 @@ The settlement layer. Reserves move in its book and nowhere else.
 | `GET /messages`, `GET /messages/{seq}` | the files **this institution** sent and received, and one of them — see [a member bank's](#a-member-bank--8083-8084-) |
 | `GET /clock` | the deployment's business date, and the closure if TARGET is shut |
 | `POST /clock/day` | run one business day and move to the next; answers with the day's report |
+| `GET /clock/phases`, `POST /clock/phases/{phase}` | the day's phases in the order it runs them, and one of them on its own |
 | `POST /admin/reset` | clear every store and rebuild the sample dataset |
 
-**The two clock routes are the OPERATOR's, and they are here for `POST /admin/reset`'s reason.** Advancing the day drives all N+2 institutions, so it is an act over a *deployment* and a deployment is not an institution — and it takes the same lock the reset takes, because there is one deployment behind every port. It is **one-way**: only a reset rewinds it, which puts the button nearer `Reset` than to anything else on a console. On a day TARGET is shut it still advances; nothing clears, the readout says why, and that is the lesson rather than a state to be prevented.
+**The clock routes are the OPERATOR's, and they are here for `POST /admin/reset`'s reason.** Advancing the day drives all N+2 institutions, so it is an act over a *deployment* and a deployment is not an institution — and it takes the same lock the reset takes, because there is one deployment behind every port. It is **one-way**: only a reset rewinds it, which puts the button nearer `Reset` than to anything else on a console. On a day TARGET is shut it still advances; nothing clears, the readout says why, and that is the lesson rather than a state to be prevented.
+
+**A phase is a door, so a day can be run a step at a time.** `POST /clock/day` runs eleven phases and answers with what all of them moved together; `POST /clock/phases/clearing` runs one and stops. That is how a reader watches a file *wait*: after the cut-off the `pacs.008` is sitting in the clearing house's order log, and after the clearing the `pacs.002` is sitting in the payer's bank's download queue with nobody having come for it. Each door answers with the same three lists a day's report carries, narrowed to what that phase did — and **the clock does not move**, because a phase is a step inside a day and only advancing the day ends one.
+
+A phase is **named and never parameterised**: the key is the phase's own name spelt for a URL, `GET /clock/phases` is where the names come from, and a name the day does not declare is a `400`. There is no route that runs a range of them, and none that runs a phase narrowed to one queue — a caller wanting a shorter run opens the doors it wants, in the order the day declares them. `settlementOnly` is in the listing rather than enforced by the door: on a day the scheme is shut `POST /clock/day` skips the clearing phases, and an operator who names one has already decided they want it.
+
+**Stepping and advancing overlap, and nothing stops them.** A phase run by hand and then a `POST /clock/day` runs that phase twice, because nothing records how far the day has got. Today that is survivable rather than safe — a cut-off empties the hub it drains, the clearing house works through a pending list, and the end-of-day advancement guards make a second close a no-op — and it is why a clock that ticks on its own needs a durable cursor before anything may fire a phase with no human behind it.
 
 **`GET /cycles` was here and is not.** A cycle is the clearing house's row: this institution holds no cycles table, is told a set of positions and a reference, and records what it discharged. The route was invisible while one database served every institution and is a missing table now. It is on the clearing house, where the cut-off is.
 

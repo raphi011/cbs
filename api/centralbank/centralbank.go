@@ -21,9 +21,9 @@ type Institution interface {
 }
 
 // An Operator is the DEPLOYMENT: a business day drives all N+2 institutions and
-// none of them owns it. These four are served on this listener because that is
-// where the operator's console lives, and on this interface because the type
-// system should say whose acts they are.
+// none of them owns it. These are served on this listener because that is where
+// the operator's console lives, and on this interface because the type system
+// should say whose acts they are.
 type Operator interface {
 	// Members is every bank the deployment holds a database for, each read out of
 	// its own database.
@@ -36,6 +36,11 @@ type Operator interface {
 	// business day and moves it to the next.
 	BusinessDate() api.BusinessDateDTO
 	AdvanceDay(ctx context.Context) (api.DayReportDTO, error)
+
+	// Phases is the business day as it is declared, in order, and RunPhase runs
+	// one of them without moving the clock. A phase is named, never parameterised.
+	Phases() []api.PhaseDTO
+	RunPhase(ctx context.Context, phase string) (api.PhaseReportDTO, error)
 }
 
 // surface is the handler receiver: one institution and the operator whose

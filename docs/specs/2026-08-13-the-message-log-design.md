@@ -124,6 +124,41 @@ the rule that a business day is a declared sequence's ruling holds:
 a phase is named, never parameterised, and a caller composes derived runs around
 it rather than splicing.
 
+**The doors sit with the clock**, on the settlement agent's listener beside
+`POST /clock/day`, because they are the same act at a finer grain: `GET
+/clock/phases` is the declaration and `POST /clock/phases/{phase}` runs one of
+them. Five things follow from "named, never parameterised", and each was a
+decision:
+
+- **A key is the phase's own name spelt for a URL** — lowercased, spaces
+  hyphenated. Not a second identifier declared beside the name, which would be
+  one more thing to keep in step; the listing is where a client reads them, and
+  two phases spelling alike is a panic at boot rather than a door that shadows
+  another.
+- **A phase a SEQUENCE holds and the day does not declare gets no door.** The
+  narrowed collection (`collectClearingHouseOnly`) is cut to fit
+  `carryToClearing` and is the one phase in the codebase the day does not
+  declare; offering it would be offering a splice.
+- **`settlementOnly` is reported, not enforced.** It stays what it already is —
+  `AdvanceDay`'s question — because a caller that named a phase has decided it
+  wants it, which is the existing rule for a derived sequence and not a new one.
+- **No door for the clock move.** Stepping every phase of a day leaves the date
+  where it was, and only `POST /clock/day` moves it. Making the roll an event
+  among the others is [the scheduled business day](2026-08-13-a-scheduled-business-day-design.md)'s
+  one structural change, and pre-empting it here would land it without the
+  cursor that makes it safe.
+- **Each door drains the journal and reports what it moved**, exactly as
+  `AdvanceDay` and `CarryToClearing` already do. So a report is what *this call*
+  did, and a day advanced after some phases were stepped reports only the rest.
+
+**What it costs is that stepping and advancing overlap.** A phase run by hand
+and then a whole day runs that phase twice, and nothing refuses it, because
+nothing records how far the day has got. The guards that make this survivable
+today are the ones the scheduled business day's *phase re-entrancy* section
+names — and this is the change that first puts a re-run within reach of a
+browser, which is an argument for that record's phase 2 rather than against this
+door.
+
 **`Collect` is journalled.** Gap 4 above. A file is put into a queue in one event
 and taken out in another, and the graph renders a queued-and-uncollected file as
 a dot resting on the wire at the receiving bank's end. That gap *is*

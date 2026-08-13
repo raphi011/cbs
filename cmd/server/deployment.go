@@ -102,7 +102,7 @@ type Deployment struct {
 	// one identity a bank has.
 	banks map[iso20022.BIC]*bank.Bank
 
-	// resetMu serializes Reset AND AdvanceDay.
+	// resetMu serializes Reset AND anything that runs a phase of a business day.
 	resetMu sync.Mutex
 }
 

@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"fmt"
+	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -92,8 +94,7 @@ type DayReport struct {
 	Problems []node.Problem
 }
 
-// toBusinessDateDTO and toDayReportDTO render the deployment's own values onto
-// the wire.
+// The deployment's own values, rendered onto the wire.
 func toBusinessDateDTO(d BusinessDate) api.BusinessDateDTO {
 	return api.BusinessDateDTO{
 		Date:          d.Date.Format(time.DateOnly),
@@ -103,30 +104,40 @@ func toBusinessDateDTO(d BusinessDate) api.BusinessDateDTO {
 }
 
 func toDayReportDTO(r DayReport) api.DayReportDTO {
+	return api.DayReportDTO{
+		Ran:          toBusinessDateDTO(r.Ran),
+		Next:         toBusinessDateDTO(r.Next),
+		MovementsDTO: toMovementsDTO(r.Files, r.Outcomes, r.Problems),
+	}
+}
+
+// toMovementsDTO renders what a run moved, whether that run was a whole day or
+// one phase of one.
+func toMovementsDTO(files []node.FileMoved, outcomes []node.TransactionOutcome,
+	problems []node.Problem) api.MovementsDTO {
+
 	// The three slices are made non-nil, so a quiet day is [] on the wire and
 	// not null: a client that had to treat the two alike would be re-deriving
 	// "nothing happened" from a JSON quirk.
-	out := api.DayReportDTO{
-		Ran:      toBusinessDateDTO(r.Ran),
-		Next:     toBusinessDateDTO(r.Next),
-		Files:    make([]api.FileMovedDTO, 0, len(r.Files)),
-		Outcomes: make([]api.TransactionOutcomeDTO, 0, len(r.Outcomes)),
-		Problems: make([]api.ProblemDTO, 0, len(r.Problems)),
+	out := api.MovementsDTO{
+		Files:    make([]api.FileMovedDTO, 0, len(files)),
+		Outcomes: make([]api.TransactionOutcomeDTO, 0, len(outcomes)),
+		Problems: make([]api.ProblemDTO, 0, len(problems)),
 	}
-	for _, f := range r.Files {
+	for _, f := range files {
 		out.Files = append(out.Files, api.FileMovedDTO{
 			From: string(f.From), To: string(f.To),
 			OrderType: string(f.OrderType), OrderID: string(f.OrderID),
 			Movement: string(f.Movement),
 		})
 	}
-	for _, o := range r.Outcomes {
+	for _, o := range outcomes {
 		out.Outcomes = append(out.Outcomes, api.TransactionOutcomeDTO{
 			DecidedBy: string(o.DecidedBy), Payment: string(o.Payment),
 			Status: string(o.Status), Code: string(o.Code), Text: o.Text,
 		})
 	}
-	for _, p := range r.Problems {
+	for _, p := range problems {
 		out.Problems = append(out.Problems, api.ProblemDTO{
 			Institution: string(p.Institution), OrderID: string(p.OrderID), Detail: p.Detail,
 		})
@@ -357,6 +368,57 @@ var carryToClearingPhases = append(
 var subscribePhases = only(beforeClock, phasePublishRoster, phaseRefresh)
 
 // ---------------------------------------------------------------------------
+// The doors: one per phase, so a day can be run a step at a time
+// ---------------------------------------------------------------------------
+
+// dayPhases is every phase a business day declares, in the order it runs them,
+// and it is the whole list of doors. A derived sequence is not in it and neither
+// is the narrowed collection — see the design record.
+var dayPhases = append(slices.Clone(beforeClock), afterClock...)
+
+// phaseKey is a phase's name spelt for a URL, which is the only identifier a
+// door has: a phase is named, never parameterised.
+func phaseKey(name string) string {
+	return strings.ToLower(strings.ReplaceAll(name, " ", "-"))
+}
+
+// phaseDoors is every phase by its key. Building it at init is what makes two
+// phases spelt alike a boot failure rather than a door that shadows another.
+var phaseDoors = doorsOf(dayPhases)
+
+func doorsOf(list []phase) map[string]phase {
+	out := make(map[string]phase, len(list))
+	for _, p := range list {
+		key := phaseKey(p.name)
+		if _, dup := out[key]; dup {
+			panic(fmt.Sprintf("server: two phases of a business day are spelt %q", key))
+		}
+		out[key] = p
+	}
+	return out
+}
+
+// afterTheClock reports whether a phase runs once the date has moved.
+func afterTheClock(p phase) bool {
+	return slices.ContainsFunc(afterClock, func(q phase) bool { return q.id == p.id })
+}
+
+func toPhaseDTO(p phase) api.PhaseDTO {
+	return api.PhaseDTO{
+		Key: phaseKey(p.name), Name: p.name,
+		SettlementOnly: p.settlementOnly, AfterClock: afterTheClock(p),
+	}
+}
+
+func toPhaseReportDTO(r PhaseReport) api.PhaseReportDTO {
+	return api.PhaseReportDTO{
+		Phase:        toPhaseDTO(r.Phase),
+		Ran:          toBusinessDateDTO(r.Ran),
+		MovementsDTO: toMovementsDTO(r.Files, r.Outcomes, r.Problems),
+	}
+}
+
+// ---------------------------------------------------------------------------
 // The day itself
 // ---------------------------------------------------------------------------
 
@@ -385,6 +447,36 @@ func (d *Deployment) AdvanceDay(ctx context.Context) (DayReport, error) {
 		Outcomes: outcomes,
 		Problems: problems,
 	}, err
+}
+
+// A PhaseReport is one phase of a business day and everything it moved. It
+// carries no next date: a phase is a step inside a day, and only advancing the
+// day moves the clock.
+type PhaseReport struct {
+	Phase phase
+	Ran   BusinessDate
+
+	Files    []node.FileMoved
+	Outcomes []node.TransactionOutcome
+	Problems []node.Problem
+}
+
+// RunPhase runs ONE named phase of the business day and hands back what it
+// moved. It runs the phase whatever day it is: settlementOnly is AdvanceDay's
+// question, and a caller that named a phase has already decided it wants it.
+func (d *Deployment) RunPhase(ctx context.Context, key string) (PhaseReport, error) {
+	p, ok := phaseDoors[key]
+	if !ok {
+		return PhaseReport{}, api.BadRequest("no phase of a business day is spelt %q", key)
+	}
+	d.resetMu.Lock()
+	defer d.resetMu.Unlock()
+
+	ran := d.BusinessDate()
+	d.journal.problem(runPhases(ctx, d, []phase{p})...)
+
+	files, outcomes, problems := d.journal.take()
+	return PhaseReport{Phase: p, Ran: ran, Files: files, Outcomes: outcomes, Problems: problems}, nil
 }
 
 // Subscribe is the clearing house publishing its routing table and every member

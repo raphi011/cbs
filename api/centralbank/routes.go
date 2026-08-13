@@ -26,7 +26,7 @@ func Routes(inst Institution, op Operator) *api.Router {
 	mux.HandleFunc("GET /assets", api.HandleListAssets)
 	// Reset clears the store and reseeds it.
 	s.registerAdminRoutes(mux)
-	// The business date, and the button that advances it.
+	// The business date, the button that advances it, and a door per phase.
 	s.registerClockRoutes(mux)
 	return mux
 }
