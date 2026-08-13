@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/raphi011/cbs/calendar"
-	"github.com/raphi011/cbs/deposit"
 	"github.com/raphi011/cbs/ebics"
 	"github.com/raphi011/cbs/iso20022"
 	"github.com/raphi011/cbs/ledger"
@@ -312,62 +311,24 @@ func (d *Deployment) nextMsgID(from iso20022.BIC) string {
 // The doors: everything that comes into this system from outside a business day
 // ---------------------------------------------------------------------------
 
-// Submit runs the submitting bank's half synchronously and hands the
-// instruction to that bank's hub.
+// Submit is the ROUTING question and only that: which of this deployment's
+// banks does this scheme have submit the instruction? Every judgement about it
+// is that bank's own, and is made in bank.Bank.Submit.
 func (d *Deployment) Submit(ctx context.Context, req payment.InitiatePaymentRequest) (payment.Payment, error) {
 	scheme, ok := d.csm.Network().Scheme(req.Scheme)
 	if !ok {
 		return payment.Payment{}, fmt.Errorf("server: no scheme %q, so no bank submits it: %w", req.Scheme, payment.ErrSchemeNotFound)
 	}
-	// A payment that never leaves one bank is not a payment this system carries.
+	// On-us, asked before the routing: SubmitterOf answers one of two addresses
+	// that are the same one, and "this deployment holds no bank at X" would be the
+	// wrong thing to say about an instruction whose fault is that it stays put.
 	if req.DebtorDetails.Agent != "" && req.DebtorDetails.Agent == req.CreditorDetails.Agent {
 		return payment.Payment{}, fmt.Errorf("server: %s is both the payer's bank and the payee's for this instruction: %w",
 			req.DebtorDetails.Agent, payment.ErrOnUsPayment)
 	}
-	// And a payment one of whose banks the scheme has not admitted.
-	for _, side := range []struct {
-		role  string
-		agent iso20022.BIC
-	}{
-		{"payer's bank", req.DebtorDetails.Agent},
-		{"payee's bank", req.CreditorDetails.Agent},
-	} {
-		// A side naming no bank is skipped rather than refused, exactly as the
-		// on-us guard above skips it: "not a member" is not the truth about a
-		// party the request did not name.
-		if side.agent == "" {
-			continue
-		}
-		if _, err := d.csm.Network().GetRosterEntryByBIC(ctx, side.agent); err != nil {
-			if errors.Is(err, payment.ErrRosterEntryNotFound) {
-				return payment.Payment{}, fmt.Errorf("server: the %s, %s, is not a member of %s: %w",
-					side.role, side.agent, req.Scheme, payment.ErrBankNotAdmitted)
-			}
-			return payment.Payment{}, err
-		}
-	}
-
 	b, err := d.member(payment.SubmitterOf(scheme, req.DebtorDetails.Agent, req.CreditorDetails.Agent))
 	if err != nil {
 		return payment.Payment{}, err
-	}
-	// On-us, asked by ADDRESS, and this is the arm that fires for an instruction a
-	// customer actually hands in.
-	counterparty := req.Creditor
-	if scheme.Direction() == payment.Pull {
-		counterparty = req.Debtor
-	}
-	if counterparty.Identifier != (deposit.Identifier{}) {
-		switch _, err := b.Network().ResolveIdentifier(node.WithActor(ctx, b.BIC()), counterparty.Identifier); {
-		case err == nil:
-			return payment.Payment{}, fmt.Errorf("server: %s holds both the payer's account and the payee's for this instruction: %w",
-				b.BIC(), payment.ErrOnUsPayment)
-		case errors.Is(err, deposit.ErrIdentifierNotFound):
-			// The ordinary case: the payee is somebody else's customer, which is
-			// the only thing this bank can conclude and the only thing it needs to.
-		default:
-			return payment.Payment{}, err
-		}
 	}
 	return b.Submit(ctx, req)
 }

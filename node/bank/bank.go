@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/raphi011/cbs/deposit"
 	"github.com/raphi011/cbs/ebics"
 	"github.com/raphi011/cbs/iso20022"
 	"github.com/raphi011/cbs/ledger"
@@ -89,6 +90,22 @@ func (b *Bank) Lodge(ctx context.Context, asset ledger.AssetCode, amount ledger.
 	return in, nil
 }
 
+// routes reports whether this bank's own copy of the routing directory names an
+// address. A stale directory is a real condition to be in, and it is the one a
+// member bank actually acts on: nothing here reads the clearing house's rows.
+func (b *Bank) routes(ctx context.Context, bic iso20022.BIC) (bool, error) {
+	entries, err := b.ops.ListDirectory(ctx)
+	if err != nil {
+		return false, fmt.Errorf("server: %s cannot read its own routing directory: %w", b.bic, err)
+	}
+	for _, e := range entries {
+		if e.BIC == bic {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 // TakeDirectory replaces this bank's copy of the scheme's routing directory
 // with the roster it has been handed.
 func (b *Bank) TakeDirectory(ctx context.Context, published []payment.RosterEntry) ([]payment.DirectoryEntry, error) {
@@ -133,9 +150,69 @@ func (b *Bank) upload(ctx context.Context, to iso20022.BIC, c *ebics.Client, env
 	return id, nil
 }
 
-// Submit is a bank taking its own customer's instruction into its hub.
+// Submit is a bank taking its own customer's instruction into its hub. Every
+// question it asks is answered from THIS bank's own rows, which is the whole of
+// what a bank has: its scheme registry, its routing directory, its register.
 func (b *Bank) Submit(ctx context.Context, req payment.InitiatePaymentRequest) (payment.Payment, error) {
 	ctx = node.WithActor(ctx, b.bic)
+
+	scheme, ok := b.ops.Scheme(req.Scheme)
+	if !ok {
+		return payment.Payment{}, fmt.Errorf("server: %s has not joined %q: %w", b.bic, req.Scheme, payment.ErrSchemeNotFound)
+	}
+	// A payment that never leaves one bank is not a payment this system carries.
+	if req.DebtorDetails.Agent != "" && req.DebtorDetails.Agent == req.CreditorDetails.Agent {
+		return payment.Payment{}, fmt.Errorf("server: %s is both the payer's bank and the payee's for this instruction: %w",
+			req.DebtorDetails.Agent, payment.ErrOnUsPayment)
+	}
+	// And a payment one of whose banks this bank's directory does not route to.
+	for _, side := range []struct {
+		role  string
+		agent iso20022.BIC
+	}{
+		{"payer's bank", req.DebtorDetails.Agent},
+		{"payee's bank", req.CreditorDetails.Agent},
+	} {
+		// A side naming no bank is skipped rather than refused, exactly as the
+		// on-us guard above skips it: "not a member" is not the truth about a
+		// party the request did not name.
+		if side.agent == "" {
+			continue
+		}
+		routed, err := b.routes(ctx, side.agent)
+		if err != nil {
+			return payment.Payment{}, err
+		}
+		if !routed {
+			return payment.Payment{}, fmt.Errorf("server: %s's directory does not route to the %s, %s, under %s: %w",
+				b.bic, side.role, side.agent, req.Scheme, payment.ErrBankNotAdmitted)
+		}
+	}
+	// And an instruction this scheme has the OTHER side send. On a collection the
+	// submitting bank is the payee's, so this is half the schemes rather than a
+	// corner: a console that wants to submit as another bank posts to that bank.
+	if submitter := payment.SubmitterOf(scheme, req.DebtorDetails.Agent, req.CreditorDetails.Agent); submitter != b.bic {
+		return payment.Payment{}, fmt.Errorf("server: %s was handed an instruction %s submits under %s: %w",
+			b.bic, submitter, req.Scheme, payment.ErrNotTheSubmittingAgent)
+	}
+	// On-us, asked by ADDRESS, and this is the arm that fires for an instruction a
+	// customer actually hands in.
+	counterparty := req.Creditor
+	if scheme.Direction() == payment.Pull {
+		counterparty = req.Debtor
+	}
+	if counterparty.Identifier != (deposit.Identifier{}) {
+		switch _, err := b.ops.ResolveIdentifier(ctx, counterparty.Identifier); {
+		case err == nil:
+			return payment.Payment{}, fmt.Errorf("server: %s holds both the payer's account and the payee's for this instruction: %w",
+				b.bic, payment.ErrOnUsPayment)
+		case errors.Is(err, deposit.ErrIdentifierNotFound):
+			// The ordinary case: the payee is somebody else's customer, which is
+			// the only thing this bank can conclude and the only thing it needs to.
+		default:
+			return payment.Payment{}, err
+		}
+	}
 
 	p, err := b.ops.TakeInstruction(ctx, req)
 	if err != nil {

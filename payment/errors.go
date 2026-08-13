@@ -33,6 +33,11 @@ var (
 	// institution.
 	ErrOnUsPayment = errors.New("payment: both parties bank at the same institution, which is a book transfer and not a clearing payment")
 
+	// ErrNotTheSubmittingAgent is an instruction handed to a bank that is not the
+	// one this scheme has submit it. On a collection that is the payee's bank,
+	// which is why it is half the schemes. See SubmitterOf.
+	ErrNotTheSubmittingAgent = errors.New("payment: this scheme has the other side submit this instruction")
+
 	// ErrPaymentNotFound is returned when a payment ID does not match any
 	// payment in the system.
 	ErrPaymentNotFound = errors.New("payment not found")

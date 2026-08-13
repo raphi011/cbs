@@ -77,6 +77,10 @@ var reasonTable = []reasonMapping{
 	// nothing for "both of these parties are yours".
 	{ErrOnUsPayment, "ErrOnUsPayment", iso20022.StatusReasonNotSpecifiedAgentGenerated},
 
+	// An instruction handed to the bank that does not submit it, and MS03 for the
+	// reason above: nothing in the code set says "the other agent sends this one".
+	{ErrNotTheSubmittingAgent, "ErrNotTheSubmittingAgent", iso20022.StatusReasonNotSpecifiedAgentGenerated},
+
 	// Its sibling, and RC01 rather than MS03 because there IS a code for this one:
 	// "the BIC does not identify a reachable participant" is exactly what an
 	// absent or malformed CdtrAgt/DbtrAgt means.

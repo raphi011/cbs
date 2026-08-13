@@ -164,6 +164,10 @@ func errorStatus(err error) int {
 		// legitimate thing to want; what refuses it is that this route does not carry
 		// it.
 		errors.Is(err, payment.ErrOnUsPayment),
+		// An instruction posted to the bank that does not submit it, and the same
+		// category once more: it is well formed, and what refuses it is that this
+		// console is the wrong bank's. The other bank's console carries it.
+		errors.Is(err, payment.ErrNotTheSubmittingAgent),
 		// A payment to or from a bank the scheme has not admitted is the same
 		// category again: the request is well formed, both accounts are real, and
 		// what refuses it is that this route does not carry it — a founded bank has a

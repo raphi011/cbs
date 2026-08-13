@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"errors"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/raphi011/cbs/ebics"
@@ -361,4 +363,45 @@ func paymentIDs(ps []payment.Payment) []payment.PaymentID {
 		out = append(out, p.ID)
 	}
 	return out
+}
+
+// A bank refuses an instruction this scheme has the OTHER bank submit. On a
+// collection the submitting side is the payee's bank, so a direct debit posted
+// to the payer's console is a customer of one bank trying to make another bank
+// send: the defect the doors were routing around, and half the schemes.
+func TestABankRefusesAnInstructionTheOtherSideSubmits(t *testing.T) {
+	h := newHarness(t)
+
+	payer, err := h.dep.member(h.debtorBIC)
+	if err != nil {
+		t.Fatalf("member %s: %v", h.debtorBIC, err)
+	}
+	req := h.directDebitRequest(t)
+
+	_, err = payer.Submit(context.Background(), req)
+	if !errors.Is(err, payment.ErrNotTheSubmittingAgent) {
+		t.Fatalf("the payer's bank answered %v to a collection its payee's bank submits, want a refusal", err)
+	}
+	// Both banks are named, because the refusal's whole content is which of them
+	// this instruction belongs to.
+	for _, bic := range []iso20022.BIC{h.debtorBIC, h.creditorBIC} {
+		if !strings.Contains(err.Error(), string(bic)) {
+			t.Errorf("the refusal does not name %s: %v", bic, err)
+		}
+	}
+	// And nothing was taken: a refused instruction is not in anybody's hub.
+	for _, bic := range []iso20022.BIC{h.debtorBIC, h.creditorBIC} {
+		if got := h.pending(t, bic); len(got) != 0 {
+			t.Errorf("%s's hub holds %v after the refusal", bic, paymentIDs(got))
+		}
+	}
+
+	// The payee's bank is the one that takes it, over the same request.
+	payee, err := h.dep.member(h.creditorBIC)
+	if err != nil {
+		t.Fatalf("member %s: %v", h.creditorBIC, err)
+	}
+	if _, err := payee.Submit(context.Background(), req); err != nil {
+		t.Fatalf("the payee's bank refused the collection it submits: %v", err)
+	}
 }

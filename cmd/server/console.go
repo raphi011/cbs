@@ -50,20 +50,16 @@ func (o operator) AdvanceDay(ctx context.Context) (api.DayReportDTO, error) {
 	return toDayReportDTO(report), err
 }
 
-// bankConsole is one member bank's surface plus the two doors the DEPLOYMENT
-// still performs on that bank's behalf: a customer posting here can make
-// another bank submit, and a refresh reads the clearing house's rows in
-// process. Both are recorded breaches, not the design; see the design record.
+// bankConsole is one member bank's surface plus the one door the DEPLOYMENT
+// still performs on that bank's behalf: a refresh reads the clearing house's
+// rows in process. That is a recorded breach, not the design; see the design
+// record.
 type bankConsole struct {
 	*bank.Bank
 	d *Deployment
 }
 
 var _ bankapi.Institution = bankConsole{}
-
-func (c bankConsole) Submit(ctx context.Context, req payment.InitiatePaymentRequest) (payment.Payment, error) {
-	return c.d.Submit(ctx, req)
-}
 
 func (c bankConsole) RefreshDirectory(ctx context.Context) ([]payment.DirectoryEntry, error) {
 	return c.d.RefreshDirectory(ctx, c.BIC())
