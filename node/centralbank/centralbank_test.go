@@ -32,9 +32,8 @@ func (silentJournal) File(node.FileMoved)             {}
 func (silentJournal) Outcome(node.TransactionOutcome) {}
 
 // refusing is a settlement agent whose lodgement act fails with one error. It
-// keeps what it is asked to record and is otherwise unreachable: the two tests
-// below drive that act alone, and every file this agent addresses goes through
-// the message log on the way out.
+// keeps what it is asked to record and is otherwise unreachable, because the
+// tests below drive that one act.
 type refusing struct {
 	ops
 	err      error

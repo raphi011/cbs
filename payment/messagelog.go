@@ -78,10 +78,9 @@ func PaymentsIn(doc iso20022.Document) []PaymentID {
 			add(tx.OrgnlTxId)
 		}
 	case *iso20022.Pacs002:
-		// A status naming no transaction is the FF01 answer to a file that would
-		// not parse. And one answering a pacs.009 names the CUT-OFF rather than a
-		// payment, because that is what a settlement instruction identifies — the
-		// original message definition is the only thing that tells the two apart.
+		// A status naming no transaction is the FF01 answer to a file that would not
+		// parse; one answering a pacs.009 names the CUT-OFF rather than a payment,
+		// and the original message definition is what tells those two apart.
 		orig, reports := ReadStatus(d)
 		if orig.MsgDefIdr == (iso20022.Pacs009{}).MessageDefinitionIdentifier() {
 			return nil

@@ -21,7 +21,7 @@ export interface Point {
   y: number;
 }
 
-export interface Node {
+export interface InstitutionNode {
   bic: string;
   name: string;
   role: InstitutionRole;
@@ -52,7 +52,7 @@ export interface Edge {
 }
 
 export interface Graph {
-  nodes: Node[];
+  nodes: InstitutionNode[];
   edges: Edge[];
 }
 
@@ -71,6 +71,13 @@ export function wireKey(subscriber: string, host: string): string {
   return `${subscriber}|${host}`;
 }
 
+// wireEnds reads a key back. It is here rather than at the caller because the
+// format is this module's, and a selected wire travels as its key.
+export function wireEnds(key: string): { subscriber: string; host: string } {
+  const [subscriber, host] = key.split("|");
+  return { subscriber, host };
+}
+
 // codeOf is the institution code of a BIC: characters 1-4. A BIC shorter than
 // that is answered whole rather than padded, because a deployment configured
 // with a stub address should still draw.
@@ -83,7 +90,7 @@ export function codeOf(bic: string): string {
 // listeners were bound: stable across a reload, so a node does not move because
 // a file did.
 export function layout(flow: Pick<NetworkFlow, "institutions" | "wires">): Graph {
-  const at = new Map<string, Node>();
+  const at = new Map<string, InstitutionNode>();
   const banks = flow.institutions.filter((i) => i.role === "member bank");
 
   for (const i of flow.institutions) {
@@ -114,7 +121,7 @@ function spread(index: number, n: number): number {
   return MARGIN + (usable * index) / (n - 1);
 }
 
-function route(w: Wire, at: Map<string, Node>): Edge | null {
+function route(w: Wire, at: Map<string, InstitutionNode>): Edge | null {
   const from = at.get(w.subscriber);
   const to = at.get(w.host);
   // A wire naming an institution the mesh did not list is dropped rather than
@@ -154,7 +161,7 @@ const CLEARANCE = 36;
 // outward from the centre — leftward for a bank sitting exactly on it — and it
 // is at least enough to clear the clearing house, which a bank near the middle
 // of the row would otherwise be wired straight through.
-function control(from: Node, to: Node): { x: number; y: number } {
+function control(from: InstitutionNode, to: InstitutionNode): { x: number; y: number } {
   const centre = CANVAS.width / 2;
   const left = from.x <= centre;
   // A quadratic sits at (p0 + 2c + p1) / 4 halfway along, and halfway is where
@@ -166,14 +173,14 @@ function control(from: Node, to: Node): { x: number; y: number } {
   return { x: clamp(x, -40, CANVAS.width + 40), y: (from.y + to.y) / 2 };
 }
 
-function bow(from: Node, to: Node): string {
+function bow(from: InstitutionNode, to: InstitutionNode): string {
   const c = control(from, to);
   return `M ${from.x} ${from.y} Q ${c.x} ${c.y} ${to.x} ${to.y}`;
 }
 
 // bowPoint is the quadratic Bézier at t, which is where a dot has to sit to be
 // ON the curve rather than on the straight line between its ends.
-function bowPoint(from: Node, to: Node, t: number): { x: number; y: number } {
+function bowPoint(from: InstitutionNode, to: InstitutionNode, t: number): { x: number; y: number } {
   const c = control(from, to);
   const u = 1 - t;
   return {
@@ -182,7 +189,7 @@ function bowPoint(from: Node, to: Node, t: number): { x: number; y: number } {
   };
 }
 
-function along(from: Node, to: Node, t: number): { x: number; y: number } {
+function along(from: InstitutionNode, to: InstitutionNode, t: number): { x: number; y: number } {
   return { x: from.x + (to.x - from.x) * t, y: from.y + (to.y - from.y) * t };
 }
 
@@ -206,12 +213,12 @@ export function isResting(c: Crossing): boolean {
 // is reachable by nobody.
 export function restingByWire(crossings: Crossing[], wires: Wire[]): Map<string, Resting> {
   const known = new Map<string, Wire>();
-  for (const w of wires) known.set(pair(w.subscriber, w.host), w);
+  for (const w of wires) known.set(eitherWay(w.subscriber, w.host), w);
 
   const out = new Map<string, Resting>();
   for (const c of crossings) {
     if (!isResting(c)) continue;
-    const w = known.get(pair(c.from, c.to));
+    const w = known.get(eitherWay(c.from, c.to));
     if (!w) continue;
     const key = wireKey(w.subscriber, w.host);
     let held = out.get(key);
@@ -249,6 +256,6 @@ export function forReading(crossings: Crossing[]): Crossing[] {
   return [...resting, ...newestFirst.flatMap((d) => byDay.get(d)!)];
 }
 
-function pair(a: string, b: string): string {
+function eitherWay(a: string, b: string): string {
   return a < b ? `${a} ${b}` : `${b} ${a}`;
 }

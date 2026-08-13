@@ -167,10 +167,9 @@ func (b *Bank) upload(ctx context.Context, to iso20022.BIC, c *ebics.Client, env
 		return "", fmt.Errorf("server: %s could not upload a %s to %s: %w", b.bic, t, to, err)
 	}
 	b.env.Journal.File(node.FileMoved{From: b.bic, To: to, OrderType: t, OrderID: id, Movement: node.FilePut})
-	// Recorded after the file has gone, because the order id is minted by the
-	// host, and a failure here is LOGGED rather than returned: a caller told its
-	// upload failed would send the same instructions again, and the file has
-	// already arrived.
+	// Recorded after the file has gone, because the host mints the order id. A
+	// failure here is LOGGED rather than returned: a caller told its upload failed
+	// would send the same instructions again, and the file has already arrived.
 	if err := node.Record(ctx, b.ops, b.bic, payment.MessageSent, to, id, env, raw); err != nil {
 		b.env.Log.Error("server: a file was sent and not recorded", "bank", b.bic, "to", to, "order", id, "error", err)
 	}

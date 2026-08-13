@@ -4,7 +4,7 @@ import Link from "next/link";
 
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
-import { codeOf, forReading } from "@/lib/network-graph";
+import { codeOf, forReading, isResting } from "@/lib/network-graph";
 import { formatSize, shortDefinition } from "@/lib/message";
 import { formatDate } from "@/lib/dates";
 import type { Crossing } from "@/lib/types";
@@ -44,7 +44,6 @@ export function CrossingList({
 }
 
 function Row({ crossing: c, dense }: { crossing: Crossing; dense: boolean }) {
-  const resting = c.sentAt !== undefined && c.receivedAt === undefined;
   const unsent = c.sentAt === undefined;
   return (
     <li className="space-y-1 py-2">
@@ -57,7 +56,7 @@ function Row({ crossing: c, dense }: { crossing: Crossing; dense: boolean }) {
             {codeOf(c.from)} → {codeOf(c.to)}
           </span>
         </span>
-        {resting ? (
+        {isResting(c) ? (
           // Not an error and not a failure: a file put where its recipient can
           // reach it, which that recipient collects in its own phase.
           <Badge variant="outline" className="shrink-0 border-primary/40 text-primary">

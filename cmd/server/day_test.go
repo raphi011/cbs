@@ -177,10 +177,9 @@ var releaseWithoutCollectionByMembers = only(beforeClock,
 	phaseBankCutoff, phaseClearing, phaseClearingHouseCutoff,
 	phaseDischarge, phaseSettlement, phaseRelease)
 
-// A file put where its recipient can reach it and a file that recipient has
-// taken are two events, and the gap between them is what settling before
-// releasing leaves standing. A report that could not tell them apart would say
-// a bank had a file it has never been near.
+// A file put where its recipient can reach it and one that recipient has taken
+// are two events. A report that could not tell them apart would say a bank had
+// a file it has never been near.
 func TestAFileWaitingInAQueueIsDistinguishableFromACollectedOne(t *testing.T) {
 	h := newHarness(t)
 	h.submitCreditTransfer(t)

@@ -361,8 +361,19 @@ with everything else. Nothing here bounds it, and if a bound is wanted it is a
 retention decision with a domain consequence rather than a tuning knob.
 
 **A `messages` table is a schema change in three files**, so it is a
-documentation change: chapters 15 and 16, the README's *Persistence* section, and
-the schema comments themselves, which carry the domain argument.
+documentation change: the persistence chapter, which is where what gets a table
+is taught, the transport chapter, where what a bank keeps of a collected file
+is, the README's *Persistence* section, and the schema comments themselves,
+which carry the domain argument. Multi-asset accounting is untouched by any of
+it.
+
+**Only the write is doubled, and the reads are deliberately not.** `RecordMessage`
+and `RecordMessageTx` are the pair the standing rule asks for, because an
+institution writing payment rows about a file it is recording wants both in one
+unit of work. The two reads have no `Tx` sibling: nothing joins a listing to a
+write, and `GetMessage` is `ListMessages` narrowed to one seq rather than an act
+of its own. A `Tx` half nobody calls is the boilerplate that rule exists to
+avoid, not the doubling it exists to keep.
 
 **The push channel is a one-way door**, and the narrowing lands HERE. The rule
 that the deployment owns the clock claims *"no background goroutines under this
@@ -424,8 +435,8 @@ Tasks 1–3 are the sub-project. 4 is what makes 6 worth building, and 7 is what
 
 `README.md`'s transport section and *Persistence*; the three `0001_init.sql`
 files, whose comments are the domain argument for the relational mapping; the
-quiz chapters on the transport and the clearing cycle. `CONTEXT.md` gains
-**message log** only if the term is used in the UI.
+quiz chapters on persistence and on the transport. `CONTEXT.md` gains **message
+log** only if the term is used in the UI.
 
 `hint-content.ts` and the quiz chapters name no repo symbol, so what they may say
 is that an institution keeps a record of the files it sent and received — never a
@@ -451,7 +462,12 @@ the mechanism, and the graph is where a reader now meets them.
   business day: the count of sends at one institution equals the count of
   receives at its counterparty, for every pair.
 - **A payment reaches its own documents.** From a payment id to the `pacs.008`
-  that carried it, at each institution that holds a copy, on a seeded scenario.
+  that carried it, at each institution that holds a copy, on a deployment that
+  drove the transport. **The seed is the other half and is asserted too**: it
+  performs every institution's act itself and puts no file on any wire, so a
+  payment it builds reaches no document and no institution logs one. Both hold
+  at once, and a screen promising a file for every payment would be wrong on
+  every payment the seed made.
 - **A queued-and-uncollected file is distinguishable from a delivered one**,
   which is task 1's acceptance test and the thing the graph draws.
 - **No institution can read another's messages.** The listener test: a bank's
@@ -462,7 +478,10 @@ the mechanism, and the graph is where a reader now meets them.
   the phase reported are the same list.
 - **A file resting on a wire is never paged out**, whatever the limit, and a
   watcher that falls too far behind is dropped rather than waited for.
-- **`payment/recon` unaffected.** The log records; it decides nothing.
+- **`payment/recon` unaffected**, which is asserted by the suites that already
+  run it rather than by anything new: the log records and decides nothing, so
+  the claim is that `seed`'s whole-deployment check and `cmd/server`'s
+  calibration stay green with it writing.
 
 The graph's own rules are pure functions in `web/src/lib/network-graph.ts` and
 tested there, which is the only mechanical guard the frontend has: a bank the

@@ -18,9 +18,10 @@ import (
 // standing payment/recon has — it may open every institution's log precisely
 // because no institution may — and it is why this is not on any node package.
 
-// messageLog is what the mesh needs of an institution: its own half of every
-// crossing. All three kinds keep one and no two of them are the same type.
-type messageLog interface {
+// messageLister is the ONE method the mesh needs of an institution: its own
+// half of every crossing, listed. Narrower than the read a listener takes,
+// which is also handed one message at a time and this never asks for.
+type messageLister interface {
 	ListMessages(ctx context.Context, f payment.MessageFilter) ([]payment.Message, error)
 }
 
@@ -74,8 +75,8 @@ func (d *Deployment) wires() []api.WireDTO {
 
 // messageLogs is every institution's message log, keyed by the institution
 // holding it.
-func (d *Deployment) messageLogs() map[iso20022.BIC]messageLog {
-	out := map[iso20022.BIC]messageLog{
+func (d *Deployment) messageLogs() map[iso20022.BIC]messageLister {
+	out := map[iso20022.BIC]messageLister{
 		d.cfg.ClearingHouseBIC: d.csm.Network(),
 		d.cfg.CentralBankBIC:   d.cb.Network(),
 	}

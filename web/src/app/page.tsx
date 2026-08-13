@@ -50,7 +50,7 @@ export default function Lobby() {
       <section className="space-y-3">
         <h2 className="flex items-center gap-1.5 text-sm font-medium text-muted-foreground">
           The network
-          <Hint id="payment-hub" />
+          <Hint id="store-split" />
         </h2>
         <NetworkView />
       </section>

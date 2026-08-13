@@ -55,9 +55,18 @@ Old `/participants/…` links are forwarded by `app/participants/[...rest]/page.
 The central bank, the clearing house and a bank's back office share one
 `ConsoleShell` from `components/shell/`, parameterised by identity; the
 customer's shell has no left panel, a different-enough arrangement that it
-doesn't join that group. `plain-shell` is the lobby's and Learn's.
+doesn't join that group. `plain-shell` is the lobby's and Learn's. **The right
+rail carries the network above the concept panel** — `NetworkRail` from
+`components/network/`, desktop only, suppressed on the lobby, which carries
+`NetworkView` at full size instead. That rail is the OPERATOR's frame around a
+persona, never a persona's own chrome: a bank's screens must not grow it.
 
-**Reusable primitives — don't rebuild these** (`src/components/`): `Hint` (the `?` popover, registry in `hint-content.ts`), `Money`/`MoneyInput`/`AmountCell`, `DataTable`, `EnumBadge`, `ConfirmAction`, `Combobox` + domain pickers in `pickers/` (`ParticipantPicker`, `DepositAccountPicker`, `GLAccountPicker`) — use these for ID entry, never free-text. `PageHeader`, `FieldLabel`, `IdText` (monospace ID display), `ErrorState`.
+**Reusable primitives — don't rebuild these** (`src/components/`): `Hint` (the `?` popover, registry in `hint-content.ts`), `Money`/`MoneyInput`/`AmountCell`, `DataTable`, `EnumBadge`, `ConfirmAction`, `Combobox` + domain pickers in `pickers/` (`ParticipantPicker`, `DepositAccountPicker`, `GLAccountPicker`) — use these for ID entry, never free-text. `PageHeader`, `FieldLabel`, `IdText` (monospace ID display), `ErrorState`. The
+network's own pieces live in `components/network/` — `FlowGraph`, `CrossingList`,
+`PhaseStepper`, and one app-wide `EventSource` mounted in `Providers`; their
+rules are pure functions in `lib/network-graph.ts` and tested there, which is the
+only mechanical guard the rendering has. `components/payment/` is the same shape
+for a payment's trail and its documents, over `lib/payment-trail.ts`.
 
 ## Backend contract gotchas (cause real failures)
 

@@ -162,6 +162,44 @@ func TestASeqNoListingNamedIsNotFound(t *testing.T) {
 	}
 }
 
+// A seq counts ONE institution's own traffic, so the same number at another
+// institution names that institution's message or nothing at all. It is never
+// the same file, which is why nothing may carry a seq across a listener.
+func TestASeqNamesNothingAtAnotherInstitution(t *testing.T) {
+	h := newHarness(t)
+	h.submitCreditTransfer(t)
+	h.day(t)
+
+	mine := messagesOf(t, h.bank(h.debtorBIC).ListMessages, payment.MessageFilter{})
+	if len(mine) == 0 {
+		t.Fatal("the payer's bank recorded no traffic at all, so there is no seq to carry")
+	}
+	elsewhere := []struct {
+		holder iso20022.BIC
+		get    func(context.Context, int64) (payment.Message, error)
+	}{
+		{h.creditorBIC, h.bank(h.creditorBIC).GetMessage},
+		{h.cfg.ClearingHouseBIC, h.nets.ClearingHouse().GetMessage},
+		{h.cfg.CentralBankBIC, h.cb().GetMessage},
+	}
+	for _, m := range mine {
+		for _, other := range elsewhere {
+			got, err := other.get(context.Background(), m.Seq)
+			if errors.Is(err, payment.ErrMessageNotFound) {
+				continue
+			}
+			if err != nil {
+				t.Fatalf("%s answering seq %d: %v", other.holder, m.Seq, err)
+			}
+			if got.MsgID == m.MsgID && got.Direction == m.Direction {
+				t.Errorf("seq %d names the same file at %s and at %s; a seq that travelled between "+
+					"two logs would let a viewer read one institution's document off another's listing",
+					m.Seq, h.debtorBIC, other.holder)
+			}
+		}
+	}
+}
+
 // One institution's log is one institution's, and the filter is what a listing
 // is built out of.
 func TestAnInstitutionsLogHoldsOnlyItsOwnTraffic(t *testing.T) {

@@ -10,7 +10,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { ErrorState } from "@/components/error-state";
 import { cn } from "@/lib/utils";
 import { useNetworkFlow } from "@/lib/api/hooks";
-import { isResting, restingByWire } from "@/lib/network-graph";
+import { isResting, restingByWire, wireEnds } from "@/lib/network-graph";
 import type { NetworkFlow } from "@/lib/types";
 import { CrossingList } from "./crossing-list";
 import { FlowGraph } from "./flow-graph";
@@ -56,7 +56,7 @@ export function NetworkRail() {
       <div className="flex items-center gap-1.5 px-4 py-3">
         <h2 className="flex flex-1 items-center gap-1.5 text-sm font-semibold">
           Network
-          <Hint id="payment-hub" />
+          <Hint id="store-split" />
         </h2>
         <LiveDot />
         <Button
@@ -98,7 +98,7 @@ export function NetworkView() {
   const shown = useMemo(() => {
     if (!flow) return [];
     if (!wire) return flow.crossings;
-    const [subscriber, host] = wire.split("|");
+    const { subscriber, host } = wireEnds(wire);
     return flow.crossings.filter(
       (c) =>
         (c.from === subscriber && c.to === host) || (c.from === host && c.to === subscriber),

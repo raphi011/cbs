@@ -1524,9 +1524,9 @@ CREATE TABLE payments (
     -- fixed because it is one member bank's own sub-project — a table in this
     -- database, by the same rule that made the clearing house's shares rows and
     -- the transport's queues rows: an obligation kept only in a process ends
-    -- when the process does. Until it
-    -- lands, payment/recon is the instrument for the break: a suspense that has
-    -- not returned to zero is exactly what it looks for.
+    -- when the process does. Until it lands, payment/recon is the instrument for
+    -- the break: a suspense that has not returned to zero is exactly what it
+    -- looks for.
     --
     -- NEITHER SHAPE HAS debtor_participant OR creditor_participant. They would
     -- name each party's bank as a ParticipantID beside an agent column naming the

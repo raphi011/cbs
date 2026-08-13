@@ -13,9 +13,8 @@ import (
 )
 
 // The phase doors: the same business day AdvanceDay runs, one step at a time.
-// What the day-order suite asserts about the declaration, these assert about
-// what an operator can reach — and the one property a door must not acquire is
-// the ability to compose a sequence of its own.
+// The day-order suite asserts the declaration; these assert what an operator
+// can reach, and that a door cannot compose a sequence of its own.
 
 func phasesOn(t *testing.T, s *server) []api.PhaseDTO {
 	t.Helper()

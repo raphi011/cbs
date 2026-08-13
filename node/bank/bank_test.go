@@ -2,9 +2,12 @@ package bank
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -38,9 +41,10 @@ func (o *unrecordable) PostSettlementAdvice(_ context.Context, m payment.Advised
 	return payment.SettlementAdvice{}, nil
 }
 
-// statement is the camt.053 the settlement agent addresses to a member: one
-// account, one movement, which is what a member is told about its own reserve.
-func statement(t *testing.T) []byte {
+// statementEnvelope is the camt.053 the settlement agent addresses to a member:
+// one account, one movement, which is what a member is told about its own
+// reserve.
+func statementEnvelope(t *testing.T) iso20022.Envelope {
 	t.Helper()
 
 	env, err := payment.StatementMessage(payment.SettlementStatement{
@@ -56,12 +60,24 @@ func statement(t *testing.T) []byte {
 	if err != nil {
 		t.Fatalf("StatementMessage: %v", err)
 	}
-	raw, err := iso20022.Marshal(env)
+	return env
+}
+
+func statement(t *testing.T) []byte {
+	t.Helper()
+
+	raw, err := iso20022.Marshal(statementEnvelope(t))
 	if err != nil {
 		t.Fatalf("Marshal: %v", err)
 	}
 	return raw
 }
+
+// silentJournal is the deployment's report sink, which these tests do not read.
+type silentJournal struct{}
+
+func (silentJournal) File(node.FileMoved)             {}
+func (silentJournal) Outcome(node.TransactionOutcome) {}
 
 // TestAFailedRecordDoesNotCostACollectedFile: Download empties the queue as it
 // hands a file over, so the file exists only in memory by the time it is
@@ -89,5 +105,38 @@ func TestAFailedRecordDoesNotCostACollectedFile(t *testing.T) {
 	}
 	if got := view.booked[0].Reference; got != "cyc_1" {
 		t.Errorf("the leg was booked against %q, want the cycle the statement named", got)
+	}
+}
+
+// TestAFailedRecordDoesNotCostASentFile is the send half of the rule above. A
+// caller told its upload failed would send the same instructions again, and the
+// file has already arrived: the host has it and has minted an id for it.
+func TestAFailedRecordDoesNotCostASentFile(t *testing.T) {
+	host := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(ebics.Response{ReturnCode: ebics.OK, OrderID: "A001"})
+	}))
+	defer host.Close()
+
+	view := &unrecordable{}
+	b := &Bank{
+		env: node.Env{
+			Now:            func() time.Time { return testTime },
+			Log:            slog.New(slog.NewTextHandler(io.Discard, nil)),
+			Journal:        silentJournal{},
+			CentralBankBIC: agentBIC,
+		},
+		ops: view,
+		bic: memberBIC,
+	}
+
+	id, err := b.upload(context.Background(), agentBIC,
+		ebics.NewClient(ebics.SubscriberID(memberBIC), host.URL), statementEnvelope(t))
+	if err != nil {
+		t.Fatalf("a file whose record failed was reported as a failed upload: %v", err)
+	}
+	if id != "A001" {
+		t.Errorf("the order id was %q, want the one the host minted; a caller given none "+
+			"cannot ask what became of a file the host is already holding", id)
 	}
 }

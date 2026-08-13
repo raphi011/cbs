@@ -5,8 +5,8 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { ErrorState } from "@/components/error-state";
 import { Hint } from "@/components/hint";
 import { formatBusinessDate } from "@/lib/dates";
-import { usePaymentAudit } from "@/lib/api/hooks";
-import { trailOf, waitingOn, type TrailStep } from "@/lib/payment-trail";
+import { usePaymentTrail } from "@/lib/api/hooks";
+import { waitingOn, type TrailStep } from "@/lib/payment-trail";
 import type { PaymentStatus } from "@/lib/enums";
 
 // Where a payment has been, as ONE institution's copy of it tells it.
@@ -29,8 +29,7 @@ export function PaymentTrail({
   // Whose copy this is, in words a banker would use — "the clearing house".
   institution: string;
 }) {
-  const { data, isLoading, error, refetch } = usePaymentAudit({ entity: payid });
-  const steps = trailOf(data ?? []);
+  const { steps, isLoading, error, refetch } = usePaymentTrail(payid);
   const waiting = waitingOn(status);
 
   return (

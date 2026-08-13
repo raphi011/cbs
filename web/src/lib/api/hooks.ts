@@ -11,6 +11,7 @@ import {
 } from "@tanstack/react-query";
 
 import { buildKnownAccounts, projectStatement } from "@/lib/statement";
+import { trailOf } from "@/lib/payment-trail";
 import type { StatementRow } from "@/lib/statement";
 import type { AccountType } from "@/lib/enums";
 import { backendFor } from "@/lib/identity";
@@ -721,6 +722,15 @@ export function usePaymentAudit(q: AuditQuery = {}) {
     queryKey: qk.paymentAudit(q),
     queryFn: () => api.paymentAudit(q),
   });
+}
+
+// Where one payment has been, as the institution serving this audit tells it.
+// The fold is here rather than in the screen because a screen should ask for a
+// trail and not for a log it has to reduce; `steps` is ordered by seq.
+export function usePaymentTrail(payid: string) {
+  const q = usePaymentAudit({ entity: payid });
+  const events = q.data;
+  return { ...q, steps: useMemo(() => trailOf(events ?? []), [events]) };
 }
 
 // --- The message log ------------------------------------------------------

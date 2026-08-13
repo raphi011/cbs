@@ -8,7 +8,7 @@ import {
   layout,
   restingByWire,
   type Edge,
-  type Node,
+  type InstitutionNode,
   type Point,
   type Resting,
 } from "@/lib/network-graph";
@@ -145,7 +145,7 @@ function Waiting({ at, count }: { at: Point; count: number }) {
 
 // An institution. Hosts are wider and filled; a member bank is outlined,
 // because what separates them here is that one is dialled and the other dials.
-function Pill({ node }: { node: Node }) {
+function Pill({ node }: { node: InstitutionNode }) {
   const host = node.role !== "member bank";
   const box = host ? HOST : BANK;
   return (

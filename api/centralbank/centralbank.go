@@ -21,9 +21,8 @@ type Institution interface {
 }
 
 // An Operator is the DEPLOYMENT: a business day drives all N+2 institutions and
-// none of them owns it. These are served on this listener because that is where
-// the operator's console lives, and on this interface because the type system
-// should say whose acts they are.
+// none of them owns it. Served on this listener because the operator's console
+// is here, and on this interface so the type system says whose acts they are.
 type Operator interface {
 	// Members is every bank the deployment holds a database for, each read out of
 	// its own database.
