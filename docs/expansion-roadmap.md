@@ -168,7 +168,7 @@ four had each been paying for separately.
 6. **Reserve adequacy.** Wanted by both 4 and 5, and worth little before either.
 7. **Crypto**, then **FX** — the two undecided-scope domains, largest last.
 
-### 1. 7c, the message log — `spec`
+### 1. 7c, the message log — `wip`
 
 [`2026-08-13-the-message-log-design.md`](specs/2026-08-13-the-message-log-design.md).
 The last of sub-project 7, and the only reason §7 is not `done`. Envelopes
@@ -180,13 +180,15 @@ Cheap relative to what it exposes: every flow already shipped becomes something 
 reader can watch rather than infer. It is also the natural home for anything that
 wants to explain a `pacs.002` reason code at the point it was returned.
 
-Two things found while scoping it, both of which changed what it has to build.
+Two things found while scoping it changed what it has to build, and the first of
+them is built.
 
-**The journal records puts and never collects.** `node.Journal` already sees
-every file an institution uploads or enqueues, in phase order, and `DayReport`
-carries them — but `bank.Collect` journals nothing. So the deployment can say
-when a file was *addressed* to a bank and not when that bank took it, which is
-the gap settle-before-release exists to teach.
+**The journal records the take as well as the put** — task 1, shipped.
+`node.FileMoved` carries a movement, and every place a file is taken journals
+one: both `Collect`s, and both hosts' `Work`, where an upload comes out of the
+order log it has been resting in. So a put with no take means one thing, which
+is a file waiting in a queue nobody has come for — the gap settle-before-release
+exists to teach, and the thing the graph draws.
 
 **Nothing can be stepped one hop.** `POST /payments/cutoff` on a bank's listener
 produces its `pacs.008` and is unrendered; after it the file sits in the clearing

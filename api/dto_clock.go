@@ -23,12 +23,14 @@ type DayReportDTO struct {
 }
 
 // FileMovedDTO is one file that left one institution for another, under the
-// order type it travelled as and the order id its host gave it.
+// order type it travelled as and the order id its host gave it. The movement is
+// which half of the crossing it is: put where the recipient can reach it, taken.
 type FileMovedDTO struct {
 	From      string `json:"from"`
 	To        string `json:"to"`
 	OrderType string `json:"orderType"`
 	OrderID   string `json:"orderId"`
+	Movement  string `json:"movement"`
 }
 
 // TransactionOutcomeDTO is one institution's decision about one payment.

@@ -99,7 +99,7 @@ func (c *ClearingHouse) enqueue(ctx context.Context, to iso20022.BIC, env iso200
 	if err != nil {
 		return fmt.Errorf("server: %s cannot address a %s to %s: %w", c.bic, t, to, err)
 	}
-	c.env.Journal.File(node.FileMoved{From: c.bic, To: to, OrderType: t, OrderID: id})
+	c.env.Journal.File(node.FileMoved{From: c.bic, To: to, OrderType: t, OrderID: id, Movement: node.FilePut})
 	return nil
 }
 
@@ -119,7 +119,7 @@ func (c *ClearingHouse) upload(ctx context.Context, env iso20022.Envelope) error
 	if err != nil {
 		return fmt.Errorf("server: %s could not upload a %s to %s: %w", c.bic, t, to, err)
 	}
-	c.env.Journal.File(node.FileMoved{From: c.bic, To: to, OrderType: t, OrderID: id})
+	c.env.Journal.File(node.FileMoved{From: c.bic, To: to, OrderType: t, OrderID: id, Movement: node.FilePut})
 	return nil
 }
 
@@ -138,6 +138,10 @@ func (c *ClearingHouse) Work(ctx context.Context) []node.Problem {
 	}
 	var problems []node.Problem
 	for _, order := range pending {
+		// Taken out of the order log it has been resting in since its subscriber
+		// uploaded it. See bank.Bank.Collect, which journals a take the same way.
+		c.env.Journal.File(node.FileMoved{From: iso20022.BIC(order.Subscriber), To: c.bic,
+			OrderType: order.Type, OrderID: order.ID, Movement: node.FileTaken})
 		answer, detail := c.host.Processed, ""
 		if err := c.handle(ctx, order); err != nil {
 			problems = append(problems, node.Problem{Institution: c.bic, OrderID: order.ID, Detail: err.Error()})
@@ -162,6 +166,8 @@ func (c *ClearingHouse) Collect(ctx context.Context) []node.Problem {
 	}
 	var problems []node.Problem
 	for _, f := range files {
+		// See bank.Bank.Collect: the take is journalled before the file is worked.
+		c.env.Journal.File(node.FileMoved{From: from, To: c.bic, OrderType: f.OrderType, OrderID: f.OrderID, Movement: node.FileTaken})
 		if err := c.handleFile(ctx, from, f.Payload); err != nil {
 			problems = append(problems, node.Problem{Institution: c.bic, OrderID: f.OrderID, Detail: err.Error()})
 		}

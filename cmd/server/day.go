@@ -117,6 +117,7 @@ func toDayReportDTO(r DayReport) api.DayReportDTO {
 		out.Files = append(out.Files, api.FileMovedDTO{
 			From: string(f.From), To: string(f.To),
 			OrderType: string(f.OrderType), OrderID: string(f.OrderID),
+			Movement: string(f.Movement),
 		})
 	}
 	for _, o := range r.Outcomes {

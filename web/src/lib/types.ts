@@ -575,11 +575,18 @@ export interface BusinessDate {
 // FileMoved is one file that left one institution for another: uploaded to a
 // host, or put in a subscriber's download queue. The order id is what its host
 // minted for it, and is what the sender would ask about.
+//
+// `movement` is which half of the crossing this is. A file is put where its
+// recipient can reach it in one event and taken by that recipient in another,
+// and the two pair on `from`, `to` and the order id. A put with no take is a
+// file still waiting in a queue — which is what settling before releasing
+// leaves behind, and the one state worth drawing differently.
 export interface FileMoved {
   from: string;
   to: string;
   orderType: string;
   orderId: string;
+  movement: "put" | "taken";
 }
 
 // TransactionOutcome is one institution's decision about one payment.

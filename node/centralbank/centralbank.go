@@ -72,7 +72,7 @@ func (c *CentralBank) enqueue(ctx context.Context, to iso20022.BIC, env iso20022
 	if err != nil {
 		return fmt.Errorf("server: %s cannot address a %s to %s: %w", c.bic, t, to, err)
 	}
-	c.env.Journal.File(node.FileMoved{From: c.bic, To: to, OrderType: t, OrderID: id})
+	c.env.Journal.File(node.FileMoved{From: c.bic, To: to, OrderType: t, OrderID: id, Movement: node.FilePut})
 	return nil
 }
 
@@ -88,6 +88,9 @@ func (c *CentralBank) Work(ctx context.Context) []node.Problem {
 	}
 	var problems []node.Problem
 	for _, order := range pending {
+		// See csm.ClearingHouse.Work: an upload is taken out of the order log here.
+		c.env.Journal.File(node.FileMoved{From: iso20022.BIC(order.Subscriber), To: c.bic,
+			OrderType: order.Type, OrderID: order.ID, Movement: node.FileTaken})
 		answer, detail := c.host.Processed, ""
 		if err := c.handle(ctx, iso20022.BIC(order.Subscriber), order.Payload); err != nil {
 			problems = append(problems, node.Problem{Institution: c.bic, OrderID: order.ID, Detail: err.Error()})

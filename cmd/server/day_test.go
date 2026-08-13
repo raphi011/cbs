@@ -1,10 +1,13 @@
 package main
 
 import (
+	"context"
 	"testing"
 	"time"
 
+	"github.com/raphi011/cbs/ebics"
 	"github.com/raphi011/cbs/iso20022"
+	"github.com/raphi011/cbs/node"
 	"github.com/raphi011/cbs/payment"
 )
 
@@ -165,6 +168,76 @@ func TestTwoDaysDoNotReportTheSameFileTwice(t *testing.T) {
 	}
 	if len(second.Outcomes) != 0 {
 		t.Errorf("the second day re-reported %v decisions", len(second.Outcomes))
+	}
+}
+
+// releaseWithoutCollectionByMembers settles and releases and leaves every share
+// standing in the queue it was released into.
+var releaseWithoutCollectionByMembers = only(beforeClock,
+	phaseBankCutoff, phaseClearing, phaseClearingHouseCutoff,
+	phaseDischarge, phaseSettlement, phaseRelease)
+
+// A file put where its recipient can reach it and a file that recipient has
+// taken are two events, and the gap between them is what settling before
+// releasing leaves standing. A report that could not tell them apart would say
+// a bank had a file it has never been near.
+func TestAFileWaitingInAQueueIsDistinguishableFromACollectedOne(t *testing.T) {
+	h := newHarness(t)
+	h.submitCreditTransfer(t)
+
+	runPhases(context.Background(), h.dep, releaseWithoutCollectionByMembers)
+	released, _, _ := h.dep.journal.take()
+
+	// Everything the clearing house addressed to a member, less everything any
+	// institution has taken: the members' collection is deliberately not in the
+	// sequence above, so what is left is resting on the wire.
+	waiting := map[ebics.OrderID]node.FileMoved{}
+	for _, f := range released {
+		if f.Movement == node.FilePut && f.From == h.cfg.ClearingHouseBIC && f.To != h.cfg.CentralBankBIC {
+			waiting[f.OrderID] = f
+		}
+	}
+	for _, f := range released {
+		if f.Movement == node.FileTaken {
+			delete(waiting, f.OrderID)
+		}
+	}
+	if len(waiting) == 0 {
+		t.Fatal("the release addressed nothing to any member, so this test would pass on nothing")
+	}
+
+	// And the uploads DID get taken, at the host that worked them. A put with no
+	// take has to mean one thing.
+	for _, f := range released {
+		if f.Movement != node.FilePut || f.To != h.cfg.ClearingHouseBIC {
+			continue
+		}
+		if _, still := waiting[f.OrderID]; still {
+			t.Errorf("%s was uploaded to the clearing house and the clearing house never took it", f.OrderID)
+		}
+	}
+
+	// The collection is the take, and every file that was waiting has one.
+	runPhases(context.Background(), h.dep, []phase{collectClearingHouseOnly})
+	collected, _, _ := h.dep.journal.take()
+
+	taken := map[ebics.OrderID]node.FileMoved{}
+	for _, f := range collected {
+		if f.Movement == node.FileTaken {
+			taken[f.OrderID] = f
+		}
+	}
+	for id, put := range waiting {
+		got, ok := taken[id]
+		if !ok {
+			t.Errorf("%s was addressed to %s and no take was journalled when it collected", id, put.To)
+			continue
+		}
+		// A put and its take are the same crossing, so they name the same ends.
+		if got.From != put.From || got.To != put.To {
+			t.Errorf("%s was put %s→%s and taken %s→%s; both halves name one crossing",
+				id, put.From, put.To, got.From, got.To)
+		}
 	}
 }
 

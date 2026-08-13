@@ -89,6 +89,14 @@ export function BusinessDay() {
   );
 }
 
+// countFiles counts crossings and not movements. A file is put where its
+// recipient can reach it and taken by that recipient, so a delivered file is two
+// entries in the report and one file. Order ids are minted per host, which is
+// why the ends are part of the key.
+function countFiles(files: DayReport["files"]): number {
+  return new Set(files.map((f) => `${f.from}→${f.to}:${f.orderId}`)).size;
+}
+
 // describeDay is the one line the toast carries: what the day did, in the terms
 // the report is made of.
 //
@@ -100,8 +108,9 @@ function describeDay(report: DayReport): string {
     const why = report.ran.closure ?? "weekend";
     return `TARGET closed (${why}) — interest accrued, nothing cleared`;
   }
+  const files = countFiles(report.files);
   const parts = [
-    `${report.files.length} ${report.files.length === 1 ? "file" : "files"}`,
+    `${files} ${files === 1 ? "file" : "files"}`,
     `${report.outcomes.length} ${report.outcomes.length === 1 ? "decision" : "decisions"}`,
   ];
   if (report.problems.length > 0) {
