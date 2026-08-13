@@ -18,9 +18,8 @@ half.
 **The argument is not here.** Refusal rationales, absence-records, the
 "why not the other way" reasoning and the worked examples were removed
 deliberately, not lost. Do not reinstate them beside the code. Where a decision
-needs to be recoverable, it goes in `docs/adr/` as a numbered ruling or in
-`docs/specs/` as a design record, and the comment states the rule and points
-there in the same three lines.
+needs to be recoverable, it goes in `docs/specs/` as a design record, and the
+comment states the rule and points there in the same three lines.
 
 **Write the rule, not the history.** A comment states what is true now. It does
 not say what the code used to do, which task changed it, what an earlier version
@@ -133,10 +132,10 @@ bank's.
 crossing: `sqlite.OpenBank`, `OpenClearingHouse` and `OpenCentralBank` return
 `*BankStore`, `*ClearingHouseStore` and `*CentralBankStore`, whose units of work
 are `payment.BankTx`, `payment.CsmTx` and `payment.CentralBankTx`. There is no
-`payment.Tx` and no `payment.Store`. Reach is 69 / 21 / 34 methods, and
-[ADR-0007](docs/adr/0007-a-store-per-institution.md) is the ruling. The shape is
+`payment.Tx` and no `payment.Store`. Reach is 69 / 21 / 34 methods. The shape is
 a CONSTRUCTOR rather than a parameter, so there is no seam where a store opened
-as one institution hands out another's transaction.
+as one institution hands out another's transaction. See
+[the design record](docs/specs/2026-08-12-store-per-institution-design.md).
 
 **A balance is a fold in the domain, not an aggregate on the seam.** The store
 answers `ledger.Tx.ScanEntries` with rows; `ledger.BookBalance`,
@@ -158,8 +157,9 @@ are a domain distinction. Three do not fit and each is a signal rather than a
 lapse: `payment.RecordRelayed` loops its `Tx` sibling over a batch, and 20
 error-only wrappers have no value to carry. Nesting is refused at runtime by
 `sqlite.ErrNestedTransaction`, which is what makes the doubling safe and is the
-thing to preserve. [ADR-0009](docs/adr/0009-the-doubling-stays-and-the-boilerplate-goes.md)
-is the ruling, and it records why `Tx`-first was refused.
+thing to preserve. `Tx`-first — dropping the wrappers and making every caller
+open its own unit of work — was refused: it moves 209 call sites in `payment`
+alone to say what the wrapper already says.
 
 `sqlite.Shape` survives as an internal value and refuses nothing. It carries the
 migration directory, the table list `Reset` empties, and the two column-list
@@ -187,10 +187,9 @@ four conversations — `Initiate`, `Reject`, `Return`, `Settle` — over
 `*payment.Networks`, for a caller that IS the deployment: `seed` and the suites,
 never an institution and nothing on the transport path, where each performs its
 own half off the file it is handed. Every act stays in its own unit of work; the
-package opens no transaction and holds no store.
-[ADR-0008](docs/adr/0008-a-conversation-belongs-to-the-deployment.md) is the
-ruling, `provision` is the same shape one layer over, and a driver that writes
-the sequence out again is how the seed and the suite came to build two different
+package opens no transaction and holds no store. `provision` is the same shape
+one layer over, and a driver that writes the sequence out again is how the seed
+and the suite came to build two different
 payments. Which agent plays which part is `payment.SubmitterOf`, `ReceiverOf`,
 `ReturnerOf` and `CounterpartyOf` — one rule, and the receiving side and the
 returning side are the same body under two act names.
@@ -240,8 +239,7 @@ surface (`api/bank`, `api/csm`, `api/centralbank`), the listener (one per
 institution, its own port and its own `/ebics`) and the package: `node/bank`,
 `node/csm` and `node/centralbank`, one institution apiece, with `cmd/server`
 holding the deployment that drives them. See
-[ADR-0010](docs/adr/0010-an-institution-holds-what-it-does-the-deployment-holds-the-order.md)
-and [the design record](docs/specs/2026-08-13-a-package-per-institution-design.md).
+[the design record](docs/specs/2026-08-13-a-package-per-institution-design.md).
 
 **Each node is handed a `node.Env` at construction** — a clock, a logger, a
 journal, an id minter and the two addresses it dials — and holds nothing else
@@ -259,8 +257,8 @@ one.
 **What reflects reality is separated; what simulates a deployment is not.** The
 business day, its phase order, the journal, `Reset` and the seed are the
 DEPLOYMENT'S, and they are allowed to see every institution at once — that is
-[ADR-0008](docs/adr/0008-a-conversation-belongs-to-the-deployment.md)'s rule
-(`payment/flow`, `payment/recon`) one layer up, and it is why they are not being
+the rule above (`payment/flow`, `payment/recon`) one layer up, and it is why
+they are not being
 taken apart. What must hold is the DIRECTION: an institution's code may not know
 that a deployment exists. Anything institution-shaped that reaches for one is
 either the environment (a clock, a logger, an id minter, a report sink, the two
@@ -294,12 +292,10 @@ in the code states the rule and not the history. Read the relevant record before
 changing the shape of anything; write one before a change large enough to need
 phasing.
 
-`docs/adr/` is narrower and outlives the sub-project that produced it: one
-numbered record per decision a later reader has to know about before changing the
-shape of anything near it. A spec is a plan with phasing; an ADR is a ruling in
-the present tense. If you find yourself wanting to write "this used to work the
-other way" beside the code, that is what an ADR is for. `docs/adr/README.md`
-holds the index and the distinction.
+**There is no separate ruling record.** A design record is the only place a
+decision lives, and it holds the rule, the alternative it rejected and what that
+cost. If you find yourself wanting to write "this used to work the other way"
+beside the code, write it in the spec instead.
 
 ## Agent skills
 
@@ -315,5 +311,5 @@ The five canonical roles, each label string equal to its name. See
 
 ### Domain docs
 
-Single-context: `CONTEXT.md` and `docs/adr/` at the repo root. See
+Single-context: `CONTEXT.md` and `docs/specs/` at the repo root. See
 `docs/agents/domain.md`.

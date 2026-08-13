@@ -232,7 +232,7 @@ shares. `TestTheClearingHousesOtherCallersLeaveTheHeldReturnsAlone` was about an
 unlocked field and is now about a pending obligation no cut-off may sweep — the
 same three routes, a different reason.
 
-The ruling is [ADR-0003](../adr/0003-an-institutions-obligations-live-in-its-database.md),
+The ruling is this record's,
 which is what a later reader needs before moving any of this back into memory.
 
 ## Phasing
@@ -269,7 +269,7 @@ what the word means — it is that nothing an institution can call reaches the
 table. The port is declared by `ebics`, whose vocabulary is subscribers, order
 ids, order types and payloads, and no method on `payment.Tx` names any of it. The
 crossing is not resisted; it is inexpressible. That is
-[ADR-0004](../adr/0004-a-queue-is-a-table-and-stays-opaque.md).
+the rule that a queue is a table whose bytes stay opaque.
 
 **ENROLMENT stayed in memory, and it is the interesting half.** Everything else a
 host holds became rows; who is enrolled did not, because it is DERIVED — the
@@ -360,8 +360,8 @@ table" question gained a share as a correct answer, and the `bulk-file` hint
 gained the paragraph about what waits between the sort and the release.
 `CONTEXT.md`'s *Share* and *Held return* entries no longer say "in memory", and
 the *Payment hub* entry now says it is the last one that is.
-[ADR-0003](../adr/0003-an-institutions-obligations-live-in-its-database.md) is
-the ruling, and ADR-0002's *What it costs* points at it instead of recording the
+The held-files durability design is
+the ruling, and settle-before-release's *What it costs* points at it instead of recording the
 defect.
 
 Phase 3 moved the same four layers again. `README.md`'s *Persistence* section

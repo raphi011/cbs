@@ -3,10 +3,10 @@
 What is left to build, in the order it should be built.
 
 This file is forward-looking. What each shipped sub-project decided, reversed and
-learned is in its spec under `docs/specs/` and in `git log`; the index at the bottom is
-only enough to resolve a cross-reference by number. A decision that outlives the
-sub-project that produced it — one a later reader has to know about before
-changing the shape of anything near it — is in [`docs/adr/`](adr/).
+learned is in its spec under `docs/specs/` and in `git log`; the index at the
+bottom is only enough to resolve a cross-reference by number. A design record
+holds the decision, the alternative it rejected and what that cost, and there is
+no separate ruling record.
 
 **Status legend:** `todo` · `spec` (design agreed, spec written) · `plan`
 (implementation plan written) · `wip`
@@ -24,7 +24,7 @@ Three constraints apply to everything below.
   authoritative; `CONTEXT.md`, `web/src/components/hint-content.ts`, the quiz
   chapters under `web/src/lib/quiz/chapters/`, and the schema comments in
   `store/sqlite/schema/` all have to move with it. A decision that outlives its
-  sub-project goes in `docs/adr/`. See `CLAUDE.md`.
+  sub-project goes in its design record. See `CLAUDE.md`.
 - **Nothing requires setup.** A fresh checkout runs the whole suite with no
   database, no Docker and no toolchain. Every new entity still needs to be in
   `store/storetest`.
@@ -54,7 +54,6 @@ Three constraints apply to everything below.
   deployment has is that deployment's business and not a library's.
 - `payment/flow` — the four conversations between institutions, in the order the
   messages travel, for a caller that IS the deployment: the seed and the suites.
-  See [ADR-0008](adr/0008-a-conversation-belongs-to-the-deployment.md).
 - `payment/recon` — the reconciliation harness, test-only by convention: the one
   instrument that opens every institution's database at once, precisely because
   no institution in the system may. Its narrow sibling is `payment.Network.Reconcile`,
@@ -470,7 +469,7 @@ the code side, and doing either alone leaves the other's cost in place.
 
 **The roll half shipped with §21**, which gave the deployment a clock, a TARGET
 calendar and an explicit advance that runs a business day — see
-[ADR-0001](adr/0001-the-deployment-owns-the-clock.md). So the first paragraph
+the rule that the deployment owns the clock. So the first paragraph
 above is out of date in one respect and kept because the rest of it is not: there
 IS a business date now, and the worked case — a transfer submitted after cut-off
 before a holiday weekend — is buildable in the seed.
@@ -844,17 +843,14 @@ because nothing else in this file points at them.
 | Learner-facing docs name no repo symbol | [`2026-08-10-domain-only-learner-docs-design.md`](specs/2026-08-10-domain-only-learner-docs-design.md) |
 | Real IBANs and the routing directory | [`2026-08-10-real-ibans-and-routing-directory-design.md`](specs/2026-08-10-real-ibans-and-routing-directory-design.md) |
 | Admission is deletable | [`2026-08-11-delete-admission-design.md`](specs/2026-08-11-delete-admission-design.md) |
-| What an institution holds when the process ends | [`2026-08-12-held-files-durability-design.md`](specs/2026-08-12-held-files-durability-design.md) · [ADR-0003](adr/0003-an-institutions-obligations-live-in-its-database.md) · [ADR-0004](adr/0004-a-queue-is-a-table-and-stays-opaque.md) |
-| A store per institution | [`2026-08-12-store-per-institution-design.md`](specs/2026-08-12-store-per-institution-design.md) · [ADR-0007](adr/0007-a-store-per-institution.md) |
+| What an institution holds when the process ends | [`2026-08-12-held-files-durability-design.md`](specs/2026-08-12-held-files-durability-design.md) |
+| A store per institution | [`2026-08-12-store-per-institution-design.md`](specs/2026-08-12-store-per-institution-design.md) |
 | The derived balances leave the store seam | [`2026-08-12-derived-balances-off-the-store-seam-design.md`](specs/2026-08-12-derived-balances-off-the-store-seam-design.md) |
-| The interbank conversation has an owner | [`2026-08-13-the-interbank-conversation-design.md`](specs/2026-08-13-the-interbank-conversation-design.md) · [ADR-0008](adr/0008-a-conversation-belongs-to-the-deployment.md) |
-| A package per institution | [`2026-08-13-a-package-per-institution-design.md`](specs/2026-08-13-a-package-per-institution-design.md) · [ADR-0010](adr/0010-an-institution-holds-what-it-does-the-deployment-holds-the-order.md) |
+| The interbank conversation has an owner | [`2026-08-13-the-interbank-conversation-design.md`](specs/2026-08-13-the-interbank-conversation-design.md) |
+| A package per institution | [`2026-08-13-a-package-per-institution-design.md`](specs/2026-08-13-a-package-per-institution-design.md) |
 | The routing table is collected, not read | [`2026-08-13-a-roster-download-order-type-design.md`](specs/2026-08-13-a-roster-download-order-type-design.md) |
 
-Three more shipped as rulings with no design record of their own:
-[ADR-0005](adr/0005-a-business-day-is-a-declared-sequence.md) (the business day
-as a declared sequence), [ADR-0006](adr/0006-one-type-per-institution.md) (one
-type per institution) and
-[ADR-0009](adr/0009-the-doubling-stays-and-the-boilerplate-goes.md) (the
-`X` / `XTx` doubling). Cross-layer composition, the transport deepening and the
-on-us book transfer are in `git log` alone.
+Three more shipped with no design record of their own — the business day as a
+declared sequence, one type per institution, and the `X` / `XTx` doubling. Those,
+cross-layer composition, the transport deepening and the on-us book transfer are
+in `git log` alone.
