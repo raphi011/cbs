@@ -174,24 +174,37 @@ func TestPaymentAuditCoversTheNettingFlow(t *testing.T) {
 			ledger.EventCycleSettled,
 		}, " "))
 
-	// Each bank's is the same shape as the other's, and it is the shape of what a
-	// bank actually did: it founded itself, it recorded the membership it was
-	// granted, and it took part in both payments — as the submitter of one and the
-	// receiver of the other.
-	eachBank := strings.Join([]string{
-		ledger.EventParticipantAdded,
-		ledger.EventMembershipRecorded,
-		ledger.EventPaymentInitiated,
-		ledger.EventPaymentInitiated,
-		ledger.EventPaymentSettled,
-		ledger.EventPaymentSettled,
-	}, " ")
-	assertEqual(t, "Bank A's trail", eventTypes(withoutRefreshes(bankAudit(t, sys, a.BIC, ""))), eachBank)
-	assertEqual(t, "Bank B's trail", eventTypes(withoutRefreshes(bankAudit(t, sys, b.BIC, ""))), eachBank)
+	// Each bank's trail is what that bank actually did: it founded itself, it
+	// recorded the membership it was granted, and it took part in both payments —
+	// as the submitter of one and the receiver of the other. The acceptance falls
+	// where each bank SUBMITTED, because only the submitter is sent the ACCP, and
+	// A submitted the first of the two payments where B submitted the second.
+	assertEqual(t, "Bank A's trail", eventTypes(withoutRefreshes(bankAudit(t, sys, a.BIC, ""))),
+		strings.Join([]string{
+			ledger.EventParticipantAdded,
+			ledger.EventMembershipRecorded,
+			ledger.EventPaymentInitiated, // the one A submitted
+			ledger.EventPaymentAccepted,
+			ledger.EventPaymentInitiated, // the one A received
+			ledger.EventPaymentSettled,
+			ledger.EventPaymentSettled,
+		}, " "))
+	assertEqual(t, "Bank B's trail", eventTypes(withoutRefreshes(bankAudit(t, sys, b.BIC, ""))),
+		strings.Join([]string{
+			ledger.EventParticipantAdded,
+			ledger.EventMembershipRecorded,
+			ledger.EventPaymentInitiated, // the one B received
+			ledger.EventPaymentInitiated, // the one B submitted
+			ledger.EventPaymentAccepted,
+			ledger.EventPaymentSettled,
+			ledger.EventPaymentSettled,
+		}, " "))
 
 	// Every event names the entity it is about, so ?entity= is usable — and the
 	// answer differs by institution, which is the point. The clearing house holds
-	// a payment's whole lifecycle; a bank holds the two moments it acted in.
+	// a payment's whole lifecycle; a bank holds the moments it acted in, which is
+	// three for the bank that submitted it and two for the bank that answered.
+	submitters := map[PaymentID]iso20022.BIC{payments[0]: a.BIC, payments[1]: b.BIC}
 	for _, pid := range payments {
 		assertEqual(t, "the clearing house on "+string(pid), eventTypes(csmAudit(t, sys, string(pid))),
 			strings.Join([]string{
@@ -200,9 +213,19 @@ func TestPaymentAuditCoversTheNettingFlow(t *testing.T) {
 				ledger.EventPaymentCleared,
 				ledger.EventPaymentSettled,
 			}, " "))
-		bothEnds := ledger.EventPaymentInitiated + " " + ledger.EventPaymentSettled
-		assertEqual(t, "Bank A on "+string(pid), eventTypes(bankAudit(t, sys, a.BIC, string(pid))), bothEnds)
-		assertEqual(t, "Bank B on "+string(pid), eventTypes(bankAudit(t, sys, b.BIC, string(pid))), bothEnds)
+		submitted := strings.Join([]string{
+			ledger.EventPaymentInitiated,
+			ledger.EventPaymentAccepted,
+			ledger.EventPaymentSettled,
+		}, " ")
+		answered := ledger.EventPaymentInitiated + " " + ledger.EventPaymentSettled
+		for _, bic := range []iso20022.BIC{a.BIC, b.BIC} {
+			want := answered
+			if submitters[pid] == bic {
+				want = submitted
+			}
+			assertEqual(t, string(bic)+" on "+string(pid), eventTypes(bankAudit(t, sys, bic, string(pid))), want)
+		}
 	}
 
 	// A bank's own two, keyed by its own id: it founded itself, and later it
@@ -310,13 +333,18 @@ func TestRejectedPaymentIsAudited(t *testing.T) {
 			ledger.EventPaymentRejected,
 		}, " "))
 	// Each bank's own copy: it took the payment on, and it was told the payment
-	// died. No payment.accepted — that is the clearing house's act and no bank
-	// records another institution's.
-	bothBanks := ledger.EventPaymentInitiated + " " + ledger.EventPaymentRejected
+	// died. The acceptance is on the SUBMITTER's alone — a credit transfer is
+	// submitted by the payer's bank, and only that bank is sent the ACCP.
 	assertEqual(t, "the payer's bank on the rejected payment",
-		eventTypes(bankAudit(t, sys, a.BIC, string(p.ID))), bothBanks)
+		eventTypes(bankAudit(t, sys, a.BIC, string(p.ID))),
+		strings.Join([]string{
+			ledger.EventPaymentInitiated,
+			ledger.EventPaymentAccepted,
+			ledger.EventPaymentRejected,
+		}, " "))
 	assertEqual(t, "the payee's bank on the rejected payment",
-		eventTypes(bankAudit(t, sys, b.BIC, string(p.ID))), bothBanks)
+		eventTypes(bankAudit(t, sys, b.BIC, string(p.ID))),
+		ledger.EventPaymentInitiated+" "+ledger.EventPaymentRejected)
 }
 
 // TestFailedInitiationLeavesNoAuditTrail is the mirror image: an instruction
@@ -400,16 +428,23 @@ func TestReturnedPaymentIsAudited(t *testing.T) {
 			ledger.EventPaymentReturned,
 		}, " "))
 	// Each bank recorded the payment and its settlement, and each recorded the
-	// return: a return is posted at both ends, unlike a rejection's refund.
-	bothBanks := strings.Join([]string{
-		ledger.EventPaymentInitiated,
-		ledger.EventPaymentSettled,
-		ledger.EventPaymentReturned,
-	}, " ")
+	// return: a return is posted at both ends, unlike a rejection's refund. The
+	// acceptance is the payee's bank's alone, a collection being submitted by it.
 	assertEqual(t, "the payer's bank on the returned payment",
-		eventTypes(bankAudit(t, sys, a.BIC, string(payID))), bothBanks)
+		eventTypes(bankAudit(t, sys, a.BIC, string(payID))),
+		strings.Join([]string{
+			ledger.EventPaymentInitiated,
+			ledger.EventPaymentSettled,
+			ledger.EventPaymentReturned,
+		}, " "))
 	assertEqual(t, "the payee's bank on the returned payment",
-		eventTypes(bankAudit(t, sys, b.BIC, string(payID))), bothBanks)
+		eventTypes(bankAudit(t, sys, b.BIC, string(payID))),
+		strings.Join([]string{
+			ledger.EventPaymentInitiated,
+			ledger.EventPaymentAccepted,
+			ledger.EventPaymentSettled,
+			ledger.EventPaymentReturned,
+		}, " "))
 }
 
 // TestParticipantAuditPayloadDropsLiveHandles pins that the payload of both

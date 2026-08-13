@@ -16,6 +16,7 @@ import (
 	"github.com/raphi011/cbs/iso20022"
 	"github.com/raphi011/cbs/ledger"
 	. "github.com/raphi011/cbs/payment"
+	"github.com/raphi011/cbs/payment/flow"
 	"github.com/raphi011/cbs/product"
 	"github.com/raphi011/cbs/store/storetest"
 	"github.com/raphi011/cbs/store/testenv"
@@ -120,50 +121,16 @@ func accountsOf(t *testing.T, p *Bank) BankAccounts {
 	return accts
 }
 
-// initiate runs all four halves of an initiation and returns the payment
-// Accepted in its scheme's open cycle. There is deliberately no such method;
-// tests about the split call the halves directly.
+// initiate is flow.Initiate, which owns the order: there is deliberately no
+// method on any institution that plays two of them, and tests about the split
+// call the halves directly.
 func initiate(ctx context.Context, sys *testSystem, req InitiatePaymentRequest) (Payment, error) {
-	// The SUBMITTING bank's own network, not the clearing house's: the submitting
-	// side is resolved in this network's own register. See submitterOfReq.
-	p, err := sys.bank(submitterOfReq(sys, req)).SubmitPayment(ctx, req)
-	if err != nil {
-		return Payment{}, err
-	}
-	relayed := relayedFrom(p)
-	if err := sys.bank(receiverOf(sys, p)).AcceptInbound(ctx, p.ID, relayed); err != nil {
-		return Payment{}, err
-	}
-	if _, err := sys.RecordRelayed(ctx, []InboundTransaction{{ID: p.ID, Request: relayed}}); err != nil {
-		return Payment{}, err
-	}
-	return sys.AcceptAtCSM(ctx, p.ID)
+	return flow.Initiate(ctx, sys.nets, req)
 }
 
-// reject runs both halves of a rejection — the clearing house's transition and
-// the debtor bank's reversal of its own leg. A TEST helper for initiate's reason:
-// there is deliberately no method that plays both actors.
+// reject is flow.Reject, for initiate's reason.
 func reject(ctx context.Context, sys *testSystem, id PaymentID, code iso20022.StatusReason, reason string) (Payment, error) {
-	out, err := sys.RejectAtCSM(ctx, id, code, reason)
-	if err != nil {
-		return Payment{}, err
-	}
-	// Both banks record it, and only the payer's gives money back. A bank holding NO
-	// copy is skipped, which is a deployment's behaviour: a clearing house refusing a
-	// payment before relaying it leaves the far bank with nothing.
-	agents := []iso20022.BIC{out.DebtorDetails.Agent}
-	if other := out.CreditorDetails.Agent; other != out.DebtorDetails.Agent {
-		agents = append(agents, other)
-	}
-	for _, agent := range agents {
-		if _, err := sys.bank(agent).GetPayment(ctx, id); errors.Is(err, ErrPaymentNotFound) {
-			continue
-		}
-		if _, err := sys.bank(agent).RejectAtBank(ctx, id, code, reason); err != nil {
-			return Payment{}, err
-		}
-	}
-	return out, nil
+	return flow.Reject(ctx, sys.nets, id, code, reason)
 }
 
 // setupTwoBanks creates two banks, opens a customer account at each (Alice at

@@ -14,6 +14,7 @@ import (
 	"github.com/raphi011/cbs/ledger"
 	"github.com/raphi011/cbs/lending"
 	"github.com/raphi011/cbs/payment"
+	"github.com/raphi011/cbs/payment/flow"
 	"github.com/raphi011/cbs/product"
 	"github.com/raphi011/cbs/provision"
 )
@@ -260,52 +261,18 @@ func (b *builder) lodge(p *payment.Bank, amount ledger.Amount) {
 	must(b.cb().ReceiveLodgement(b.ctx, in))
 }
 
-// submitterOf is payment's rule, over a scheme resolved in the clearing house's
-// registry. An id the registry does not hold is read as a push.
-func (b *builder) submitterOf(scheme payment.SchemeID, debtorAgent, creditorAgent iso20022.BIC) iso20022.BIC {
-	s, ok := b.csm().Scheme(scheme)
-	if !ok {
-		return debtorAgent
-	}
-	return payment.SubmitterOf(s, debtorAgent, creditorAgent)
-}
-
-// initiate runs all four halves of an initiation — the submitting bank's, the
-// receiving bank's, the clearing house's and the submitting bank's again —
-// leaving the payment Accepted in its scheme's open cycle.
+// initiate is flow.Initiate: every institution's half of an initiation, leaving
+// the payment Accepted in its scheme's open cycle and the submitting bank's own
+// copy Accepted with it.
 func (b *builder) initiate(req payment.InitiatePaymentRequest) payment.Payment {
-	submitter := b.submitterOf(req.Scheme, req.DebtorDetails.Agent, req.CreditorDetails.Agent)
-	p := must(b.bank(submitter).SubmitPayment(b.ctx, req))
-
-	// What the OTHER two institutions would have been sent, and it is the whole of
-	// what they get.
-	relayed := req
-	relayed.DebtorDetails, relayed.CreditorDetails = p.DebtorDetails, p.CreditorDetails
-
-	// The RECEIVING bank answers, and it is the other one. Naming it is what picks
-	// the network AcceptInbound resolves the address in — its own register and no
-	// other — and the seed is playing that bank as well as the submitting one.
-	receiver := payment.CounterpartyOf(submitter, p.DebtorDetails.Agent, p.CreditorDetails.Agent)
-	check(b.bank(receiver).AcceptInbound(b.ctx, p.ID, relayed))
-	// And the CLEARING HOUSE, which has to be carrying the payment before it can
-	// take it into a cycle. In the running system this is the moment it routes the
-	// instruction on; here there is nothing to route, so the record stands alone.
-	must(b.csm().RecordRelayed(b.ctx, []payment.InboundTransaction{{ID: p.ID, Request: relayed}}))
-	accepted := must(b.csm().AcceptAtCSM(b.ctx, p.ID))
-
-	// And the SUBMITTING bank is told, which is the act this composite was
-	// missing.
-	must(b.bank(submitter).AcceptAtBank(b.ctx, p.ID))
-	return accepted
+	return must(flow.Initiate(b.ctx, b.nets, req))
 }
 
-// reject runs both halves of a rejection — the clearing house's transition and
-// the submitting bank's reversal of its own leg — leaving the payment Rejected
-// with the payer's money back in their account.
+// reject is flow.Reject: the clearing house's transition and each party's
+// record of it, leaving the payment Rejected with the payer's money back in
+// their account.
 func (b *builder) reject(id payment.PaymentID, code iso20022.StatusReason, reason string) {
-	rejected := must(b.csm().RejectAtCSM(b.ctx, id, code, reason))
-	submitter := b.submitterOf(rejected.Scheme, rejected.DebtorDetails.Agent, rejected.CreditorDetails.Agent)
-	must(b.bank(submitter).RejectAtBank(b.ctx, id, code, reason))
+	must(flow.Reject(b.ctx, b.nets, id, code, reason))
 }
 
 // returnPayment runs all three institutions' halves of an R-transaction,
