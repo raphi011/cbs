@@ -352,6 +352,38 @@ that promised a file would be wrong on every seeded payment there is.
 design's decision 2 unchanged. The same component takes a bank's audit and a
 bank's log the day a bank grows a payment detail page of its own.
 
+### 8. Every file is readable, and most of them name no payment
+
+A `camt.053` names no payment. Neither does the roster, and a `pacs.009` names
+the cut-off rather than the payments netted into it. All three are invisible to
+a payment's *Files* card by construction, so while that card was the only viewer
+there was nowhere in the app to read most of a business day's traffic — the
+reserve statement a bank books its mirror leg from least of all.
+
+**A row in the mesh's list opens the document**, which makes the list an index
+over every file that crossed rather than a summary of them.
+
+**Reaching a document means naming the institution as well as the seq.** A seq
+counts one institution's own traffic, so the read is qualified by which listener
+answers: a member bank's own, or one of the two hosts'. A bank is looked UP in
+the deployment's roll rather than assumed to be keyed by its own address, and a
+bank the mesh draws but the deployment holds no row for is not reachable rather
+than reachable at a guessed key. The cache is keyed the same way, because one
+entry for two institutions would hand a reader the wrong file.
+
+**A crossing has two copies and the SENDER's is opened.** It is the file as it
+was sent and it exists for every crossing that happened; a crossing with no send
+recorded is a missing record rather than a stage, and the recipient's is then
+the only copy there is. The viewer names whose log it came out of, so the same
+bytes read from two ends are not silently one thing.
+
+**The payment page names its holder as a constant and does not resolve it.**
+That console is the clearing house's, so the log it reads is that institution's.
+Resolving it from the mesh would make a persona's own screen depend on the
+deployment's read of every institution at once, which is the leak §4's placement
+exists to avoid — and would leave a payment unable to show its documents
+whenever the mesh was unavailable.
+
 ## What it costs
 
 **Every message is stored forever.** Rows are never deleted, as in
@@ -490,6 +522,12 @@ enough to clear the clearing house at 3, 4 and 5 banks, the two directions of
 travel rest at opposite ends, and a crossing between two ends that share no wire
 is dropped rather than drawn.
 
+Which log a document is read from is in `web/src/lib/message.ts` under the same
+guard: each part resolves to its own listener, an address the mesh does not list
+and a bank the deployment holds no row for both resolve to nobody, two holders
+never share a cache key, and a crossing yields the sender's copy where there is
+one and the recipient's where there is not.
+
 The trail's are in `web/src/lib/payment-trail.ts` under the same guard: a trail
 orders by seq and not by the timestamps, which tie within a day; an event the
 step table does not name still becomes a step, because a trail with a hole in it
@@ -513,5 +551,9 @@ and release from OUTSIDE the browser moved it — the trail grew *Cleared* and
 *Settled*, and a third file appeared, the `pacs.008` the clearing house released
 to the payee's bank once the reserves had moved. Both directions of a document
 were opened; a payment the sample dataset placed shows an empty log and says why.
+A `camt.053` was read from the settlement agent's log off the mesh, a `pacs.008`
+from a member bank's own, and the same file was opened from both ends — the
+clearing house's copy on the payment page and the sending bank's on the mesh,
+each naming whose log it came out of.
 The rail is desktop-only by construction, and at 644px the two cards stack, the
 dialog fits and the document scrolls inside its own box.

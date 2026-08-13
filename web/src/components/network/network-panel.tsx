@@ -144,6 +144,7 @@ export function NetworkView() {
           </div>
           <CrossingList
             crossings={shown}
+            institutions={flow.institutions}
             emptyLabel={
               wire
                 ? "Nothing has crossed this wire."

@@ -12,6 +12,7 @@ import {
 
 import { buildKnownAccounts, projectStatement } from "@/lib/statement";
 import { trailOf } from "@/lib/payment-trail";
+import { holderKey, type LogHolder } from "@/lib/message";
 import type { StatementRow } from "@/lib/statement";
 import type { AccountType } from "@/lib/enums";
 import { backendFor } from "@/lib/identity";
@@ -744,16 +745,33 @@ export function useClearingHouseMessages(q: MessageQuery = {}) {
   });
 }
 
-// One document. Never refetched: a log row is written once and the file it
-// carries is the file as it travelled.
-export function useClearingHouseMessage(seq: number | null) {
+// One document, from the log of the institution that holds it. Never refetched:
+// a log row is written once and the file it carries is the file as it
+// travelled.
+//
+// The holder is part of the question and not a detail of it. A seq counts one
+// institution's own traffic, so asking the wrong listener for one answers about
+// a different file or about nothing.
+export function useMessageDocument(holder: LogHolder | null, seq: number | null) {
   return useQuery({
-    queryKey: qk.messageDocument(seq ?? 0),
-    queryFn: () => api.clearingHouseMessage(seq!),
-    enabled: seq !== null,
+    queryKey: qk.messageDocument(holder ? holderKey(holder) : "", seq ?? 0),
+    queryFn: () => documentAt(holder!, seq!),
+    enabled: holder !== null && seq !== null,
     staleTime: Infinity,
   });
 }
+
+function documentAt(holder: LogHolder, seq: number) {
+  switch (holder.kind) {
+    case "bank":
+      return api.bankMessage(holder.pid, seq);
+    case "clearing house":
+      return api.clearingHouseMessage(seq);
+    case "settlement agent":
+      return api.centralBankMessage(seq);
+  }
+}
+
 
 // --- Payment: mandates ----------------------------------------------------
 

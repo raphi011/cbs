@@ -67,6 +67,10 @@ network's own pieces live in `components/network/` — `FlowGraph`, `CrossingLis
 rules are pure functions in `lib/network-graph.ts` and tested there, which is the
 only mechanical guard the rendering has. `components/payment/` is the same shape
 for a payment's trail and its documents, over `lib/payment-trail.ts`.
+`components/message/` holds the one document viewer both of them open, and it
+takes the `LogHolder` saying whose log to read: a seq counts ONE institution's
+traffic, so `lib/message.ts` resolves an address to its listener rather than
+letting a caller guess one.
 
 ## Backend contract gotchas (cause real failures)
 

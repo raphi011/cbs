@@ -158,8 +158,13 @@ export const qk = {
   // A document, keyed outside that prefix on purpose: a log row is written once
   // and never changed, so the one read that carries the bytes must not be
   // refetched by every invalidate of the listing above it.
-  messageDocument: (seq: number) =>
-    ["clearing-house", "message-document", seq] as const,
+  //
+  // Keyed by the INSTITUTION as well as the seq, because a seq counts one
+  // institution's own traffic: the same number names a different file at every
+  // other listener, and one cache entry for both would hand a reader the wrong
+  // document.
+  messageDocument: (holder: string, seq: number) =>
+    ["message-document", holder, seq] as const,
   settlements: () => ["settlements"] as const,
   settlement: (sid: string) => ["settlements", sid] as const,
 };

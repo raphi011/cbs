@@ -4,21 +4,14 @@ import { useState } from "react";
 import { ArrowDownLeft, ArrowUpRight } from "lucide-react";
 
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
 import { Skeleton } from "@/components/ui/skeleton";
-import { CopyButton } from "@/components/copy-button";
 import { ErrorState } from "@/components/error-state";
 import { Hint } from "@/components/hint";
+import { MessageDialog } from "@/components/message/message-dialog";
 import { formatBusinessDate } from "@/lib/dates";
-import { formatSize, shortDefinition } from "@/lib/message";
+import { formatSize, shortDefinition, type LogHolder } from "@/lib/message";
 import { codeOf } from "@/lib/network-graph";
-import { useClearingHouseMessage, useClearingHouseMessages } from "@/lib/api/hooks";
+import { useClearingHouseMessages } from "@/lib/api/hooks";
 import { cn } from "@/lib/utils";
 import type { Message } from "@/lib/types";
 
@@ -30,6 +23,12 @@ import type { Message } from "@/lib/types";
 // file produced which decision, and within a business day there is no
 // chronology to infer one from — every row of a day carries the same instant.
 // So the two are shown together and neither claims the other's order.
+
+// This console is the clearing house's, so the log it reads is that
+// institution's and there is nothing to resolve: naming the holder from the
+// mesh would make a persona's own screen depend on the deployment's read of
+// every institution, which is the leak the mesh's placement avoids.
+const CLEARING_HOUSE: LogHolder = { kind: "clearing house" };
 
 export function PaymentDocuments({ payid }: { payid: string }) {
   const { data, isLoading, error, refetch } = useClearingHouseMessages({ payment: payid });
@@ -65,7 +64,7 @@ export function PaymentDocuments({ payid }: { payid: string }) {
             ))}
           </ul>
         )}
-        <MessageDialog seq={open} onClose={() => setOpen(null)} />
+        <MessageDialog holder={CLEARING_HOUSE} seq={open} onClose={() => setOpen(null)} />
       </CardContent>
     </Card>
   );
@@ -110,51 +109,5 @@ function MessageRow({ message: m, onOpen }: { message: Message; onOpen: () => vo
         </span>
       </button>
     </li>
-  );
-}
-
-// The document, as it travelled. It is fetched only when one is asked for: a
-// listing leaves every payload unread and carries its size instead, and this is
-// the one read in the app that is handed a file's bytes.
-function MessageDialog({ seq, onClose }: { seq: number | null; onClose: () => void }) {
-  const { data, isLoading, error, refetch } = useClearingHouseMessage(seq);
-
-  return (
-    <Dialog open={seq !== null} onOpenChange={(o) => !o && onClose()}>
-      <DialogContent className="sm:max-w-3xl">
-        <DialogHeader>
-          <DialogTitle className="font-mono text-sm">
-            {data ? data.msgDefIdr : "Document"}
-          </DialogTitle>
-          <DialogDescription>
-            {data
-              ? `${data.direction === "sent" ? "Sent to" : "Received from"} ${data.counterparty} on ${formatBusinessDate(data.at.slice(0, 10))}${data.orderId ? ` · order ${data.orderId}` : ""}`
-              : "The file as it travelled."}
-          </DialogDescription>
-        </DialogHeader>
-        {error ? (
-          <ErrorState error={error} onRetry={() => void refetch()} />
-        ) : isLoading || !data ? (
-          <Skeleton className="h-72 w-full" />
-        ) : (
-          <>
-            <pre className="max-h-[60vh] overflow-auto rounded-md bg-muted p-3 font-mono text-xs leading-relaxed">
-              {data.document}
-            </pre>
-            <div className="flex items-center justify-between gap-2">
-              {/* Rendering a document is not validating it, and this viewer
-                  must not imply otherwise: nothing in this repository checks a
-                  message against a schema. */}
-              <p className="text-xs text-muted-foreground">
-                {"The file as it travelled, message id "}
-                <span className="font-mono">{data.msgId}</span>
-                {". Nothing here checks it against a schema."}
-              </p>
-              <CopyButton value={data.document} label="document" />
-            </div>
-          </>
-        )}
-      </DialogContent>
-    </Dialog>
   );
 }

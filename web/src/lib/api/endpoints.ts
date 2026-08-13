@@ -693,11 +693,20 @@ export function clearingHouseMessages(q: MessageQuery = {}): Promise<Message[]> 
   return request("GET", csm(`/messages${qs({ ...q })}`));
 }
 
-// One document, and the only read in this file that is handed a file's bytes:
-// every listing leaves the payload unread and carries its size instead. The seq
-// is one this institution's own listing named.
+// One document, and the only reads in this file handed a file's bytes: every
+// listing leaves the payload unread and carries its size instead. A seq counts
+// ONE institution's own traffic, so each of these three answers about itself
+// and the same number at another names that institution's file or nothing.
 export function clearingHouseMessage(seq: number): Promise<MessageDocument> {
   return request("GET", csm(`/messages/${seq}`));
+}
+
+export function bankMessage(pid: string, seq: number): Promise<MessageDocument> {
+  return request("GET", bank(pid, `/messages/${seq}`));
+}
+
+export function centralBankMessage(seq: number): Promise<MessageDocument> {
+  return request("GET", cb(`/messages/${seq}`));
 }
 
 // --- Payment: clearing cycles ---------------------------------------------
