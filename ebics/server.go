@@ -13,6 +13,10 @@ type Server struct {
 
 	mu   sync.Mutex
 	subs map[SubscriberID]struct{}
+
+	// pubs is what this host OFFERS, by order type: one snapshot per type, the
+	// same bytes for every subscriber. See Publish.
+	pubs map[OrderType][]byte
 }
 
 // Order is a file a subscriber uploaded, as the hosting institution sees it.
@@ -29,7 +33,7 @@ type Order struct {
 // order log in store. Enrolment is provisioning's act, not a side effect of
 // somebody dialling in.
 func NewServer(store Store) *Server {
-	return &Server{store: store, subs: map[SubscriberID]struct{}{}}
+	return &Server{store: store, subs: map[SubscriberID]struct{}{}, pubs: map[OrderType][]byte{}}
 }
 
 // Enrol admits a subscriber, which is what makes it reachable. Enrolling twice
@@ -42,14 +46,15 @@ func (s *Server) Enrol(sub SubscriberID) {
 	s.subs[sub] = struct{}{}
 }
 
-// Reset discards every enrolment. The queues and the order log are rows and go
-// with the rest of the institution's when its store is emptied, which is the
-// same act one layer down.
+// Reset discards every enrolment and everything this host offers. The queues and
+// the order log are rows and go with the rest of the institution's when its
+// store is emptied, which is the same act one layer down.
 func (s *Server) Reset() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	s.subs = map[SubscriberID]struct{}{}
+	s.pubs = map[OrderType][]byte{}
 }
 
 // Enrolled reports whether sub can reach this host at all.
@@ -144,6 +149,42 @@ func collects(t, enqueued OrderType) bool {
 	return enqueued != C53
 }
 
+// Publish replaces what this host offers under t. A snapshot is not addressed to
+// anybody and publishing it twice is publishing it once, which is what makes it
+// a directory rather than a message.
+func (s *Server) Publish(t OrderType, payload []byte) error {
+	if !t.IsPublished() {
+		return refuse(UnsupportedOrderType, "%s is not a type this host publishes", t)
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.pubs[t] = payload
+	return nil
+}
+
+// Published hands sub the snapshot this host offers under t. Nothing is emptied,
+// so two subscribers collect the same file and one subscriber may collect it
+// twice.
+func (s *Server) Published(sub SubscriberID, t OrderType) ([]byte, error) {
+	if !s.Enrolled(sub) {
+		return nil, refuse(InvalidUserOrUserState, "%s is not enrolled at this host", sub)
+	}
+	if !t.IsPublished() {
+		return nil, refuse(UnsupportedOrderType, "%s is not a type this host publishes", t)
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	payload, ok := s.pubs[t]
+	if !ok {
+		return nil, refuse(NoDownloadDataAvailable, "this host publishes no %s", t)
+	}
+	return payload, nil
+}
+
 // Acknowledgements is the HAC answer: every order sub has uploaded here and
 // what became of it, oldest first.
 func (s *Server) Acknowledgements(ctx context.Context, sub SubscriberID) ([]Acknowledgement, error) {
@@ -172,6 +213,9 @@ func (s *Server) Enqueue(ctx context.Context, sub SubscriberID, t OrderType, pay
 	}
 	if t == BTD || t == HAC {
 		return "", refuse(UnsupportedOrderType, "%s selects files, it does not name one", t)
+	}
+	if t.IsPublished() {
+		return "", refuse(UnsupportedOrderType, "%s is published to every subscriber, not addressed to one", t)
 	}
 
 	return s.mint(ctx, func(ctx context.Context, tx Tx, seq int, id OrderID) error {

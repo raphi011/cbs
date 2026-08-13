@@ -42,7 +42,8 @@ func (c *Client) Upload(ctx context.Context, t OrderType, payload []byte) (Order
 }
 
 // Download collects what is waiting: C53 for statements, BTD for everything
-// else, in the order the host queued it.
+// else, in the order the host queued it. A published type — HRD — comes back the
+// same way and empties nothing; see Server.Published.
 func (c *Client) Download(ctx context.Context, t OrderType) ([]File, error) {
 	resp, err := c.do(ctx, Request{OrderType: t})
 	if CodeOf(err) == NoDownloadDataAvailable {
