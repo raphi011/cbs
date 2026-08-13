@@ -146,16 +146,29 @@ ADR-0006 and ADR-0007 made unrepresentable one layer down. The suite is
 
 Each phase leaves the tree green and deletes what it replaces.
 
-1. **The role rules.** `SubmitterOf`, `ReceiverOf` and `CounterpartyOf` exported
-   beside `ReturnerOf`; the six copies delete; `cmd/server` keeps its local
-   names as one-line delegations, the way it already does for the returner.
-2. **`Initiate` and `Reject`.** Both drivers delegate. This is the phase that
-   closes the divergence, and the three audit expectations move with it — the
-   submitting bank records the acceptance, because that is what its deployment
-   does.
-3. **`Return` and `Settle`.** The larger two, and the ones where the suite has a
-   guard the seed does not.
-4. **The ruling and the docs.** An ADR for who may drive a conversation,
+1. **The role rules.** — `done`. The four are in `payment/scheme.go` and the six
+   copies are gone; `cmd/server` keeps its local names as delegations, the way
+   it already did for the returner, and `recon` keeps its own because the BIC is
+   half of what it answers. A seventh copy turned up in `seed_test.go`, keyed
+   off a scheme id literal rather than the direction. `payment/scheme_test.go`
+   is the rule's own suite, including the deployment where one bank is both
+   sides.
+2. **`Initiate` and `Reject`.** — `done`, and the measurement above is what
+   happened: three audit expectations, each gaining the submitting bank's
+   acceptance. Two further drifts came out of writing the sequence once — the
+   seed relayed the request rather than the payment, dropping the payer's
+   back-filled address, and its rejection reached the submitting bank alone. The
+   suite's trails are now asserted per bank, because which bank submitted
+   decides where the acceptance falls.
+3. **`Return` and `Settle`.** — `done`. `runCycle` keeps the open-submit-close it
+   is for and hands the rest over, so the legs check that decides whether there
+   is anything to settle sits with the settlement. `returnTheWholeWay` is
+   `returnWholePayment` for a fixture that cannot carry on past a failure, and
+   the three helpers the split drives — `bookTheAdvices`, `payTheCreditors`,
+   `settleCycle` — stay, because the tests about the split call the halves
+   directly.
+4. **The ruling and the docs.** — `done`.
+   [ADR-0008](../adr/0008-a-conversation-belongs-to-the-deployment.md),
    `CLAUDE.md`'s store section, and the roadmap entry.
 
 ## What this does not do

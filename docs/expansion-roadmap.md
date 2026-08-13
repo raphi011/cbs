@@ -52,6 +52,9 @@ Three constraints apply to everything below.
   day. They are this deployment's orchestration rather than a library some other
   system could use, which is what puts them in a command; which institutions a
   deployment has is that deployment's business and not a library's.
+- `payment/flow` — the four conversations between institutions, in the order the
+  messages travel, for a caller that IS the deployment: the seed and the suites.
+  See [ADR-0008](adr/0008-a-conversation-belongs-to-the-deployment.md).
 - `payment/recon` — the reconciliation harness, test-only by convention: the one
   instrument that opens every institution's database at once, precisely because
   no institution in the system may. Its narrow sibling is `payment.Network.Reconcile`,
@@ -845,6 +848,42 @@ the unique index, `MarkReversed`'s conditional `UPDATE`, `NextID`'s allocation.
 
 [Design record](specs/2026-08-12-derived-balances-off-the-store-seam-design.md)
 — six phases, each with what it cost, including the two it refused.
+
+### The interbank conversation has an owner — `done`
+
+The architecture review's third card, and what the two before it left exposed:
+every act had an owner and the ORDER they go in had none. Two callers drove it
+by calling the domain directly — `seed` and `payment`'s own suite — and each
+wrote the sequence out.
+
+**They had drifted, and the drift was in the sample dataset.** The seed reached
+`AcceptAtBank` where the suite stopped at `AcceptAtCSM`, so a payment was
+`Accepted` at its submitting bank in the seed data and `Initiated` in every test
+that built one. `seed/seed.go` had named that hazard in its own comment. Writing
+the conversation once found two more: the seed relayed the REQUEST rather than
+the payment, so the payer's back-filled address never reached the other two
+institutions' copies, and a rejection reached the submitting bank alone.
+
+**`payment/flow` owns the four conversations** — `Initiate`, `Reject`, `Return`,
+`Settle` — over `*payment.Networks`, for a caller that IS the deployment and for
+no institution. Every act stays the institution's own in its own unit of work;
+the package opens no transaction and holds no store.
+[ADR-0008](adr/0008-a-conversation-belongs-to-the-deployment.md) is the ruling
+and `provision` was the precedent.
+
+**One rule underneath, not three.** `payment.SubmitterOf`, `ReceiverOf`,
+`ReturnerOf` and `CounterpartyOf` replaced six copies across `cmd/server`,
+`seed`, `recon` and two suites. The receiving side and the returning side are
+the same body under two act names, which `payment/scheme_test.go` asserts.
+
+The three audit trails that moved are the same claim from the other side: a
+submitting bank records that it was told, so a bank's trail depends on which
+payment it submitted rather than being one shape asserted twice.
+
+[Design record](specs/2026-08-13-the-interbank-conversation-design.md) — four
+phases, and what the card got wrong: `cmd/server` is not a third copy, because
+since sub-project 21 its institutions reach these acts off the files they are
+handed.
 
 ### A caller cannot see which order a listing comes back in — `todo`
 

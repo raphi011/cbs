@@ -170,6 +170,19 @@ it against five deliberately broken states and `seed` runs it over the widest
 deployment. If a change could make two institutions' books disagree, that is the
 test to add.
 
+**No institution owns the ORDER its acts go in, and `payment/flow` does.** The
+four conversations — `Initiate`, `Reject`, `Return`, `Settle` — over
+`*payment.Networks`, for a caller that IS the deployment: `seed` and the suites,
+never an institution and nothing on the transport path, where each performs its
+own half off the file it is handed. Every act stays in its own unit of work; the
+package opens no transaction and holds no store.
+[ADR-0008](docs/adr/0008-a-conversation-belongs-to-the-deployment.md) is the
+ruling, `provision` is the same shape one layer over, and a driver that writes
+the sequence out again is how the seed and the suite came to build two different
+payments. Which agent plays which part is `payment.SubmitterOf`, `ReceiverOf`,
+`ReturnerOf` and `CounterpartyOf` — one rule, and the receiving side and the
+returning side are the same body under two act names.
+
 **Nothing cross-checks the SQL.** There is one implementation, so anything that
 would need proving against a second has to be proved before it lands. What
 replaces the cross-check for the two failures that are otherwise silent is a
