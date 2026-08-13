@@ -114,11 +114,7 @@ func (s *Book) AccountHistoryTx(ctx context.Context, tx Tx, pos Position) (Accou
 			if pos.Subsidiary != "" && e.Subsidiary != pos.Subsidiary {
 				continue
 			}
-			if e.Direction == hist.Normal {
-				movement += e.Amount
-			} else {
-				movement -= e.Amount
-			}
+			movement += signed(e, hist.Normal)
 		}
 		hist.Closing += movement
 		hist.Rows = append(hist.Rows, HistoryRow{

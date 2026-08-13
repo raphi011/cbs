@@ -205,6 +205,17 @@ type Entry struct {
 	ValueDate time.Time
 }
 
+// EntryFilter narrows a scan to what the entries index can serve. Nothing else
+// belongs here: a predicate the index cannot answer is a full scan whichever
+// language evaluates it, so the fold does the rest.
+type EntryFilter struct {
+	// From and To bound the value date to [From, To); a zero bound is no bound. An
+	// entry with no value date is in neither, which is what makes a dated window
+	// and an undated total two different questions.
+	From time.Time
+	To   time.Time
+}
+
 // DayMovement is an account's net movement on one value date, signed by the
 // account's normal direction.
 type DayMovement struct {

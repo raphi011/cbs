@@ -1821,13 +1821,15 @@ Each schema writes the reasoning into the database itself, inside the `CREATE TA
 
 ### A Balance Is an Aggregate, Not a Column
 
-There is no `balance` column anywhere in the schema. A book balance is computed on demand by summing the account's entries, signed by normal balance — which makes the account's normal direction a **parameter** of the query rather than a constant in it:
+There is no `balance` column anywhere in the schema. A book balance is computed on demand by summing the account's entries, signed by normal balance — which makes the account's normal direction a **parameter** of the sum rather than a constant in it:
 
 ```sql
 SELECT COALESCE(SUM(CASE WHEN direction = ? THEN amount ELSE -amount END), 0)
   FROM entries
  WHERE book_id = ? AND account_id = ?;   -- the first ? is the normal direction
 ```
+
+That statement is the rule, not the code: the store's `ScanEntries` runs the `WHERE` clause and streams the rows, and `ledger.BookBalance` does the addition. Which side of the seam adds is the subject of the roadmap's *Move the derived balances off the store seam*; what does not change is that the figure is derived and no column holds it.
 
 Hardcoding `debit` there is the easy mistake, and it is only half wrong, which is what makes it hard to see: it is correct for every Asset and Expense account and it negates every Liability, Equity and Revenue one. Alice's checking account in the walkthrough below is a **Liability** — a customer deposit is money the bank owes — so a debit-hardcoded query would report its 75000 as −75000.
 

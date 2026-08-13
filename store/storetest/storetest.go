@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 	"sync"
 	"testing"
@@ -313,7 +314,7 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Ban
 			assertEqual(t, "the pooled leg's subsidiary", one.Entries[1].Subsidiary, "dep_1")
 			assertEqual(t, "the plain leg's subsidiary", one.Entries[0].Subsidiary, "")
 
-			whole, err := tx.BookBalance(ctx, bookA, pooled.Total(), ledger.Credit)
+			whole, err := ledger.BookBalance(ctx, tx, bookA, pooled.Total(), ledger.Credit)
 			if err != nil {
 				return err
 			}
@@ -321,7 +322,7 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Ban
 
 			var detail ledger.Amount
 			for subsidiary, want := range map[string]ledger.Amount{"dep_1": 1040, "dep_2": 250} {
-				got, err := tx.BookBalance(ctx, bookA, pooled.For(subsidiary), ledger.Credit)
+				got, err := ledger.BookBalance(ctx, tx, bookA, pooled.For(subsidiary), ledger.Credit)
 				if err != nil {
 					return err
 				}
@@ -332,7 +333,7 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Ban
 
 			// A subsidiary nothing was ever posted for is zero, like an account
 			// with no entries. Nothing here holds a list to check it against.
-			absent, err := tx.BookBalance(ctx, bookA, pooled.For("dep_9"), ledger.Credit)
+			absent, err := ledger.BookBalance(ctx, tx, bookA, pooled.For("dep_9"), ledger.Credit)
 			if err != nil {
 				return err
 			}
@@ -690,7 +691,7 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Ban
 			}
 			assertEqual(t, "orphan account's subledger", string(a.SubledgerID), "900")
 
-			balance, err := tx.BookBalance(ctx, bookA, ledger.AccountID("999.999.001").Total(), ledger.Debit)
+			balance, err := ledger.BookBalance(ctx, tx, bookA, ledger.AccountID("999.999.001").Total(), ledger.Debit)
 			if err != nil {
 				return err
 			}
@@ -1169,6 +1170,118 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Ban
 			return err
 		})
 		assertEqual(t, "transactions for the account", len(all), 2)
+	})
+
+	// A balance is a fold over ScanEntries, so what the store owes is the ROWS:
+	// this position's and no other's, narrowed by a window the index can serve.
+	t.Run("ScanEntriesYieldsThePositionsEntriesInTheWindow", func(t *testing.T) {
+		s := open(t, newStore, bookA)
+
+		const pooled ledger.AccountID = "902.001.001"
+		day := func(d int) time.Time { return time.Date(2026, 5, d, 0, 0, 0, 0, time.UTC) }
+
+		update(t, s, func(ctx context.Context, tx ledger.BankTx) error {
+			for _, p := range []struct {
+				id         string
+				subsidiary string
+				when       time.Time
+			}{
+				{"1", "dep_1", day(1)},
+				{"2", "dep_2", day(2)},
+				{"3", "dep_1", day(3)},
+				// Undated, so it is in no window and in every unbounded scan.
+				{"4", "dep_1", time.Time{}},
+			} {
+				err := tx.PutTransaction(ctx, bookA, ledger.Transaction{
+					ID: ledger.TransactionID("txn_scan_" + p.id), ValueDate: p.when,
+					Entries: []ledger.Entry{
+						{ID: ledger.EntryID("ent_scan_" + p.id), AccountID: pooled, Subsidiary: p.subsidiary,
+							Amount: 100, Direction: ledger.Credit, ValueDate: p.when},
+						{ID: ledger.EntryID("ent_scan_other_" + p.id), AccountID: "902.001.002",
+							Amount: 100, Direction: ledger.Debit, ValueDate: p.when},
+					},
+				})
+				if err != nil {
+					return err
+				}
+			}
+			return nil
+		})
+
+		cases := []struct {
+			label  string
+			pos    ledger.Position
+			filter ledger.EntryFilter
+			want   string
+		}{
+			{"the whole account", pooled.Total(), ledger.EntryFilter{},
+				"[ent_scan_1 ent_scan_2 ent_scan_3 ent_scan_4]"},
+			{"one subsidiary", pooled.For("dep_1"), ledger.EntryFilter{},
+				"[ent_scan_1 ent_scan_3 ent_scan_4]"},
+			{"a subsidiary nothing was posted for", pooled.For("dep_9"), ledger.EntryFilter{}, "[]"},
+			// [From, To): the lower bound is in, the upper is out, and the
+			// undated entry is in neither.
+			{"a half-open window", pooled.Total(), ledger.EntryFilter{From: day(1), To: day(3)},
+				"[ent_scan_1 ent_scan_2]"},
+			{"a lower bound alone", pooled.Total(), ledger.EntryFilter{From: day(2)},
+				"[ent_scan_2 ent_scan_3]"},
+			{"an upper bound alone", pooled.Total(), ledger.EntryFilter{To: day(2)}, "[ent_scan_1]"},
+			{"a subsidiary within a window", pooled.For("dep_1"), ledger.EntryFilter{From: day(2), To: day(4)},
+				"[ent_scan_3]"},
+		}
+		for _, c := range cases {
+			assertEqual(t, c.label, scanned(t, s, c.pos, c.filter), c.want)
+		}
+
+		// An Entry comes back whole: five columns, and the account the position
+		// named rather than a sixth column repeating it.
+		view(t, s, func(ctx context.Context, tx ledger.BankTx) error {
+			for e, err := range tx.ScanEntries(ctx, bookA, pooled.For("dep_2"), ledger.EntryFilter{}) {
+				if err != nil {
+					return err
+				}
+				assertEqual(t, "the entry's id", string(e.ID), "ent_scan_2")
+				assertEqual(t, "its account", string(e.AccountID), string(pooled))
+				assertEqual(t, "its subsidiary", e.Subsidiary, "dep_2")
+				assertEqual(t, "its amount", e.Amount, ledger.Amount(100))
+				assertEqual(t, "its direction", e.Direction, ledger.Credit)
+				assertEqual(t, "its value date", e.ValueDate.Equal(day(2)), true)
+			}
+			return nil
+		})
+	})
+
+	// A scan stops when the caller stops, and it must not report an error for
+	// having been stopped: a fold that has seen enough is not a failure.
+	t.Run("ScanEntriesStopsWhenTheFoldBreaks", func(t *testing.T) {
+		s := open(t, newStore, bookA)
+
+		update(t, s, func(ctx context.Context, tx ledger.BankTx) error {
+			return tx.PutTransaction(ctx, bookA, ledger.Transaction{
+				ID: "txn_scan_break", Status: ledger.Posted,
+				Entries: []ledger.Entry{
+					{ID: "ent_break_1", AccountID: "903.001.001", Amount: 100, Direction: ledger.Debit},
+					{ID: "ent_break_2", AccountID: "903.001.001", Amount: 200, Direction: ledger.Debit},
+					{ID: "ent_break_3", AccountID: "903.001.002", Amount: 300, Direction: ledger.Credit},
+				},
+			})
+		})
+
+		seen := 0
+		view(t, s, func(ctx context.Context, tx ledger.BankTx) error {
+			for _, err := range tx.ScanEntries(ctx, bookA, ledger.AccountID("903.001.001").Total(), ledger.EntryFilter{}) {
+				if err != nil {
+					return err
+				}
+				seen++
+				break
+			}
+			// And the unit of work is still usable afterwards: an abandoned scan
+			// leaves nothing behind that the next read trips over.
+			_, err := ledger.BookBalance(ctx, tx, bookA, ledger.AccountID("903.001.001").Total(), ledger.Debit)
+			return err
+		})
+		assertEqual(t, "entries seen before the break", seen, 1)
 	})
 
 	t.Run("ValueDateBalanceCountsOnlyEntriesBeforeTheBound", func(t *testing.T) {
@@ -1989,10 +2102,29 @@ func balance(t *testing.T, s ledger.BankStore, id ledger.AccountID) ledger.Amoun
 	var out ledger.Amount
 	view(t, s, func(ctx context.Context, tx ledger.BankTx) error {
 		var err error
-		out, err = tx.BookBalance(ctx, bookA, ledger.AccountID(id).Total(), ledger.Debit)
+		out, err = ledger.BookBalance(ctx, tx, bookA, ledger.AccountID(id).Total(), ledger.Debit)
 		return err
 	})
 	return out
+}
+
+// scanned is the ids a scan yields, sorted and rendered: ScanEntries promises
+// which entries come back and not in which order, so the assertion is about
+// membership.
+func scanned(t *testing.T, s ledger.BankStore, pos ledger.Position, f ledger.EntryFilter) string {
+	t.Helper()
+	ids := []string{}
+	view(t, s, func(ctx context.Context, tx ledger.BankTx) error {
+		for e, err := range tx.ScanEntries(ctx, bookA, pos, f) {
+			if err != nil {
+				return err
+			}
+			ids = append(ids, string(e.ID))
+		}
+		return nil
+	})
+	slices.Sort(ids)
+	return sliceString(ids)
 }
 
 // audit reads the audit log through a filter.

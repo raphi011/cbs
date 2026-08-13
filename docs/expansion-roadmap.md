@@ -805,7 +805,7 @@ unexported, leaving the DTO files free of I/O as `api/doc.go` claims.
 
 The 99-route table was dumped before and after and is byte-identical.
 
-### Move the derived balances off the store seam — `spec`
+### Move the derived balances off the store seam — `wip`
 
 The three transaction seams carry 73 / 21 / 37 methods, 82 / 76 / 70% of them
 Put/Get/List pass-through. The cost is in the rest: eleven computations
@@ -845,6 +845,25 @@ and what it buys is eleven computations written once.
 six phases, and it separates the eight computations that move from the three
 constraints that cannot: a uniqueness claim under concurrency belongs where the
 transactions are.
+
+**Phase 1 is done, and it corrected the number above.** `ledger.Tx.ScanEntries`
+replaced `BookBalance` on all three seams; the balance is a fold in `ledger`,
+reached by the trial balance and by `payment/recon` without a `Book`. But the Go
+column in that table was a sketch selecting two columns, and a scan that yields
+an `Entry` selects five:
+
+| entries on the account | SQL `SUM` | the fold over `ScanEntries` |
+| ---------------------- | --------- | --------------------------- |
+| 100                    | 57 µs     | 132 µs                      |
+| 1 000                  | 421 µs    | 1.10 ms                     |
+| 10 000                 | 4.4 ms    | 11.3 ms                     |
+| 100 000                | 62 ms     | 135 ms                      |
+
+A factor of 2.3 at every size, not a fifth past ten thousand. The iterator is
+free and the timestamp parse is a ninth of it; the rest is reading three columns
+a balance does not use. In absolute terms it is +75 µs on a hundred-entry
+account, which is what the decision now rests on — `TrialBalanceTx` is where it
+compounds, one balance per account in the chart.
 
 ### `Scheme` — an interface with seven constant returns
 

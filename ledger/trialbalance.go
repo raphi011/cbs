@@ -91,7 +91,7 @@ func (s *Book) TrialBalanceTx(ctx context.Context, tx Tx, asOf time.Time) (Trial
 
 	for _, a := range accounts {
 		normal := a.Type.NormalBalance()
-		book, err := tx.BookBalance(ctx, s.id, a.ID.Total(), normal)
+		book, err := BookBalance(ctx, tx, s.id, a.ID.Total(), normal)
 		if err != nil {
 			return TrialBalance{}, err
 		}
@@ -102,19 +102,19 @@ func (s *Book) TrialBalanceTx(ctx context.Context, tx Tx, asOf time.Time) (Trial
 
 		// Restate onto the debit-positive convention every column here shares:
 		// a credit-normal account's positive balance is a credit.
-		signed, inFlight := book, book-valueDated
+		debitPositive, inFlight := book, book-valueDated
 		if normal == Credit {
-			signed, inFlight = -signed, -inFlight
+			debitPositive, inFlight = -debitPositive, -inFlight
 		}
 
 		row := TrialBalanceRow{
 			Account: a.ID, Name: a.Name, Type: a.Type, Asset: a.Asset,
 			Control: a.Control, InFlight: inFlight,
 		}
-		if signed >= 0 {
-			row.Debits = signed
+		if debitPositive >= 0 {
+			row.Debits = debitPositive
 		} else {
-			row.Credits = -signed
+			row.Credits = -debitPositive
 		}
 		out.Rows = append(out.Rows, row)
 

@@ -86,6 +86,35 @@ The alternative this replaces was Postgres's index-backed `SUM`, and there is no
 Postgres. What is being weighed is a fifth of a millisecond on accounts a hundred
 times busier than any in the seed, against eleven rules written once.
 
+### What phase 1 measured, and where the table above was wrong
+
+**The Go column was a sketch, and the sketch selected two columns.** It read
+`direction` and `amount`, which is all a balance needs. The seam yields an
+`Entry`, so the real implementation selects five — `id`, `subsidiary_id`,
+`amount`, `direction`, `value_date`. Re-measured with the fold as the shipped
+code (`account_id` dropped from the projection, since the `WHERE` clause already
+fixed it):
+
+| entries on the account | SQL `SUM` | the fold over `ScanEntries` | the 2-column sketch |
+| ---------------------- | --------- | --------------------------- | ------------------- |
+| 100                    | 57 µs     | 132 µs                      | 72 µs               |
+| 1 000                  | 421 µs    | 1.10 ms                     | 578 µs              |
+| 10 000                 | 4.4 ms    | 11.3 ms                     | 6.0 ms              |
+| 100 000                | 62 ms     | 135 ms                      | 80 ms               |
+
+**It is a factor of 2.3, not a fifth, and it is flat across every size.** Split
+three ways at ten thousand entries: the iterator itself costs nothing (13.4 ms
+against 13.6 ms for the same loop written out), parsing the timestamp costs
+1.5 ms, and the remaining ~5 ms is reading the three columns a balance does not
+use. The cost of moving a balance into the domain is the cost of an `Entry`
+being wider than a sum.
+
+In absolute terms it is +75 µs on a hundred-entry account and +0.7 ms on a
+thousand-entry one. The decision still rests on that being small against eleven
+rules written once — but it rests on the absolute number, and no longer on the
+ratio. `TrialBalanceTx` is where it compounds: one balance per account in the
+chart, so a 200-account trial balance pays it 200 times.
+
 ## The shape
 
 **The seam yields entries; the domain folds them.**
@@ -119,10 +148,14 @@ Three properties this has to keep, and each is a way to get it wrong:
 Each phase leaves the tree green and deletes what it replaces. No phase is worth
 starting without the one before it.
 
-1. **`ScanEntries` and `BookBalance`.** The narrowest complete slice: one new
-   store method, one computation moved, one aggregate deleted. Re-run
-   `BenchmarkBookBalance` — the Go side of it becomes the real implementation,
-   so the benchmark stops comparing an implementation against a sketch.
+1. **`ScanEntries` and `BookBalance`.** — `done`. The narrowest complete slice:
+   one new store method, one computation moved, one aggregate deleted.
+   `ledger.BookBalance` is a package-level fold, so `payment/recon` and the
+   trial balance reach it without a `Book`; `ledger.signed` is the sign rule,
+   written once and used by the history fold too. `BenchmarkBookBalance` keeps
+   the deleted SQL as a local helper and gained a `fold` arm — see the
+   re-measurement above, which did not come out where this document said it
+   would.
 2. **`ValueDateBalance` and `ValueDatedSeries`.** The day arithmetic leaves SQL.
    This is where the bulk of the prose contract is deleted.
 3. **`SubsidiaryBalances`.** Needs a grouped fold and the zero-netting rule; the

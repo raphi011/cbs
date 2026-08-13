@@ -9,6 +9,7 @@ import (
 	"go/parser"
 	"go/printer"
 	"go/token"
+	"iter"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -403,9 +404,9 @@ func (r *recordingBankTx) MarkReversed(ctx context.Context, book ledger.BookID, 
 	return r.BankTx.MarkReversed(ctx, book, id)
 }
 
-func (r *recordingBankTx) BookBalance(ctx context.Context, book ledger.BookID, pos ledger.Position, normal ledger.Direction) (ledger.Amount, error) {
+func (r *recordingBankTx) ScanEntries(ctx context.Context, book ledger.BookID, pos ledger.Position, f ledger.EntryFilter) iter.Seq2[ledger.Entry, error] {
 	r.rec.note(book)
-	return r.BankTx.BookBalance(ctx, book, pos, normal)
+	return r.BankTx.ScanEntries(ctx, book, pos, f)
 }
 
 func (r *recordingBankTx) ValueDateBalance(ctx context.Context, book ledger.BookID, pos ledger.Position, normal ledger.Direction, before time.Time) (ledger.Amount, error) {
@@ -732,9 +733,9 @@ func (r *recordingCentralBankTx) MarkReversed(ctx context.Context, book ledger.B
 	return r.CentralBankTx.MarkReversed(ctx, book, id)
 }
 
-func (r *recordingCentralBankTx) BookBalance(ctx context.Context, book ledger.BookID, pos ledger.Position, normal ledger.Direction) (ledger.Amount, error) {
+func (r *recordingCentralBankTx) ScanEntries(ctx context.Context, book ledger.BookID, pos ledger.Position, f ledger.EntryFilter) iter.Seq2[ledger.Entry, error] {
 	r.rec.note(book)
-	return r.CentralBankTx.BookBalance(ctx, book, pos, normal)
+	return r.CentralBankTx.ScanEntries(ctx, book, pos, f)
 }
 
 func (r *recordingCentralBankTx) ValueDateBalance(ctx context.Context, book ledger.BookID, pos ledger.Position, normal ledger.Direction, before time.Time) (ledger.Amount, error) {

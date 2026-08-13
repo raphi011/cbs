@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"iter"
 	"strings"
 	"time"
 
@@ -684,23 +685,65 @@ func subsidiaryClause(pos ledger.Position) (string, []any) {
 	return " AND e.subsidiary_id = ?", []any{pos.Subsidiary}
 }
 
-// BookBalance aggregates a position's entries in SQL rather than replaying them
-// in Go: entries in the account's normal direction add, the rest subtract.
-func (t *tx) BookBalance(ctx context.Context, book ledger.BookID, pos ledger.Position, normal ledger.Direction) (ledger.Amount, error) {
-	if err := t.own(book); err != nil {
-		return 0, err
+// ScanEntries streams a position's entries. entries_account_idx serves the
+// position and the value-date bounds narrow within it: every clause built here
+// is a column of that index. See ledger.Tx for the contract.
+func (t *tx) ScanEntries(ctx context.Context, book ledger.BookID, pos ledger.Position, f ledger.EntryFilter) iter.Seq2[ledger.Entry, error] {
+	return func(yield func(ledger.Entry, error) bool) {
+		if err := t.own(book); err != nil {
+			yield(ledger.Entry{}, err)
+			return
+		}
+		fail := func(err error) {
+			yield(ledger.Entry{}, fmt.Errorf("sqlite: scan entries %s: %w", pos, err))
+		}
+
+		clause, extra := subsidiaryClause(pos)
+		args := append([]any{string(book), string(pos.Account)}, extra...)
+		// A NULL value date compares to neither bound, so an undated entry falls
+		// out of a bounded scan and stays in an unbounded one.
+		if !f.From.IsZero() {
+			clause += " AND e.value_date >= ?"
+			args = append(args, formatTime(f.From))
+		}
+		if !f.To.IsZero() {
+			clause += " AND e.value_date < ?"
+			args = append(args, formatTime(f.To))
+		}
+
+		// account_id is not selected: the WHERE clause fixed it, so reading it back
+		// is one TEXT column per row to learn what the caller supplied.
+		rows, err := t.tx.QueryContext(ctx, `
+			SELECT e.id, e.subsidiary_id, e.amount, e.direction, e.value_date
+			FROM entries e WHERE e.book_id = ? AND e.account_id = ?`+clause,
+			args...)
+		if err != nil {
+			fail(err)
+			return
+		}
+		defer rows.Close()
+
+		for rows.Next() {
+			var (
+				e         ledger.Entry
+				direction int64
+				valueDate nullTime
+			)
+			if err := rows.Scan(&e.ID, &e.Subsidiary, &e.Amount, &direction, &valueDate); err != nil {
+				fail(err)
+				return
+			}
+			e.AccountID = pos.Account
+			e.Direction = ledger.Direction(direction)
+			e.ValueDate = valueDate.Time
+			if !yield(e, nil) {
+				return
+			}
+		}
+		if err := rows.Err(); err != nil {
+			fail(err)
+		}
 	}
-	clause, extra := subsidiaryClause(pos)
-	args := append([]any{int64(normal), string(book), string(pos.Account)}, extra...)
-	var balance ledger.Amount
-	err := t.tx.QueryRowContext(ctx, `
-		SELECT COALESCE(SUM(CASE WHEN e.direction = ? THEN e.amount ELSE -e.amount END), 0)
-		FROM entries e WHERE e.book_id = ? AND e.account_id = ?`+clause,
-		args...).Scan(&balance)
-	if err != nil {
-		return 0, fmt.Errorf("sqlite: book balance %s: %w", pos, err)
-	}
-	return balance, nil
 }
 
 // SubsidiaryBalances groups a control account's entries by subsidiary. See

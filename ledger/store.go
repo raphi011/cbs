@@ -2,6 +2,7 @@ package ledger
 
 import (
 	"context"
+	"iter"
 	"time"
 )
 
@@ -107,9 +108,10 @@ type Tx interface {
 	// covers it and a read-compare-write would race.
 	MarkReversed(ctx context.Context, book BookID, id TransactionID) error
 
-	// BookBalance aggregates entries rather than replaying them in Go. normal is
-	// the account type's normal direction; entries in that direction add.
-	BookBalance(ctx context.Context, book BookID, pos Position, normal Direction) (Amount, error)
+	// ScanEntries streams the position's entries, narrowed by the filter, in no
+	// promised order. A balance is the fold over it, and BookBalance is that fold
+	// — the store yields rows and the domain does the arithmetic.
+	ScanEntries(ctx context.Context, book BookID, pos Position, f EntryFilter) iter.Seq2[Entry, error]
 
 	// ValueDateBalance is BookBalance restricted to entries that take economic
 	// effect before the bound: it aggregates entries whose value date is strictly

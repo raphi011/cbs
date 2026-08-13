@@ -595,7 +595,7 @@ func (s *Book) checkSufficientBalance(ctx context.Context, tx Tx, accounts map[A
 		if delta >= 0 {
 			continue
 		}
-		available, err := tx.BookBalance(ctx, s.id, pos, acct.Type.NormalBalance())
+		available, err := BookBalance(ctx, tx, s.id, pos, acct.Type.NormalBalance())
 		if err != nil {
 			return err
 		}
@@ -728,6 +728,30 @@ func (s *Book) ReverseTransactionTx(ctx context.Context, tx Tx, txID Transaction
 // Balance Queries
 // ---------------------------------------------------------------------------
 
+// signed is one entry's effect on a balance kept in normal's direction, and the
+// one place that rule is written: an entry in the normal direction raises the
+// balance and the opposite one lowers it.
+func signed(e Entry, normal Direction) Amount {
+	if e.Direction == normal {
+		return e.Amount
+	}
+	return -e.Amount
+}
+
+// BookBalance sums a position's entries, signed by normal. An account nothing
+// was posted to is zero, and an empty subsidiary is the whole account — a
+// balance is a fold over entries, never a join to a chart of accounts.
+func BookBalance(ctx context.Context, tx Tx, book BookID, pos Position, normal Direction) (Amount, error) {
+	var balance Amount
+	for e, err := range tx.ScanEntries(ctx, book, pos, EntryFilter{}) {
+		if err != nil {
+			return 0, err
+		}
+		balance += signed(e, normal)
+	}
+	return balance, nil
+}
+
 // BookBalance computes the current book balance of a position.
 func (s *Book) BookBalance(ctx context.Context, pos Position) (Amount, error) {
 	var out Amount
@@ -745,7 +769,7 @@ func (s *Book) BookBalanceTx(ctx context.Context, tx Tx, pos Position) (Amount, 
 	if err != nil {
 		return 0, err
 	}
-	return tx.BookBalance(ctx, s.id, pos, acct.Type.NormalBalance())
+	return BookBalance(ctx, tx, s.id, pos, acct.Type.NormalBalance())
 }
 
 // ValueDateBalance computes an account's balance as of the end of asOf's day.

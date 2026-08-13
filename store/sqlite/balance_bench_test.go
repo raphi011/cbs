@@ -11,8 +11,9 @@ import (
 	"github.com/raphi011/cbs/payment"
 )
 
-// The measurement the roadmap's "Move the derived balances off the store seam"
-// asks for: what SQLite's aggregate buys over the same sum written in Go.
+// What SQLite's aggregate buys over the fold that replaced it, in three arms:
+// the deleted SQL, the shipped fold, and a two-column scan that shows how much
+// of the fold's cost is the columns an Entry carries.
 
 const benchBook ledger.BookID = "book_bench"
 
@@ -63,8 +64,22 @@ func benchStore(b *testing.B, n int) *BankStore {
 	return s
 }
 
-// goScanBalance is BookBalance with the addition moved into Go: the same rows,
-// the same index, one round trip per entry instead of one per account.
+// sqlSumBalance is the aggregate ledger.BookBalance replaced, kept here so the
+// comparison has two sides. The store no longer holds it: the seam yields
+// entries and the domain folds them.
+func sqlSumBalance(ctx context.Context, t *tx, book ledger.BookID, account ledger.AccountID,
+	normal ledger.Direction,
+) (ledger.Amount, error) {
+	var balance ledger.Amount
+	err := t.tx.QueryRowContext(ctx, `
+		SELECT COALESCE(SUM(CASE WHEN e.direction = ? THEN e.amount ELSE -e.amount END), 0)
+		FROM entries e WHERE e.book_id = ? AND e.account_id = ?`,
+		int64(normal), string(book), string(account)).Scan(&balance)
+	return balance, err
+}
+
+// goScanBalance is the sum written against the raw rows, kept beside the domain
+// fold so the benchmark says what the iterator itself costs.
 func goScanBalance(ctx context.Context, t *tx, book ledger.BookID, account ledger.AccountID,
 	normal ledger.Direction,
 ) (ledger.Amount, error) {
@@ -100,10 +115,14 @@ func BenchmarkBookBalance(b *testing.B) {
 		s := benchStore(b, n)
 		ctx := context.Background()
 
-		// Both answers first, so a timing comparison cannot be between one
+		// All three answers first, so a timing comparison cannot be between one
 		// balance and something that is not one.
 		if err := s.View(ctx, func(ctx context.Context, t payment.BankTx) error {
-			aggregate, err := t.BookBalance(ctx, benchBook, ledger.Position{Account: benchAccount}, ledger.Debit)
+			folded, err := ledger.BookBalance(ctx, t, benchBook, ledger.Position{Account: benchAccount}, ledger.Debit)
+			if err != nil {
+				return err
+			}
+			aggregate, err := sqlSumBalance(ctx, t.(*tx), benchBook, benchAccount, ledger.Debit)
 			if err != nil {
 				return err
 			}
@@ -111,8 +130,8 @@ func BenchmarkBookBalance(b *testing.B) {
 			if err != nil {
 				return err
 			}
-			if aggregate != scanned || aggregate != ledger.Amount(100*n) {
-				b.Fatalf("n=%d: aggregate %d, scan %d", n, aggregate, scanned)
+			if folded != aggregate || folded != scanned || folded != ledger.Amount(100*n) {
+				b.Fatalf("n=%d: fold %d, aggregate %d, scan %d", n, folded, aggregate, scanned)
 			}
 			return nil
 		}); err != nil {
@@ -122,7 +141,18 @@ func BenchmarkBookBalance(b *testing.B) {
 		b.Run(fmt.Sprintf("sql/%d", n), func(b *testing.B) {
 			for b.Loop() {
 				if err := s.View(ctx, func(ctx context.Context, t payment.BankTx) error {
-					_, err := t.BookBalance(ctx, benchBook, ledger.Position{Account: benchAccount}, ledger.Debit)
+					_, err := sqlSumBalance(ctx, t.(*tx), benchBook, benchAccount, ledger.Debit)
+					return err
+				}); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+
+		b.Run(fmt.Sprintf("fold/%d", n), func(b *testing.B) {
+			for b.Loop() {
+				if err := s.View(ctx, func(ctx context.Context, t payment.BankTx) error {
+					_, err := ledger.BookBalance(ctx, t, benchBook, ledger.Position{Account: benchAccount}, ledger.Debit)
 					return err
 				}); err != nil {
 					b.Fatal(err)
