@@ -3,7 +3,7 @@
 Based on `main` at `0cffdb6`. Tasks 1 and 2 have landed;
 [ADR-0010](../adr/0010-an-institution-holds-what-it-does-the-deployment-holds-the-order.md)
 is the ruling they produced. Task 3 has its fallback in place and its primary
-form outstanding; task 4 is untouched and optional. See *What landed* below.
+form outstanding; task 4 is refused. See *What landed* below.
 
 The goal is a **modular monolith**: one process that plays every institution,
 built out of parts that each play exactly one. Reading what a clearing house does
@@ -254,13 +254,14 @@ are the domain decisions; task 4 is optional and later.
    rows. `Deployment.Submit` keeps the routing prelude and becomes the operator
    console's act, on the operator surface.
 3. **The directory door.** A roster download order type, or the fallback above.
-4. **Optional, later: `cmd/bank`, `cmd/csm`, `cmd/centralbank`.** Each opens ONE
-   database through the constructor that already exists, builds one node, serves
-   one listener. `cmd/server` keeps importing all three and running them in one
-   process. Nothing above forecloses this and nothing above requires it.
+4. ~~**Optional, later: `cmd/bank`, `cmd/csm`, `cmd/centralbank`.**~~ **Refused.**
+   One binary is the deployment this repository wants. The shape survives — each
+   node is importable and opens one database through a constructor that already
+   exists — so a later reader can see that three binaries would be a composition
+   change; what is decided is that nobody is going to make it. **Do not propose
+   this again without the decision being reversed first.**
 
-Tasks 1 and 4 are the modular monolith. Tasks 2 and 3 are what makes the parts
-honest, and they are worth doing whether or not 4 ever happens.
+Task 1 is the modular monolith. Tasks 2 and 3 are what makes the parts honest.
 
 ## What this does not do
 
@@ -383,8 +384,8 @@ and costs the thing the day engine is: a sequenced list whose order is
 load-bearing — `day.go:273` argues why the settlement agent must be collected
 from first. Turning that into three services coordinating gives every phase
 boundary a failure mode, in the one part of the system that is explicitly a
-simulation of a business day rather than a model of one. Task 4 gets separate
-binaries without it.
+simulation of a business day rather than a model of one. And separate processes
+are not wanted at all — see task 4.
 
 **Leave `cmd/server` as one package and only fix the doors.** Cheapest, and it
 closes the two real defects. It leaves the thing that prompted this: three

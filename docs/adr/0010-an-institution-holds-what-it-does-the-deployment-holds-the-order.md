@@ -71,9 +71,12 @@ everything.
 processes and costs the thing the day engine is — a sequenced list whose order
 is load-bearing — by giving every phase boundary a failure mode, in the one part
 of the system that is explicitly a simulation of a business day rather than a
-model of one. Separate binaries remain available as a composition change:
-`node/` is importable, and the single-institution store and network
-constructors already exist.
+model of one. **And separate binaries are not wanted either.** One process is the
+deployment this repository is; what the split buys is that reading one
+institution is reading one package, not that anyone is going to run three.
+The shape happens to survive — `node/` is importable and the
+single-institution store and network constructors already exist — and that is
+an observation about the arrangement rather than a plan.
 
 ## Consequences
 
