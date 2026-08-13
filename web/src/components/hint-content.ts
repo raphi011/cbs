@@ -365,7 +365,9 @@ Direction of flow:
 
 Money always flows **debtor → creditor** regardless of who initiates. [[scheme-direction-pull|Pull schemes]] reverse who *triggers* the instruction, but the underlying posting choreography is identical — one posting function serves both, and whoever runs it is the debtor's bank.
 
-\`Direction\` decides three things, and none of them is which way money flows: **which bank submits** (the payer's on a push, the payee's on a pull), **which half of the checks runs at submission and which on receipt**, and **whether a [[requires-mandate|mandate]] is required** — which, because the creditor holds the mandate in SEPA, also decides which bank checks it.`,
+\`Direction\` decides three things, and none of them is which way money flows: **which bank submits** (the payer's on a push, the payee's on a pull), **which half of the checks runs at submission and which on receipt**, and **whether a [[requires-mandate|mandate]] is required** — which, because the creditor holds the mandate in SEPA, also decides which bank checks it.
+
+**And a bank refuses an instruction the scheme has the other side submit.** Which side that is, is a rule about roles rather than a preference, so a bank handed a collection it is on the wrong end of does not quietly send it on somebody else's behalf: it says whose instruction it is and stops. A customer of one bank cannot make another bank send.`,
   },
   "scheme-direction-pull": {
     title: "Pull scheme",
@@ -380,7 +382,9 @@ Direction of flow:
   Debited by:    Bank A            (on receipt)
 \`\`\`
 
-Money still flows **debtor → creditor** — "direction" only means who triggers the instruction. Because the creditor initiates, [[requires-mandate|a mandate is required]], and the debtor — who never asked for the debit — can dispute the collection and have it [[allows-return|returned]]. Returns are not a pull-only thing, though: both SEPA schemes allow them here, and direction decides only *which* bank sends one.`,
+Money still flows **debtor → creditor** — "direction" only means who triggers the instruction. Because the creditor initiates, [[requires-mandate|a mandate is required]], and the debtor — who never asked for the debit — can dispute the collection and have it [[allows-return|returned]]. Returns are not a pull-only thing, though: both SEPA schemes allow them here, and direction decides only *which* bank sends one.
+
+**A collection handed to the payer's bank is refused there.** Bank A is the wrong end of it: the collection is Bank B's to submit, and a bank that took it anyway would be sending on another bank's behalf. This is half the schemes rather than a corner case, which is why "which bank submits" is a refusal a bank makes and not a routing step somewhere above it.`,
   },
   "settlement-model-net": {
     title: "Net settlement",
@@ -1108,7 +1112,7 @@ The split mirrors the world. The Bundesbank runs the Bankleitzahl file and the E
 
 **A member does not ask the clearing house per payment. It subscribes.** It fetches the published directory and replaces its own copy wholesale — a snapshot, because that is what a directory file is, not a delta feed. Between two pulls it routes from whatever it was last given.
 
-So **staleness is real**, and it is the behaviour rather than a defect being tolerated: a bank admitted this morning cannot be paid by a bank that refreshed yesterday. The payer's own bank finds no entry, refuses before either leg posts, and one refresh makes the same payment work. Every real routing directory works this way, which is why being in the scheme's directory and holding a copy of it are two separate things — [[bank-admission|admission]] fills nobody's copy, its own included.
+So **staleness is real**, and it is the behaviour rather than a defect being tolerated: a bank admitted this morning cannot be paid by a bank that refreshed yesterday. The payer's own bank finds no entry, refuses before either leg posts, and one refresh makes the same payment work. That holds for **both** questions a submitting bank asks about an address — where do I send this, and is that bank in this scheme at all — because a member has only the one copy to ask; asking the clearing house instead is the lookup the subscription exists to replace. Every real routing directory works this way, which is why being in the scheme's directory and holding a copy of it are two separate things — [[bank-admission|admission]] fills nobody's copy, its own included.
 
 **What makes a copy safe is one invariant: a bank code is never reassigned.** A copy that is behind is therefore *incomplete*, never *wrong*. The failure mode is "I cannot route this yet" and never "I routed it to the wrong bank", and nothing may introduce a path that gives a code back to be issued again.
 

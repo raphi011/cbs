@@ -523,6 +523,27 @@ already charged across a whole book.
 Deepening opportunities in the code, ranked. Each is a refactor with a stated
 win, and none is urgent.
 
+### A roster download order type — `todo`
+
+The last of [the package-per-institution design](specs/2026-08-13-a-package-per-institution-design.md),
+and the one breach it left open. `RefreshDirectory` reads the clearing house's
+roster IN PROCESS, so the DEPLOYMENT performs it (`cmd/server/console.go`) and a
+`bank.Bank` cannot. That is strictly better than a bank reaching another
+institution's rows, and it is not the answer.
+
+The answer is a download. The clearing house already publishes the roster and
+every member already dials it; what is missing is a published-file concept on
+`ebics.Server` — the shape `HAC` already has, a download answered from
+somewhere other than a queue — a message format for a roster, which would be the
+first file on this transport that is not ISO 20022, a publishing act on the
+clearing house, and a day phase to order the two. `bank.Bank.RefreshDirectory`
+then collects and hands what it collected to `TakeDirectory`, which already
+exists.
+
+It is a domain change as well as a structural one: how a member gets the
+directory it routes by is a bankable fact, so `hint-content.ts` and the quiz
+chapters move with it.
+
 ### A `Day` type in `ledger`
 
 **Not `BusinessDate`.** That term is taken, and correctly: the business date is

@@ -39,7 +39,7 @@ export const chapter: Chapter = {
       ],
       answer: 1,
       explanation:
-        "In a [[scheme-direction-pull]] payment the **payee's bank** originates the instruction — the payee 'pulls' funds from the payer's account. SEPA Direct Debit works this way: the creditor's bank initiates the collection.",
+        "In a [[scheme-direction-pull]] payment the **payee's bank** originates the instruction — the payee 'pulls' funds from the payer's account. SEPA Direct Debit works this way: the creditor's bank initiates the collection.\n\nAnd a bank on the wrong end of one **refuses it**. Hand a collection to the payer's bank and it will not take it: submitting is the payee's bank's act, and a bank that sent it anyway would be sending on another institution's behalf. Half the schemes turn on that, so it is a refusal a bank makes rather than a routing step above it.",
       explore: { label: "Browse payment schemes", href: "/clearing-house/schemes" },
     },
     {

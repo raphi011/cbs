@@ -28,3 +28,4 @@ overriding it — see `docs/agents/domain.md`.
 | [0007](0007-a-store-per-institution.md) | A store per institution, and the shape is a constructor | store-per-institution design |
 | [0008](0008-a-conversation-belongs-to-the-deployment.md) | A conversation between institutions belongs to the deployment | architecture review |
 | [0009](0009-the-doubling-stays-and-the-boilerplate-goes.md) | The `X` / `XTx` doubling stays, and the boilerplate goes | architecture review |
+| [0010](0010-an-institution-holds-what-it-does-the-deployment-holds-the-order.md) | An institution's package holds what it does; the deployment's holds the order | a package per institution |

@@ -120,6 +120,16 @@ An institution's EBICS server side. The clearing house and the settlement agent
 are hosts; a member bank is not.
 _Avoid_: server, endpoint
 
+**Institution**:
+One party in the network: a member bank, the clearing house, the settlement
+agent. "Node" is the PACKAGE holding one (`node/bank`), never the party.
+_Avoid_: node, entity, actor, participant
+
+**Deployment**:
+Every institution one process holds, plus the business day that drives them. The
+one caller allowed to see all of them, and not itself an institution.
+_Avoid_: system, network, environment
+
 ## The day
 
 **Business date**:

@@ -226,6 +226,57 @@ Three things about the store are worth knowing before changing anything near it:
   uncommitted writer. Anything you measure about ordering must open a file.
   `TestTheRetryBudgetOutlastsASlowWriter` is the one that does.
 
+## A modular monolith: institutions are parts, the deployment is the whole
+
+One process plays every institution, and it is built out of parts that each play
+exactly ONE. Reading what a clearing house does is reading one institution's
+code; the process it happens to share is somebody else's concern.
+
+**The split runs through seven layers** and all seven hold: the database (N+2),
+the store type (`OpenBank` / `OpenClearingHouse` / `OpenCentralBank`), the domain
+handle (`BankNetwork` / `ClearingHouseNetwork` / `CentralBankNetwork`), the
+transport state (the EBICS queue is a table in the two hosts' schemas), the HTTP
+surface (`api/bank`, `api/csm`, `api/centralbank`), the listener (one per
+institution, its own port and its own `/ebics`) and the package: `node/bank`,
+`node/csm` and `node/centralbank`, one institution apiece, with `cmd/server`
+holding the deployment that drives them. See
+[ADR-0010](docs/adr/0010-an-institution-holds-what-it-does-the-deployment-holds-the-order.md)
+and [the design record](docs/specs/2026-08-13-a-package-per-institution-design.md).
+
+**Each node is handed a `node.Env` at construction** — a clock, a logger, a
+journal, an id minter and the two addresses it dials — and holds nothing else
+about the process it runs in. `grep -rn 'Deployment' node/` finds nothing, and
+that is the claim to preserve. The deployment's own acts are served on an
+institution's listener through an `Operator` interface (`api/csm`,
+`api/centralbank`), so the type system says whose act each one is.
+
+**Institutions already talk over the wire.** `ebics.Client` POSTs to a configured
+URL, which in this deployment is loopback. Everything on the payment path — files
+up, shares down, settlement instructions, returns — already crosses a network
+boundary. Nothing on that path is an in-process call, and nothing new may become
+one.
+
+**What reflects reality is separated; what simulates a deployment is not.** The
+business day, its phase order, the journal, `Reset` and the seed are the
+DEPLOYMENT'S, and they are allowed to see every institution at once — that is
+[ADR-0008](docs/adr/0008-a-conversation-belongs-to-the-deployment.md)'s rule
+(`payment/flow`, `payment/recon`) one layer up, and it is why they are not being
+taken apart. What must hold is the DIRECTION: an institution's code may not know
+that a deployment exists. Anything institution-shaped that reaches for one is
+either the environment (a clock, a logger, an id minter, a report sink, the two
+addresses it dials — pass it in) or a crossing that belongs on the deployment.
+
+**A bank submits only what it is the submitting agent of.** `bank.Bank.Submit`
+answers the scheme, the on-us and the membership questions from that bank's own
+rows — its registry, its routing directory, its register — and refuses an
+instruction the scheme has the other side send (`payment.ErrNotTheSubmittingAgent`).
+`Deployment.Submit` is the ROUTING question and only that.
+
+One known breach remains, recorded and not yet fixed: `RefreshDirectory` reads
+the clearing house's roster in process, so it is performed by the DEPLOYMENT
+(`cmd/server/console.go`) rather than by a `bank.Bank`, which cannot. Closing it
+needs a roster download order type. Do not add a second.
+
 ## What is planned, and what was already decided
 
 `docs/expansion-roadmap.md` is forward-looking: verified defects, the build
