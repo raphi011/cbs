@@ -58,11 +58,19 @@ reaches these tables at all.
 So the clearing house looking inside a file it is only carrying is not a query
 somebody might write carelessly — it is a query there is nothing to write with.
 
-**Enrolment stays in memory**, and that is the one thing here that is not
-persisted. It is derived: who may dial a host is who the clearing house's roster
-names, plus the clearing house itself at the settlement agent, and provisioning
-admits every member again at each boot. Nothing is lost by not writing down a
-fact that is rebuilt from a row that is.
+**Enrolment stays in memory**, and it is not persisted because it is derived: who
+may dial a host is who the clearing house's roster names, plus the clearing house
+itself at the settlement agent, and provisioning admits every member again at
+each boot. Nothing is lost by not writing down a fact that is rebuilt from a row
+that is.
+
+**The routing table a host PUBLISHES is in memory for the same reason**, and it
+is the only other thing here that is not a row. It is the roster rendered, so a
+boot that republishes it loses nothing — see
+[the design record](../specs/2026-08-13-a-roster-download-order-type-design.md).
+A published file is not a queue: it is offered to every subscriber alike and
+collecting it empties nothing, so none of the durability argument above applies
+to it.
 
 ## Consequences
 

@@ -99,6 +99,16 @@ The files one host holds for one subscriber, in order, as rows in that host's
 own database. It is the whole of routing.
 _Avoid_: inbox, mailbox, actor table, address table
 
+**Published file**:
+One snapshot a host offers every subscriber alike, under an order type of its
+own. Collecting it empties nothing, which is the difference from a queue.
+_Avoid_: broadcast, feed, push, publication
+
+**Routing table**:
+The roster RENDERED as a published file (`HRD`). The clearing house's rows are
+the roster; the copy a member collects into is its routing directory.
+_Avoid_: bank directory, BIC directory, directory file
+
 **Order log**:
 Every order a host has been sent and what it made of each. What `HAC` answers
 from, and the hosting institution's own work list.
@@ -111,8 +121,8 @@ _Avoid_: actor, node, peer
 
 **Enrolment**:
 Admitting a subscriber to a host, which is what makes a bank REACHABLE. A
-separate act from admission, and the only thing a host keeps outside its
-database — it is rebuilt from the roster at every boot.
+separate act from admission, and one of the two things a host keeps outside its
+database — both are rebuilt from the roster at every boot.
 _Avoid_: admission, registration, provisioning
 
 **Host**:

@@ -85,11 +85,13 @@ own routing directory rather than the clearing house's live register. That is
 more correct, not a compromise: a member checks the directory it subscribes to,
 and a stale directory becomes a state this system can be in and can teach.
 
-**One breach is left, and it is recorded.** `RefreshDirectory` still reads the
-clearing house's roster in process, so the DEPLOYMENT performs it and a
-`bank.Bank` cannot. Closing it needs a roster download order type — the clearing
-house already publishes the roster and the bank already dials it; what is
-missing is a message and a handler.
+**The one breach this ruling left is closed.** `RefreshDirectory` read the
+clearing house's roster in process, so the DEPLOYMENT performed it and a
+`bank.Bank` could not. The clearing house now publishes its roster on its own
+host under `HRD` and a member collects it, which leaves nothing on the directory
+path that is not a file — see
+[the design record](../specs/2026-08-13-a-roster-download-order-type-design.md).
+What the deployment keeps is the ORDER: publish, then collect.
 
 **A node's own behaviour is testable without a deployment.** Three settlement
 agent tests moved into `node/centralbank`, where the narrowed view they

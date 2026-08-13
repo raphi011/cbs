@@ -638,7 +638,8 @@ The hub is not a durable record. A payment in it has a committed debtor leg, so 
 Running one carries every payment through every phase, in a fixed order, for every institution before the next phase begins:
 
 \`\`\`
-0  banks   take the published routing directory
+0  csm     publish the routing directory
+0b banks   collect it -> each replaces its own copy
 1  banks   cut-off -> one file per scheme, uploaded
 2  csm     validate, accept into the open cycle, answer per transaction,
            and BUILD each receiving bank's share -- releasing nothing
@@ -655,7 +656,7 @@ It **does not interleave**. Each phase finishes everywhere before the next start
 
 Three of those orderings are load-bearing:
 
-- **The directory refresh is first**, so a bank admitted since the last day can be paid by its neighbours today rather than whenever somebody remembers to pull. See [[routing-directory]].
+- **The directory refresh is first**, so a bank admitted since the last day can be paid by its neighbours today rather than whenever somebody remembers to pull. It is two steps and the order is the content: the clearing house publishes the table, and only then does every member collect it. See [[routing-directory]].
 - **Phases 3, 4 and 5 are settle, then release.** The cycle settles before any output file leaves the clearing house, so a receiving bank is handed its instructions only once the funds behind them are final. Reverse them and a bank could credit a customer against a batch that still fails. What the order costs is the receiving bank's ability to reject — its objections become [[allows-return|returns]] instead.
 - **Banks collect from the settlement agent first.** The reserve mirror has to be booked before the [[creditor-leg|creditor legs]] draw on it, and the two files sit in **different queues at different institutions**. Two connections share no ordering, so nothing about the order they were written in survives; what guarantees it is the bank's own collection order, which is a decision each bank makes about its own operations.
 
@@ -1110,7 +1111,9 @@ The **branch** codes — Italy's CAB, France's guichet — are carried in the ad
 
 The split mirrors the world. The Bundesbank runs the Bankleitzahl file and the EPC keeps the Register of Participants: **who issued this address** is not **may this address be reached**, and they are different institutions answering different questions. A bank with a code and no roster entry is issuing addresses nobody can pay, which is a real state and one this system can hold.
 
-**A member does not ask the clearing house per payment. It subscribes.** It fetches the published directory and replaces its own copy wholesale — a snapshot, because that is what a directory file is, not a delta feed. Between two pulls it routes from whatever it was last given.
+**A member does not ask the clearing house per payment. It subscribes.** It collects the published directory and replaces its own copy wholesale — a snapshot, because that is what a directory file is, not a delta feed. Between two pulls it routes from whatever it was last given.
+
+**And it is a file, collected the way every other file is.** The clearing house publishes the table on the same file transfer that carries payments, under its own order type — \`HRD\`, a download beside \`C53\` and \`BTD\` — and a member collects it there. Two things make it a *publication* rather than a message: it is the same file for every member, and collecting it takes nothing away, so a member can collect it twice and a second member finds it still there. That is the opposite of a download queue, where a file is addressed to one subscriber and is gone once collected. It is also the one file on this transport carrying **no ISO 20022 message at all** — a routing table is host parameter data, and EBICS's own \`HPD\`, \`HKD\` and \`HTD\` downloads are the same kind of thing. A clearing house that has published nothing leaves a member with the copy it already has, which is the difference between *stale* and *empty*: one is a state this scheme models and the other would take every payment down.
 
 So **staleness is real**, and it is the behaviour rather than a defect being tolerated: a bank admitted this morning cannot be paid by a bank that refreshed yesterday. The payer's own bank finds no entry, refuses before either leg posts, and one refresh makes the same payment work. That holds for **both** questions a submitting bank asks about an address — where do I send this, and is that bank in this scheme at all — because a member has only the one copy to ask; asking the clearing house instead is the lookup the subscription exists to replace. Every real routing directory works this way, which is why being in the scheme's directory and holding a copy of it are two separate things — [[bank-admission|admission]] fills nobody's copy, its own included.
 
@@ -1118,7 +1121,9 @@ So **staleness is real**, and it is the behaviour rather than a defect being tol
 
 And the refusal cannot say **which** of two situations it is in — no such bank is in this scheme, or this bank's copy predates it. Those have different remedies, and telling them apart would mean asking the clearing house, which is the lookup the subscription replaces. A refusal claiming to know would be lying about it.
 
-**Not a push, and not a background poller.** A clearing house holding a subscriber list and a retry policy is a delivery system rather than a publisher, and the real vendor does not know who is listening. What the pull does have is a cadence: it is the **first phase of every clearing [[business-day|business day]]**, before anything else moves, so a bank admitted since yesterday can be paid by its neighbours today rather than whenever somebody remembers.
+**Not a push, and not a background poller.** A clearing house holding a subscriber list and a retry policy is a delivery system rather than a publisher, and the real vendor does not know who is listening. What the pull does have is a cadence: it is the **opening of every clearing [[business-day|business day]]**, before anything else moves, so a bank admitted since yesterday can be paid by its neighbours today rather than whenever somebody remembers. Two steps, and their order is the content — the clearing house publishes the table, and only then does every member collect it. A member collecting first would take yesterday's.
+
+**Only a member collects it.** A bank the scheme has not admitted has nowhere to collect from — being admitted is what gives it a place at the clearing house at all — so it can neither be paid nor pay until its admission finishes. Admission itself publishes the table again, so the members can reach the new bank on their next pull rather than the day after.
 
 The copy carries a code and a BIC and **nothing else** — no name, because what the published row is written from delivers none, and no list of assets either. Refusing early from data that may be behind would refuse a payment the clearing house would have accepted, so whether a member clears in this currency stays a question for whoever reads the live roster. See [[routing-roster]] and [[counterparty-details]].`,
   },
@@ -1564,7 +1569,9 @@ What the entry does *not* carry is the point:
 - **no account of any kind** — no account id, no subledger, no product, no book. A clearing house holding one would be holding the means to reach into a bank's ledger. The row this replaced carried the central bank's account ids, and readers in three institutions resolved their postings through it.
 - **no name** — what the row is written from identifies the account owner by BIC and delivers no legal name at all. Routing is an address; a name here could only be the clearing house remembering something nobody told it. That absence travels all the way down to a payer, who resolves an address and is shown a BIC.
 
-It is keyed by BIC because a clearing house routes what a message addresses, and a message addresses a BIC. See [[bank-admission]] for how the row comes to be written, and by whom.`,
+It is keyed by BIC because a clearing house routes what a message addresses, and a message addresses a BIC. See [[bank-admission]] for how the row comes to be written, and by whom.
+
+**Nobody else reads these rows.** The clearing house renders them as a file and publishes it under the \`HRD\` order type, and that file — not the table — is what a member takes a [[routing-directory|copy]] of. So the directory travels the way a payment does, and a member bank never reaches into the clearing house's own records to route.`,
   },
   "bank-admission": {
     title: "Admission is four acts, in order",

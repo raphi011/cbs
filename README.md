@@ -894,7 +894,9 @@ The split mirrors the world. The Bundesbank runs the Bankleitzahl file and the E
 
 ##### The subscription, and the staleness that comes with it
 
-A member does not query the clearing house per payment. It **subscribes**: `POST /directory/banks/refresh` fetches the roster and replaces its own copy wholesale — a snapshot, because that is what a directory file is, not a delta feed. Between two refreshes a bank routes from what it was last given.
+A member does not query the clearing house per payment. It **subscribes**: `POST /directory/banks/refresh` collects the routing table the clearing house publishes and replaces its own copy wholesale — a snapshot, because that is what a directory file is, not a delta feed. Between two refreshes a bank routes from what it was last given.
+
+**It is a file, collected over the same file transfer everything else travels on**, and the clearing house's `roster_entries` are read by the clearing house alone. The table is *published* rather than addressed: `ebics.Server.Publish` offers one snapshot under order type `HRD` and every member collects the same bytes, so unlike a queue, collecting it empties nothing and a member may collect it twice. It is also the one file on this transport that carries no ISO 20022 message — a scheme's routing table is host parameter data, which is what EBICS's own `HPD`/`HKD`/`HTD` downloads are too. A clearing house that has published nothing leaves the member with the copy it has (`bank.ErrNoRoutingTable`): stale is a state this scheme models, and empty is not one a host that has not published yet should cause.
 
 So **staleness is real**, and it is the behaviour rather than a defect being tolerated: a bank admitted this morning cannot be paid by a bank that refreshed yesterday. The payer's bank finds no entry, refuses with `ErrBankCodeUnknown`, and one refresh makes the same payment work (`cmd/server`'s `TestABankAdmittedAfterTheLastRefreshCannotBePaidUntilTheNextOne`).
 
@@ -902,7 +904,7 @@ What makes that safe is one invariant the whole design rests on: **a bank code i
 
 And the refusal cannot say **which** of two situations it is in: no such bank is in this scheme, or this bank's copy predates it. Those have different remedies and a subscriber has no way to tell them apart, because telling them apart would mean asking the clearing house — the lookup the subscription replaces. A status code claiming to know would be lying about it. Contrast `ErrBankCodeNotAllocated`, which is the *issuer's* answer to the same shape of question and can tell, because the registry is where an allocation comes into existence.
 
-Not a push, and not a background poller. A clearing house holding a subscriber list and a retry policy is a delivery system rather than a publisher, and the real vendor does not know who is listening. What the refresh *does* have is a cadence, and it is the [business day's](#advancing-the-clock-runs-a-business-day): every bank takes the published roster in the refresh phase, before anything else moves, so a bank admitted since the last advance can be paid by its neighbours today rather than after somebody remembers to call the route. A route nobody calls and a poller nobody can test are both replaced by a phase in a schedule that runs on demand.
+Not a push, and not a background poller. A clearing house holding a subscriber list and a retry policy is a delivery system rather than a publisher, and the real vendor does not know who is listening. What the refresh *does* have is a cadence, and it is the [business day's](#advancing-the-clock-runs-a-business-day): the clearing house publishes and then every member collects, in the day's opening pair, before anything else moves — so a bank admitted since the last advance can be paid by its neighbours today rather than after somebody remembers to call the route. A route nobody calls and a poller nobody can test are both replaced by a phase in a schedule that runs on demand.
 
 ##### The copy carries a BIC and a code, and nothing else
 
@@ -1235,6 +1237,7 @@ That is one refusal where there were two facts that could disagree, and it also 
 | `C53` | download | statements |
 | `HAC` | download | the acknowledgement file: what became of each order this subscriber sent |
 | `BTD` | download | everything else waiting in the queue, in order |
+| `HRD` | download | the scheme's routing table, PUBLISHED: the same file for every member, and collecting it empties nothing |
 
 `EBICS_OK` and an order id mean **the file arrived and parsed**. They say nothing about what it means. The business answer is a `pacs.002` the subscriber collects on a later download — and that seam is the whole point of modelling the transport at all.
 
@@ -1261,7 +1264,8 @@ That is simpler than a set of concurrent actors *and* more faithful, and those t
 The schedule, on a day the scheme settles:
 
 ```
-0  banks   take the published routing directory
+0  csm     publish the routing table
+0b banks   collect it -> each replaces its own copy
 1  banks   cut-off -> one file per scheme -> upload CCT / CDD
 2  csm     validate, record, take into the open cycle, answer per transaction,
            and BUILD each receiving bank's share -- releasing nothing
@@ -1278,7 +1282,7 @@ Two things it deliberately does not do. It **does not interleave**: each phase c
 
 Three orderings in that list are load-bearing rather than presentational:
 
-- **The directory refresh is the day's first phase**, so a bank admitted since the last advance can be paid by its neighbours *today* rather than after somebody remembers to call the route. The refresh is a phase of the day rather than a background poller, and it visits **every** bank rather than every subscriber, because a bank waiting on admission is exactly the bank that needs the directory it is about to appear in.
+- **The directory refresh is the day's first phase**, so a bank admitted since the last advance can be paid by its neighbours *today* rather than after somebody remembers to call the route. It is two phases and their order is the content: the clearing house **publishes** the table, and only then does every member collect it — a member collecting first would take yesterday's. It visits every **subscriber**, because a bank the roster does not name has no queue at the clearing house and nothing to collect from; admitting it is what republishes the table it is now in.
 - **Phases 3, 4, 5 are settle-then-release.** The cycle settles before the output files leave the clearing house, so a receiving bank is handed its instructions only once the funds behind them are final. Reverse them and settlement risk is invented. What the order costs is the receiving bank's ability to say *no*, which is why [its objections are returns](#the-payment-lifecycle) rather than rejections.
 - **The collection phase visits the settlement agent first.** The mirror leg has to be booked before the creditor legs draw on it, and the two files that carry them sit in **different queues at different institutions** — the `camt.053` at the settlement agent, the released `pacs.008` at the clearing house. Two connections share no ordering, so nothing about the order they were written in survives. What guarantees it is the **bank's own collection order**, and that is more honest than a guarantee from the network: the ordering was never a property of the transport; it was a property of there being one queue.
 
@@ -2105,7 +2109,7 @@ Two things follow, and both are the boundary rather than a regression. The **deb
 
 **`GET /roster` is the routing directory this institution PUBLISHES.** `roster_entries` is written by `AdmitMemberTx` from the settlement agent's acknowledgement, it answers "who may be addressed" rather than "who exists", and a founded bank is absent from it — which is exactly the distinction `GET /members` above does *not* make. Each row carries the member's `country` and `bankCode` beside its BIC, and that pairing is what makes it a routing directory rather than a guest list: it is the thing every member copies and derives from. It carries no name, because what it is written from delivers none.
 
-This route is a **publication and not a service**. Nothing pushes it at anybody and no bank queries it per payment: a member calls `POST /directory/banks/refresh` on its own port, takes a snapshot, and routes from its copy until it asks again. See [the subscription](#the-subscription-and-the-staleness-that-comes-with-it).
+This route is a **publication and not a service**, and it is the operator's view of one: nothing pushes it at anybody, and no bank reads it here or anywhere else. What a member reads is the `HRD` file this institution publishes on its EBICS host, collected by `POST /directory/banks/refresh` on the member's own port. See [the subscription](#the-subscription-and-the-staleness-that-comes-with-it).
 
 A clearing house cannot resolve an IBAN to an account, and no route here pretends to. Doing so would mean reading every member's *deposit accounts* — not a thing this institution holds, and since the store split not a thing it could reach, because the `csm` shape has no deposit register at all. Address resolution lives on a **bank's** port and answers out of that bank's own register.
 
