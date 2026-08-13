@@ -156,8 +156,13 @@ starting without the one before it.
    the deleted SQL as a local helper and gained a `fold` arm — see the
    re-measurement above, which did not come out where this document said it
    would.
-2. **`ValueDateBalance` and `ValueDatedSeries`.** The day arithmetic leaves SQL.
-   This is where the bulk of the prose contract is deleted.
+2. **`ValueDateBalance` and `ValueDatedSeries`.** — `done`. The day arithmetic
+   left SQL: `substr(value_date, 1, 10)` and the `GROUP BY` are gone, and
+   `ledger.DayStart` is the only day boundary there is. Both are package-level
+   folds, and the series is still two scans — the opening and the window — which
+   is what the SQL did, over the same rows. Two edges the SQL expressed by
+   accident are now stated: a zero bound is before nothing, and a window that
+   does not end after it starts holds no days.
 3. **`SubsidiaryBalances`.** Needs a grouped fold and the zero-netting rule; the
    `HAVING` goes.
 4. **`ActiveHoldTotal`.** `deposit.Tx` grows a hold scan; the expiry rule becomes

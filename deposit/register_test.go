@@ -6,6 +6,7 @@ package deposit_test
 import (
 	"context"
 	"errors"
+	"iter"
 	"testing"
 	"time"
 
@@ -882,17 +883,17 @@ func expectedFromTimeline(start time.Time, days int, dc interest.DayCount,
 	return total
 }
 
-// countingTx wraps a Tx and counts value-dated series reads, so a test can assert
-// that a run was skipped BEFORE any I/O rather than that it happened to produce zero.
-// The two are indistinguishable from the balance alone.
+// countingTx wraps a Tx and counts entry scans, so a test can assert that a run
+// was skipped BEFORE any I/O rather than that it happened to produce zero. The
+// two are indistinguishable from the balance alone.
 type countingTx struct {
 	Tx
-	series *int
+	scans *int
 }
 
-func (t countingTx) ValueDatedSeries(ctx context.Context, book ledger.BookID, pos ledger.Position, normal ledger.Direction, from, to time.Time) (ledger.Series, error) {
-	*t.series++
-	return t.Tx.ValueDatedSeries(ctx, book, pos, normal, from, to)
+func (t countingTx) ScanEntries(ctx context.Context, book ledger.BookID, pos ledger.Position, f ledger.EntryFilter) iter.Seq2[ledger.Entry, error] {
+	*t.scans++
+	return t.Tx.ScanEntries(ctx, book, pos, f)
 }
 
 // fundBy posts the mirror-image transaction to overdrawBy: it credits the

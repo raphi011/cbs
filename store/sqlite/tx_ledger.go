@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"iter"
 	"strings"
-	"time"
 
 	"github.com/raphi011/cbs/ledger"
 )
@@ -774,79 +773,6 @@ func (t *tx) SubsidiaryBalances(ctx context.Context, book ledger.BookID, account
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("sqlite: subsidiary balances %s: %w", account, err)
-	}
-	return out, nil
-}
-
-// ValueDateBalance is BookBalance restricted to entries whose value date falls
-// strictly before the bound. See ledger.Tx for the contract.
-func (t *tx) ValueDateBalance(ctx context.Context, book ledger.BookID, pos ledger.Position, normal ledger.Direction, before time.Time) (ledger.Amount, error) {
-	if err := t.own(book); err != nil {
-		return 0, err
-	}
-	clause, extra := subsidiaryClause(pos)
-	args := append([]any{int64(normal), string(book), string(pos.Account)}, extra...)
-	args = append(args, formatTime(before))
-	var balance ledger.Amount
-	err := t.tx.QueryRowContext(ctx, `
-		SELECT COALESCE(SUM(CASE WHEN e.direction = ? THEN e.amount ELSE -e.amount END), 0)
-		FROM entries e
-		WHERE e.book_id = ? AND e.account_id = ?`+clause+` AND e.value_date < ?`,
-		args...).Scan(&balance)
-	if err != nil {
-		return 0, fmt.Errorf("sqlite: value date balance %s: %w", pos, err)
-	}
-	return balance, nil
-}
-
-// ValueDatedSeries buckets an account's entries by value date in SQL. See
-// ledger.Tx for the contract.
-func (t *tx) ValueDatedSeries(ctx context.Context, book ledger.BookID, pos ledger.Position, normal ledger.Direction, from, to time.Time) (ledger.Series, error) {
-	if err := t.own(book); err != nil {
-		return ledger.Series{}, err
-	}
-	opening, err := t.ValueDateBalance(ctx, book, pos, normal, from)
-	if err != nil {
-		return ledger.Series{}, err
-	}
-
-	clause, extra := subsidiaryClause(pos)
-	args := append([]any{int64(normal), string(book), string(pos.Account)}, extra...)
-	args = append(args, formatTime(from), formatTime(to))
-	rows, err := t.tx.QueryContext(ctx, `
-		SELECT substr(e.value_date, 1, 10) AS day,
-		       SUM(CASE WHEN e.direction = ? THEN e.amount ELSE -e.amount END)
-		FROM entries e
-		WHERE e.book_id = ? AND e.account_id = ?`+clause+`
-		  AND e.value_date >= ? AND e.value_date < ?
-		GROUP BY 1
-		ORDER BY 1`,
-		args...)
-	if err != nil {
-		return ledger.Series{}, fmt.Errorf("sqlite: value dated series %s: %w", pos, err)
-	}
-	defer rows.Close()
-
-	out := ledger.Series{Opening: opening, Movements: make([]ledger.DayMovement, 0)}
-	for rows.Next() {
-		var (
-			day    string
-			amount ledger.Amount
-		)
-		if err := rows.Scan(&day, &amount); err != nil {
-			return ledger.Series{}, fmt.Errorf("sqlite: value dated series %s: %w", pos, err)
-		}
-		at, err := time.Parse(time.DateOnly, day)
-		if err != nil {
-			return ledger.Series{}, fmt.Errorf("sqlite: value dated series %s: day %q: %w", pos, day, err)
-		}
-		out.Movements = append(out.Movements, ledger.DayMovement{
-			Day:    ledger.DayStart(at.UTC()),
-			Amount: amount,
-		})
-	}
-	if err := rows.Err(); err != nil {
-		return ledger.Series{}, fmt.Errorf("sqlite: value dated series %s: %w", pos, err)
 	}
 	return out, nil
 }

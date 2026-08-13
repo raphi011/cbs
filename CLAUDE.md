@@ -133,7 +133,7 @@ bank's.
 crossing: `sqlite.OpenBank`, `OpenClearingHouse` and `OpenCentralBank` return
 `*BankStore`, `*ClearingHouseStore` and `*CentralBankStore`, whose units of work
 are `payment.BankTx`, `payment.CsmTx` and `payment.CentralBankTx`. There is no
-`payment.Tx` and no `payment.Store`. Reach is 73 / 29 / 45 methods, and
+`payment.Tx` and no `payment.Store`. Reach is 71 / 21 / 35 methods, and
 [ADR-0007](docs/adr/0007-a-store-per-institution.md) is the ruling. The shape is
 a CONSTRUCTOR rather than a parameter, so there is no seam where a store opened
 as one institution hands out another's transaction.

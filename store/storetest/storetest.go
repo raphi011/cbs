@@ -358,13 +358,13 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Ban
 			// The value-dated reads carry the subsidiary too: interest is computed
 			// from these, and a series that read the pool would accrue the whole
 			// bank's balance for every customer under it.
-			asAt, err := tx.ValueDateBalance(ctx, bookA, pooled.For("dep_1"), ledger.Credit, day(5))
+			asAt, err := ledger.ValueDateBalance(ctx, tx, bookA, pooled.For("dep_1"), ledger.Credit, day(5))
 			if err != nil {
 				return err
 			}
 			assertEqual(t, "dep_1 as at the 5th", asAt, ledger.Amount(1000))
 
-			series, err := tx.ValueDatedSeries(ctx, bookA, pooled.For("dep_1"), ledger.Credit, day(5), day(7))
+			series, err := ledger.ValueDatedSeries(ctx, tx, bookA, pooled.For("dep_1"), ledger.Credit, day(5), day(7))
 			if err != nil {
 				return err
 			}
@@ -1324,7 +1324,7 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Ban
 			var got ledger.Amount
 			view(t, s, func(ctx context.Context, tx ledger.BankTx) error {
 				var err error
-				got, err = tx.ValueDateBalance(ctx, bookA, ledger.AccountID("900.001.001").Total(), ledger.Debit, c.before)
+				got, err = ledger.ValueDateBalance(ctx, tx, bookA, ledger.AccountID("900.001.001").Total(), ledger.Debit, c.before)
 				return err
 			})
 			assertEqual(t, fmt.Sprintf("balance before %v", c.before), got, c.want)
@@ -1337,7 +1337,7 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Ban
 		var got ledger.Amount
 		view(t, s, func(ctx context.Context, tx ledger.BankTx) error {
 			var err error
-			got, err = tx.ValueDateBalance(ctx, bookA, ledger.AccountID("999.999.001").Total(), ledger.Debit,
+			got, err = ledger.ValueDateBalance(ctx, tx, bookA, ledger.AccountID("999.999.001").Total(), ledger.Debit,
 				time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC))
 			return err
 		})
@@ -1369,7 +1369,7 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Ban
 			// A bound far in the future would catch this entry were a zero
 			// ValueDate treated as "before everything", which is what the naive
 			// in-Go check does.
-			got, err = tx.ValueDateBalance(ctx, bookA, ledger.AccountID("900.001.003").Total(), ledger.Debit,
+			got, err = ledger.ValueDateBalance(ctx, tx, bookA, ledger.AccountID("900.001.003").Total(), ledger.Debit,
 				time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC))
 			return err
 		})
@@ -1377,7 +1377,7 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Ban
 	})
 
 	// ValueDateBalanceNetsAReversalOnTheOriginalsDay exercises the contract
-	// line in Tx.ValueDateBalance directly: a reversal posts its own mirrored
+	// line in ledger.ValueDateBalance directly: a reversal posts its own mirrored
 	// entries, value-dated onto the original leg's day (ReverseTransactionTx),
 	// and those are what cancel the original — so a bound falling after the
 	// original's value date must see the net, zero, not the gross.
@@ -1403,7 +1403,7 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Ban
 		var gross ledger.Amount
 		view(t, s, func(ctx context.Context, tx ledger.BankTx) error {
 			var err error
-			gross, err = tx.ValueDateBalance(ctx, bookA, ledger.AccountID(cash).Total(), ledger.Debit, before)
+			gross, err = ledger.ValueDateBalance(ctx, tx, bookA, ledger.AccountID(cash).Total(), ledger.Debit, before)
 			return err
 		})
 		assertEqual(t, "balance before the reversal", gross, ledger.Amount(10_000))
@@ -1430,7 +1430,7 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Ban
 		var netted ledger.Amount
 		view(t, s, func(ctx context.Context, tx ledger.BankTx) error {
 			var err error
-			netted, err = tx.ValueDateBalance(ctx, bookA, ledger.AccountID(cash).Total(), ledger.Debit, before)
+			netted, err = ledger.ValueDateBalance(ctx, tx, bookA, ledger.AccountID(cash).Total(), ledger.Debit, before)
 			return err
 		})
 		assertEqual(t, "balance after the reversal, read on the original's day", netted, ledger.Amount(0))
@@ -1446,7 +1446,7 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Ban
 		var got ledger.Series
 		view(t, s, func(ctx context.Context, tx ledger.BankTx) error {
 			var err error
-			got, err = tx.ValueDatedSeries(ctx, bookA, ledger.AccountID("901.001.001").Total(), ledger.Debit, day(4), day(9))
+			got, err = ledger.ValueDatedSeries(ctx, tx, bookA, ledger.AccountID("901.001.001").Total(), ledger.Debit, day(4), day(9))
 			return err
 		})
 
@@ -1476,7 +1476,7 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Ban
 		var got ledger.Series
 		view(t, s, func(ctx context.Context, tx ledger.BankTx) error {
 			var err error
-			got, err = tx.ValueDatedSeries(ctx, bookA, ledger.AccountID("901.001.002").Total(), ledger.Credit, day(4), day(9))
+			got, err = ledger.ValueDatedSeries(ctx, tx, bookA, ledger.AccountID("901.001.002").Total(), ledger.Credit, day(4), day(9))
 			return err
 		})
 		assertEqual(t, "opening", got.Opening, ledger.Amount(100))
@@ -1489,7 +1489,7 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Ban
 		// the 7th, which stays 0 either way (there is no negative zero).
 		view(t, s, func(ctx context.Context, tx ledger.BankTx) error {
 			var err error
-			got, err = tx.ValueDatedSeries(ctx, bookA, ledger.AccountID("901.001.002").Total(), ledger.Debit, day(4), day(9))
+			got, err = ledger.ValueDatedSeries(ctx, tx, bookA, ledger.AccountID("901.001.002").Total(), ledger.Debit, day(4), day(9))
 			return err
 		})
 		if got.Opening != -100 || len(got.Movements) != 3 ||
@@ -1508,7 +1508,7 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Ban
 		var got ledger.Series
 		view(t, s, func(ctx context.Context, tx ledger.BankTx) error {
 			var err error
-			got, err = tx.ValueDatedSeries(ctx, bookA, ledger.AccountID("901.001.001").Total(), ledger.Debit, day(8), day(9))
+			got, err = ledger.ValueDatedSeries(ctx, tx, bookA, ledger.AccountID("901.001.001").Total(), ledger.Debit, day(8), day(9))
 			return err
 		})
 		assertEqual(t, "opening (the 1st, the 4th, both of the 5th, and the 7th's net-zero pair)", got.Opening, ledger.Amount(550))
@@ -1549,7 +1549,7 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Ban
 		var got ledger.Series
 		view(t, s, func(ctx context.Context, tx ledger.BankTx) error {
 			var err error
-			got, err = tx.ValueDatedSeries(ctx, bookA, ledger.AccountID("901.001.001").Total(), ledger.Debit, day(4), day(9))
+			got, err = ledger.ValueDatedSeries(ctx, tx, bookA, ledger.AccountID("901.001.001").Total(), ledger.Debit, day(4), day(9))
 			return err
 		})
 		assertEqual(t, "opening (unchanged by an entry that is not value-dated)", got.Opening, ledger.Amount(100))
@@ -1561,7 +1561,7 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Ban
 		// range rather than merely before the window.
 		view(t, s, func(ctx context.Context, tx ledger.BankTx) error {
 			var err error
-			got, err = tx.ValueDatedSeries(ctx, bookA, ledger.AccountID("901.001.001").Total(), ledger.Debit, time.Time{}, day(9))
+			got, err = ledger.ValueDatedSeries(ctx, tx, bookA, ledger.AccountID("901.001.001").Total(), ledger.Debit, time.Time{}, day(9))
 			return err
 		})
 		assertEqual(t, "opening from the beginning of time", got.Opening, ledger.Amount(0))
@@ -1583,7 +1583,7 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Ban
 		var got ledger.Series
 		view(t, s, func(ctx context.Context, tx ledger.BankTx) error {
 			var err error
-			got, err = tx.ValueDatedSeries(ctx, bookA, ledger.AccountID("999.999.001").Total(), ledger.Debit, day(1), day(9))
+			got, err = ledger.ValueDatedSeries(ctx, tx, bookA, ledger.AccountID("999.999.001").Total(), ledger.Debit, day(1), day(9))
 			return err
 		})
 		assertEqual(t, "opening", got.Opening, ledger.Amount(0))

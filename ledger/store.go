@@ -3,7 +3,6 @@ package ledger
 import (
 	"context"
 	"iter"
-	"time"
 )
 
 // Store owns all persistent state. Interfaces are declared here, by the
@@ -113,18 +112,9 @@ type Tx interface {
 	// — the store yields rows and the domain does the arithmetic.
 	ScanEntries(ctx context.Context, book BookID, pos Position, f EntryFilter) iter.Seq2[Entry, error]
 
-	// ValueDateBalance is BookBalance restricted to entries that take economic
-	// effect before the bound: it aggregates entries whose value date is strictly
-	// less than before.
-	ValueDateBalance(ctx context.Context, book BookID, pos Position, normal Direction, before time.Time) (Amount, error)
-
 	// SubsidiaryBalances is the balance of every subsidiary under an account, in
 	// one query rather than one BookBalance per subsidiary: the caller does not
 	// know the subsidiaries before it asks, which is the whole difference between
 	// this and reading a Position.
 	SubsidiaryBalances(ctx context.Context, book BookID, account AccountID, normal Direction) ([]SubsidiaryBalance, error)
-
-	// ValueDatedSeries returns the balance carried into from, plus the net
-	// movement on each value date in [from, to) that had any.
-	ValueDatedSeries(ctx context.Context, book BookID, pos Position, normal Direction, from, to time.Time) (Series, error)
 }

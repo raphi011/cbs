@@ -409,16 +409,6 @@ func (r *recordingBankTx) ScanEntries(ctx context.Context, book ledger.BookID, p
 	return r.BankTx.ScanEntries(ctx, book, pos, f)
 }
 
-func (r *recordingBankTx) ValueDateBalance(ctx context.Context, book ledger.BookID, pos ledger.Position, normal ledger.Direction, before time.Time) (ledger.Amount, error) {
-	r.rec.note(book)
-	return r.BankTx.ValueDateBalance(ctx, book, pos, normal, before)
-}
-
-func (r *recordingBankTx) ValueDatedSeries(ctx context.Context, book ledger.BookID, pos ledger.Position, normal ledger.Direction, from, to time.Time) (ledger.Series, error) {
-	r.rec.note(book)
-	return r.BankTx.ValueDatedSeries(ctx, book, pos, normal, from, to)
-}
-
 // The two whose book travels inside the argument. See structCarriedBooks.
 
 func (r *recordingBankTx) AppendAudit(ctx context.Context, e ledger.AuditEvent) error {
@@ -736,16 +726,6 @@ func (r *recordingCentralBankTx) MarkReversed(ctx context.Context, book ledger.B
 func (r *recordingCentralBankTx) ScanEntries(ctx context.Context, book ledger.BookID, pos ledger.Position, f ledger.EntryFilter) iter.Seq2[ledger.Entry, error] {
 	r.rec.note(book)
 	return r.CentralBankTx.ScanEntries(ctx, book, pos, f)
-}
-
-func (r *recordingCentralBankTx) ValueDateBalance(ctx context.Context, book ledger.BookID, pos ledger.Position, normal ledger.Direction, before time.Time) (ledger.Amount, error) {
-	r.rec.note(book)
-	return r.CentralBankTx.ValueDateBalance(ctx, book, pos, normal, before)
-}
-
-func (r *recordingCentralBankTx) ValueDatedSeries(ctx context.Context, book ledger.BookID, pos ledger.Position, normal ledger.Direction, from, to time.Time) (ledger.Series, error) {
-	r.rec.note(book)
-	return r.CentralBankTx.ValueDatedSeries(ctx, book, pos, normal, from, to)
 }
 
 func (r *recordingCentralBankTx) AppendAudit(ctx context.Context, e ledger.AuditEvent) error {

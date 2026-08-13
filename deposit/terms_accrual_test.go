@@ -409,11 +409,11 @@ func TestANeverPricedAccountReadsNoSeries(t *testing.T) {
 	overdrawValueDated(t, reg, book, sub, acct, 100_000, day(0), day(0))
 
 	clock.set(day(30))
-	var reads int
+	var scans int
 	assertNoError(t, reg.Store().Update(ctx, func(ctx context.Context, tx Tx) error {
-		return reg.AccrueOverdraftTx(ctx, countingTx{Tx: tx, series: &reads}, acct.ID, day(30))
+		return reg.AccrueOverdraftTx(ctx, countingTx{Tx: tx, scans: &scans}, acct.ID, day(30))
 	}))
-	assertEqual(t, "series reads on a never-priced account", reads, 0)
+	assertEqual(t, "entry scans on a never-priced account", scans, 0)
 
 	got, err := reg.GetAccount(ctx, acct.ID)
 	assertNoError(t, err)
@@ -445,11 +445,11 @@ func TestAnUnadvancedWindowIsRefusedBeforeReadingASeries(t *testing.T) {
 
 	// Now re-run for a date the window has ALREADY reached. The record must
 	// come back untouched, and no series must be read at all.
-	var reads int
+	var scans int
 	assertNoError(t, reg.Store().Update(ctx, func(ctx context.Context, tx Tx) error {
-		return reg.AccrueOverdraftTx(ctx, countingTx{Tx: tx, series: &reads}, acct.ID, day(30))
+		return reg.AccrueOverdraftTx(ctx, countingTx{Tx: tx, scans: &scans}, acct.ID, day(30))
 	}))
-	assertEqual(t, "series reads on an unadvanced window", reads, 0)
+	assertEqual(t, "entry scans on an unadvanced window", scans, 0)
 
 	after, err := reg.GetAccount(ctx, acct.ID)
 	assertNoError(t, err)

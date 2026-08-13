@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 	"time"
 )
@@ -752,6 +753,57 @@ func BookBalance(ctx context.Context, tx Tx, book BookID, pos Position, normal D
 	return balance, nil
 }
 
+// ValueDateBalance is BookBalance restricted to entries that take economic
+// effect strictly before the bound. An entry with no value date is before no
+// bound at all, and neither is anything before the zero time.
+func ValueDateBalance(ctx context.Context, tx Tx, book BookID, pos Position, normal Direction, before time.Time) (Amount, error) {
+	if before.IsZero() {
+		return 0, nil
+	}
+	var balance Amount
+	for e, err := range tx.ScanEntries(ctx, book, pos, EntryFilter{To: before}) {
+		if err != nil {
+			return 0, err
+		}
+		balance += signed(e, normal)
+	}
+	return balance, nil
+}
+
+// ValueDatedSeries is the balance carried into from, plus the net movement on
+// each UTC day in [from, to) that had entries — a day whose entries net to zero
+// is a movement of zero, and a day with none is not a row.
+func ValueDatedSeries(ctx context.Context, tx Tx, book BookID, pos Position, normal Direction, from, to time.Time) (Series, error) {
+	opening, err := ValueDateBalance(ctx, tx, book, pos, normal, from)
+	if err != nil {
+		return Series{}, err
+	}
+	out := Series{Opening: opening, Movements: make([]DayMovement, 0)}
+	// A window that does not end after it starts holds no days, and a zero end is
+	// one of those.
+	if !to.After(from) {
+		return out, nil
+	}
+
+	byDay := map[time.Time]Amount{}
+	for e, err := range tx.ScanEntries(ctx, book, pos, EntryFilter{From: from, To: to}) {
+		if err != nil {
+			return Series{}, err
+		}
+		byDay[DayStart(e.ValueDate)] += signed(e, normal)
+	}
+
+	days := make([]time.Time, 0, len(byDay))
+	for d := range byDay {
+		days = append(days, d)
+	}
+	slices.SortFunc(days, func(a, b time.Time) int { return a.Compare(b) })
+	for _, d := range days {
+		out.Movements = append(out.Movements, DayMovement{Day: d, Amount: byDay[d]})
+	}
+	return out, nil
+}
+
 // BookBalance computes the current book balance of a position.
 func (s *Book) BookBalance(ctx context.Context, pos Position) (Amount, error) {
 	var out Amount
@@ -789,7 +841,7 @@ func (s *Book) ValueDateBalanceTx(ctx context.Context, tx Tx, pos Position, asOf
 	if err != nil {
 		return 0, err
 	}
-	return tx.ValueDateBalance(ctx, s.id, pos, acct.Type.NormalBalance(), NextDay(asOf))
+	return ValueDateBalance(ctx, tx, s.id, pos, acct.Type.NormalBalance(), NextDay(asOf))
 }
 
 // SeriesTx is an account's value-dated movement history over [from, to], signed
@@ -799,7 +851,7 @@ func (s *Book) SeriesTx(ctx context.Context, tx Tx, pos Position, from, to time.
 	if err != nil {
 		return Series{}, err
 	}
-	return tx.ValueDatedSeries(ctx, s.id, pos, acct.Type.NormalBalance(),
+	return ValueDatedSeries(ctx, tx, s.id, pos, acct.Type.NormalBalance(),
 		DayStart(from), NextDay(to))
 }
 

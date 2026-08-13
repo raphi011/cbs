@@ -765,9 +765,9 @@ emptying `inShape` to `return nil` left the whole suite green.
 
 `payment.BankTx`, `CsmTx` and `CentralBankTx` replace it, composed from the
 capabilities two institutions genuinely share — `ledger.CommonTx` (3, all three),
-`ledger.Tx` (22, bank and settlement agent), `ledger.SlotTx` (3, a bank's),
+`ledger.Tx` (23, bank and settlement agent), `ledger.SlotTx` (3, a bank's),
 `PaymentRowsTx` (4, bank and clearing house), `ebics.Tx` (8, the two that are
-dialled). Reach per institution: **73 / 29 / 45** against 108, measured, and
+dialled). Reach per institution: **71 / 21 / 35** against 108, measured, and
 every crossing is a build failure.
 
 The shape became a constructor rather than a parameter — `OpenBank`,
@@ -807,7 +807,7 @@ The 99-route table was dumped before and after and is byte-identical.
 
 ### Move the derived balances off the store seam — `wip`
 
-The three transaction seams carry 73 / 21 / 37 methods, 82 / 76 / 70% of them
+At filing the three transaction seams carried 73 / 21 / 37 methods, 82 / 76 / 70% of them
 Put/Get/List pass-through. The cost is in the rest: eleven computations
 expressed twice, in two languages, with
 contract prose as the only link — listing order, both balances, the series,
@@ -864,6 +864,14 @@ free and the timestamp parse is a ninth of it; the rest is reading three columns
 a balance does not use. In absolute terms it is +75 µs on a hundred-entry
 account, which is what the decision now rests on — `TrialBalanceTx` is where it
 compounds, one balance per account in the chart.
+
+**Phase 2 is done too.** `ValueDateBalance` and `ValueDatedSeries` left the seam
+with the day arithmetic: `substr(value_date, 1, 10)` and the `GROUP BY` are
+gone, and `ledger.DayStart` is now the only answer to which day an entry is in.
+Reach is 71 / 21 / 35, which is where the numbers above come from; the
+73 / 29 / 45 this file, `CLAUDE.md` and ADR-0007 all carried was wrong before
+either phase started. Left: `SubsidiaryBalances`, `ActiveHoldTotal`,
+`GetOpenCycle`, the listing orders, and the shared-suite move.
 
 ### `Scheme` — an interface with seven constant returns
 

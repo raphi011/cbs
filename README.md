@@ -496,7 +496,7 @@ In practice, most core banking systems have a rules engine upstream of the ledge
 
 A single account carries three distinct balances at any point in time:
 
-- **Value-date balance** (also called the **interest-bearing balance**): The balance computed from entries whose value date has passed. This is what the bank uses to calculate interest. It is `ledger.Book.ValueDateBalance(ctx, accountID, asOf)` — the balance endpoint's one non-test caller — and it is also exactly what `Tx.ValueDatedSeries` opens on at the start of its window; both interest engines read the series rather than calling `ValueDateBalance` directly.
+- **Value-date balance** (also called the **interest-bearing balance**): The balance computed from entries whose value date has passed. This is what the bank uses to calculate interest. It is `ledger.Book.ValueDateBalance(ctx, accountID, asOf)` — the balance endpoint's one non-test caller — and it is also exactly what `ledger.ValueDatedSeries` opens on at the start of its window; both interest engines read the series rather than calling `ValueDateBalance` directly.
 
   A day boundary here is a UTC day, and a day's interest accrues on that day's **closing** balance: entries value-dated on the day itself count. A business date is a date, so an end-of-day run at 23:00 covers the same day as one at 09:00 — `ledger.DayStart` is where that rule lives, and it lives in Go rather than in the store, because which day an instant falls in is a domain answer and date arithmetic in a dialect is one DST-adjacent edge case away from disagreeing with it.
 
@@ -1613,7 +1613,7 @@ At the end of each business day, the system captures a snapshot of each account'
 
 - **Performance optimization:** instead of replaying all transactions from account creation, balance queries could start from the most recent snapshot and only replay subsequent transactions.
 
-None of this is implemented yet. Interest accrual reads `Tx.ValueDatedSeries` fresh from the entry list on every run — its opening figure is exactly `ValueDateBalance` at the window's start — rather than reading a stored snapshot, and no balance query of any kind consults one either — see [A Balance Is an Aggregate, Not a Column](#a-balance-is-an-aggregate-not-a-column). What is captured today is the raw material a checkpoint would read from.
+None of this is implemented yet. Interest accrual reads `ledger.ValueDatedSeries` fresh from the entry list on every run — its opening figure is exactly `ValueDateBalance` at the window's start — rather than reading a stored snapshot, and no balance query of any kind consults one either — see [A Balance Is an Aggregate, Not a Column](#a-balance-is-an-aggregate-not-a-column). What is captured today is the raw material a checkpoint would read from.
 
 ### Audit Trail
 

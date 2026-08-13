@@ -95,7 +95,7 @@ func (s *Book) TrialBalanceTx(ctx context.Context, tx Tx, asOf time.Time) (Trial
 		if err != nil {
 			return TrialBalance{}, err
 		}
-		valueDated, err := tx.ValueDateBalance(ctx, s.id, a.ID.Total(), normal, before)
+		valueDated, err := ValueDateBalance(ctx, tx, s.id, a.ID.Total(), normal, before)
 		if err != nil {
 			return TrialBalance{}, err
 		}

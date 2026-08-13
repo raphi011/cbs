@@ -6,6 +6,7 @@ package lending_test
 
 import (
 	"context"
+	"iter"
 	"testing"
 	"time"
 
@@ -291,25 +292,24 @@ func TestANeverPricedFacilityReadsNoSeries(t *testing.T) {
 	assertNoError(t, err)
 
 	clock.set(day(30))
-	var reads int
+	var scans int
 	assertNoError(t, p.Store().Update(ctx, func(ctx context.Context, tx lending.Tx) error {
-		return p.AccrueTx(ctx, countingTx{Tx: tx, series: &reads}, line.ID, day(30))
+		return p.AccrueTx(ctx, countingTx{Tx: tx, scans: &scans}, line.ID, day(30))
 	}))
-	assertEqual(t, "series reads on a never-priced facility", reads, 0)
+	assertEqual(t, "entry scans on a never-priced facility", scans, 0)
 	assertEqual(t, "accrued on a never-priced facility", facility(t, p, line.ID).Accrued, interest.Accrued(0))
 }
 
-// countingTx wraps a Tx and counts value-dated series reads, so a test can
-// assert that a run was skipped BEFORE any I/O rather than that it happened to
-// produce zero.
+// countingTx wraps a Tx and counts entry scans, so a test can assert that a run
+// was skipped BEFORE any I/O rather than that it happened to produce zero.
 type countingTx struct {
 	lending.Tx
-	series *int
+	scans *int
 }
 
-func (t countingTx) ValueDatedSeries(ctx context.Context, book ledger.BookID, pos ledger.Position, normal ledger.Direction, from, to time.Time) (ledger.Series, error) {
-	*t.series++
-	return t.Tx.ValueDatedSeries(ctx, book, pos, normal, from, to)
+func (t countingTx) ScanEntries(ctx context.Context, book ledger.BookID, pos ledger.Position, f ledger.EntryFilter) iter.Seq2[ledger.Entry, error] {
+	*t.scans++
+	return t.Tx.ScanEntries(ctx, book, pos, f)
 }
 
 // Re-disbursement charges the span between a full repayment and the new
