@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/raphi011/cbs/internal/unit"
 	"github.com/raphi011/cbs/ledger"
 )
 
@@ -70,13 +71,9 @@ func (c *Catalogue) appendAuditTx(ctx context.Context, tx Tx, eventType, entityI
 // CreateProduct adds a catalogue entry. It has no price yet: DraftVersion and
 // PublishVersion give it one, and until then no account can be opened from it.
 func (c *Catalogue) CreateProduct(ctx context.Context, name string, kind Kind) (Product, error) {
-	var out Product
-	err := c.store.Update(ctx, func(ctx context.Context, tx Tx) error {
-		var err error
-		out, err = c.CreateProductTx(ctx, tx, name, kind)
-		return err
+	return unit.Run(ctx, c.store.Update, func(ctx context.Context, tx Tx) (Product, error) {
+		return c.CreateProductTx(ctx, tx, name, kind)
 	})
-	return out, err
 }
 
 // CreateProductTx is CreateProduct within a caller-supplied unit of work, so a
@@ -103,13 +100,9 @@ func (c *Catalogue) CreateProductTx(ctx context.Context, tx Tx, name string, kin
 // DraftVersion writes an unpublished version for one effective day, or replaces
 // the draft already there.
 func (c *Catalogue) DraftVersion(ctx context.Context, id ID, effectiveFrom time.Time, pricing OverdraftPricing) (Version, error) {
-	var out Version
-	err := c.store.Update(ctx, func(ctx context.Context, tx Tx) error {
-		var err error
-		out, err = c.DraftVersionTx(ctx, tx, id, effectiveFrom, pricing)
-		return err
+	return unit.Run(ctx, c.store.Update, func(ctx context.Context, tx Tx) (Version, error) {
+		return c.DraftVersionTx(ctx, tx, id, effectiveFrom, pricing)
 	})
-	return out, err
 }
 
 // DraftVersionTx is DraftVersion within a caller-supplied unit of work.
@@ -148,13 +141,9 @@ func (c *Catalogue) DraftVersionTx(ctx context.Context, tx Tx, id ID, effectiveF
 // PublishVersion freezes the draft for one effective day and stamps its content
 // hash.
 func (c *Catalogue) PublishVersion(ctx context.Context, id ID, effectiveFrom time.Time) (Version, error) {
-	var out Version
-	err := c.store.Update(ctx, func(ctx context.Context, tx Tx) error {
-		var err error
-		out, err = c.PublishVersionTx(ctx, tx, id, effectiveFrom)
-		return err
+	return unit.Run(ctx, c.store.Update, func(ctx context.Context, tx Tx) (Version, error) {
+		return c.PublishVersionTx(ctx, tx, id, effectiveFrom)
 	})
-	return out, err
 }
 
 // PublishVersionTx is PublishVersion within a caller-supplied unit of work.

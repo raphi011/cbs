@@ -8,6 +8,8 @@ import (
 	"slices"
 	"strconv"
 	"time"
+
+	"github.com/raphi011/cbs/internal/unit"
 )
 
 // Book is the central component of the general ledger. It manages the full
@@ -71,13 +73,9 @@ func (s *Book) appendAuditTx(ctx context.Context, tx CommonTx, scope Scope, even
 // organization in the chart of accounts, typically representing a book of
 // accounts (e.g., "General Ledger", "Trading Book").
 func (s *Book) CreateLedger(ctx context.Context, name string) (Ledger, error) {
-	var out Ledger
-	err := s.store.Update(ctx, func(ctx context.Context, tx Tx) error {
-		var err error
-		out, err = s.CreateLedgerTx(ctx, tx, name)
-		return err
+	return unit.Run(ctx, s.store.Update, func(ctx context.Context, tx Tx) (Ledger, error) {
+		return s.CreateLedgerTx(ctx, tx, name)
 	})
-	return out, err
 }
 
 // CreateLedgerTx is CreateLedger within a caller-supplied unit of work.
@@ -121,13 +119,9 @@ func (s *Book) GetLedger(ctx context.Context, id LedgerID) (Ledger, error) {
 // provide a second level of grouping for accounts (e.g., "Accounts Receivable",
 // "Checking Accounts", "Loan Portfolio").
 func (s *Book) CreateSubledger(ctx context.Context, ledgerID LedgerID, name string) (Subledger, error) {
-	var out Subledger
-	err := s.store.Update(ctx, func(ctx context.Context, tx Tx) error {
-		var err error
-		out, err = s.CreateSubledgerTx(ctx, tx, ledgerID, name)
-		return err
+	return unit.Run(ctx, s.store.Update, func(ctx context.Context, tx Tx) (Subledger, error) {
+		return s.CreateSubledgerTx(ctx, tx, ledgerID, name)
 	})
-	return out, err
 }
 
 // CreateSubledgerTx is CreateSubledger within a caller-supplied unit of work.
@@ -182,13 +176,9 @@ func (s *Book) GetSubledger(ctx context.Context, id SubledgerID) (Subledger, err
 
 // CreateAccount creates a new financial account within a subledger.
 func (s *Book) CreateAccount(ctx context.Context, subledgerID SubledgerID, name string, accountType AccountType, asset AssetCode) (Account, error) {
-	var out Account
-	err := s.store.Update(ctx, func(ctx context.Context, tx Tx) error {
-		var err error
-		out, err = s.CreateAccountTx(ctx, tx, subledgerID, name, accountType, asset)
-		return err
+	return unit.Run(ctx, s.store.Update, func(ctx context.Context, tx Tx) (Account, error) {
+		return s.CreateAccountTx(ctx, tx, subledgerID, name, accountType, asset)
 	})
-	return out, err
 }
 
 // CreateAccountTx is CreateAccount within a caller-supplied unit of work. The
@@ -390,13 +380,9 @@ type PostTransactionRequest struct {
 
 // PostTransaction records a new multi-legged accounting transaction.
 func (s *Book) PostTransaction(ctx context.Context, req PostTransactionRequest) (Transaction, error) {
-	var out Transaction
-	err := s.store.Update(ctx, func(ctx context.Context, tx Tx) error {
-		var err error
-		out, err = s.PostTransactionTx(ctx, tx, req)
-		return err
+	return unit.Run(ctx, s.store.Update, func(ctx context.Context, tx Tx) (Transaction, error) {
+		return s.PostTransactionTx(ctx, tx, req)
 	})
-	return out, err
 }
 
 // PostTransactionTx is PostTransaction within a caller-supplied unit of work.
@@ -639,13 +625,9 @@ func (s *Book) GetTransactionByIdempotencyKey(ctx context.Context, key string) (
 // original transaction. Every debit entry becomes a credit and every credit
 // entry becomes a debit, with the same amounts and currencies.
 func (s *Book) ReverseTransaction(ctx context.Context, txID TransactionID, description string) (Transaction, error) {
-	var out Transaction
-	err := s.store.Update(ctx, func(ctx context.Context, tx Tx) error {
-		var err error
-		out, err = s.ReverseTransactionTx(ctx, tx, txID, description)
-		return err
+	return unit.Run(ctx, s.store.Update, func(ctx context.Context, tx Tx) (Transaction, error) {
+		return s.ReverseTransactionTx(ctx, tx, txID, description)
 	})
-	return out, err
 }
 
 // ReverseTransactionTx is ReverseTransaction within a caller-supplied unit of
@@ -806,13 +788,9 @@ func ValueDatedSeries(ctx context.Context, tx EntryScanner, book BookID, pos Pos
 
 // BookBalance computes the current book balance of a position.
 func (s *Book) BookBalance(ctx context.Context, pos Position) (Amount, error) {
-	var out Amount
-	err := s.store.View(ctx, func(ctx context.Context, tx Tx) error {
-		var err error
-		out, err = s.BookBalanceTx(ctx, tx, pos)
-		return err
+	return unit.Run(ctx, s.store.View, func(ctx context.Context, tx Tx) (Amount, error) {
+		return s.BookBalanceTx(ctx, tx, pos)
 	})
-	return out, err
 }
 
 // BookBalanceTx is BookBalance within a caller-supplied unit of work.
@@ -826,13 +804,9 @@ func (s *Book) BookBalanceTx(ctx context.Context, tx Tx, pos Position) (Amount, 
 
 // ValueDateBalance computes an account's balance as of the end of asOf's day.
 func (s *Book) ValueDateBalance(ctx context.Context, pos Position, asOf time.Time) (Amount, error) {
-	var out Amount
-	err := s.store.View(ctx, func(ctx context.Context, tx Tx) error {
-		var err error
-		out, err = s.ValueDateBalanceTx(ctx, tx, pos, asOf)
-		return err
+	return unit.Run(ctx, s.store.View, func(ctx context.Context, tx Tx) (Amount, error) {
+		return s.ValueDateBalanceTx(ctx, tx, pos, asOf)
 	})
-	return out, err
 }
 
 // ValueDateBalanceTx is ValueDateBalance within a caller-supplied unit of work.

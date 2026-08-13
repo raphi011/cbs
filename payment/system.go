@@ -11,6 +11,7 @@ import (
 
 	"github.com/raphi011/cbs/deposit"
 	"github.com/raphi011/cbs/iban"
+	"github.com/raphi011/cbs/internal/unit"
 	"github.com/raphi011/cbs/iso20022"
 	"github.com/raphi011/cbs/ledger"
 	"github.com/raphi011/cbs/lending"
@@ -369,58 +370,33 @@ func (s *Network) admissionSequenceTx(ctx context.Context, tx ledger.CommonTx) e
 // FoundBank is FoundBankTx in its own unit of work: the bank's own act, and the
 // only one of the four its own operator drives directly.
 func (s *BankNetwork) FoundBank(ctx context.Context, name string, bic iso20022.BIC, country iban.Country, assets []ledger.AssetCode) (*Bank, error) {
-	var out *Bank
-	err := s.store.Update(ctx, func(ctx context.Context, tx BankTx) error {
-		var err error
-		out, err = s.FoundBankTx(ctx, tx, name, bic, country, assets)
-		return err
+	return unit.Run(ctx, s.store.Update, func(ctx context.Context, tx BankTx) (*Bank, error) {
+		return s.FoundBankTx(ctx, tx, name, bic, country, assets)
 	})
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
 }
 
 // OpenSettlementAccount is OpenSettlementAccountTx in its own unit of work: the
 // settlement agent's act, on a request from the applicant.
 func (s *CentralBankNetwork) OpenSettlementAccount(ctx context.Context, in AdmissionRequest) (SettlementMember, iban.Issuer, error) {
-	var (
-		out    SettlementMember
-		issuer iban.Issuer
-	)
-	err := s.store.Update(ctx, func(ctx context.Context, tx CentralBankTx) error {
-		var err error
-		out, issuer, err = s.OpenSettlementAccountTx(ctx, tx, in)
-		return err
+	return unit.Run2(ctx, s.store.Update, func(ctx context.Context, tx CentralBankTx) (SettlementMember, iban.Issuer, error) {
+		return s.OpenSettlementAccountTx(ctx, tx, in)
 	})
-	return out, issuer, err
 }
 
 // AdmitMember is AdmitMemberTx in its own unit of work: the clearing house's
 // act, on the settlement agent's acknowledgement.
 func (s *ClearingHouseNetwork) AdmitMember(ctx context.Context, in AdmissionAcknowledgement) (RosterEntry, error) {
-	var out RosterEntry
-	err := s.store.Update(ctx, func(ctx context.Context, tx CsmTx) error {
-		var err error
-		out, err = s.AdmitMemberTx(ctx, tx, in)
-		return err
+	return unit.Run(ctx, s.store.Update, func(ctx context.Context, tx CsmTx) (RosterEntry, error) {
+		return s.AdmitMemberTx(ctx, tx, in)
 	})
-	return out, err
 }
 
 // RecordMembership is RecordMembershipTx in its own unit of work: the bank's
 // second act, on the same acknowledgement the clearing house admitted it from.
 func (s *BankNetwork) RecordMembership(ctx context.Context, in AdmissionAcknowledgement) (*Bank, error) {
-	var out *Bank
-	err := s.store.Update(ctx, func(ctx context.Context, tx BankTx) error {
-		var err error
-		out, err = s.RecordMembershipTx(ctx, tx, in)
-		return err
+	return unit.Run(ctx, s.store.Update, func(ctx context.Context, tx BankTx) (*Bank, error) {
+		return s.RecordMembershipTx(ctx, tx, in)
 	})
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
 }
 
 // FoundBankTx is the bank's own act: a bank with a licence building itself.
@@ -905,20 +881,9 @@ func (s *BankNetwork) DepositTx(ctx context.Context, tx BankTx, participant Part
 // LodgeReserves is a bank swapping vault cash for a claim on its central bank.
 func (s *BankNetwork) LodgeReserves(ctx context.Context, asset ledger.AssetCode,
 	amount ledger.Amount, mc MessageContext) (LodgementInstruction, iso20022.Envelope, error) {
-
-	var (
-		in  LodgementInstruction
-		env iso20022.Envelope
-	)
-	err := s.store.Update(ctx, func(ctx context.Context, tx BankTx) error {
-		var err error
-		in, env, err = s.LodgeReservesTx(ctx, tx, asset, amount, mc)
-		return err
+	return unit.Run2(ctx, s.store.Update, func(ctx context.Context, tx BankTx) (LodgementInstruction, iso20022.Envelope, error) {
+		return s.LodgeReservesTx(ctx, tx, asset, amount, mc)
 	})
-	if err != nil {
-		return LodgementInstruction{}, iso20022.Envelope{}, err
-	}
-	return in, env, nil
 }
 
 // LodgeReservesTx is LodgeReserves within a caller-supplied unit of work.
@@ -982,16 +947,9 @@ func (s *BankNetwork) LodgeReservesTx(ctx context.Context, tx BankTx, asset ledg
 // ReceiveLodgement is the central bank's half: crediting a member's reserve
 // account because the member asked it to.
 func (s *CentralBankNetwork) ReceiveLodgement(ctx context.Context, in LodgementInstruction) (LodgementReceipt, error) {
-	var out LodgementReceipt
-	err := s.store.Update(ctx, func(ctx context.Context, tx CentralBankTx) error {
-		var err error
-		out, err = s.ReceiveLodgementTx(ctx, tx, in)
-		return err
+	return unit.Run(ctx, s.store.Update, func(ctx context.Context, tx CentralBankTx) (LodgementReceipt, error) {
+		return s.ReceiveLodgementTx(ctx, tx, in)
 	})
-	if err != nil {
-		return LodgementReceipt{}, err
-	}
-	return out, nil
 }
 
 // ReceiveLodgementTx is ReceiveLodgement within a caller-supplied unit of work.
@@ -1046,13 +1004,9 @@ func (s *CentralBankNetwork) ReceiveLodgementTx(ctx context.Context, tx CentralB
 // CreateMandate records a debtor's authorization for a creditor to collect
 // funds via direct debit. A MaxAmount of 0 means unlimited.
 func (s *BankNetwork) CreateMandate(ctx context.Context, assertedAgent iso20022.BIC, debtor, creditor PartyRef, maxAmount ledger.Amount) (Mandate, error) {
-	var out Mandate
-	err := s.store.Update(ctx, func(ctx context.Context, tx BankTx) error {
-		var err error
-		out, err = s.CreateMandateTx(ctx, tx, assertedAgent, debtor, creditor, maxAmount)
-		return err
+	return unit.Run(ctx, s.store.Update, func(ctx context.Context, tx BankTx) (Mandate, error) {
+		return s.CreateMandateTx(ctx, tx, assertedAgent, debtor, creditor, maxAmount)
 	})
-	return out, err
 }
 
 // CreateMandateTx is CreateMandate within a caller-supplied unit of work.
@@ -1137,13 +1091,9 @@ func (s *BankNetwork) RevokeMandateTx(ctx context.Context, tx BankTx, id Mandate
 // OpenCycle opens a clearing cycle for a scheme. Payments submitted while it
 // is open accumulate in it until CloseCycle computes their net positions.
 func (s *ClearingHouseNetwork) OpenCycle(ctx context.Context, scheme SchemeID) (ClearingCycle, error) {
-	var out ClearingCycle
-	err := s.store.Update(ctx, func(ctx context.Context, tx CsmTx) error {
-		var err error
-		out, err = s.OpenCycleTx(ctx, tx, scheme)
-		return err
+	return unit.Run(ctx, s.store.Update, func(ctx context.Context, tx CsmTx) (ClearingCycle, error) {
+		return s.OpenCycleTx(ctx, tx, scheme)
 	})
-	return out, err
 }
 
 // OpenCycleTx is OpenCycle within a caller-supplied unit of work. The
@@ -1184,13 +1134,9 @@ func (s *ClearingHouseNetwork) OpenCycleTx(ctx context.Context, tx CsmTx, scheme
 // it instructed has settled — and handing back the payments so the caller can
 // tell each one's banks.
 func (s *ClearingHouseNetwork) SettleAtCSM(ctx context.Context, id CycleID) ([]Payment, error) {
-	var out []Payment
-	err := s.store.Update(ctx, func(ctx context.Context, tx CsmTx) error {
-		var err error
-		out, err = s.SettleAtCSMTx(ctx, tx, id)
-		return err
+	return unit.Run(ctx, s.store.Update, func(ctx context.Context, tx CsmTx) ([]Payment, error) {
+		return s.SettleAtCSMTx(ctx, tx, id)
 	})
-	return out, err
 }
 
 // SettleAtCSMTx is SettleAtCSM within a caller-supplied unit of work.
@@ -1239,13 +1185,9 @@ func (s *ClearingHouseNetwork) SettleAtCSMTx(ctx context.Context, tx CsmTx, id C
 // across the cycle's payments and marks the payments Cleared. No money moves
 // yet — that happens at SettleCycle.
 func (s *ClearingHouseNetwork) CloseCycle(ctx context.Context, id CycleID) (ClearingCycle, error) {
-	var out ClearingCycle
-	err := s.store.Update(ctx, func(ctx context.Context, tx CsmTx) error {
-		var err error
-		out, err = s.CloseCycleTx(ctx, tx, id)
-		return err
+	return unit.Run(ctx, s.store.Update, func(ctx context.Context, tx CsmTx) (ClearingCycle, error) {
+		return s.CloseCycleTx(ctx, tx, id)
 	})
-	return out, err
 }
 
 // CloseCycleTx is CloseCycle within a caller-supplied unit of work.
@@ -1300,14 +1242,9 @@ func (s *ClearingHouseNetwork) CloseCycleTx(ctx context.Context, tx CsmTx, id Cy
 // across the members' reserve accounts at the central bank, in ONE transaction,
 // in the central bank's own book.
 func (s *CentralBankNetwork) SettleCycle(ctx context.Context, id CycleID, legs []SettlementLeg) (Settlement, []SettlementStatement, error) {
-	var out Settlement
-	var statements []SettlementStatement
-	err := s.store.Update(ctx, func(ctx context.Context, tx CentralBankTx) error {
-		var err error
-		out, statements, err = s.SettleCycleTx(ctx, tx, id, legs)
-		return err
+	return unit.Run2(ctx, s.store.Update, func(ctx context.Context, tx CentralBankTx) (Settlement, []SettlementStatement, error) {
+		return s.SettleCycleTx(ctx, tx, id, legs)
 	})
-	return out, statements, err
 }
 
 // SettleCycleTx is SettleCycle within a caller-supplied unit of work.
@@ -1524,13 +1461,9 @@ func (s *CentralBankNetwork) settlementLegsTx(ctx context.Context, tx CentralBan
 // is what a bank acting on a statement it has just been handed needs: the
 // message is the whole of the input, so there is nothing else to commit with it.
 func (s *BankNetwork) PostSettlementAdvice(ctx context.Context, m AdvisedMovement) (SettlementAdvice, error) {
-	var out SettlementAdvice
-	err := s.store.Update(ctx, func(ctx context.Context, tx BankTx) error {
-		var err error
-		out, err = s.PostSettlementAdviceTx(ctx, tx, m)
-		return err
+	return unit.Run(ctx, s.store.Update, func(ctx context.Context, tx BankTx) (SettlementAdvice, error) {
+		return s.PostSettlementAdviceTx(ctx, tx, m)
 	})
-	return out, err
 }
 
 // PostSettlementAdviceTx is a member bank booking a cut-off it was told about:
@@ -1614,13 +1547,9 @@ func (s *BankNetwork) PostSettlementAdviceTx(ctx context.Context, tx BankTx, m A
 // acting on an advice it has just been handed needs: the message names one
 // payment and there is nothing else to commit with it.
 func (s *BankNetwork) SettleAtBank(ctx context.Context, id PaymentID) (Payment, error) {
-	var out Payment
-	err := s.store.Update(ctx, func(ctx context.Context, tx BankTx) error {
-		var err error
-		out, err = s.SettleAtBankTx(ctx, tx, id)
-		return err
+	return unit.Run(ctx, s.store.Update, func(ctx context.Context, tx BankTx) (Payment, error) {
+		return s.SettleAtBankTx(ctx, tx, id)
 	})
-	return out, err
 }
 
 // SettleAtBankTx is a member bank's half of settlement: it records on this
@@ -1747,13 +1676,9 @@ type InitiatePaymentRequest struct {
 
 // SubmitPayment is SubmitPaymentTx in its own unit of work.
 func (s *BankNetwork) SubmitPayment(ctx context.Context, req InitiatePaymentRequest) (Payment, error) {
-	var out Payment
-	err := s.store.Update(ctx, func(ctx context.Context, tx BankTx) error {
-		var err error
-		out, err = s.SubmitPaymentTx(ctx, tx, req)
-		return err
+	return unit.Run(ctx, s.store.Update, func(ctx context.Context, tx BankTx) (Payment, error) {
+		return s.SubmitPaymentTx(ctx, tx, req)
 	})
-	return out, err
 }
 
 // TakeInstruction is the submitting bank's half AND the proof that what it took
@@ -1996,13 +1921,9 @@ func (s *BankNetwork) AcceptInboundTx(ctx context.Context, tx BankTx, id Payment
 // a bank working through a released output file needs: one transaction fails on
 // its own, and the rest of the file is unaffected.
 func (s *BankNetwork) ReceiveUnapplied(ctx context.Context, id PaymentID, req InitiatePaymentRequest) (Payment, error) {
-	var out Payment
-	err := s.store.Update(ctx, func(ctx context.Context, tx BankTx) error {
-		var err error
-		out, err = s.ReceiveUnappliedTx(ctx, tx, id, req)
-		return err
+	return unit.Run(ctx, s.store.Update, func(ctx context.Context, tx BankTx) (Payment, error) {
+		return s.ReceiveUnappliedTx(ctx, tx, id, req)
 	})
-	return out, err
 }
 
 // ReceiveUnappliedTx is the receiving bank writing down a payment that has
@@ -2169,13 +2090,9 @@ func (s *ClearingHouseNetwork) RecordRelayedTx(ctx context.Context, tx CsmTx, id
 // acting on a pacs.002 it has just been handed needs: the message names one
 // payment and there is nothing else to commit with it.
 func (s *BankNetwork) AcceptAtBank(ctx context.Context, id PaymentID) (Payment, error) {
-	var out Payment
-	err := s.store.Update(ctx, func(ctx context.Context, tx BankTx) error {
-		var err error
-		out, err = s.AcceptAtBankTx(ctx, tx, id)
-		return err
+	return unit.Run(ctx, s.store.Update, func(ctx context.Context, tx BankTx) (Payment, error) {
+		return s.AcceptAtBankTx(ctx, tx, id)
 	})
-	return out, err
 }
 
 // AcceptAtBankTx is a member bank's half of an acceptance: it records on this
@@ -2207,13 +2124,9 @@ func (s *BankNetwork) AcceptAtBankTx(ctx context.Context, tx BankTx, id PaymentI
 
 // AcceptAtCSM is AcceptAtCSMTx in its own unit of work.
 func (s *ClearingHouseNetwork) AcceptAtCSM(ctx context.Context, id PaymentID) (Payment, error) {
-	var out Payment
-	err := s.store.Update(ctx, func(ctx context.Context, tx CsmTx) error {
-		var err error
-		out, err = s.AcceptAtCSMTx(ctx, tx, id)
-		return err
+	return unit.Run(ctx, s.store.Update, func(ctx context.Context, tx CsmTx) (Payment, error) {
+		return s.AcceptAtCSMTx(ctx, tx, id)
 	})
-	return out, err
 }
 
 // AcceptAtCSMTx is the CLEARING HOUSE's half: it takes a payment both banks
@@ -2379,13 +2292,9 @@ func (s *BankNetwork) postDebtorLegTx(ctx context.Context, tx BankTx, scheme Sch
 
 // RejectAtCSM is RejectAtCSMTx in its own unit of work.
 func (s *ClearingHouseNetwork) RejectAtCSM(ctx context.Context, id PaymentID, code iso20022.StatusReason, reason string) (Payment, error) {
-	var out Payment
-	err := s.store.Update(ctx, func(ctx context.Context, tx CsmTx) error {
-		var err error
-		out, err = s.RejectAtCSMTx(ctx, tx, id, code, reason)
-		return err
+	return unit.Run(ctx, s.store.Update, func(ctx context.Context, tx CsmTx) (Payment, error) {
+		return s.RejectAtCSMTx(ctx, tx, id, code, reason)
 	})
-	return out, err
 }
 
 // RejectAtCSMTx is the CLEARING HOUSE's half of a rejection: it transitions the
@@ -2423,13 +2332,9 @@ func (s *ClearingHouseNetwork) RejectAtCSMTx(ctx context.Context, tx CsmTx, id P
 
 // RejectAtBank is RejectAtBankTx in its own unit of work.
 func (s *BankNetwork) RejectAtBank(ctx context.Context, id PaymentID, code iso20022.StatusReason, reason string) (Payment, error) {
-	var out Payment
-	err := s.store.Update(ctx, func(ctx context.Context, tx BankTx) error {
-		var err error
-		out, err = s.RejectAtBankTx(ctx, tx, id, code, reason)
-		return err
+	return unit.Run(ctx, s.store.Update, func(ctx context.Context, tx BankTx) (Payment, error) {
+		return s.RejectAtBankTx(ctx, tx, id, code, reason)
 	})
-	return out, err
 }
 
 // RejectAtBankTx is a member bank's half of a rejection: it records on this
@@ -2504,13 +2409,9 @@ func (s *BankNetwork) ReverseDebtorLegTx(ctx context.Context, tx BankTx, p Payme
 // message is the whole of the input, and there is nothing else to commit with
 // it.
 func (s *CentralBankNetwork) SettleReturn(ctx context.Context, in ReturnInstruction) ([]SettlementStatement, error) {
-	var out []SettlementStatement
-	err := s.store.Update(ctx, func(ctx context.Context, tx CentralBankTx) error {
-		var err error
-		out, err = s.SettleReturnTx(ctx, tx, in)
-		return err
+	return unit.Run(ctx, s.store.Update, func(ctx context.Context, tx CentralBankTx) ([]SettlementStatement, error) {
+		return s.SettleReturnTx(ctx, tx, in)
 	})
-	return out, err
 }
 
 // SettleReturnTx is the settlement agent's whole part in a return: one
@@ -2609,13 +2510,9 @@ func (s *CentralBankNetwork) SettleReturnTx(ctx context.Context, tx CentralBankT
 // bank acting on a return needs: one message names one payment, and there is
 // nothing else to commit with it.
 func (s *BankNetwork) PostReturnLeg(ctx context.Context, id PaymentID, reason string) (Payment, error) {
-	var out Payment
-	err := s.store.Update(ctx, func(ctx context.Context, tx BankTx) error {
-		var err error
-		out, err = s.PostReturnLegTx(ctx, tx, id, reason)
-		return err
+	return unit.Run(ctx, s.store.Update, func(ctx context.Context, tx BankTx) (Payment, error) {
+		return s.PostReturnLegTx(ctx, tx, id, reason)
 	})
-	return out, err
 }
 
 // PostReturnLegTx is a bank posting its own customer leg of a return, in its
@@ -2836,23 +2733,15 @@ func returnLegKey(id PaymentID, leg string, replacing ledger.TransactionID) stri
 // institutions that keep a copy of the payment. See CompleteReturnTx for which
 // two, and why the third needs nothing.
 func (s *BankNetwork) CompleteReturn(ctx context.Context, id PaymentID) (Payment, error) {
-	var out Payment
-	err := s.store.Update(ctx, func(ctx context.Context, tx BankTx) error {
-		var err error
-		out, err = s.CompleteReturnTx(ctx, tx, id)
-		return err
+	return unit.Run(ctx, s.store.Update, func(ctx context.Context, tx BankTx) (Payment, error) {
+		return s.CompleteReturnTx(ctx, tx, id)
 	})
-	return out, err
 }
 
 func (s *ClearingHouseNetwork) CompleteReturn(ctx context.Context, id PaymentID) (Payment, error) {
-	var out Payment
-	err := s.store.Update(ctx, func(ctx context.Context, tx CsmTx) error {
-		var err error
-		out, err = s.CompleteReturnTx(ctx, tx, id)
-		return err
+	return unit.Run(ctx, s.store.Update, func(ctx context.Context, tx CsmTx) (Payment, error) {
+		return s.CompleteReturnTx(ctx, tx, id)
 	})
-	return out, err
 }
 
 // CompleteReturnTx marks this institution's own copy Returned on being told the
@@ -3040,13 +2929,9 @@ func validateParty(field string, ref PartyRef) error {
 // it names, WITHIN THIS BANK's register. The bank asking is this network's own
 // identity, and the answer is about its own customers or there is no answer.
 func (s *BankNetwork) ResolveIdentifier(ctx context.Context, ident deposit.Identifier) (PartyRef, error) {
-	var out PartyRef
-	err := s.store.View(ctx, func(ctx context.Context, tx BankTx) error {
-		var err error
-		out, err = s.ResolveIdentifierTx(ctx, tx, ident)
-		return err
+	return unit.Run(ctx, s.store.View, func(ctx context.Context, tx BankTx) (PartyRef, error) {
+		return s.ResolveIdentifierTx(ctx, tx, ident)
 	})
-	return out, err
 }
 
 // ResolveIdentifierTx is ResolveIdentifier within a caller-supplied unit of

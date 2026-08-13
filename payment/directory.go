@@ -6,6 +6,7 @@ import (
 
 	"github.com/raphi011/cbs/deposit"
 	"github.com/raphi011/cbs/iban"
+	"github.com/raphi011/cbs/internal/unit"
 	"github.com/raphi011/cbs/iso20022"
 	"github.com/raphi011/cbs/ledger"
 )
@@ -15,16 +16,9 @@ import (
 
 // RefreshDirectory is RefreshDirectoryTx in its own unit of work.
 func (s *BankNetwork) RefreshDirectory(ctx context.Context, published []RosterEntry) ([]DirectoryEntry, error) {
-	var out []DirectoryEntry
-	err := s.store.Update(ctx, func(ctx context.Context, tx BankTx) error {
-		var err error
-		out, err = s.RefreshDirectoryTx(ctx, tx, published)
-		return err
+	return unit.Run(ctx, s.store.Update, func(ctx context.Context, tx BankTx) ([]DirectoryEntry, error) {
+		return s.RefreshDirectoryTx(ctx, tx, published)
 	})
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
 }
 
 // RefreshDirectoryTx takes delivery of a snapshot of the scheme's routing

@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/raphi011/cbs/internal/unit"
 	"github.com/raphi011/cbs/ledger"
 )
 
@@ -60,13 +61,9 @@ func (p *Portfolio) refundPayableTx(ctx context.Context, tx Tx, f Facility) (led
 // oldest facility first. A facility owing nothing is omitted, so an empty
 // result means the bank owes no borrower anything — which is the ordinary case.
 func (p *Portfolio) ListRefundsPayable(ctx context.Context) ([]RefundPayable, error) {
-	var out []RefundPayable
-	err := p.store.View(ctx, func(ctx context.Context, tx Tx) error {
-		var err error
-		out, err = p.ListRefundsPayableTx(ctx, tx)
-		return err
+	return unit.Run(ctx, p.store.View, func(ctx context.Context, tx Tx) ([]RefundPayable, error) {
+		return p.ListRefundsPayableTx(ctx, tx)
 	})
-	return out, err
 }
 
 // ListRefundsPayableTx is ListRefundsPayable within a caller-supplied unit of
@@ -105,13 +102,9 @@ func (p *Portfolio) ListRefundsPayableTx(ctx context.Context, tx Tx) ([]RefundPa
 // earned, discharging what a backdated correction left in the facility's
 // refunds-payable account.
 func (p *Portfolio) RefundInterest(ctx context.Context, id FacilityID, counterparty ledger.Position, amount ledger.Amount, date time.Time, description string) (ledger.Transaction, error) {
-	var out ledger.Transaction
-	err := p.store.Update(ctx, func(ctx context.Context, tx Tx) error {
-		var err error
-		out, err = p.RefundInterestTx(ctx, tx, id, counterparty, amount, date, description)
-		return err
+	return unit.Run(ctx, p.store.Update, func(ctx context.Context, tx Tx) (ledger.Transaction, error) {
+		return p.RefundInterestTx(ctx, tx, id, counterparty, amount, date, description)
 	})
-	return out, err
 }
 
 // RefundInterestTx is RefundInterest within a caller-supplied unit of work.
