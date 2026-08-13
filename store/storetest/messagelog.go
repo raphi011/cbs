@@ -193,6 +193,13 @@ func runMessageLog(t *testing.T, open func(*testing.T) messageLog) {
 		both := list(payment.MessageFilter{Direction: payment.MessageReceived, Counterparty: verdeBIC})
 		assertEqual(t, "received from one counterparty", len(both), 1)
 		assertEqual(t, "and it is the right one", both[0].MsgID, "MSG-2")
+
+		// And one seq is one message, which is how the file itself is fetched.
+		one := list(payment.MessageFilter{Seq: carried[1].Seq})
+		assertEqual(t, "the message under one seq", len(one), 1)
+		assertEqual(t, "and it is that message", one[0].MsgID, "MSG-2")
+		assertEqual(t, "a seq nothing was written under",
+			len(list(payment.MessageFilter{Seq: carried[1].Seq + 1000})), 0)
 	})
 
 	// Before and Limit page the log the way AuditFilter's do: a limit takes the

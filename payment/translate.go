@@ -99,6 +99,11 @@ var reasonTable = []reasonMapping{
 	{ErrCycleNotFound, "ErrCycleNotFound", ""},
 	{ErrSettlementNotFound, "ErrSettlementNotFound", ""},
 
+	// A seq names a row in the reader's OWN message log, so a miss is a question
+	// this institution asked itself. No counterparty is party to the answer, and
+	// a log records rather than decides.
+	{ErrMessageNotFound, "ErrMessageNotFound", ""},
+
 	// A settlement advice is a bank's OWN row about its OWN cut-off, so a
 	// missing one is a question this bank asked itself and got no answer to.
 	// There is no counterparty in the conversation to tell.

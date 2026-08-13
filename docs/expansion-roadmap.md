@@ -180,10 +180,16 @@ Cheap relative to what it exposes: every flow already shipped becomes something 
 reader can watch rather than infer. It is also the natural home for anything that
 wants to explain a `pacs.002` reason code at the point it was returned.
 
+**Tasks 1–3 have shipped**, which is the sub-project: the journal records the
+take as well as the put, `messages` is a table in all three schemas written at
+every send and every receive, and each listener serves its own institution's log
+with the file behind it. Tasks 4–7 are what is left — the phase doors, the mesh
+the deployment serves, the graph and the document viewer.
+
 Two things found while scoping it changed what it has to build, and the first of
 them is built.
 
-**The journal records the take as well as the put** — task 1, shipped.
+**The journal records the take as well as the put** — task 1.
 `node.FileMoved` carries a movement, and every place a file is taken journals
 one: both `Collect`s, and both hosts' `Work`, where an upload comes out of the
 order log it has been resting in. So a put with no take means one thing, which

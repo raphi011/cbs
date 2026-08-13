@@ -19,6 +19,10 @@ func Routes(inst Institution, op Operator) *api.Router {
 	mux.HandleFunc("GET /roster", api.Handle(http.StatusOK, s.handleListRoster))
 	mux.HandleFunc("GET /assets", api.HandleListAssets)
 	mux.HandleFunc("GET /payments/audit", api.Handle(http.StatusOK, s.handlePaymentAudit))
+	// This institution's own half of every crossing, and one file at a time. The
+	// mesh is not here: a counterparty's half is in the counterparty's database.
+	mux.HandleFunc("GET /messages", api.Handle(http.StatusOK, s.handleListMessages))
+	mux.HandleFunc("GET /messages/{seq}", api.Handle(http.StatusOK, s.handleGetMessage))
 	// The MANDATES are not here.
 	s.registerPaymentRoutes(mux)
 	return mux

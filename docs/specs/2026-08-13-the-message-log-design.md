@@ -97,6 +97,16 @@ Serving it rather than fanning out in the browser is what keeps "may see
 everything" in the type system. The `Operator` interface is where the
 deployment's own acts already live.
 
+**A listing is an index and a document is a resource.** `GET /messages` answers
+each message's header, the payments it named and the file's SIZE, and never the
+bytes. Rows are never deleted — see *What it costs* — so a page of a log that
+grows forever must not carry the files in it, and a reader listing a payment's
+documents wants to know which files carried it rather than to be handed all of
+them. `GET /messages/{seq}` is where one document is read. The seq it takes is
+one the listing named rather than one a caller composed: it counts a single
+institution's own traffic, so the same number on another listener names that
+institution's message or nothing at all.
+
 **Ordering is the deployment's schedule position**, not anybody's `seq`. Within
 one institution `seq` orders its own rows; between institutions nothing does,
 and the honest answer is that the deployment ran the phases in a declared order

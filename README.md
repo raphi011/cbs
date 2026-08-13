@@ -2075,6 +2075,7 @@ The settlement layer. Reserves move in its book and nowhere else.
 | `GET /settlements`, `GET /settlements/{sid}` | what it settled |
 | `GET /assets` | known assets |
 | `GET /audit` | the central bank's own log |
+| `GET /messages`, `GET /messages/{seq}` | the files **this institution** sent and received, and one of them — see [a member bank's](#a-member-bank--8083-8084-) |
 | `GET /clock` | the deployment's business date, and the closure if TARGET is shut |
 | `POST /clock/day` | run one business day and move to the next; answers with the day's report |
 | `POST /admin/reset` | clear every store and rebuild the sample dataset |
@@ -2102,6 +2103,7 @@ The CSM. It sees every payment in the network, which is its job rather than a le
 | `POST /cycles/{id}/settle` | re-send the `pacs.009` for a cycle the central bank refused |
 | `GET /schemes`, `GET /roster`, `GET /assets` | schemes, the published routing directory, known assets |
 | `GET /payments/audit` | **this institution's** payment-layer log |
+| `GET /messages`, `GET /messages/{seq}` | the files **this institution** sent and received, and one of them — see [a member bank's](#a-member-bank--8083-8084-) |
 
 **`GET /members` was here and is not**, and the argument that put it here was right about the console and wrong about the institution. This is where an admission is watched from, and watching a bank *become* a member needs the banks that are not one yet — but the clearing house holds no banks table. What it holds is `roster_entries`, and a roster is exactly the list that omits the founded bank the listing existed for. So the two halves separated rather than one being bent into the other: the roster is on `GET /roster` below and is this institution's own answer, and the bank list is on the central bank's listener, where it is the operator's read over a deployment rather than an institution's claim about its members.
 
@@ -2144,6 +2146,7 @@ Everything that used to sit under `/participants/{pid}/…`, with the segment go
 | `POST /end-of-day` | run the day's accrual |
 | `GET /audit`, `GET /deposit-audit` | this bank's own ledger and deposit logs |
 | `GET /payments/audit` | this bank's own **payment-layer** log — its own copy's events, and nothing of another bank's |
+| `GET /messages`, `GET /messages/{seq}` | the files this bank sent and received, and one of them with the document — see below |
 | `GET /payments`, `GET /payments/{payid}` | **its own copies only** |
 | `POST /payments` | accept a customer's instruction — `202` and a `paymentId` |
 | `GET /payments/pending` | what is waiting in this bank's hub for the next cut-off |
@@ -2156,6 +2159,10 @@ Everything that used to sit under `/participants/{pid}/…`, with the segment go
 Two of those are new, and both were impossible before. **`GET /payments` is narrowed to the bank's own copies** — what it sent and what it received. The unnarrowed list showed every bank its competitors' customers, counterparties and amounts, and narrowing it needed a caller identity that a single shared server does not have. It needs no narrowing at all now: this bank's database holds this bank's rows and no others, so a payment it is not party to has no row here, and the `404` it answers is the store's answer rather than a filter's. It is `404` and not `403` for the reason it always was — a `403` would confirm that the id names something real — and that is now simply true: as far as this institution is concerned it does not.
 
 **`GET /payments/audit` is one endpoint per institution**, for the same reason and with a sharper consequence: there is no combined payment log anywhere, and no order between two institutions' events. See [There Is No Combined Log](#there-is-no-combined-log-and-no-order-between-two-of-them).
+
+**`GET /messages` is one endpoint per institution too, and at a member bank it is the only record of a file there is** — EBICS has no push, so a bank hosts nothing and what it uploaded and what it collected existed nowhere once the call returned. It answers this institution's own half of each crossing, narrowed by `?direction=`, `?counterparty=`, `?payment=` and the same `before`/`limit` paging the audit trail takes. **`?payment=` is the join a payment screen asks**: the id on the wire is the submitting bank's and crosses unchanged, so each institution answers the same question out of its own log — and the settlement agent answers *nothing*, because a settlement instruction names the cut-off rather than the payments netted into it, which is the domain rather than a gap.
+
+**The listing is an index and `GET /messages/{seq}` is the document.** Nothing here is ever deleted, so a page of the log carries each file's header, the payments it named and its size, and never the bytes; one file at a time is read by its seq, which counts that institution's own traffic and names something else on any other listener. There is no route on any of these three surfaces that answers the mesh — the other half of every crossing is in the counterparty's database, and assembling the two is the *deployment's* act rather than an institution's.
 
 **`POST /payments` is where a customer's instruction lands.** A retail client must never talk to the clearing house — it has no CSM connection in the real thing either — so submission goes to its own bank. The answer is `202 Accepted` with a `paymentId` rather than the payment itself, and the outcome is read back from `GET /payments/{id}`. That is the shape a real CSM imposes: it answers with a `pacs.002` later, not by return value.
 

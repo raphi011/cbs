@@ -2,6 +2,7 @@ package payment
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/raphi011/cbs/iso20022"
@@ -95,6 +96,10 @@ func PaymentsIn(doc iso20022.Document) []PaymentID {
 // A MessageFilter narrows a message listing. The zero value is this
 // institution's whole traffic, oldest first.
 type MessageFilter struct {
+	// Seq names ONE message, which is how the file itself is fetched once a
+	// listing has named it. See Network.GetMessage.
+	Seq int64
+
 	Direction    MessageDirection
 	Counterparty iso20022.BIC
 
@@ -138,6 +143,20 @@ func (s *Network) RecordMessageTx(ctx context.Context, tx MessageLogTx, m Messag
 		m.At = s.now()
 	}
 	return tx.AppendMessage(ctx, m)
+}
+
+// GetMessage is one file this institution logged, by the seq its own store
+// allocated. A seq is reached from a listing rather than guessed, because it
+// counts one institution's traffic and no two institutions agree on one.
+func (s *Network) GetMessage(ctx context.Context, seq int64) (Message, error) {
+	found, err := s.ListMessages(ctx, MessageFilter{Seq: seq})
+	if err != nil {
+		return Message{}, err
+	}
+	if len(found) == 0 {
+		return Message{}, fmt.Errorf("%w: %d", ErrMessageNotFound, seq)
+	}
+	return found[0], nil
 }
 
 // ListMessages is this institution's own traffic, narrowed by f. There is no

@@ -42,6 +42,11 @@ var (
 	// payment in the system.
 	ErrPaymentNotFound = errors.New("payment not found")
 
+	// ErrMessageNotFound is a seq this institution's message log has no row
+	// under. A seq is one institution's own, so another's names something else
+	// here or nothing at all.
+	ErrMessageNotFound = errors.New("payment: this institution logged no message under this seq")
+
 	// ErrSchemeNotFound is returned when a payment references a scheme that
 	// has not been registered with the system.
 	ErrSchemeNotFound = errors.New("payment scheme not registered")

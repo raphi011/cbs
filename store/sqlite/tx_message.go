@@ -49,6 +49,9 @@ func (t *tx) ListMessages(ctx context.Context, f payment.MessageFilter) ([]payme
 		args = append(args, arg)
 		where = append(where, clause)
 	}
+	if f.Seq > 0 {
+		add("seq = ?", f.Seq)
+	}
 	if f.Direction != "" {
 		add("direction = ?", string(f.Direction))
 	}

@@ -29,6 +29,10 @@ func Routes(inst Institution) *api.Router {
 	mux.HandleFunc("POST /lodgements", handleBody(s, http.StatusAccepted, s.handleLodgeReserves))
 	mux.HandleFunc("GET /audit", handle(s, http.StatusOK, s.handleLedgerAudit))
 	mux.HandleFunc("GET /deposit-audit", handle(s, http.StatusOK, s.handleDepositAudit))
+	// What this bank sent and received, and one file at a time. The listing is an
+	// index and carries no bytes; the second route is where a document is read.
+	mux.HandleFunc("GET /messages", api.Handle(http.StatusOK, s.handleListMessages))
+	mux.HandleFunc("GET /messages/{seq}", api.Handle(http.StatusOK, s.handleGetMessage))
 	// A bank's own legs. The clearing house serves the same two patterns
 	// unnarrowed, which is the split doing its job rather than a collision.
 	mux.HandleFunc("GET /payments", api.Handle(http.StatusOK, s.handleListBankPayments))
