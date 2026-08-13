@@ -742,7 +742,7 @@ func signed(e Entry, normal Direction) Amount {
 // BookBalance sums a position's entries, signed by normal. An account nothing
 // was posted to is zero, and an empty subsidiary is the whole account — a
 // balance is a fold over entries, never a join to a chart of accounts.
-func BookBalance(ctx context.Context, tx Tx, book BookID, pos Position, normal Direction) (Amount, error) {
+func BookBalance(ctx context.Context, tx EntryScanner, book BookID, pos Position, normal Direction) (Amount, error) {
 	var balance Amount
 	for e, err := range tx.ScanEntries(ctx, book, pos, EntryFilter{}) {
 		if err != nil {
@@ -756,7 +756,7 @@ func BookBalance(ctx context.Context, tx Tx, book BookID, pos Position, normal D
 // ValueDateBalance is BookBalance restricted to entries that take economic
 // effect strictly before the bound. An entry with no value date is before no
 // bound at all, and neither is anything before the zero time.
-func ValueDateBalance(ctx context.Context, tx Tx, book BookID, pos Position, normal Direction, before time.Time) (Amount, error) {
+func ValueDateBalance(ctx context.Context, tx EntryScanner, book BookID, pos Position, normal Direction, before time.Time) (Amount, error) {
 	if before.IsZero() {
 		return 0, nil
 	}
@@ -773,7 +773,7 @@ func ValueDateBalance(ctx context.Context, tx Tx, book BookID, pos Position, nor
 // ValueDatedSeries is the balance carried into from, plus the net movement on
 // each UTC day in [from, to) that had entries — a day whose entries net to zero
 // is a movement of zero, and a day with none is not a row.
-func ValueDatedSeries(ctx context.Context, tx Tx, book BookID, pos Position, normal Direction, from, to time.Time) (Series, error) {
+func ValueDatedSeries(ctx context.Context, tx EntryScanner, book BookID, pos Position, normal Direction, from, to time.Time) (Series, error) {
 	opening, err := ValueDateBalance(ctx, tx, book, pos, normal, from)
 	if err != nil {
 		return Series{}, err

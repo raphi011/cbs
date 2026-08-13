@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"slices"
-	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -314,63 +313,14 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Ban
 			assertEqual(t, "the pooled leg's subsidiary", one.Entries[1].Subsidiary, "dep_1")
 			assertEqual(t, "the plain leg's subsidiary", one.Entries[0].Subsidiary, "")
 
-			whole, err := ledger.BookBalance(ctx, tx, bookA, pooled.Total(), ledger.Credit)
-			if err != nil {
-				return err
-			}
-			assertEqual(t, "the control balance", whole, ledger.Amount(1290))
-
-			var detail ledger.Amount
-			for subsidiary, want := range map[string]ledger.Amount{"dep_1": 1040, "dep_2": 250} {
-				got, err := ledger.BookBalance(ctx, tx, bookA, pooled.For(subsidiary), ledger.Credit)
-				if err != nil {
-					return err
-				}
-				assertEqual(t, "the balance of "+subsidiary, got, want)
-				detail += got
-			}
-			assertEqual(t, "the detail against the control", detail, whole)
-
-			// A subsidiary nothing was ever posted for is zero, like an account
-			// with no entries. Nothing here holds a list to check it against.
-			absent, err := ledger.BookBalance(ctx, tx, bookA, pooled.For("dep_9"), ledger.Credit)
-			if err != nil {
-				return err
-			}
-			assertEqual(t, "a subsidiary with no postings", absent, ledger.Amount(0))
-
-			// And the same detail asked for the other way round: the caller that does
-			// not know the subsidiaries yet.
-			breakdown, err := ledger.SubsidiaryBalances(ctx, tx, bookA, pooled, ledger.Credit)
-			if err != nil {
-				return err
-			}
-			var listed []string
-			var summed ledger.Amount
-			for _, row := range breakdown {
-				listed = append(listed, row.Subsidiary)
-				summed += row.Balance
-			}
-			assertEqual(t, "the subsidiaries, in order", sliceString(listed), "[dep_1 dep_2]")
-			assertEqual(t, "the breakdown against the control", summed, whole)
-			assertEqual(t, "dep_1's row", breakdown[0].Balance, ledger.Amount(1040))
-
-			// The value-dated reads carry the subsidiary too: interest is computed
-			// from these, and a series that read the pool would accrue the whole
-			// bank's balance for every customer under it.
-			asAt, err := ledger.ValueDateBalance(ctx, tx, bookA, pooled.For("dep_1"), ledger.Credit, day(5))
-			if err != nil {
-				return err
-			}
-			assertEqual(t, "dep_1 as at the 5th", asAt, ledger.Amount(1000))
-
-			series, err := ledger.ValueDatedSeries(ctx, tx, bookA, pooled.For("dep_1"), ledger.Credit, day(5), day(7))
-			if err != nil {
-				return err
-			}
-			assertEqual(t, "dep_1's opening on the 5th", series.Opening, ledger.Amount(1000))
-			assertEqual(t, "days dep_1 moved on", len(series.Movements), 1)
-			assertEqual(t, "dep_1's movement", series.Movements[0].Amount, ledger.Amount(40))
+			// The pool and one subsidiary within it are the same scan with one
+			// clause dropped, which is the claim the arithmetic rests on.
+			assertEqual(t, "entries in the pool", scanned(t, s, pooled.Total(), ledger.EntryFilter{}),
+				"[tx_1_b tx_2_b tx_3_b]")
+			assertEqual(t, "entries under dep_1", scanned(t, s, pooled.For("dep_1"), ledger.EntryFilter{}),
+				"[tx_1_b tx_3_b]")
+			assertEqual(t, "entries under a subsidiary with no postings",
+				scanned(t, s, pooled.For("dep_9"), ledger.EntryFilter{}), "[]")
 
 			// And the listing: one subsidiary's statement is their own postings,
 			// each carrying the other leg of its own event.
@@ -1125,53 +1075,6 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Ban
 		assertErrorIs(t, "lookup by empty key", lookupErr, ledger.ErrTransactionNotFound)
 	})
 
-	t.Run("BookBalanceIncludesReversedTransactions", func(t *testing.T) {
-		s := open(t, newStore, bookA)
-
-		const cash ledger.AccountID = "100.100.001"
-		update(t, s, func(ctx context.Context, tx ledger.BankTx) error {
-			return tx.PutTransaction(ctx, bookA, ledger.Transaction{
-				ID:        "tx_1",
-				Status:    ledger.Posted,
-				CreatedAt: time.Date(2025, 1, 15, 12, 0, 0, 0, time.UTC),
-				Entries: []ledger.Entry{
-					{ID: "ent_1", AccountID: cash, Amount: 10_000, Direction: ledger.Debit},
-				},
-			})
-		})
-		assertEqual(t, "balance after posting", balance(t, s, cash), ledger.Amount(10_000))
-
-		// Marking the original Reversed must NOT change the balance. The status
-		// is informational; nothing has moved yet.
-		update(t, s, func(ctx context.Context, tx ledger.BankTx) error {
-			return tx.MarkReversed(ctx, bookA, "tx_1")
-		})
-		assertEqual(t, "balance after MarkReversed", balance(t, s, cash), ledger.Amount(10_000))
-
-		// The reversal's own mirrored entries are what cancel the original.
-		update(t, s, func(ctx context.Context, tx ledger.BankTx) error {
-			return tx.PutTransaction(ctx, bookA, ledger.Transaction{
-				ID:         "tx_2",
-				Status:     ledger.Posted,
-				ReversalOf: "tx_1",
-				CreatedAt:  time.Date(2025, 1, 15, 13, 0, 0, 0, time.UTC),
-				Entries: []ledger.Entry{
-					{ID: "ent_2", AccountID: cash, Amount: 10_000, Direction: ledger.Credit},
-				},
-			})
-		})
-		assertEqual(t, "balance after the reversal posts", balance(t, s, cash), ledger.Amount(0))
-
-		// Both transactions remain visible: the audit trail is never rewritten.
-		var all []ledger.Transaction
-		view(t, s, func(ctx context.Context, tx ledger.BankTx) error {
-			var err error
-			all, err = tx.ListTransactionsForPosition(ctx, bookA, ledger.AccountID(cash).Total())
-			return err
-		})
-		assertEqual(t, "transactions for the account", len(all), 2)
-	})
-
 	// A balance is a fold over ScanEntries, so what the store owes is the ROWS:
 	// this position's and no other's, narrowed by a window the index can serve.
 	t.Run("ScanEntriesYieldsThePositionsEntriesInTheWindow", func(t *testing.T) {
@@ -1284,314 +1187,18 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Ban
 		assertEqual(t, "entries seen before the break", seen, 1)
 	})
 
-	t.Run("ValueDateBalanceCountsOnlyEntriesBeforeTheBound", func(t *testing.T) {
-		s := open(t, newStore, bookA)
-
-		day := func(d int) time.Time { return time.Date(2026, 4, d, 0, 0, 0, 0, time.UTC) }
-
-		update(t, s, func(ctx context.Context, tx ledger.BankTx) error {
-			// Three debits on three consecutive days, one carrying a time of day.
-			for i, when := range []time.Time{
-				day(10),
-				day(11).Add(23 * time.Hour),
-				day(12),
-			} {
-				err := tx.PutTransaction(ctx, bookA, ledger.Transaction{
-					ID:        ledger.TransactionID("txn_vdb_" + strconv.Itoa(i)),
-					ValueDate: when,
-					Entries: []ledger.Entry{
-						{ID: ledger.EntryID("ent_vdb_d" + strconv.Itoa(i)), AccountID: "900.001.001", Amount: 100, Direction: ledger.Debit, ValueDate: when},
-						{ID: ledger.EntryID("ent_vdb_c" + strconv.Itoa(i)), AccountID: "900.001.002", Amount: 100, Direction: ledger.Credit, ValueDate: when},
-					},
-				})
-				if err != nil {
-					return err
-				}
-			}
-			return nil
-		})
-
-		cases := []struct {
-			before time.Time
-			want   ledger.Amount
-		}{
-			{day(10), 0},   // nothing value-dated before the 10th
-			{day(11), 100}, // the 10th only
-			{day(12), 200}, // the 10th and the 11th, time of day included
-			{day(13), 300},
-		}
-		for _, c := range cases {
-			var got ledger.Amount
-			view(t, s, func(ctx context.Context, tx ledger.BankTx) error {
-				var err error
-				got, err = ledger.ValueDateBalance(ctx, tx, bookA, ledger.AccountID("900.001.001").Total(), ledger.Debit, c.before)
-				return err
-			})
-			assertEqual(t, fmt.Sprintf("balance before %v", c.before), got, c.want)
-		}
-	})
-
-	t.Run("ValueDateBalanceOfUnknownAccountIsZero", func(t *testing.T) {
-		s := open(t, newStore, bookA)
-
-		var got ledger.Amount
-		view(t, s, func(ctx context.Context, tx ledger.BankTx) error {
-			var err error
-			got, err = ledger.ValueDateBalance(ctx, tx, bookA, ledger.AccountID("999.999.001").Total(), ledger.Debit,
-				time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC))
-			return err
-		})
-		assertEqual(t, "balance", got, ledger.Amount(0))
-	})
-
 	// ValueDateBalanceExcludesZeroValueDateEntries pins a rule two stores once
 	// disagreed about and one store can still get wrong.
-	t.Run("ValueDateBalanceExcludesZeroValueDateEntries", func(t *testing.T) {
-		s := open(t, newStore, bookA)
-
-		update(t, s, func(ctx context.Context, tx ledger.BankTx) error {
-			return tx.PutTransaction(ctx, bookA, ledger.Transaction{
-				ID:        "txn_vdb_zero",
-				Status:    ledger.Posted,
-				CreatedAt: time.Date(2026, 4, 1, 12, 0, 0, 0, time.UTC),
-				// ValueDate deliberately left zero on both the transaction and
-				// its entries.
-				Entries: []ledger.Entry{
-					{ID: "ent_vdb_zero_d", AccountID: "900.001.003", Amount: 100, Direction: ledger.Debit},
-					{ID: "ent_vdb_zero_c", AccountID: "900.001.004", Amount: 100, Direction: ledger.Credit},
-				},
-			})
-		})
-
-		var got ledger.Amount
-		view(t, s, func(ctx context.Context, tx ledger.BankTx) error {
-			var err error
-			// A bound far in the future would catch this entry were a zero
-			// ValueDate treated as "before everything", which is what the naive
-			// in-Go check does.
-			got, err = ledger.ValueDateBalance(ctx, tx, bookA, ledger.AccountID("900.001.003").Total(), ledger.Debit,
-				time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC))
-			return err
-		})
-		assertEqual(t, "balance", got, ledger.Amount(0))
-	})
-
 	// ValueDateBalanceNetsAReversalOnTheOriginalsDay exercises the contract
 	// line in ledger.ValueDateBalance directly: a reversal posts its own mirrored
 	// entries, value-dated onto the original leg's day (ReverseTransactionTx),
 	// and those are what cancel the original — so a bound falling after the
 	// original's value date must see the net, zero, not the gross.
-	t.Run("ValueDateBalanceNetsAReversalOnTheOriginalsDay", func(t *testing.T) {
-		s := open(t, newStore, bookA)
-
-		const cash ledger.AccountID = "900.001.005"
-		originalValue := time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC)
-		before := ledger.NextDay(originalValue) // a bound after the original's day
-
-		update(t, s, func(ctx context.Context, tx ledger.BankTx) error {
-			return tx.PutTransaction(ctx, bookA, ledger.Transaction{
-				ID:        "txn_vdb_rev_orig",
-				Status:    ledger.Posted,
-				CreatedAt: time.Date(2026, 5, 1, 9, 0, 0, 0, time.UTC),
-				ValueDate: originalValue,
-				Entries: []ledger.Entry{
-					{ID: "ent_vdb_rev_orig", AccountID: cash, Amount: 10_000, Direction: ledger.Debit, ValueDate: originalValue},
-				},
-			})
-		})
-
-		var gross ledger.Amount
-		view(t, s, func(ctx context.Context, tx ledger.BankTx) error {
-			var err error
-			gross, err = ledger.ValueDateBalance(ctx, tx, bookA, ledger.AccountID(cash).Total(), ledger.Debit, before)
-			return err
-		})
-		assertEqual(t, "balance before the reversal", gross, ledger.Amount(10_000))
-
-		// Mark the original Reversed, then post the reversal's own mirrored
-		// entry, value-dated onto the same day as the leg it corrects — what
-		// ReverseTransactionTx actually does.
-		update(t, s, func(ctx context.Context, tx ledger.BankTx) error {
-			if err := tx.MarkReversed(ctx, bookA, "txn_vdb_rev_orig"); err != nil {
-				return err
-			}
-			return tx.PutTransaction(ctx, bookA, ledger.Transaction{
-				ID:         "txn_vdb_rev_reversal",
-				Status:     ledger.Posted,
-				ReversalOf: "txn_vdb_rev_orig",
-				CreatedAt:  time.Date(2026, 5, 1, 10, 0, 0, 0, time.UTC),
-				ValueDate:  originalValue,
-				Entries: []ledger.Entry{
-					{ID: "ent_vdb_rev_reversal", AccountID: cash, Amount: 10_000, Direction: ledger.Credit, ValueDate: originalValue},
-				},
-			})
-		})
-
-		var netted ledger.Amount
-		view(t, s, func(ctx context.Context, tx ledger.BankTx) error {
-			var err error
-			netted, err = ledger.ValueDateBalance(ctx, tx, bookA, ledger.AccountID(cash).Total(), ledger.Debit, before)
-			return err
-		})
-		assertEqual(t, "balance after the reversal, read on the original's day", netted, ledger.Amount(0))
-	})
-
-	t.Run("ValueDatedSeriesBucketsByDayAndCarriesAnOpening", func(t *testing.T) {
-		s := open(t, newStore, bookA)
-		day := func(d int) time.Time { return time.Date(2026, 6, d, 0, 0, 0, 0, time.UTC) }
-		postValueDatedSeriesFixture(t, s, day)
-
-		// The window is [4th, 9th): the 1st is opening; the 4th, 5th and 7th
-		// are movements; the 9th is outside it (to is exclusive).
-		var got ledger.Series
-		view(t, s, func(ctx context.Context, tx ledger.BankTx) error {
-			var err error
-			got, err = ledger.ValueDatedSeries(ctx, tx, bookA, ledger.AccountID("901.001.001").Total(), ledger.Debit, day(4), day(9))
-			return err
-		})
-
-		// Opening is only the 1st: the 4th sits exactly ON from, and the movement
-		// check just below is what actually pins that from is inclusive.
-		assertEqual(t, "opening (only the 1st; the 4th is a movement, not opening)", got.Opening, ledger.Amount(100))
-		if len(got.Movements) != 3 {
-			t.Fatalf("movements = %d, want 3 (the 4th, the 5th, the 7th)", len(got.Movements))
-		}
-		if !got.Movements[0].Day.Equal(day(4)) || got.Movements[0].Amount != 50 {
-			t.Errorf("movement[0] = %+v, want {%v 50} (from is inclusive)", got.Movements[0], day(4))
-		}
-		if !got.Movements[1].Day.Equal(day(5)) || got.Movements[1].Amount != 400 {
-			t.Errorf("movement[1] = %+v, want {%v 400} (both of the 5th's postings, netted)", got.Movements[1], day(5))
-		}
-		if !got.Movements[2].Day.Equal(day(7)) || got.Movements[2].Amount != 0 {
-			t.Errorf("movement[2] = %+v, want {%v 0} (equal and opposite postings still emit a zero movement, not none)", got.Movements[2], day(7))
-		}
-	})
-
-	t.Run("ValueDatedSeriesSignsByNormalDirection", func(t *testing.T) {
-		s := open(t, newStore, bookA)
-		day := func(d int) time.Time { return time.Date(2026, 6, d, 0, 0, 0, 0, time.UTC) }
-		postValueDatedSeriesFixture(t, s, day)
-
-		// The credit side of the same postings, read with Credit as normal.
-		var got ledger.Series
-		view(t, s, func(ctx context.Context, tx ledger.BankTx) error {
-			var err error
-			got, err = ledger.ValueDatedSeries(ctx, tx, bookA, ledger.AccountID("901.001.002").Total(), ledger.Credit, day(4), day(9))
-			return err
-		})
-		assertEqual(t, "opening", got.Opening, ledger.Amount(100))
-		if len(got.Movements) != 3 ||
-			got.Movements[0].Amount != 50 || got.Movements[1].Amount != 400 || got.Movements[2].Amount != 0 {
-			t.Errorf("movements = %+v, want 50, 400, 0", got.Movements)
-		}
-
-		// And read against the wrong normal, everything inverts — including
-		// the 7th, which stays 0 either way (there is no negative zero).
-		view(t, s, func(ctx context.Context, tx ledger.BankTx) error {
-			var err error
-			got, err = ledger.ValueDatedSeries(ctx, tx, bookA, ledger.AccountID("901.001.002").Total(), ledger.Debit, day(4), day(9))
-			return err
-		})
-		if got.Opening != -100 || len(got.Movements) != 3 ||
-			got.Movements[0].Amount != -50 || got.Movements[1].Amount != -400 || got.Movements[2].Amount != 0 {
-			t.Errorf("inverted series = %+v / opening %d, want -50, -400, 0 / -100", got.Movements, got.Opening)
-		}
-	})
-
-	t.Run("ValueDatedSeriesOfEmptyWindowIsEmpty", func(t *testing.T) {
-		s := open(t, newStore, bookA)
-		day := func(d int) time.Time { return time.Date(2026, 6, d, 0, 0, 0, 0, time.UTC) }
-		postValueDatedSeriesFixture(t, s, day)
-
-		// [8th, 9th): past the 7th's net-zero pair (it contributes nothing to Opening
-		// either way) and before the 9th.
-		var got ledger.Series
-		view(t, s, func(ctx context.Context, tx ledger.BankTx) error {
-			var err error
-			got, err = ledger.ValueDatedSeries(ctx, tx, bookA, ledger.AccountID("901.001.001").Total(), ledger.Debit, day(8), day(9))
-			return err
-		})
-		assertEqual(t, "opening (the 1st, the 4th, both of the 5th, and the 7th's net-zero pair)", got.Opening, ledger.Amount(550))
-		if len(got.Movements) != 0 {
-			t.Errorf("movements = %+v, want none", got.Movements)
-		}
-	})
-
 	// ValueDatedSeriesExcludesZeroValueDateEntries is the movement-bucketing half
 	// of ValueDateBalanceExcludesZeroValueDateEntries above, and it needs its own
 	// subtest: Series.Opening inherits that ruling by delegating to the same
 	// balance query, but the per-day buckets are built by separate code and could
 	// get it right in one place and wrong in the other.
-	t.Run("ValueDatedSeriesExcludesZeroValueDateEntries", func(t *testing.T) {
-		s := open(t, newStore, bookA)
-		day := func(d int) time.Time { return time.Date(2026, 6, d, 0, 0, 0, 0, time.UTC) }
-		postValueDatedSeriesFixture(t, s, day)
-
-		// Same shape as the fixture's own postings, into the same accounts, but
-		// with the value date deliberately left zero on both the transaction
-		// and its entries.
-		update(t, s, func(ctx context.Context, tx ledger.BankTx) error {
-			return tx.PutTransaction(ctx, bookA, ledger.Transaction{
-				ID:     "txn_vds_zero",
-				Status: ledger.Posted,
-				Entries: []ledger.Entry{
-					{ID: "ent_vds_zero_d", AccountID: "901.001.001", Amount: 700, Direction: ledger.Debit},
-					{ID: "ent_vds_zero_c", AccountID: "901.001.002", Amount: 700, Direction: ledger.Credit},
-				},
-			})
-		})
-
-		// A window that starts before the year-1 day the naive bucketing would
-		// produce would not distinguish it from a legitimate movement, so read the
-		// same [4th, 9th) window every other subtest uses: the three movements it
-		// contains must be exactly the three the fixture seeds, and Opening must not
-		// have absorbed the 700 either.
-		var got ledger.Series
-		view(t, s, func(ctx context.Context, tx ledger.BankTx) error {
-			var err error
-			got, err = ledger.ValueDatedSeries(ctx, tx, bookA, ledger.AccountID("901.001.001").Total(), ledger.Debit, day(4), day(9))
-			return err
-		})
-		assertEqual(t, "opening (unchanged by an entry that is not value-dated)", got.Opening, ledger.Amount(100))
-		if len(got.Movements) != 3 {
-			t.Fatalf("movements = %+v, want the fixture's 3 (a zero value date is not a day)", got.Movements)
-		}
-
-		// And from the beginning of time, where the year-1 bucket would be in
-		// range rather than merely before the window.
-		view(t, s, func(ctx context.Context, tx ledger.BankTx) error {
-			var err error
-			got, err = ledger.ValueDatedSeries(ctx, tx, bookA, ledger.AccountID("901.001.001").Total(), ledger.Debit, time.Time{}, day(9))
-			return err
-		})
-		assertEqual(t, "opening from the beginning of time", got.Opening, ledger.Amount(0))
-		if len(got.Movements) != 4 {
-			t.Fatalf("movements from the beginning of time = %+v, want 4 (the 1st, 4th, 5th, 7th)", got.Movements)
-		}
-		if !got.Movements[0].Day.Equal(day(1)) {
-			t.Errorf("first movement = %+v, want the 1st — a zero value date must not bucket onto year 1", got.Movements[0])
-		}
-	})
-
-	t.Run("ValueDatedSeriesOfUnknownAccountIsEmpty", func(t *testing.T) {
-		s := open(t, newStore, bookA)
-		day := func(d int) time.Time { return time.Date(2026, 6, d, 0, 0, 0, 0, time.UTC) }
-		// Seeded, so an empty result means "this account has none" rather than
-		// "there is no data at all" — which an unseeded store cannot tell apart.
-		postValueDatedSeriesFixture(t, s, day)
-
-		var got ledger.Series
-		view(t, s, func(ctx context.Context, tx ledger.BankTx) error {
-			var err error
-			got, err = ledger.ValueDatedSeries(ctx, tx, bookA, ledger.AccountID("999.999.001").Total(), ledger.Debit, day(1), day(9))
-			return err
-		})
-		assertEqual(t, "opening", got.Opening, ledger.Amount(0))
-		if len(got.Movements) != 0 {
-			t.Errorf("movements = %+v, want none", got.Movements)
-		}
-	})
-
 	t.Run("MarkReversedIsConditional", func(t *testing.T) {
 		s := open(t, newStore, bookA)
 
@@ -2096,18 +1703,6 @@ func view(t *testing.T, s ledger.BankStore, fn func(context.Context, ledger.Bank
 	}
 }
 
-// balance reads one account's book balance, in the Debit-normal direction.
-func balance(t *testing.T, s ledger.BankStore, id ledger.AccountID) ledger.Amount {
-	t.Helper()
-	var out ledger.Amount
-	view(t, s, func(ctx context.Context, tx ledger.BankTx) error {
-		var err error
-		out, err = ledger.BookBalance(ctx, tx, bookA, ledger.AccountID(id).Total(), ledger.Debit)
-		return err
-	})
-	return out
-}
-
 // scanned is the ids a scan yields, sorted and rendered: ScanEntries promises
 // which entries come back and not in which order, so the assertion is about
 // membership.
@@ -2165,51 +1760,6 @@ func transaction(id ledger.TransactionID, key string) ledger.Transaction {
 			{ID: ledger.EntryID(string(id) + "_b"), AccountID: "200.100.001", Amount: 100, Direction: ledger.Credit},
 		},
 	}
-}
-
-// postValueDatedSeriesFixture seeds the postings the ValueDatedSeries* subtests
-// share, between 901.001.001 ("acct1") and 901.001.002 ("acct2"), each posting
-// a balanced debit/credit pair.
-func postValueDatedSeriesFixture(t *testing.T, s ledger.BankStore, day func(int) time.Time) {
-	t.Helper()
-	const (
-		acct1 ledger.AccountID = "901.001.001"
-		acct2 ledger.AccountID = "901.001.002"
-	)
-	posts := []struct {
-		id     string
-		when   time.Time
-		amount ledger.Amount
-		debit  ledger.AccountID // the other account is credited
-	}{
-		{"a", day(1), 100, acct1},
-		{"e", day(4), 50, acct1},
-		{"b", day(5), 200, acct1},
-		{"c", day(5).Add(17 * time.Hour), 200, acct1},
-		{"f", day(7), 300, acct1},
-		{"g", day(7), 300, acct2},
-		{"d", day(9), 400, acct1},
-	}
-	update(t, s, func(ctx context.Context, tx ledger.BankTx) error {
-		for _, p := range posts {
-			credit := acct2
-			if p.debit == acct2 {
-				credit = acct1
-			}
-			err := tx.PutTransaction(ctx, bookA, ledger.Transaction{
-				ID:        ledger.TransactionID("txn_vds_" + p.id),
-				ValueDate: p.when,
-				Entries: []ledger.Entry{
-					{ID: ledger.EntryID("ent_vds_d" + p.id), AccountID: p.debit, Amount: p.amount, Direction: ledger.Debit, ValueDate: p.when},
-					{ID: ledger.EntryID("ent_vds_c" + p.id), AccountID: credit, Amount: p.amount, Direction: ledger.Credit, ValueDate: p.when},
-				},
-			})
-			if err != nil {
-				return err
-			}
-		}
-		return nil
-	})
 }
 
 func sliceString[T any](s []T) string {

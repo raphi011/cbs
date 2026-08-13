@@ -730,25 +730,19 @@ func RunDeposit(t *testing.T, newStore func(*testing.T, ledger.BookID) deposit.S
 		})
 	})
 
-	t.Run("ActiveHoldTotalExcludesReleasedCapturedAndExpired", func(t *testing.T) {
+	// What a hold total folds is what the store gives back, so this is the row
+	// and not the sum: every field it reads, and no other book's.
+	t.Run("HoldStatusAndExpiryRoundTripAndAreBookScoped", func(t *testing.T) {
 		s := openDeposit(t, newStore, bookA)
-
-		now := early.Add(12 * time.Hour)
-		yesterday := early.Add(-24 * time.Hour)
-		tomorrow := early.Add(48 * time.Hour)
+		expires := early.Add(48 * time.Hour)
 
 		updateDeposit(t, s, func(ctx context.Context, tx deposit.Tx) error {
 			for _, h := range []deposit.Hold{
-				// Counted: active, and either never expiring or expiring later.
 				hold("hld_1", "dep_1", 100, deposit.HoldActive, early, time.Time{}),
-				hold("hld_2", "dep_1", 200, deposit.HoldActive, early, tomorrow),
-
+				hold("hld_2", "dep_1", 200, deposit.HoldActive, early, expires),
 				hold("hld_3", "dep_1", 400, deposit.HoldReleased, early, time.Time{}),
 				hold("hld_4", "dep_1", 800, deposit.HoldCaptured, early, time.Time{}),
-				// Not counted: expired before now.
-				hold("hld_5", "dep_1", 1600, deposit.HoldActive, early, yesterday),
-				// Not counted: another account.
-				hold("hld_6", "dep_2", 3200, deposit.HoldActive, early, time.Time{}),
+				hold("hld_5", "dep_2", 1600, deposit.HoldActive, early, time.Time{}),
 			} {
 				if err := tx.PutHold(ctx, bookA, h); err != nil {
 					return err
@@ -756,56 +750,30 @@ func RunDeposit(t *testing.T, newStore func(*testing.T, ledger.BookID) deposit.S
 			}
 			return nil
 		})
-		// Another bank's dep_1, in another bank's database, holding a much
-		// larger amount: the aggregate must not reach it.
+		// Another bank's dep_1, in another bank's database, holding a much larger
+		// amount: this one's listing must not reach it.
 		other := openDeposit(t, newStore, bookB)
 		updateDeposit(t, other, func(ctx context.Context, tx deposit.Tx) error {
-			return tx.PutHold(ctx, bookB, hold("hld_7", "dep_1", 6400, deposit.HoldActive, early, time.Time{}))
+			return tx.PutHold(ctx, bookB, hold("hld_9", "dep_1", 6400, deposit.HoldActive, early, time.Time{}))
 		})
 
 		viewDeposit(t, s, func(ctx context.Context, tx deposit.Tx) error {
-			total, err := deposit.ActiveHoldTotal(ctx, tx, bookA, "dep_1", now)
+			holds, err := tx.ListHoldsForAccount(ctx, bookA, "dep_1")
 			if err != nil {
 				return err
 			}
-			assertEqual(t, "active hold total", total, ledger.Amount(300))
+			assertOrder(t, "this book's holds on dep_1",
+				ids(holds, func(h deposit.Hold) string { return string(h.ID) }),
+				"hld_1", "hld_2", "hld_3", "hld_4")
 
-			// The other account in the same book has only its own hold.
-			other, err := deposit.ActiveHoldTotal(ctx, tx, bookA, "dep_2", now)
-			if err != nil {
-				return err
-			}
-			assertEqual(t, "active hold total for the other account", other, ledger.Amount(3200))
-
-			// Like BookBalance this is an aggregate: an unknown account is 0,
-			// not an error.
-			unknown, err := deposit.ActiveHoldTotal(ctx, tx, bookA, "dep_nope", now)
-			if err != nil {
-				return err
-			}
-			assertEqual(t, "active hold total for an unknown account", unknown, ledger.Amount(0))
-			return nil
-		})
-
-		// Expiry is evaluated against the `now` passed in, not against the
-		// store's clock: rewind past hld_5's expiry and it counts again.
-		viewDeposit(t, s, func(ctx context.Context, tx deposit.Tx) error {
-			total, err := deposit.ActiveHoldTotal(ctx, tx, bookA, "dep_1", yesterday.Add(-time.Hour))
-			if err != nil {
-				return err
-			}
-			assertEqual(t, "active hold total before every expiry", total, ledger.Amount(1900))
-			return nil
-		})
-
-		// A hold expiring exactly at `now` has not expired yet — expiry is
-		// strictly before now, the same boundary the Register used.
-		viewDeposit(t, s, func(ctx context.Context, tx deposit.Tx) error {
-			total, err := deposit.ActiveHoldTotal(ctx, tx, bookA, "dep_1", tomorrow)
-			if err != nil {
-				return err
-			}
-			assertEqual(t, "hold expiring exactly at now still counts", total, ledger.Amount(300))
+			// A status that did not survive would make every hold count, and an
+			// expiry that did not would make one count forever.
+			assertEqual(t, "an active hold's status", holds[0].Status, deposit.HoldActive)
+			assertEqual(t, "a hold with no expiry", holds[0].ExpiresAt.IsZero(), true)
+			assertEqual(t, "a hold's expiry", holds[1].ExpiresAt.Equal(expires), true)
+			assertEqual(t, "a released hold's status", holds[2].Status, deposit.HoldReleased)
+			assertEqual(t, "a captured hold's status", holds[3].Status, deposit.HoldCaptured)
+			assertEqual(t, "a hold's amount", holds[3].Amount, ledger.Amount(800))
 			return nil
 		})
 	})
@@ -978,12 +946,6 @@ func RunDeposit(t *testing.T, newStore func(*testing.T, ledger.BookID) deposit.S
 				return err
 			}
 			assertEqual(t, "snapshots after reset", len(snaps), 0)
-
-			total, err := deposit.ActiveHoldTotal(ctx, tx, bookA, "dep_1", early)
-			if err != nil {
-				return err
-			}
-			assertEqual(t, "active hold total after reset", total, ledger.Amount(0))
 
 			terms, err := tx.ListOverdraftTermsForAccount(ctx, bookA, "dep_1")
 			if err != nil {

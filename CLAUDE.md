@@ -138,6 +138,17 @@ are `payment.BankTx`, `payment.CsmTx` and `payment.CentralBankTx`. There is no
 a CONSTRUCTOR rather than a parameter, so there is no seam where a store opened
 as one institution hands out another's transaction.
 
+**A balance is a fold in the domain, not an aggregate on the seam.** The store
+answers `ledger.Tx.ScanEntries` with rows; `ledger.BookBalance`,
+`ValueDateBalance`, `ValueDatedSeries`, `SubsidiaryBalances` and
+`deposit.ActiveHoldTotal` are package-level folds over it, each taking the
+one-method interface it needs — `ledger.EntryScanner`, `deposit.HoldLister` —
+so a rule about entries is testable with no store at all. `ledger.signed` is
+the sign rule and `deposit.Hold.ActiveAt` the expiry rule, each written once.
+See [the design record](docs/specs/2026-08-12-derived-balances-off-the-store-seam-design.md),
+which also records what the move cost: a balance is ~2.3x the SQL `SUM` it
+replaced, because an `Entry` is wider than a sum.
+
 `sqlite.Shape` survives as an internal value and refuses nothing. It carries the
 migration directory, the table list `Reset` empties, and the two column-list
 flags — `paymentLegs` and `paymentCycle` — which are finer than any interface:

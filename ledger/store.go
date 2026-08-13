@@ -107,8 +107,14 @@ type Tx interface {
 	// covers it and a read-compare-write would race.
 	MarkReversed(ctx context.Context, book BookID, id TransactionID) error
 
+	EntryScanner
+}
+
+// EntryScanner is the one method every balance in this package is a fold over.
+// The folds take it rather than a Tx, so a rule about entries is reachable by a
+// test with no store at all — which is the point of their being here.
+type EntryScanner interface {
 	// ScanEntries streams the position's entries, narrowed by the filter, in no
-	// promised order. A balance is the fold over it, and BookBalance is that fold
-	// — the store yields rows and the domain does the arithmetic.
+	// promised order. The store yields rows and the domain does the arithmetic.
 	ScanEntries(ctx context.Context, book BookID, pos Position, f EntryFilter) iter.Seq2[Entry, error]
 }

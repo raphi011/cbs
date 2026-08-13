@@ -805,52 +805,24 @@ unexported, leaving the DTO files free of I/O as `api/doc.go` claims.
 
 The 99-route table was dumped before and after and is byte-identical.
 
-### Move the derived balances off the store seam — `wip`
+### Move the derived balances off the store seam — `done`
 
-At filing the three transaction seams carried 73 / 21 / 37 methods, 82 / 76 / 70% of them
-Put/Get/List pass-through. The cost is in the rest: eleven computations
-expressed twice, in two languages, with
-contract prose as the only link — listing order, both balances, the series,
-`ListTransactionsForAccount`, `ActiveHoldTotal`, both uniqueness claims,
-`GetOpenCycle`, the subledger block. "Sign an entry by its account's normal
-direction" is written five times. Adding `ValueDatedSeries` cost 88 lines of
-implementation and 103 lines of shared-suite test.
+Five of the six phases shipped; the sixth was refused and became the item below.
 
-**The reason this was filed as speculative has expired.** It traded away
-Postgres's index-backed `SUM`, and there is no Postgres. What was left to weigh
-was SQLite's aggregate against a Go scan over streamed entries, and that is a
-measurement rather than an argument.
+**The seam yields entries and the domain folds them.** `ledger.Tx.ScanEntries`
+replaced four aggregates, and `BookBalance`, `ValueDateBalance`,
+`ValueDatedSeries`, `SubsidiaryBalances` and `deposit.ActiveHoldTotal` are
+package-level folds. `substr(value_date, 1, 10)`, the `GROUP BY`, the `HAVING`
+and five copies of "sign an entry by its account's normal direction" are gone;
+`ledger.signed` and `deposit.Hold.ActiveAt` are the two rules that replaced
+them, each written once. Each fold takes the one-method interface it needs —
+`ledger.EntryScanner`, `deposit.HoldLister` — so `storetest` gave up 546 lines
+to table tests with no database in them. Reach per institution is
+**69 / 21 / 34**.
 
-**Measured, the aggregate is not what makes a balance cost anything.**
-`BenchmarkBookBalance` (`store/sqlite/balance_bench_test.go`, Apple M2, a file
-under WAL, both sides reading the same rows through the same index prefix):
-
-| entries on the account | SQL `SUM` | the same sum in Go |
-| ---------------------- | --------- | ------------------ |
-| 100                    | 82 µs     | 85 µs              |
-| 1 000                  | 424 µs    | 602 µs             |
-| 10 000                 | 4.7 ms    | 6.7 ms             |
-| 100 000                | 69 ms     | 85 ms              |
-
-At the size a customer account actually reaches, the two are inside the noise of
-each other and BOTH are dominated by opening the unit of work — a repeat run put
-the Go scan ahead at 100 entries. The aggregate pulls away only past ten thousand
-entries on ONE account, and it pulls away by about a fifth, because the row I/O
-is the cost either way and only the addition moved. So the seam is not defended
-by this number: what it costs to move a derived balance into the domain is a
-fifth of a millisecond on accounts a hundred times busier than any in the seed,
-and what it buys is eleven computations written once.
-
-[Design record](specs/2026-08-12-derived-balances-off-the-store-seam-design.md) —
-six phases, and it separates the eight computations that move from the three
-constraints that cannot: a uniqueness claim under concurrency belongs where the
-transactions are.
-
-**Phase 1 is done, and it corrected the number above.** `ledger.Tx.ScanEntries`
-replaced `BookBalance` on all three seams; the balance is a fold in `ledger`,
-reached by the trial balance and by `payment/recon` without a `Book`. But the Go
-column in that table was a sketch selecting two columns, and a scan that yields
-an `Entry` selects five:
+**The measurement this was gated on was wrong, and phase 1 corrected it.** The
+Go column in the original table was a sketch selecting two columns; a scan that
+yields an `Entry` selects five.
 
 | entries on the account | SQL `SUM` | the fold over `ScanEntries` |
 | ---------------------- | --------- | --------------------------- |
@@ -859,22 +831,39 @@ an `Entry` selects five:
 | 10 000                 | 4.4 ms    | 11.3 ms                     |
 | 100 000                | 62 ms     | 135 ms                      |
 
-A factor of 2.3 at every size, not a fifth past ten thousand. The iterator is
-free and the timestamp parse is a ninth of it; the rest is reading three columns
-a balance does not use. In absolute terms it is +75 µs on a hundred-entry
-account, which is what the decision now rests on — `TrialBalanceTx` is where it
-compounds, one balance per account in the chart.
+A factor of 2.3 at every size, not a fifth past ten thousand entries. The
+iterator is free and the timestamp parse is a ninth of it; the rest is reading
+three columns a balance does not use. In absolute terms it is +75 µs on a
+hundred-entry account, which is what the decision rests on now — and
+`TrialBalanceTx` is where it compounds, one balance per account in the chart.
 
-**Phase 2 is done too.** `ValueDateBalance` and `ValueDatedSeries` left the seam
-with the day arithmetic: `substr(value_date, 1, 10)` and the `GROUP BY` are
-gone, and `ledger.DayStart` is now the only answer to which day an entry is in.
-The 73 / 29 / 45 this file, `CLAUDE.md` and ADR-0007 all carried was wrong
-before either phase started.
+**`GetOpenCycle` stayed in the store.** Its fold would read `ListCycles`, which
+`LEFT JOIN`s `cycle_payments` — every payment id of every cycle ever closed, on
+a path that runs twice per submission, against an indexed single-row lookup.
+The three concurrency constraints stayed too, as the design said they would:
+the unique index, `MarkReversed`'s conditional `UPDATE`, `NextID`'s allocation.
 
-**Phases 3 and 4 are done.** `SubsidiaryBalances` is a grouped fold and the
-`HAVING` is gone; `ActiveHoldTotal` folds the account's holds and
-`deposit.Hold.ActiveAt` is the expiry rule, written once. Reach is
-**69 / 21 / 34**.
+[Design record](specs/2026-08-12-derived-balances-off-the-store-seam-design.md)
+— six phases, each with what it cost, including the two it refused.
+
+### A caller cannot see which order a listing comes back in — `todo`
+
+Found while refusing phase 5 of the derived-balances work, which had assumed
+this was a claim written twice. It is written once, in the wrong place: there
+are **46 `ORDER BY` clauses** in `store/sqlite` and the domain's store
+interfaces state an order in exactly two — `deposit.Tx.ListSnapshotsForAccount`
+and `deposit.HoldLister`. Everywhere else the order a caller may rely on is
+readable only from the SQL, or from a `storetest` case asserting it.
+
+The fix is to state it, not to move it: sorting in Go what an index already
+returns sorted is a cost with no rule behind it. One line per listing, in the
+interface, and the store's implementation does not restate it. Most follow one
+convention — `<a time column> ASC NULLS FIRST, seq` — and the deviations
+(`day_key DESC`, `position`, `bic`, `scheme, value`, `slot, product, asset`)
+are the ones worth naming individually.
+
+Nothing enforces it afterwards, which is the same standing as the comment
+budget: it holds while it is applied in review.
 
 ### `Scheme` — an interface with seven constant returns
 

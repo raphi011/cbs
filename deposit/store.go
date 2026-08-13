@@ -45,7 +45,7 @@ type Tx interface {
 
 	PutHold(ctx context.Context, book ledger.BookID, h Hold) error
 	GetHold(ctx context.Context, book ledger.BookID, id HoldID) (Hold, error)
-	ListHoldsForAccount(ctx context.Context, book ledger.BookID, id AccountID) ([]Hold, error)
+	HoldLister
 
 	PutSnapshot(ctx context.Context, book ledger.BookID, s Snapshot) error
 	GetSnapshot(ctx context.Context, book ledger.BookID, id AccountID, dateKey string) (Snapshot, error)
@@ -58,6 +58,15 @@ type Tx interface {
 	PutOverdraftTerms(ctx context.Context, book ledger.BookID, t OverdraftTerms) error
 	ListOverdraftTermsForAccount(ctx context.Context, book ledger.BookID, id AccountID) ([]OverdraftTerms, error)
 	GetOverdraftTermsAsOf(ctx context.Context, book ledger.BookID, id AccountID, day time.Time) (OverdraftTerms, error)
+}
+
+// HoldLister is the one method ActiveHoldTotal folds. It takes this rather than
+// a Tx so that which hold counts against an available balance is reachable by a
+// test with no store at all.
+type HoldLister interface {
+	// ListHoldsForAccount returns an account's holds, ordered by creation time
+	// then insertion order. An unknown account yields an empty slice.
+	ListHoldsForAccount(ctx context.Context, book ledger.BookID, id AccountID) ([]Hold, error)
 }
 
 // SnapshotDateKey is the business-date key a snapshot is stored under. A

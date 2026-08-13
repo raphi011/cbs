@@ -23,7 +23,7 @@ type SubsidiaryBalance struct {
 // subsidiary, with the ones that net to zero left out — a customer who has
 // repaid is not a row in what the bank owes. One scan of the pool answers it,
 // which is the difference between this and a balance per subsidiary.
-func SubsidiaryBalances(ctx context.Context, tx Tx, book BookID, account AccountID, normal Direction) ([]SubsidiaryBalance, error) {
+func SubsidiaryBalances(ctx context.Context, tx EntryScanner, book BookID, account AccountID, normal Direction) ([]SubsidiaryBalance, error) {
 	bySubsidiary := map[string]Amount{}
 	for e, err := range tx.ScanEntries(ctx, book, account.Total(), EntryFilter{}) {
 		if err != nil {

@@ -37,7 +37,7 @@ func (r *Register) ListHolds(ctx context.Context, accountID AccountID) ([]Hold, 
 // ActiveHoldTotal is what an account's holds take off its available balance as
 // at now. It folds the account's holds rather than asking the store to add them
 // up, so Hold.ActiveAt is the only place the rule is written.
-func ActiveHoldTotal(ctx context.Context, tx Tx, book ledger.BookID, id AccountID, now time.Time) (ledger.Amount, error) {
+func ActiveHoldTotal(ctx context.Context, tx HoldLister, book ledger.BookID, id AccountID, now time.Time) (ledger.Amount, error) {
 	holds, err := tx.ListHoldsForAccount(ctx, book, id)
 	if err != nil {
 		return 0, err

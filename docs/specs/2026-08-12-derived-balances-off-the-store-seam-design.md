@@ -170,13 +170,33 @@ starting without the one before it.
    asked for. `ListHoldsForAccount` already answers with the same rows, so the
    fold reads it and `deposit.Tx` LOSES a method rather than trading one for
    another. `deposit.Hold.ActiveAt` is the expiry rule, written once.
-5. **`GetOpenCycle` and the listing orders.** Smallest and last, because they are
-   the ones a reviewer is most likely to argue are fine where they are.
-6. **The shared suite.** Cases in `store/storetest` that pin a computation become
-   domain tests in `ledger`, `deposit` and `payment`; what stays in `storetest`
-   is what a store must answer — rows, order, refusals. This phase removes more
-   lines than the other five together and must not be folded into them, because
-   a test that moves in the same commit as the code it tests proves nothing.
+5. **`GetOpenCycle` and the listing orders.** — `not done`, and the reviewer
+   this document predicted is the one writing this line.
+
+   **`GetOpenCycle` stays in the store.** The fold would be a scan of
+   `ListCycles`, which `LEFT JOIN`s `cycle_payments` — so every payment id of
+   every cycle ever closed, read on a path that runs once per submission
+   (`payment/system.go`, twice). That is not a fifth of a millisecond on a busy
+   account; it is unbounded growth on the hot path, against an indexed
+   single-row lookup. The rule it carries is one line and the cost of moving it
+   is not comparable to the four that moved.
+
+   **The listing orders are not written twice.** They were assumed to be prose
+   here and `ORDER BY` there; measured, there are 46 `ORDER BY` clauses in the
+   store and the domain's interfaces state an order in exactly one place
+   (`deposit.Tx.ListSnapshotsForAccount`) plus the new `HoldLister`. So the
+   defect is the opposite of the one filed: a caller cannot see the order at
+   all, and the fix is to state it, not to move it — sorting in Go what an
+   index already returns sorted is a cost with no rule behind it. Filed on the
+   roadmap as its own item.
+6. **The shared suite.** — `done`, and it removed 546 lines from `storetest`
+   against ~390 added in `ledger` and `deposit`. Ten ledger subtests and the
+   hold-total subtest were computations; they are now table tests over a fake
+   scanner and a fake lister, with no database in them. What stayed is what a
+   store must answer: which rows a scan yields for a position and a window,
+   that a status and an expiry survive the round trip, ordering, refusals.
+   `ledger.EntryScanner` and `deposit.HoldLister` are what made that possible —
+   a fold that took a `Tx` would have needed a 22-method fake.
 
 ## What this does not do
 
