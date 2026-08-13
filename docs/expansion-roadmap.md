@@ -180,12 +180,14 @@ Cheap relative to what it exposes: every flow already shipped becomes something 
 reader can watch rather than infer. It is also the natural home for anything that
 wants to explain a `pacs.002` reason code at the point it was returned.
 
-**Tasks 1–5 have shipped**: the journal records the take as well as the put,
+**Tasks 1–6 have shipped**: the journal records the take as well as the put,
 `messages` is a table in all three schemas written at every send and every
 receive, each listener serves its own institution's log with the file behind it,
-every phase of a business day is a door beside the clock, and the deployment
-serves the mesh — a snapshot and an event stream. Tasks 6 and 7 are what is left,
-the graph and the document viewer, and both are frontend.
+every phase of a business day is a door beside the clock, the deployment serves
+the mesh — a snapshot and an event stream — and that mesh is now drawn, in the
+operator's rail on every desktop shell and full size on the lobby, with the phase
+doors beside it and the files that crossed listed under it. **Task 7 is what is
+left**: the document viewer, and it is frontend.
 
 Two things found while scoping it changed what it has to build, and the first of
 them is built.
@@ -209,6 +211,14 @@ between. Every phase the day declares is now a door on the operator surface,
 named and never parameterised, and the clock stays where it stood. What it costs
 is that stepping and advancing overlap with nothing recording how far the day
 has got, which is an argument for §3's re-entrancy audit and cursor.
+
+**A stream is only a stream if nothing between the ends holds it** — task 6, and
+found by driving a browser rather than by any test. The Next proxy read every
+response to a string, and a proxy holds the head of a response until its first
+byte, so a watcher of a quiet deployment never connected at all. The proxy
+forwards the body as a stream and an opening stream now announces itself. Both
+are in the design record; a heartbeat against an intermediary's idle timeout is
+NOT built and is the next thing this channel will want.
 
 ### 2. Scenarios, and a deployment that starts blank — `spec`
 

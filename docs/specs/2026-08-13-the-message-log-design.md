@@ -255,6 +255,70 @@ placement avoids.
 `ShellFrame` already renders a collapsible right rail on desktop and a bottom
 sheet on mobile, so the rail exists and gains a section.
 
+**The rail section is DESKTOP's, and the lobby's view is the whole of it on a
+phone.** The rail's mobile form is a sheet a reader opens to have a concept
+explained, and a live drawing of the network is a different object than the one
+that sheet is for. The lobby carries the full-size view at every width instead.
+
+**The lobby suppresses the rail section**, because one screen shows one mesh.
+
+**The phase doors are IN the panel and not beside the day's button.** Stepping is
+only interesting next to the thing it moves: the whole point of the pair is that
+an operator opens a door and watches a file appear on a wire. *Advance day* stays
+in the topbar, where it is the same act at the coarser grain.
+
+**A file is drawn at the end it is travelling TO**, which is not the end that
+dialled. One wire carries both directions — a bank uploads to its clearing house
+over the connection it collects from — so an uploaded `pacs.008` waits at the
+clearing house and a `pacs.002` nobody has fetched waits at the bank. Drawing
+both at the host's end would have put settle-before-release at the wrong end of
+the picture, which is the one thing this view exists to show.
+
+**Only a RESTING file is drawn.** A delivered crossing is in the list beneath and
+not a dot, because a graph that kept every file that ever crossed would fill up
+and stop saying anything about now.
+
+**A wire is a click, and it narrows the list beneath.** That is the only
+interaction the drawing has: it is a picture with a filter, not a console.
+
+### 5. What the list cannot claim
+
+**There is no chronology inside a day, and the list must not imply one.** A
+deployment's clock does not move within a business day, so every crossing on one
+day carries the same instant; the mesh breaks that tie with the sender's address
+and its own `seq`, which groups a sender's traffic in the order that sender sent
+it. Reversing that to get "newest first" produces reverse-alphabetical-by-sender
+wearing a timeline's clothes.
+
+So the list keeps the mesh's grouping and imposes only what is true: the files
+still in flight first, then the most recent DAY first. And each row shows the day
+rather than the time, because rendering 09:00 on every row of a day claims a
+precision the timeline does not have.
+
+### 6. The push channel needed two things nothing had
+
+Both were found by driving a real browser against a real binary, and neither is
+visible from a test.
+
+**The Next proxy buffered every response.** `app/api/[...path]/route.ts` ended in
+`await upstream.text()`, which holds an event stream until its connection closes
+and then delivers a day at once. It forwards `upstream.body` as a stream now, and
+carries the origin's `Cache-Control` and `X-Accel-Buffering` across — a stream is
+only a stream if nothing between the ends decides to hold it. The request's abort
+signal goes upstream too, so a watcher that navigates away releases the one it
+left open.
+
+**An open stream must say so on opening.** A proxy holds the head of a response
+until its first byte, so a watcher of a quiet deployment sat unconnected — and
+reported itself dead — until something moved. `api.Stream` writes an SSE comment
+immediately, which is what makes the channel open rather than merely accepted.
+`no-transform` sits beside `X-Accel-Buffering` for the same class of reason: one
+tells a compressing proxy not to hold the stream, the other tells nginx.
+
+Neither is a heartbeat. Nothing here keeps a long-idle connection alive against an
+intermediary's idle timeout; on loopback there is none, and adding a ticker is a
+change with an argument of its own.
+
 ## What it costs
 
 **Every message is stored forever.** Rows are never deleted, as in
@@ -316,7 +380,8 @@ file that ever crossed.
    The snapshot pairs every institution's log into the crossings both ends
    observed; the stream is the journal's own events, and a second subscriber.
 6. **The graph**: the rail section, the lobby view, and the movement list that
-   clicks through to a payment's trail.
+   clicks through to a payment's trail. The phase doors landed with it, because
+   4 is what makes 6 worth watching and neither is worth much alone.
 7. **The document viewer**, hung off the whereabouts design's `PaymentTrail`.
 
 Tasks 1–3 are the sub-project. 4 is what makes 6 worth building, and 7 is what
@@ -332,6 +397,16 @@ quiz chapters on the transport and the clearing cycle. `CONTEXT.md` gains
 `hint-content.ts` and the quiz chapters name no repo symbol, so what they may say
 is that an institution keeps a record of the files it sent and received — never a
 table, a route or a component.
+
+**`CONTEXT.md` does not gain "message log", and task 6 is what decided it.** The
+term names ONE institution's record of its own traffic, and what the UI shows is
+the mesh — every institution's halves paired into the crossings both ends
+observed, which is not any institution's log. The screen says *network*, a line
+is a *wire*, and what travels one is a *file*. A per-institution log reaching the
+UI would be the change that makes the term due.
+
+No new hint keys either: `payment-hub`, `download-queue` and `bulk-file` carry
+the mechanism, and the graph is where a reader now meets them.
 
 ## Verification
 
@@ -353,3 +428,19 @@ table, a route or a component.
 - **A file resting on a wire is never paged out**, whatever the limit, and a
   watcher that falls too far behind is dropped rather than waited for.
 - **`payment/recon` unaffected.** The log records; it decides nothing.
+
+The graph's own rules are pure functions in `web/src/lib/network-graph.ts` and
+tested there, which is the only mechanical guard the frontend has: a bank the
+scheme has not admitted draws no wire, a wire to the settlement agent bows far
+enough to clear the clearing house at 3, 4 and 5 banks, the two directions of
+travel rest at opposite ends, and a crossing between two ends that share no wire
+is dropped rather than drawn.
+
+What no test reaches is the rendering, and there is still no component runner.
+The drawing, the doors and the stream were driven in a browser against a real
+binary instead: a payment initiated and a phase stepped from OUTSIDE the browser
+moved the picture with no interaction in it, and the payment's two copies
+disagreed on screen — `Initiated` at its bank, `Accepted` at the clearing house —
+with the `pacs.002` that would settle the argument drawn resting on the wire.
+A narrow viewport was not verified in a browser; the rail is desktop-only by
+construction and the lobby's view is a responsive grid.

@@ -41,6 +41,16 @@ export const qk = {
   // key that said otherwise would invite a second one per operator.
   clock: () => ["clock"] as const,
 
+  // The day's declared steps. Not keyed by date: which phases a day HAS is
+  // fixed before the process starts, and only which of them run varies.
+  phases: () => ["clock", "phases"] as const,
+
+  // The mesh, keyed under nobody. It is the deployment's read of every
+  // institution at once, so keying it under the listener that serves it would
+  // say it was the settlement agent's — which is the one thing it is not.
+  networkFlow: (limit?: number) =>
+    limit === undefined ? (["network-flow"] as const) : (["network-flow", limit] as const),
+
   // Next-side, not a backend area: which listeners are actually there.
   operators: () => ["operators"] as const,
 

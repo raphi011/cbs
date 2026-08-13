@@ -74,6 +74,21 @@ async function resolve(
   return null;
 }
 
+// What the upstream says about its own body is carried across, because an event
+// stream is only a stream if nothing between the two ends decides to hold it:
+// its `no-transform` and `x-accel-buffering` are the backend saying exactly that.
+const PASSTHROUGH = ["content-type", "cache-control", "x-accel-buffering"];
+
+function passthroughHeaders(upstream: Response): Headers {
+  const out = new Headers();
+  for (const name of PASSTHROUGH) {
+    const value = upstream.headers.get(name);
+    if (value) out.set(name, value);
+  }
+  if (!out.has("content-type")) out.set("content-type", "application/json");
+  return out;
+}
+
 // In Next 16, dynamic route params are async — `ctx.params` is a Promise and
 // must be awaited. Typing it inline avoids depending on generated RouteContext
 // types during `tsc --noEmit`.
@@ -123,6 +138,9 @@ async function handle(
       headers,
       body,
       cache: "no-store",
+      // A watcher that navigates away must release the one it left open
+      // upstream, and only the request's own signal says it went.
+      signal: request.signal,
     });
   } catch {
     // Naming the operator matters now that there are six of them: "the backend
@@ -134,14 +152,13 @@ async function handle(
   }
 
   // Return the upstream status and body verbatim so the client sees the
-  // backend's descriptive {error} string on failures.
-  const text = await upstream.text();
-  return new NextResponse(text || null, {
+  // backend's descriptive {error} string on failures. Verbatim includes WHEN:
+  // a response is passed through as a stream, because reading it to a string
+  // first would hold an event stream until its connection closed and then
+  // deliver a day's worth of events at once.
+  return new NextResponse(upstream.body, {
     status: upstream.status,
-    headers: {
-      "content-type":
-        upstream.headers.get("content-type") ?? "application/json",
-    },
+    headers: passthroughHeaders(upstream),
   });
 }
 

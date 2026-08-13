@@ -22,6 +22,7 @@ import {
 } from "@/components/concept-panel-provider";
 import { ConceptPanelBody } from "@/components/concept-panel";
 import { useIsDesktop } from "@/components/use-is-desktop";
+import { NetworkRail } from "@/components/network/network-panel";
 import { Topbar } from "./topbar";
 
 // Collapsed right rail: a thin clickable strip that re-expands the concepts panel.
@@ -260,10 +261,18 @@ function DesktopShell({
           {collapsed ? (
             <ConceptStrip onExpand={() => setCollapsed(false)} />
           ) : (
+            // The rail holds two things, and the network is above the concept
+            // panel because it is the operator's frame and the panel is the
+            // reader's. Each keeps its own scroll: a long explanation must not
+            // push the mesh off the top, and a wide deployment must not take
+            // the panel's height.
             <div className="flex h-full flex-col border-l bg-card">
-              <Suspense fallback={null}>
-                <ConceptPanelBody onCollapse={() => setCollapsed(true)} />
-              </Suspense>
+              <NetworkRail />
+              <div className="min-h-0 flex-1">
+                <Suspense fallback={null}>
+                  <ConceptPanelBody onCollapse={() => setCollapsed(true)} />
+                </Suspense>
+              </div>
             </div>
           )}
         </ResizablePanel>

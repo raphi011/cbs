@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 )
 
@@ -22,13 +23,21 @@ type StreamEvent struct {
 func Stream(w http.ResponseWriter, r *http.Request, events <-chan StreamEvent) {
 	h := w.Header()
 	h.Set("Content-Type", "text/event-stream")
-	h.Set("Cache-Control", "no-cache")
+	// Buffering an event stream buffers away the whole point of it, and both of
+	// these say so to a different intermediary: no-transform stops a compressing
+	// proxy, which holds a stream until it ends, and X-Accel-Buffering stops nginx.
+	h.Set("Cache-Control", "no-cache, no-transform")
 	h.Set("Connection", "keep-alive")
-	// Buffering an event stream buffers away the whole point of it.
 	h.Set("X-Accel-Buffering", "no")
 
 	rc := http.NewResponseController(w)
 	w.WriteHeader(http.StatusOK)
+	// A comment, and what makes the channel OPEN rather than merely accepted: a
+	// proxy holds the head of a response until its first byte, so a watcher of a
+	// quiet deployment would sit unconnected until something moved.
+	if _, err := io.WriteString(w, ": open\n\n"); err != nil {
+		return
+	}
 	if err := rc.Flush(); err != nil {
 		return
 	}

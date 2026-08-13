@@ -5,12 +5,18 @@ import { ThemeProvider } from "next-themes";
 import { useState } from "react";
 
 import { Toaster } from "@/components/ui/sonner";
+import { NetworkWatcher } from "@/components/network/network-watcher";
 
 // App-wide client providers: next-themes for light/dark, TanStack Query for
 // server state, sonner for toasts. ThemeProvider is outermost because the
 // Toaster reads the active theme via useTheme(). The QueryClient is created
 // once per client via useState so it survives re-renders but isn't shared
 // across requests on the server.
+//
+// NetworkWatcher is inside the QueryClientProvider and outside every route,
+// which is what makes it ONE subscription: the mesh is drawn on the lobby and
+// in the rail of every other shell, and a connection per drawing would be two
+// connections watching one deployment.
 export function Providers({ children }: { children: React.ReactNode }) {
   const [client] = useState(
     () =>
@@ -30,7 +36,7 @@ export function Providers({ children }: { children: React.ReactNode }) {
   return (
     <ThemeProvider attribute="class" defaultTheme="system" enableSystem>
       <QueryClientProvider client={client}>
-        {children}
+        <NetworkWatcher>{children}</NetworkWatcher>
         <Toaster richColors closeButton />
       </QueryClientProvider>
     </ThemeProvider>

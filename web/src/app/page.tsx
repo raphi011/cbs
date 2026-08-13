@@ -8,6 +8,7 @@ import { Money, UnresolvedAmount } from "@/components/money";
 import { EnumBadge } from "@/components/enum-badge";
 import { ErrorState } from "@/components/error-state";
 import { Hint } from "@/components/hint";
+import { NetworkView } from "@/components/network/network-panel";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useAssetLookup, useIdentityDirectory, useReserves } from "@/lib/api/hooks";
 import { homeFor } from "@/lib/identity";
@@ -41,6 +42,18 @@ export default function Lobby() {
           a different listener. Pick a seat.
         </p>
       </div>
+
+      {/* Before the cast, the stage. This is the one screen that shows what no
+          seat can see — every institution at once — and it is here rather than
+          inside a persona because a bank's own screens showing another bank's
+          traffic is exactly the crossing the system refuses. */}
+      <section className="space-y-3">
+        <h2 className="flex items-center gap-1.5 text-sm font-medium text-muted-foreground">
+          The network
+          <Hint id="payment-hub" />
+        </h2>
+        <NetworkView />
+      </section>
 
       <section className="space-y-3">
         <h2 className="text-sm font-medium text-muted-foreground">Institutions</h2>

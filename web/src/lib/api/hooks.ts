@@ -987,6 +987,43 @@ export function useAdvanceDay() {
   });
 }
 
+// The day's declared steps. They are fixed before the process starts, so this
+// is read once and never refetched — only which of them RUN varies by day.
+export function usePhases() {
+  return useQuery({
+    queryKey: qk.phases(),
+    queryFn: api.listPhases,
+    staleTime: Infinity,
+  });
+}
+
+// Open one phase's door, then invalidate every query.
+//
+// Every query, for the same reason advancing a day does: a phase clears, or
+// settles, or accrues, and naming the subset a given phase touches would be
+// naming the whole of the domain one phase at a time.
+export function useRunPhase() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: api.runPhase,
+    onSuccess: () => qc.invalidateQueries(),
+  });
+}
+
+// --- The network mesh -------------------------------------------------------
+
+// Every institution's traffic paired into the crossings both ends observed.
+//
+// It is read WHOLE and not polled: this is every row every institution holds,
+// which is what a truthful answer about what is still in flight costs. What
+// refreshes it is the push channel — see NetworkWatcher.
+export function useNetworkFlow(limit?: number) {
+  return useQuery({
+    queryKey: qk.networkFlow(limit),
+    queryFn: () => api.networkFlow(limit),
+  });
+}
+
 // Reset the whole backend to the sample dataset, then invalidate every query so
 // the UI refetches the fresh state.
 export function useResetState() {

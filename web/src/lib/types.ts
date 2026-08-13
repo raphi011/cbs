@@ -626,6 +626,86 @@ export interface DayReport {
   problems: DayProblem[];
 }
 
+// Phase is one step of the business day, as the door an operator opens it
+// through. `key` is the name spelt for a URL and is the whole of what a door
+// takes: a phase is named, never parameterised, so there is nothing to compose.
+//
+// `settlementOnly` is reported and not enforced — a caller that named a phase
+// has decided it wants it, and a day the scheme is shut simply skips it.
+// `afterClock` says the phase runs once the date has moved.
+export interface Phase {
+  key: string;
+  name: string;
+  settlementOnly: boolean;
+  afterClock: boolean;
+}
+
+// PhaseReport is what one phase moved. There is no `next`, and that absence is
+// the whole difference between stepping a day and advancing one: only advancing
+// moves the clock.
+export interface PhaseReport {
+  phase: Phase;
+  ran: BusinessDate;
+  files: FileMoved[];
+  outcomes: TransactionOutcome[];
+  problems: DayProblem[];
+}
+
+// --- The network mesh -------------------------------------------------------
+
+// Every institution at once, which is a read no institution may make. It is the
+// DEPLOYMENT's, served from the settlement agent's listener beside the clock for
+// the same reason the clock is there, and assembled nowhere in this browser.
+
+// The part an institution plays. A member bank is a subscriber at both hosts;
+// the clearing house is a host and a subscriber; the settlement agent is a host
+// and a subscriber nowhere.
+export type InstitutionRole = "member bank" | "clearing house" | "settlement agent";
+
+export interface Institution {
+  bic: string;
+  name: string;
+  role: InstitutionRole;
+}
+
+// Wire is one EBICS connection, named by the parts its ends play: a subscriber
+// dials a host and nothing is ever pushed the other way. A bank with no wire is
+// one the scheme has not admitted — holding a database is not being reachable.
+export interface Wire {
+  subscriber: string;
+  host: string;
+}
+
+// Crossing is one file between two institutions: the send one end recorded and
+// the take the other did, paired on the transport's order id.
+//
+// `receivedAt` absent is a file RESTING on the wire — a queue nobody has come
+// for, which is settle-before-release drawn. `sentAt` absent is different and
+// worse: a record the sender is missing, not a state a crossing passes through.
+//
+// `sentSeq` and `receivedSeq` name the row in each end's OWN log, which is how a
+// reader gets from here to the document. A seq means nothing at any other
+// institution.
+export interface Crossing {
+  from: string;
+  to: string;
+  msgDefIdr: string;
+  msgId: string;
+  orderId?: string;
+  sentSeq?: number;
+  receivedSeq?: number;
+  sentAt?: string;
+  receivedAt?: string;
+  payments: string[];
+  payloadSize: number;
+}
+
+export interface NetworkFlow {
+  institutions: Institution[];
+  wires: Wire[];
+  crossings: Crossing[];
+}
+
 // --- Lending layer ----------------------------------------------------------
 
 // Facility mirrors facilityDTO. A facility is not a line in the chart of
