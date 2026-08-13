@@ -149,6 +149,18 @@ See [the design record](docs/specs/2026-08-12-derived-balances-off-the-store-sea
 which also records what the move cost: a balance is ~2.3x the SQL `SUM` it
 replaced, because an `Entry` is wider than a sum.
 
+**Every act exists twice — `X` opens a unit of work, `XTx` runs inside one — and
+both halves stay.** The wrappers carry the callers (209 sites in `payment`
+alone); the `XTx` methods carry the rules. A wrapper is its signature and a call
+to `unit.Run` or `unit.Run2`, which turn `Update` or `View` into a call that
+returns a value; the seam is named at the call site because read-only and writing
+are a domain distinction. Three do not fit and each is a signal rather than a
+lapse: `payment.RecordRelayed` loops its `Tx` sibling over a batch, and 20
+error-only wrappers have no value to carry. Nesting is refused at runtime by
+`sqlite.ErrNestedTransaction`, which is what makes the doubling safe and is the
+thing to preserve. [ADR-0009](docs/adr/0009-the-doubling-stays-and-the-boilerplate-goes.md)
+is the ruling, and it records why `Tx`-first was refused.
+
 `sqlite.Shape` survives as an internal value and refuses nothing. It carries the
 migration directory, the table list `Reset` empties, and the two column-list
 flags — `paymentLegs` and `paymentCycle` — which are finer than any interface:

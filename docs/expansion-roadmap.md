@@ -90,7 +90,7 @@ Each verified against the current tree rather than carried on trust.
 
 ### `ReverseTransactionTx` skips every check `PostTransactionTx` makes
 
-`ledger/book.go:787-856` builds mirrored entries and writes straight to
+`ledger/book.go:635-708` builds mirrored entries and writes straight to
 `tx.PutTransaction`, bypassing the empty-transaction guard, the `Amount <= 0`
 guard, `validateBalance`, `tx.LockAccounts` and `checkSufficientBalance`.
 Reversing a receipt into an Asset account whose balance has since been spent
@@ -100,16 +100,17 @@ only reverses Liability↔Liability legs, which is why nothing has caught it.
 The double-reversal half of this is closed — `MarkReversed` is conditional in the
 store, so two concurrent reversals cannot both succeed. The balance check is not.
 
-### One value-date defect, documented twice and fixed nowhere
+### Interest accrues on interest earned the same day
 
-`deposit/register.go:1892` and `lending/accrual.go:554` each describe interest
-accruing on interest earned the same day, and each points at the other. The fix
-both comments propose — value-date capitalisation to the *next* day — changes
-interest figures, so seed expectations, api tests and possibly README and quiz
-claims move with it.
+Both capitalisations post `ValueDate: date` — `deposit/register.go:1391` and
+`lending/accrual.go:280` — so the span ending on that day is re-priced over a
+balance that already includes the charge. Each site states the consequence and
+neither claims it is right.
 
-**It is a domain decision and must not ride along inside a refactor.** That is
-why the shared-accrual extraction stopped short of it.
+The fix is value-date capitalisation to the *next* day, and it changes interest
+figures, so seed expectations, api tests and possibly README and quiz claims move
+with it. **It is a domain decision and must not ride along inside a refactor** —
+which is why the shared-accrual extraction stopped short of it.
 
 ### `GetPaymentByEndToEndID` is ambiguous by construction
 
@@ -123,13 +124,13 @@ claiming one reference; today nothing does.
 ### The seed closes a business day the deployment has not reached
 
 `AdvanceDay` runs each bank's end of day for the day it is LEAVING and then moves
-the clock (`beforeClock`'s end-of-day phase, then the pivot). `seed/seed.go:393`
+the clock (`beforeClock`'s end-of-day phase, then the pivot). `seed/seed.go:226`
 `runDays` does the opposite: `b.day()` advances first, and `RunEndOfDay` is then
 called with `b.clock.Now()`, the day just arrived at. Over N days the seed closes
 D+1…D+N where a deployment closes D…D+N-1.
 
 It is **not** a correctness defect today — the advancement guards
-(`deposit/register.go:1812`, `lending/accrual.go:143`,
+(`deposit/register.go:1183`, `lending/accrual.go:57`,
 `DayCount.Days(LastAccrualDate, date) <= 0`) make the re-close a no-op. Two things
 are wrong anyway: `runDays`' own comment claims the seed's accrual moves *"exactly
 as a running day would produce them"*, which this makes false; and the first
@@ -137,10 +138,10 @@ operator advance after a boot re-closes a day the seed already closed, so it
 accrues nothing on any seeded facility.
 
 Fixing it moves interest figures, so it is a domain decision and does not ride
-along inside a refactor — the same reason the value-date item above is filed
-rather than fixed.
+along inside a refactor — the same reason the capitalisation defect above is
+filed rather than fixed.
 
-### `respond.go:20` puts a raw `err.Error()` in 500 bodies
+### `api/respond.go:21` puts a raw `err.Error()` in 500 bodies
 
 Where `recoverPanic` is careful to emit a fixed string. One of the two is wrong
 about what a 500 may disclose.
@@ -161,112 +162,6 @@ four had each been paying for separately.
 3. **Card transactions.** Additive on top of holds and the existing net path.
 4. **Reserve adequacy.** Wanted by both 2 and 3, and worth little before either.
 5. **Crypto**, then **FX** — the two undecided-scope domains, largest last.
-
-### The on-us book transfer — `done`
-
-`deposit.Register.TransferTx`, and `POST /transfers` on a bank's own port. It is
-the `deposit` layer's act rather than the `payment` layer's, because nothing
-about it needs to know what an institution is: it touches the two customers' own
-GL accounts, and a register spans one book. A submitting bank's door refuses the
-on-us *payment* unchanged — the two are different products and the payer chooses
-one.
-
-What it does NOT cover is the standing order: a transfer that happens on a date
-has a lifecycle of its own, and nothing here holds an instruction between the day
-it is given and the day it runs.
-
-Two defects found under sub-project 8 remain reachable only through an
-arrangement a submitting bank's door refuses, and this work did not change that —
-`AcceptInboundTx`'s witness is the ROW, which is false when the same bank also
-submitted, and `PostReturnLegTx` decides which leg is last by position in a
-conversation one institution does not have. Both are closed and both are still
-proved through the store rather than through a path a caller can reach.
-
-### EBICS batches, the institutions in `cmd/server`, and the business day — `done`
-
-Sub-project 21.
-[`2026-08-11-ebics-and-the-business-day-design.md`](specs/2026-08-11-ebics-and-the-business-day-design.md).
-Nine tasks, and the largest since 8. It deleted `mesh`, which 7b built, the way §9
-deleted the two store backends §8 built.
-
-`docs/sepa-real-world.md` contradicted the mesh on every mechanical claim it made:
-bulk clearing is *"store-and-forward file transfer against a cutoff clock"* and
-*"EBICS has no push at all — the bank polls for its downloads"*. 7b had built the
-opposite — N+2 actors with inboxes, one message per payment, delivery that always
-succeeds. 21 kept what 7b was for, the message being the interface, and replaced
-everything underneath it.
-
-Three deliveries landed. **The top level is library and `cmd/server` is glue** —
-`api` split three ways over interfaces each sub-package declares, and each
-institution has a struct with its own routes and its own EBICS side.
-**The transport is EBICS** — uploads, per-subscriber download queues, order types
-and order ids; there is no actor table, because enrolment is what creates a queue.
-**The deployment owns a clock, and advancing it runs a business day** — the
-refresh, the cut-off, the clearing, the netting, settlement, release, each bank's
-collection and each bank's end of day, in one explicit list, on a TARGET calendar.
-
-The third is what made the first two cheap, and it was not asked for. There are
-**no background goroutines under this process at all**, so `Drain` — the thing
-that let every test say "submit, drain, assert" — needed no replacement rather
-than a test-only substitute. The suite says "submit, advance a day, assert" and
-`AdvanceDay` returns when the day is done.
-
-Two decisions outlive the sub-project and are recorded as such:
-[ADR-0001](adr/0001-the-deployment-owns-the-clock.md), the deployment owns the
-clock, and [ADR-0002](adr/0002-settle-before-release.md), the clearing house
-settles before it releases.
-
-**Task 8 was the one that changed the domain rather than the plumbing.** Settling
-before releasing moved every receiving bank's objection from a `pacs.002` reject
-to a `pacs.004` return — which is what those codes are in SEPA — and left the
-clearing house as the only institution that rejects anything. A payee whose
-account is closed is taken on and sent back rather than refused, which is what
-made the unclaimed-balances ageing feature reachable at all.
-
-It claimed two items filed elsewhere. The roll half of *A business date* below,
-including the case that item named: a transfer submitted after cut-off before a
-holiday weekend. And the deferred note that batched bulks and a cut-off timer
-were *reachable for the first time but unclaimed* — task 7 claimed both, and
-`pacs.002`'s `GrpSts: PART` is produced. `pacs.028`, listed beside them, stays
-unclaimed.
-
-It did **not** claim the threading half of *A business date* — assigning the date
-at command acceptance and carrying it — which is the `Day` type under *Structural
-work*, and is a compiler-guided rename across four packages that had no business
-being inside a transport swap.
-
-**Three things it leaves behind**, none of them a surprise and each written where
-it bites rather than only here:
-
-- **The clearing house's held output files were in memory**, so a restart lost
-  the shares a cut-off's receiving banks are owed. Both halves of this are now
-  closed and it is left here because the third thing below still leans on the
-  argument. `ClearingHouse.unhandable` refuses to instruct a cut-off whose shares
-  are missing (`payment.ErrCycleNotReleasable`, 422), so the state costs no money
-  where it is still reachable; and the shares themselves are rows in that
-  institution's own database — `held_files`, `held_file_transactions`,
-  `held_returns` — under
-  [ADR-0003](adr/0003-an-institutions-obligations-live-in-its-database.md).
-  `ClearingHouse.unhanded` still reports the state where it is reachable without
-  an instruction, and `payment/recon`'s `partiesHoldTheirCopy` finds it in the
-  books afterwards.
-
-  **The seed no longer produces the state the guard refuses.** It used to ship
-  three closed cycles holding five Cleared payments no act in this system could
-  advance, because it played every institution and uploaded nothing. It now
-  submits its in-flight payments through the deployment's own door and runs the
-  file-moving phases of a day itself (`Deployment.CarryToClearing`), so each has
-  a real share behind it and the first advance settles and delivers all six.
-- **A bank's payment hub is in memory**, so a restart loses instructions whose
-  debtor legs are committed — money in clearing suspense against a file that will
-  never be built. It is now the LAST obligation in the system a process takes
-  with it: the same defect the clearing house's shares had, one institution over,
-  and ADR-0003 names it as the case it does not close. A table in that bank's own
-  database, by exactly that ruling. `payment/recon` is the instrument that finds
-  it meanwhile.
-- **One cut-off per business day**, where SEPA runs several settlement cycles.
-  Adding more is a loop over a list of times, and it is deliberately out of
-  scope: the calendar had to exist before a time of day within it meant anything.
 
 ### 1. 7c, the message log — `todo`
 
@@ -389,34 +284,6 @@ short a number someone can see.
 
 Ranked by value per unit of effort. Nothing here blocks the sequence above, and
 each is a self-contained afternoon-to-a-week.
-
-### What an institution is holding when the process ends — `done`
-
-[`2026-08-12-held-files-durability-design.md`](specs/2026-08-12-held-files-durability-design.md).
-Every obligation an institution has not yet discharged was in process memory: the
-clearing house's output shares and held returns, a bank's hub, and the EBICS
-host's queues and order log. A restart made them stop existing while the money
-that moved against them stayed moved.
-
-Three phases, all landed. **Phase 1, the seed**: the sample dataset used to ship
-three closed cycles holding five payments nothing could advance, because it built
-no files at all. It now uploads for real — `seed.Deployment` gained `Submit` and
-`CarryToClearing`, `cmd/server` serves the two hosts before it seeds — and leaves
-six payments Accepted in the open cut-off for each scheme, every one with a share
-behind it. **Phase 2, the clearing house's own tables**: `held_files`,
-`held_file_transactions` and `held_returns`, under
-[ADR-0003](adr/0003-an-institutions-obligations-live-in-its-database.md).
-**Phase 3, the transport**: `ebics_queue` and `ebics_orders`, in both hosting
-institutions' schemas, under
-[ADR-0004](adr/0004-a-queue-is-a-table-and-stays-opaque.md) — which is where the
-argument against storing a queue at all is answered rather than dropped. The two
-tests in `cmd/server/restart_test.go` are the only ones in the repository that
-can fail for the reason this entry exists: one drops the process between a
-cut-off and its settlement, the other between a settlement and the members
-collecting what it released.
-
-**What is left is one member bank's hub**, which is separable by institution and
-is that bank's own sub-project; it has its own entry above.
 
 ### Where a payment is — the lifecycle trail and the hub that holds it — `spec`
 
@@ -654,38 +521,7 @@ already charged across a whole book.
 ## Structural work
 
 Deepening opportunities in the code, ranked. Each is a refactor with a stated
-win; none is urgent, and the first is the one the others keep tripping over.
-
-### Collapse the `X` / `XTx` doubling
-
-**84 `…Tx` sibling methods.** Nearly every one is a six-line closure with no
-caller outside its own package: every domain operation exists twice, one form
-opening a unit of work and its twin running inside one.
-
-Nothing types the difference. The rule is prose and the failure mode is a
-deadlock. **Solution: `Tx`-first** — every domain method takes a `Tx`, and one
-`WithTx` helper above the domain opens and commits. The two colourings collapse
-into one and nesting becomes unrepresentable.
-
-Same cause, visible cost today: `handleListFacilities` opens two store
-transactions *per facility* and reads each facility row three times, because
-`Drawn` and `RefundPayableFor` each own their own `View`.
-
-### Cross-layer composition has an owner — `done`
-
-`Bank` was the candidate and `Bank` is the answer. `Network.bind` already hands a
-bank its ledger, register, portfolio and catalogue, so giving it the store those
-four share adds no reach a holder of one did not already have — and a
-`payment.BankTx` embeds `deposit.Tx` and `lending.Tx`, so an act spanning both
-opens ONE unit of work and downcasts nothing.
-
-`payment.Bank.Repay` and `Bank.RunEndOfDay` are the two such acts. Each lost a
-`tx.(lending.Tx)` and a hand-written error string for a case the type system
-already refuses; `handleRepay` is now a date parse, a call and a DTO.
-
-`deposit.Register.Store()` stays, with its reason corrected: it opens a unit of
-work over ONE layer, which is what a `deposit.Tx` reaches, and its only callers
-are tests.
+win, and none is urgent.
 
 ### A `Day` type in `ledger`
 
@@ -712,178 +548,6 @@ for it:
 A day-granular, UTC-normalised-at-construction `ledger.Day` with `Start()`,
 `Next()`, `Key()` and value equality. Thread the type, not the instant, and a
 missing date becomes a compile error. Cheaper today than at any later point.
-
-### The business day as a declared sequence — `done`
-
-[ADR-0005](adr/0005-a-business-day-is-a-declared-sequence.md). The order of a day
-was statement order inside `Deployment.clear`, and three other places re-wrote a
-subset of it by hand. It is now two declared lists of named phases with the clock
-move as the pivot, and every subset — including the two in test files — is
-DERIVED by naming phases, so none can hold a phase the day lacks or run two in an
-order the day does not.
-
-Two things it bought that the entry above did not ask for. A phase RETURNS what
-it could not do and only a runner journals, so the silently-droppable `[]Problem`
-at fifteen call sites became unrepresentable. And `settlementOnly` on the phase
-put "what runs on a weekend" in the declaration, where it had been a doc comment.
-
-What it did not buy is de-duplication: the subsets are argued and there are still
-four of them. Splitting the collection into three selectable phases WOULD have
-de-duplicated the last of it, and it inverts an observable nesting — a day visits
-each bank and takes all three of its queues before the next bank takes any — so
-the collection stayed one phase and `collectClearingHouseOnly` is the one step in
-the package that is not a phase of a day.
-
-### One type per institution — `done`
-
-[ADR-0006](adr/0006-one-type-per-institution.md). `payment.Network` was one type
-carrying all three institutions' 107 acts, and which of them a caller might
-perform was answered twice at runtime — `ErrNotThisInstitutionsAct` and
-`sqlite.ErrNotInThisShape` — and once at compile time, in `cmd/server/ops.go`
-alone, which `Bank.Network()` then bypassed by handing the whole 107 to the HTTP
-surface.
-
-`BankNetwork`, `ClearingHouseNetwork` and `CentralBankNetwork` embed a shared
-core. Reach falls to 68 / 42 / 30, the core holds the 15 acts three institutions
-genuinely share, and `api`, `seed`, `provision` and every test fixture are held
-by the same types `cmd/server` was. A bank surface naming `SettleCycle` no longer
-compiles.
-
-The review that produced this proposed moving `ops.go`'s three interfaces down
-into `payment` instead, on the grounds that four consumers would share them.
-Measured, they do not: `api/bank` shares 3 of its 17 methods with `bankOps` and
-`api/centralbank` shares 0 of its 5 with `settlementOps`. `ops.go` stays, with a
-different subject — which of ONE institution's acts a business day performs.
-
-### Separate the store by institution — `done`
-
-[Design record](specs/2026-08-12-store-per-institution-design.md) and
-[ADR-0007](adr/0007-a-store-per-institution.md), which is the ruling.
-
-The defect ADR-0006 removed from `payment.Network`, one layer down. `payment.Tx`
-was one interface over three schemas, so every institution's store implemented
-every method and `ErrNotInThisShape` refused at runtime what a type can refuse at
-compile time. Candidate 4 of the same review measured its test coverage:
-emptying `inShape` to `return nil` left the whole suite green.
-
-`payment.BankTx`, `CsmTx` and `CentralBankTx` replace it, composed from the
-capabilities two institutions genuinely share — `ledger.CommonTx` (3, all three),
-`ledger.Tx` (22, bank and settlement agent), `ledger.SlotTx` (3, a bank's),
-`PaymentRowsTx` (4, bank and clearing house), `ebics.Tx` (8, the two that are
-dialled). Reach per institution: **69 / 21 / 34** against 108, measured, and
-every crossing is a build failure.
-
-The shape became a constructor rather than a parameter — `OpenBank`,
-`OpenClearingHouse`, `OpenCentralBank`, each returning the store type whose
-methods that schema can answer — so `inShape` and `ErrNotInThisShape` had no
-callers left and both went. `Shape` survives internally for the migration
-directory, `Reset` and the two payment column lists, which are finer than any
-interface.
-
-It reached `ledger`, which the first pass did not expect: the clearing house was
-writing its audit trail through a ledger interface and has no ledger. And it
-reached `Network`, which had been holding a payment's row for three institutions
-when only two keep one.
-
-### Deepen the transport module — `done`
-
-Done between §21's tasks 4 and 5, against the three surface packages the split
-had just produced rather than against one large one.
-
-A handler RETURNS its response and its error; `api.Handle` and `api.HandleBody`
-decode the body, map the error, choose the status and encode, and `api/bank`'s
-pair resolve the listener's own bank in front of them. The five steps are one
-function instead of seventy call sites, `api/bank` lost a quarter of its lines,
-and the writers are unexported — so "every response carries the JSON content
-type and every error goes through the mapping" is enforced rather than kept.
-`api.ParseDay` and `api.ResolveTransactionDTO` absorbed the repeated parse and
-the repeated transaction tail; a 400 a handler decides is now
-`api.BadRequest`, mapped like any other sentinel.
-
-The two DTO-layer complaints are closed with it. `lending.OutstandingOf` is the
-one place drawn-plus-receivable is written, called by `Portfolio.Outstanding` and
-by the wire renderer, so there is nothing left for a test to hold together; the
-asset resolution moved out of `dto_ledger.go` into `transaction.go` and is
-unexported, leaving the DTO files free of I/O as `api/doc.go` claims.
-
-The 99-route table was dumped before and after and is byte-identical.
-
-### Move the derived balances off the store seam — `done`
-
-Five of the six phases shipped; the sixth was refused and became the item below.
-
-**The seam yields entries and the domain folds them.** `ledger.Tx.ScanEntries`
-replaced four aggregates, and `BookBalance`, `ValueDateBalance`,
-`ValueDatedSeries`, `SubsidiaryBalances` and `deposit.ActiveHoldTotal` are
-package-level folds. `substr(value_date, 1, 10)`, the `GROUP BY`, the `HAVING`
-and five copies of "sign an entry by its account's normal direction" are gone;
-`ledger.signed` and `deposit.Hold.ActiveAt` are the two rules that replaced
-them, each written once. Each fold takes the one-method interface it needs —
-`ledger.EntryScanner`, `deposit.HoldLister` — so `storetest` gave up 546 lines
-to table tests with no database in them. Reach per institution is
-**69 / 21 / 34**.
-
-**The measurement this was gated on was wrong, and phase 1 corrected it.** The
-Go column in the original table was a sketch selecting two columns; a scan that
-yields an `Entry` selects five.
-
-| entries on the account | SQL `SUM` | the fold over `ScanEntries` |
-| ---------------------- | --------- | --------------------------- |
-| 100                    | 57 µs     | 132 µs                      |
-| 1 000                  | 421 µs    | 1.10 ms                     |
-| 10 000                 | 4.4 ms    | 11.3 ms                     |
-| 100 000                | 62 ms     | 135 ms                      |
-
-A factor of 2.3 at every size, not a fifth past ten thousand entries. The
-iterator is free and the timestamp parse is a ninth of it; the rest is reading
-three columns a balance does not use. In absolute terms it is +75 µs on a
-hundred-entry account, which is what the decision rests on now — and
-`TrialBalanceTx` is where it compounds, one balance per account in the chart.
-
-**`GetOpenCycle` stayed in the store.** Its fold would read `ListCycles`, which
-`LEFT JOIN`s `cycle_payments` — every payment id of every cycle ever closed, on
-a path that runs twice per submission, against an indexed single-row lookup.
-The three concurrency constraints stayed too, as the design said they would:
-the unique index, `MarkReversed`'s conditional `UPDATE`, `NextID`'s allocation.
-
-[Design record](specs/2026-08-12-derived-balances-off-the-store-seam-design.md)
-— six phases, each with what it cost, including the two it refused.
-
-### The interbank conversation has an owner — `done`
-
-The architecture review's third card, and what the two before it left exposed:
-every act had an owner and the ORDER they go in had none. Two callers drove it
-by calling the domain directly — `seed` and `payment`'s own suite — and each
-wrote the sequence out.
-
-**They had drifted, and the drift was in the sample dataset.** The seed reached
-`AcceptAtBank` where the suite stopped at `AcceptAtCSM`, so a payment was
-`Accepted` at its submitting bank in the seed data and `Initiated` in every test
-that built one. `seed/seed.go` had named that hazard in its own comment. Writing
-the conversation once found two more: the seed relayed the REQUEST rather than
-the payment, so the payer's back-filled address never reached the other two
-institutions' copies, and a rejection reached the submitting bank alone.
-
-**`payment/flow` owns the four conversations** — `Initiate`, `Reject`, `Return`,
-`Settle` — over `*payment.Networks`, for a caller that IS the deployment and for
-no institution. Every act stays the institution's own in its own unit of work;
-the package opens no transaction and holds no store.
-[ADR-0008](adr/0008-a-conversation-belongs-to-the-deployment.md) is the ruling
-and `provision` was the precedent.
-
-**One rule underneath, not three.** `payment.SubmitterOf`, `ReceiverOf`,
-`ReturnerOf` and `CounterpartyOf` replaced six copies across `cmd/server`,
-`seed`, `recon` and two suites. The receiving side and the returning side are
-the same body under two act names, which `payment/scheme_test.go` asserts.
-
-The three audit trails that moved are the same claim from the other side: a
-submitting bank records that it was told, so a bank's trail depends on which
-payment it submitted rather than being one shape asserted twice.
-
-[Design record](specs/2026-08-13-the-interbank-conversation-design.md) — four
-phases, and what the card got wrong: `cmd/server` is not a third copy, because
-since sub-project 21 its institutions reach these acts off the files they are
-handed.
 
 ### A caller cannot see which order a listing comes back in — `todo`
 
@@ -1119,8 +783,28 @@ row is a TASK number rather than a sub-project one: 19 continues §8's task
 sequence, as the work that sub-project deliberately left, and it is listed here
 because it has a spec of its own to resolve a reference to.
 
-Four other design records sit alongside these and are not numbered, because each
-was one topic taken from a comparison rather than a sub-project:
-`2026-07-26-audit-log-postgres-design.md`, `2026-07-28-value-dated-balance-design.md`,
-`2026-07-30-effective-dated-terms-design.md` and
-`2026-07-30-product-catalogue-design.md`.
+**The unnumbered records are the rest of what has shipped**, each one topic taken
+from a comparison or a review rather than a sub-project. They are listed here
+because nothing else in this file points at them.
+
+| | Record |
+|---|---|
+| The audit log | [`2026-07-26-audit-log-postgres-design.md`](specs/2026-07-26-audit-log-postgres-design.md) |
+| Value-dated balances | [`2026-07-28-value-dated-balance-design.md`](specs/2026-07-28-value-dated-balance-design.md) |
+| Effective-dated terms | [`2026-07-30-effective-dated-terms-design.md`](specs/2026-07-30-effective-dated-terms-design.md) |
+| The product catalogue | [`2026-07-30-product-catalogue-design.md`](specs/2026-07-30-product-catalogue-design.md) |
+| Learner-facing docs name no repo symbol | [`2026-08-10-domain-only-learner-docs-design.md`](specs/2026-08-10-domain-only-learner-docs-design.md) |
+| Real IBANs and the routing directory | [`2026-08-10-real-ibans-and-routing-directory-design.md`](specs/2026-08-10-real-ibans-and-routing-directory-design.md) |
+| Admission is deletable | [`2026-08-11-delete-admission-design.md`](specs/2026-08-11-delete-admission-design.md) |
+| What an institution holds when the process ends | [`2026-08-12-held-files-durability-design.md`](specs/2026-08-12-held-files-durability-design.md) · [ADR-0003](adr/0003-an-institutions-obligations-live-in-its-database.md) · [ADR-0004](adr/0004-a-queue-is-a-table-and-stays-opaque.md) |
+| A store per institution | [`2026-08-12-store-per-institution-design.md`](specs/2026-08-12-store-per-institution-design.md) · [ADR-0007](adr/0007-a-store-per-institution.md) |
+| The derived balances leave the store seam | [`2026-08-12-derived-balances-off-the-store-seam-design.md`](specs/2026-08-12-derived-balances-off-the-store-seam-design.md) |
+| The interbank conversation has an owner | [`2026-08-13-the-interbank-conversation-design.md`](specs/2026-08-13-the-interbank-conversation-design.md) · [ADR-0008](adr/0008-a-conversation-belongs-to-the-deployment.md) |
+
+Three more shipped as rulings with no design record of their own:
+[ADR-0005](adr/0005-a-business-day-is-a-declared-sequence.md) (the business day
+as a declared sequence), [ADR-0006](adr/0006-one-type-per-institution.md) (one
+type per institution) and
+[ADR-0009](adr/0009-the-doubling-stays-and-the-boilerplate-goes.md) (the
+`X` / `XTx` doubling). Cross-layer composition, the transport deepening and the
+on-us book transfer are in `git log` alone.

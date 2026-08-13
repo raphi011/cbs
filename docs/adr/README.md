@@ -27,3 +27,4 @@ overriding it — see `docs/agents/domain.md`.
 | [0006](0006-one-type-per-institution.md) | One type per institution, and the identity guards what is left | architecture review |
 | [0007](0007-a-store-per-institution.md) | A store per institution, and the shape is a constructor | store-per-institution design |
 | [0008](0008-a-conversation-belongs-to-the-deployment.md) | A conversation between institutions belongs to the deployment | architecture review |
+| [0009](0009-the-doubling-stays-and-the-boilerplate-goes.md) | The `X` / `XTx` doubling stays, and the boilerplate goes | architecture review |
