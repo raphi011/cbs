@@ -65,23 +65,23 @@ type SettlementMember struct {
 // message addressed to it. It lives in the clearing house's database and in no
 // other.
 type RosterEntry struct {
-	BIC iso20022.BIC
+	BIC iso20022.BIC `json:"bic"`
 
 	// Issuer is the country and bank code this member issues its customers'
 	// addresses under, learned from the same acknowledgement that writes this row.
-	Issuer iban.Issuer
+	Issuer iban.Issuer `json:"issuer"`
 
 	// Assets is the assets this member clears in. A slice and not a map because
 	// there is nothing to key it by: the clearing house holds no account per
 	// asset, which is the difference between this row and SettlementMember above.
-	Assets []ledger.AssetCode
+	Assets []ledger.AssetCode `json:"assets"`
 
 	// AdmissionRef is the identifier every act of ONE admission quotes, and the
 	// only thing that tells two admissions on one address apart.
-	AdmissionRef string
+	AdmissionRef string `json:"admissionRef"`
 
 	// AdmittedAt is when the scheme admitted this bank, which is when this row
 	// was written rather than when the bank was founded. A bank exists before it
 	// joins one.
-	AdmittedAt time.Time
+	AdmittedAt time.Time `json:"admittedAt"`
 }
