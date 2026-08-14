@@ -59,7 +59,12 @@ doesn't join that group. `plain-shell` is the lobby's and Learn's. **The right
 rail carries the network above the concept panel** — `NetworkRail` from
 `components/network/`, desktop only, suppressed on the lobby, which carries
 `NetworkView` at full size instead. That rail is the OPERATOR's frame around a
-persona, never a persona's own chrome: a bank's screens must not grow it.
+persona, never a persona's own chrome: a bank's screens must not grow it. **The
+rail is the drawing alone**; the day's doors (`PhaseStepper`) are the lobby's,
+beside the full-size view. **A node in the drawing is a seat**: it links to that
+institution's home, which is `homeForInstitution` in `lib/identity.ts` joining
+the mesh's BICs to the deployment's participant ids, and a bank with no listener
+gets no link.
 
 **Reusable primitives — don't rebuild these** (`src/components/`): `Hint` (the `?` popover, registry in `hint-content.ts`), `Money`/`MoneyInput`/`AmountCell`, `DataTable`, `EnumBadge`, `ConfirmAction`, `Combobox` + domain pickers in `pickers/` (`ParticipantPicker`, `DepositAccountPicker`, `GLAccountPicker`) — use these for ID entry, never free-text. `PageHeader`, `FieldLabel`, `IdText` (monospace ID display), `ErrorState`. The
 network's own pieces live in `components/network/` — `FlowGraph`, `CrossingList`,

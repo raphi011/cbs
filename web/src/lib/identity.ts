@@ -17,6 +17,8 @@ import {
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 
+import type { InstitutionRole } from "./types";
+
 // Who you are in the app. There is no observer who sees all of it: a back office
 // sees one bank, a customer sees one account, the central bank sees reserves and
 // settlement, the clearing house sees the network. The identity is derived from
@@ -72,6 +74,23 @@ export function homeFor(identity: Identity): string {
     case "customer":
       return `/customer/${identity.pid}/${identity.did}`;
   }
+}
+
+// Which seat an institution in the mesh opens, or null for one nobody can sit
+// in. The two hosts ARE personas; a member bank is one only once it has a
+// listener of its own, which is the lobby's un-provisioned card in a link's
+// place. An address the deployment does not list is nobody's seat: the mesh
+// names institutions by BIC and a persona is addressed by participant id, so
+// the join is the only way from a node to a screen.
+export function homeForInstitution(
+  institution: { bic: string; role: InstitutionRole },
+  banks: { id: string; bic: string; provisioned: boolean }[],
+): string | null {
+  if (institution.role === "settlement agent") return homeFor({ persona: "central-bank" });
+  if (institution.role === "clearing house") return homeFor({ persona: "clearing-house" });
+  const bank = banks.find((b) => b.bic === institution.bic);
+  if (!bank || !bank.provisioned) return null;
+  return homeFor({ persona: "bank", pid: bank.id });
 }
 
 // The operator key the proxy routes on — the first segment after /api. One

@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   backendFor,
   homeFor,
+  homeForInstitution,
   identityFromPathname,
   navFor,
   type Identity,
@@ -173,5 +174,39 @@ describe("navFor", () => {
   // shell renders no tab strip. Sending is an act on that page, not a place.
   it("gives a customer no navigation at all", () => {
     expect(navFor({ persona: "customer", pid: "bank_1", did: "dep_9" })).toEqual([]);
+  });
+});
+
+describe("homeForInstitution", () => {
+  const banks = [
+    { id: "bank_1", bic: "AURODEFFXXX", provisioned: true },
+    { id: "bank_2", bic: "NORDDEFFXXX", provisioned: false },
+  ];
+
+  it("sends the two hosts to their own personas", () => {
+    expect(homeForInstitution({ bic: "CBSEDEFFXXX", role: "settlement agent" }, banks)).toBe(
+      "/central-bank",
+    );
+    expect(homeForInstitution({ bic: "CSMXDEFFXXX", role: "clearing house" }, banks)).toBe(
+      "/clearing-house",
+    );
+  });
+
+  // The mesh names institutions by BIC and a persona is addressed by
+  // participant id, so the join is the whole of the rule.
+  it("sends a member bank to its own back office", () => {
+    expect(homeForInstitution({ bic: "AURODEFFXXX", role: "member bank" }, banks)).toBe(
+      "/bank/bank_1",
+    );
+  });
+
+  // A bank founded and not yet provisioned has no listener, so its console
+  // would 502 on every request. It is drawn and it is not a link.
+  it("has no seat for a bank without a listener", () => {
+    expect(homeForInstitution({ bic: "NORDDEFFXXX", role: "member bank" }, banks)).toBeNull();
+  });
+
+  it("has no seat for an address the deployment does not list", () => {
+    expect(homeForInstitution({ bic: "SOLEDEFFXXX", role: "member bank" }, banks)).toBeNull();
   });
 });

@@ -9,7 +9,7 @@ import { Hint } from "@/components/hint";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ErrorState } from "@/components/error-state";
 import { cn } from "@/lib/utils";
-import { useNetworkFlow } from "@/lib/api/hooks";
+import { useInstitutionSeats, useNetworkFlow } from "@/lib/api/hooks";
 import { isResting, restingByWire, wireEnds } from "@/lib/network-graph";
 import type { NetworkFlow } from "@/lib/types";
 import { CrossingList } from "./crossing-list";
@@ -17,9 +17,9 @@ import { FlowGraph } from "./flow-graph";
 import { useNetworkWatch } from "./network-watcher";
 import { PhaseStepper } from "./phase-stepper";
 
-// The mesh, and the doors that move it. Both arrangements are here because they
-// are one object seen at two sizes: the rail is for WATCHING while you work in
-// somebody's console, and the lobby's is for READING what crossed.
+// The mesh, at two sizes, because it is one object seen from two places: the
+// rail is for WATCHING while you work in somebody's console, and the lobby's is
+// for READING what crossed and for MOVING the day that makes it change.
 //
 // This is the operator's frame around a persona and never a persona's own
 // chrome — the same standing "Advance day" has two inches away in the topbar. A
@@ -32,6 +32,11 @@ const RAIL_OPEN_KEY = "network-rail-open";
 // form is a sheet opened to explain a concept, and a live drawing of the
 // network is a different object than the one that sheet is for. On a phone the
 // lobby's view is the whole of it.
+//
+// It is the drawing and nothing else. Running a phase from beside somebody's
+// console is the deployment acting through a persona's frame, and the day's
+// doors are already two inches away in the topbar and in full on the lobby;
+// what belongs here is only the picture of what the mesh is holding.
 export function NetworkRail() {
   // Desktop-only (its one caller is DesktopShell), so localStorage is safe in
   // the initializer — it never runs on the server.
@@ -40,6 +45,7 @@ export function NetworkRail() {
   );
   const onLobby = usePathname() === "/";
   const { data: flow, isLoading, error } = useNetworkFlow();
+  const seatOf = useInstitutionSeats();
 
   const toggle = () => {
     setOpen((prev) => {
@@ -77,11 +83,10 @@ export function NetworkRail() {
             <Skeleton className="h-40" />
           ) : (
             <>
-              <FlowGraph flow={flow} />
+              <FlowGraph flow={flow} seatOf={seatOf} />
               <RestingSummary flow={flow} />
             </>
           )}
-          <PhaseStepper />
         </div>
       )}
     </section>
@@ -93,6 +98,7 @@ export function NetworkRail() {
 // what no seat can see.
 export function NetworkView() {
   const { data: flow, isLoading, error, refetch } = useNetworkFlow();
+  const seatOf = useInstitutionSeats();
   const [wire, setWire] = useState<string | null>(null);
 
   const shown = useMemo(() => {
@@ -117,6 +123,7 @@ export function NetworkView() {
           flow={flow}
           onSelectWire={setWire}
           selectedWire={wire}
+          seatOf={seatOf}
           className="max-h-80"
         />
         <RestingSummary flow={flow} />

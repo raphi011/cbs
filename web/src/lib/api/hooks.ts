@@ -15,12 +15,13 @@ import { trailOf } from "@/lib/payment-trail";
 import { holderKey, type LogHolder } from "@/lib/message";
 import type { StatementRow } from "@/lib/statement";
 import type { AccountType } from "@/lib/enums";
-import { backendFor } from "@/lib/identity";
+import { backendFor, homeForInstitution } from "@/lib/identity";
 import type {
   Asset,
   AuditQuery,
   CreateMandateRequest,
   DepositAccount,
+  InstitutionRole,
   MessageQuery,
   Participant,
 } from "@/lib/types";
@@ -1024,6 +1025,23 @@ export function useIdentityDirectory(): {
     // error never becomes a page-level error here.
     error: participants.error ?? null,
   };
+}
+
+// Which seat each institution in the mesh opens, so a node in the drawing can be
+// the thing you click to become that institution. It is the bank list and the
+// listener probe and nothing else: the accounts `useIdentityDirectory` gathers
+// are five more backends than a link needs.
+export function useInstitutionSeats(): (
+  institution: { bic: string; role: InstitutionRole },
+) => string | null {
+  const participants = useParticipants();
+  const isProvisioned = useIsProvisioned();
+  const banks = (participants.data ?? []).map((p) => ({
+    id: p.id,
+    bic: p.bic,
+    provisioned: isProvisioned(backendFor({ persona: "bank", pid: p.id })),
+  }));
+  return (institution) => homeForInstitution(institution, banks);
 }
 
 // Which day the deployment is on.

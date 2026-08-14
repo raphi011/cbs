@@ -1,6 +1,7 @@
 "use client";
 
 import { useMemo } from "react";
+import Link from "next/link";
 
 import { cn } from "@/lib/utils";
 import {
@@ -12,7 +13,7 @@ import {
   type Point,
   type Resting,
 } from "@/lib/network-graph";
-import type { NetworkFlow } from "@/lib/types";
+import type { InstitutionRole, NetworkFlow } from "@/lib/types";
 
 // The mesh, drawn. Institutions are nodes, EBICS connections are wires, and a
 // file nobody has collected is a dot resting on one — which is what settling
@@ -31,12 +32,17 @@ export function FlowGraph({
   className,
   onSelectWire,
   selectedWire,
+  seatOf,
 }: {
   flow: NetworkFlow;
   className?: string;
   // Clicking a wire narrows the list beneath the drawing to that wire's files.
   onSelectWire?: (key: string | null) => void;
   selectedWire?: string | null;
+  // Where a node leads: the screen that institution is seen from, or null for
+  // one nobody can sit in. The drawing is handed the answer rather than reading
+  // it, because a BIC becomes a route only through the deployment's own lists.
+  seatOf?: (institution: { bic: string; role: InstitutionRole }) => string | null;
 }) {
   const graph = useMemo(() => layout(flow), [flow]);
   const resting = useMemo(
@@ -61,7 +67,7 @@ export function FlowGraph({
         />
       ))}
       {graph.nodes.map((n) => (
-        <Pill key={n.bic} node={n} />
+        <Pill key={n.bic} node={n} seat={seatOf?.(n) ?? null} />
       ))}
     </svg>
   );
@@ -145,19 +151,30 @@ function Waiting({ at, count }: { at: Point; count: number }) {
 
 // An institution. Hosts are wider and filled; a member bank is outlined,
 // because what separates them here is that one is dialled and the other dials.
-function Pill({ node }: { node: InstitutionNode }) {
+//
+// A node with a seat behind it is a LINK, so the mesh is a second identity
+// chooser: the drawing already says who is in this deployment, and clicking one
+// is how you go and be them. A bank with no listener yet has no seat and stays a
+// shape — the lobby's card says the same thing in a sentence.
+function Pill({ node, seat }: { node: InstitutionNode; seat: string | null }) {
   const host = node.role !== "member bank";
   const box = host ? HOST : BANK;
-  return (
-    <g>
-      <title>{`${node.name} · ${node.bic} · ${node.role}`}</title>
+  const body = (
+    <>
+      <title>
+        {`${node.name} · ${node.bic} · ${node.role}${seat ? " — open this seat" : ""}`}
+      </title>
       <rect
         x={node.x - box.w / 2}
         y={node.y - box.h / 2}
         width={box.w}
         height={box.h}
         rx={box.h / 2}
-        className={cn("stroke-border", host ? "fill-muted" : "fill-card")}
+        className={cn(
+          "stroke-border",
+          host ? "fill-muted" : "fill-card",
+          seat && "transition-[stroke] group-hover:stroke-foreground group-focus-visible:stroke-foreground",
+        )}
         strokeWidth={1}
       />
       <text
@@ -169,6 +186,13 @@ function Pill({ node }: { node: InstitutionNode }) {
       >
         {node.code}
       </text>
-    </g>
+    </>
+  );
+
+  if (!seat) return <g>{body}</g>;
+  return (
+    <Link href={seat} aria-label={`Open ${node.name}`} className="group cursor-pointer">
+      {body}
+    </Link>
   );
 }
