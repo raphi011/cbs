@@ -42,8 +42,8 @@ func newAPIHarness(t *testing.T) *server {
 }
 
 // newBaseHarness is what a fresh deployment holds and nothing else: four banks
-// founded, admitted, subscribed, priced and prefunded, with no customer and no
-// payment anywhere.
+// founded, admitted, subscribed, priced and prefunded, one depositor each, and
+// no payment anywhere.
 func newBaseHarness(t *testing.T) *server {
 	t.Helper()
 	ctx := context.Background()

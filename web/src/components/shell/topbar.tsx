@@ -43,8 +43,9 @@ function ConceptTrigger() {
 // BusinessDay.
 //
 // And the scenario picker beside it, for a stronger reason still: a deployment
-// boots holding four banks and no customers, so until somebody runs a scenario
-// every screen in the app is empty. See ScenarioPicker.
+// boots holding four banks and a depositor apiece, so until somebody runs a
+// scenario or sends a payment by hand almost every screen is empty. See
+// ScenarioPicker.
 export function Topbar({
   mobile = false,
   mobileSidebar,

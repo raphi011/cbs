@@ -9,6 +9,7 @@ import (
 
 	"github.com/raphi011/cbs/api"
 	"github.com/raphi011/cbs/deposit"
+	"github.com/raphi011/cbs/ebics"
 	"github.com/raphi011/cbs/iso20022"
 	"github.com/raphi011/cbs/ledger"
 	"github.com/raphi011/cbs/lending"
@@ -69,6 +70,27 @@ func TestAScenarioNobodyWroteIsRefused(t *testing.T) {
 // payment that reads as settled and appears in no message log and on no graph.
 // It is asserted for every scenario, including the ones whose subject is not a
 // payment: a business day moves files whatever else it does.
+// The base state is held to the same rule a scenario is: its reserves are placed
+// by a camt.050 each, over the wire, rather than written behind one. Booting is
+// not an exemption.
+func TestTheBaseStatePlacesItsReservesByFile(t *testing.T) {
+	srv := baseState(t)
+
+	files, _, problems := srv.dep.journal.take()
+	var lodged int
+	for _, f := range files {
+		if f.OrderType == ebics.CLD {
+			lodged++
+		}
+	}
+	if want := len(srv.dep.banksInOrder()); lodged != want {
+		t.Fatalf("the base state uploaded %d lodgements for %d banks; reserves it places in process appear on no mesh", lodged, want)
+	}
+	for _, p := range problems {
+		t.Errorf("%s could not process %s: %s", p.Institution, p.OrderID, p.Detail)
+	}
+}
+
 func TestEveryScenarioMovesAFile(t *testing.T) {
 	for _, s := range scenarios {
 		t.Run(s.ID, func(t *testing.T) {

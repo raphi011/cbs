@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/raphi011/cbs/iso20022"
+	"github.com/raphi011/cbs/ledger"
 	"github.com/raphi011/cbs/payment"
 )
 
@@ -19,8 +20,9 @@ type Deployment interface {
 	// the other's.
 	Subscribe(context.Context) error
 
-	// CentralBankBIC names the settlement agent, which has no roster row to be
-	// read from: it is not a member of the scheme it settles. A lodgement names
-	// it at one end.
-	CentralBankBIC() iso20022.BIC
+	// Lodge is a member moving its own vault cash onto reserve at the settlement
+	// agent. Two databases and a camt.050 between them, so the deployment holds
+	// it for the same reason it holds Subscribe.
+	Lodge(ctx context.Context, bic iso20022.BIC, asset ledger.AssetCode,
+		amount ledger.Amount) (payment.LodgementInstruction, error)
 }

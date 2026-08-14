@@ -99,7 +99,9 @@ func (j *journal) phase(p api.PhaseDTO) {
 	j.tell(api.EventPhase, p)
 }
 
-// take empties the journal and hands back everything in it.
+// take empties the journal and hands back everything in it. Only an act whose
+// report REACHES a caller may take it: one that returns an error reports
+// nothing, so it leaves what it moved for the report that comes next.
 func (j *journal) take() ([]node.FileMoved, []node.TransactionOutcome, []node.Problem) {
 	j.mu.Lock()
 	defer j.mu.Unlock()
@@ -560,8 +562,11 @@ func (d *Deployment) AdvanceDay(ctx context.Context) (DayReport, error) {
 	defer d.resetMu.Unlock()
 
 	report, err := d.advanceDay(ctx)
+	if err != nil {
+		return report, err
+	}
 	report.Files, report.Outcomes, report.Problems = d.journal.take()
-	return report, err
+	return report, nil
 }
 
 // advanceDay is AdvanceDay without the lock and without emptying the journal,
@@ -641,8 +646,11 @@ func (d *Deployment) RunThrough(ctx context.Context, key string) (PhaseReport, e
 	defer d.resetMu.Unlock()
 
 	report, err := d.runThrough(ctx, key)
+	if err != nil {
+		return report, err
+	}
 	report.Files, report.Outcomes, report.Problems = d.journal.take()
-	return report, err
+	return report, nil
 }
 
 // runThrough is RunThrough without the lock and without emptying the journal.
@@ -678,16 +686,9 @@ func (d *Deployment) Subscribe(ctx context.Context) error {
 	return node.JoinProblemDetails(runPhases(ctx, d, subscribePhases))
 }
 
-// CarryToClearing moves the morning's files and stops before anything settles:
+// carryToClearing moves the morning's files and stops before anything settles:
 // every member's cut-off, the clearing house's work over what they uploaded,
-// and each member collecting the answers.
-func (d *Deployment) CarryToClearing(ctx context.Context) error {
-	err := node.JoinProblemDetails(d.carryToClearing(ctx))
-	d.journal.take()
-	return err
-}
-
-// carryToClearing is CarryToClearing without emptying the journal, for
+// and each member collecting the answers. It empties no journal, for
 // advanceDay's reason: a scenario carries files several times and reports what
 // all of it moved as one.
 func (d *Deployment) carryToClearing(ctx context.Context) []node.Problem {

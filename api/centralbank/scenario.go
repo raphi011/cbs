@@ -31,8 +31,8 @@ func (s *surface) handleRunScenario(r *http.Request) (api.ScenarioReportDTO, err
 
 	report, err := s.op.RunScenario(ctx, r.PathValue("id"))
 	if err != nil {
-		// The report comes back beside the error, for AdvanceDay's reason: a scenario
-		// that stopped halfway still moved everything up to where it stopped.
+		// No report: a scenario that stopped halfway leaves what it moved in the
+		// journal, and the next report carries it. See journal.take.
 		s.inst.Log().Error("scenario", "error", err, "scenario", r.PathValue("id"))
 		return api.ScenarioReportDTO{}, err
 	}

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/raphi011/cbs/calendar"
+	"github.com/raphi011/cbs/deposit"
 	"github.com/raphi011/cbs/iban"
 	"github.com/raphi011/cbs/interest"
 	"github.com/raphi011/cbs/iso20022"
@@ -123,13 +124,30 @@ func check(err error) {
 // seedAsset is the asset the whole base state is denominated in.
 const seedAsset ledger.AssetCode = "EUR"
 
-// Capital is what each bank's owners subscribe, and Lodged is how much of it the
-// bank places on reserve. The rest stays in the vault, because reserves and cash
-// are not the same money and a base state showing both says so.
+// Capital is what each bank's owners subscribe, Lodged is how much of it the
+// bank places on reserve, and Opening is what its first depositor pays in over
+// the counter. Reserves and cash are not the same money, so both are shown.
 const (
 	Capital ledger.Amount = 10_000_000
 	Lodged  ledger.Amount = 8_000_000
+	Opening ledger.Amount = 300_000
 )
+
+// The four banks a deployment boots with and the one depositor each opens. Each
+// issues addresses in the country its BIC names, under a bank code of its own
+// country's width: eight digits in Germany, five in Italy and France, three in
+// Sweden.
+var founding = []struct {
+	Name      string
+	BIC       iso20022.BIC
+	Country   iban.Country
+	Depositor string
+}{
+	{"Aurora Bank", "AURODEFFXXX", iban.DE, "Agnes Adler"},
+	{"Banca Verde", "VERDITMMXXX", iban.IT, "Beatrice Bellini"},
+	{"Nordhaven Bank", "NORDSESSXXX", iban.SE, "Nils Norberg"},
+	{"Crédit Soleil", "SOLEFRPPXXX", iban.FR, "Camille Colbert"},
+}
 
 // provisionBank writes one bank's three rows — its own, its settlement account
 // in the central bank's book, its roster entry in the clearing house's — pays
@@ -174,17 +192,20 @@ func (b *builder) publish(p *payment.Bank, id product.ID, from time.Time, pricin
 	must(p.Catalogue.PublishVersion(b.ctx, id, from))
 }
 
+// openCustomer opens a bank's first deposit account and takes that customer's
+// money in over the counter. It is the bank's own act, one institution and one
+// book: what makes the cash reserves is lodge below, and it is a conversation.
+func (b *builder) openCustomer(p *payment.Bank, name string) deposit.Account {
+	acct := must(p.Deposit.OpenAccount(b.ctx, name, seedAsset, p.ProductID, 0))
+	check(b.bank(p.BIC).Deposit(b.ctx, p.ID, acct.ID, Opening, "Opening deposit"))
+	return acct
+}
+
 // lodge moves part of one bank's vault cash onto its reserve at the central
-// bank: the member's own swap, and the settlement agent's credit that matches
-// it.
+// bank. Through the DEPLOYMENT's door, so the base state's reserves are placed
+// by a camt.050 like every other lodgement rather than written behind one.
 func (b *builder) lodge(p *payment.Bank, amount ledger.Amount) {
-	in, _ := must2(b.bank(p.BIC).LodgeReserves(b.ctx, seedAsset, amount, payment.MessageContext{
-		From:  p.BIC,
-		To:    b.dep.CentralBankBIC(),
-		MsgID: fmt.Sprintf("seed-lodge-%s-%s", p.BIC, seedAsset),
-		Now:   b.clock.Now(),
-	}))
-	must(b.cb().ReceiveLodgement(b.ctx, in))
+	must(b.dep.Lodge(b.ctx, p.BIC, seedAsset, amount))
 }
 
 func (b *builder) build() {
@@ -192,26 +213,23 @@ func (b *builder) build() {
 	// Joining is three rows in three databases, and then the owners pay the
 	// bank's capital up — which is where a bank holding no deposits gets money.
 	// See provisionBank.
-	//
-	// Each issues addresses in the country its BIC names, under a bank code of
-	// its country's own width: eight digits in Germany, five in Italy and
-	// France, three in Sweden.
-	banks := []*payment.Bank{
-		b.provisionBank("Aurora Bank", "AURODEFFXXX", iban.DE),
-		b.provisionBank("Banca Verde", "VERDITMMXXX", iban.IT),
-		b.provisionBank("Nordhaven Bank", "NORDSESSXXX", iban.SE),
-		b.provisionBank("Crédit Soleil", "SOLEFRPPXXX", iban.FR),
+	banks := make([]*payment.Bank, 0, len(founding))
+	for _, f := range founding {
+		banks = append(banks, b.provisionBank(f.Name, f.BIC, f.Country))
 	}
 
 	// --- Each bank collects the routing directory --------------------------
 	check(b.dep.Subscribe(b.ctx))
 
-	for _, p := range banks {
+	for i, p := range banks {
 		// --- Each bank's catalogue ------------------------------------------
 		// Before any account, because every deposit account is opened FROM a
 		// product: a floating terms row with no product would have nothing to
 		// float to.
 		b.products(p)
+
+		// --- Its first depositor ---------------------------------------------
+		b.openCustomer(p, founding[i].Depositor)
 
 		// --- And most of its cash placed on reserve --------------------------
 		// A bank cannot settle out of vault cash, so a base state a payment can be

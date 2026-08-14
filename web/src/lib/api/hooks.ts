@@ -1057,16 +1057,20 @@ export function useClock() {
 // Every query, because a day moves almost everything: payments clear and settle,
 // reserves move, statements are booked, interest accrues, and the date itself
 // changes. Naming the subset would be naming the whole of the domain.
+//
+// Settled rather than succeeded, here and on the two below: a run that stopped
+// halfway has still moved all of that, and where it actually landed is what the
+// reader most needs to see.
 export function useAdvanceDay() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: api.advanceDay,
-    onSuccess: () => qc.invalidateQueries(),
+    onSettled: () => qc.invalidateQueries(),
   });
 }
 
 // What an operator may trigger. A deployment boots holding a base state — four
-// banks and no customers — so this list is the only way anything gets into it.
+// banks with a depositor apiece — so this list is how most things get into it.
 //
 // The registry is fixed before the process starts, so this is never invalidated:
 // running a scenario changes the deployment and not what may be run.
@@ -1078,12 +1082,13 @@ export function useScenarios() {
 //
 // Every query, for the reason advancing a day does and more so: a scenario opens
 // accounts, moves money and advances the business date, often by months. Naming
-// the subset would be naming the whole of the domain.
+// the subset would be naming the whole of the domain. See useAdvanceDay on why
+// this is settled rather than succeeded, which matters most here.
 export function useRunScenario() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: api.runScenario,
-    onSuccess: () => qc.invalidateQueries(),
+    onSettled: () => qc.invalidateQueries(),
   });
 }
 
@@ -1103,7 +1108,7 @@ export function useRunThrough() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: api.runThrough,
-    onSuccess: () => qc.invalidateQueries(),
+    onSettled: () => qc.invalidateQueries(),
   });
 }
 

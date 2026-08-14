@@ -63,12 +63,15 @@ func (d *Deployment) RunScenario(ctx context.Context, id string) (ScenarioReport
 	defer d.resetMu.Unlock()
 
 	ran := d.BusinessDate()
-	err := s.Run(ctx, d)
+	if err := s.Run(ctx, d); err != nil {
+		// The journal is LEFT: a scenario that stopped halfway still moved everything
+		// up to where it stopped, and an error carries no report to hand it back in.
+		// See journal.take.
+		return ScenarioReport{Scenario: s, Ran: ran, Next: d.BusinessDate()}, err
+	}
 	report := ScenarioReport{Scenario: s, Ran: ran, Next: d.BusinessDate()}
-	// Taken whether or not it finished: a scenario that failed halfway still moved
-	// everything up to where it stopped, and that is what the operator has.
 	report.Files, report.Outcomes, report.Problems = d.journal.take()
-	return report, err
+	return report, nil
 }
 
 func toScenarioReportDTO(r ScenarioReport) api.ScenarioReportDTO {

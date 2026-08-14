@@ -27,7 +27,7 @@ export default function PaymentsPage() {
           rows={data}
           isLoading={isLoading}
           onRowClick={(p) => router.push(`/clearing-house/payments/${p.id}`)}
-          empty="No payments yet. A fresh deployment holds four banks and no customers — run a scenario from the topbar to make one, or initiate a payment between two funded accounts yourself."
+          empty="No payments yet. A fresh deployment holds four banks with one depositor each — run a scenario from the topbar to make one, or initiate a payment between two of those accounts yourself."
         />
       )}
     </div>

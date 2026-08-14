@@ -171,6 +171,27 @@ func TestTwoDaysDoNotReportTheSameFileTwice(t *testing.T) {
 	}
 }
 
+// And it is taken only where the report REACHES a caller. A refusal carries no
+// report, so a journal emptied by one is a set of file movements that can never
+// be reported at all. See journal.take.
+func TestARefusedPhaseKeyEmptiesNothing(t *testing.T) {
+	h := newHarness(t)
+	h.submitCreditTransfer(t)
+	runPhases(context.Background(), h.dep, only(beforeClock, phaseBankCutoff))
+
+	if _, err := h.dep.RunThrough(context.Background(), "not-a-phase-of-any-day"); err == nil {
+		t.Fatal("a phase key spelt like nothing was accepted")
+	}
+
+	files, _, _ := h.dep.journal.take()
+	for _, f := range files {
+		if f.OrderType == ebics.CCT {
+			return
+		}
+	}
+	t.Error("the cut-off's pacs.008 is in no journal; the refusal took it with it")
+}
+
 // releaseWithoutCollectionByMembers settles and releases and leaves every share
 // standing in the queue it was released into.
 var releaseWithoutCollectionByMembers = only(beforeClock,

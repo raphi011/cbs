@@ -630,8 +630,9 @@ export interface DayReport {
 }
 
 // Scenario is a named thing an operator can make happen. A deployment boots
-// holding a base state — four banks, admitted, subscribed, priced and prefunded
-// — and every customer, payment and facility in it came from one of these.
+// holding a base state — four banks, admitted, subscribed, priced, prefunded and
+// with one depositor each — and every payment and facility in it came from one
+// of these or was sent by hand.
 //
 // `id` is the whole of what the route takes: a scenario is named, never
 // parameterised, so what it does is decided where it is written.

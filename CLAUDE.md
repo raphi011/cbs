@@ -195,8 +195,8 @@ the same body under two act names.
 
 **A deployment boots holding a BASE STATE, and a SCENARIO is what fills it.**
 `seed.Populate` writes four banks founded, admitted, subscribed, priced,
-capitalised and on reserve, and nothing else — no customer, no payment, no
-facility. The registry is `cmd/server/scenarios.go`, served on the settlement
+capitalised and on reserve, each with ONE depositor holding `seed.Opening`, and
+nothing else — no second customer, no payment, no facility. The registry is `cmd/server/scenarios.go`, served on the settlement
 agent's operator surface, and **every scenario drives the doors an operator has
 and never `payment/flow`**: `Deployment.Submit`, `Return`, `Lodge`, a bank's own
 acts and the clock. `cmd/server/scenario_test.go` holds each one to having moved

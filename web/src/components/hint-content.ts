@@ -1490,7 +1490,7 @@ Credit Share Capital (EUR)  1,000  (Equity ↑ — and it is owed to nobody)
 
 Compare the deposit beside it. A depositor is [[account-type-liability|owed]] their balance; a shareholder is not. That is the whole of the difference between a liability and [[account-type-equity|equity]], and share capital is the one credit on a bank's chart that is nobody's claim on it.
 
-**Every bank starts here.** On its first day it has no customers, so [[vault-cash|vault cash]] paid in over the counter is not available to it — and a bank with an empty vault has nothing to [[lodgement|lodge]] and therefore no [[central-bank-reserves|reserves]] and therefore nothing to settle with. The subscription is what breaks that circle, which is why it runs when the bank is [[bank-founding|founded]] rather than later.
+**Every bank starts here.** On its first day it has no customers, so [[vault-cash|vault cash]] paid in over the counter is not available to it — and a bank with an empty vault has nothing to [[lodgement|lodge]] and therefore no [[central-bank-reserves|reserves]] and therefore nothing to settle with. The subscription is what breaks that circle, which is why it runs at **provisioning**: [[bank-founding|founding]] opens the account, and the owners' money is paid into it before the bank has taken a single deposit.
 
 It is per [[asset]], like every other account on the chart: a bank operating in euro and dollars was subscribed in each, and equity denominated in one currency does not fund obligations in another.
 

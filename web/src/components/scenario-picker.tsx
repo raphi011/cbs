@@ -24,10 +24,10 @@ import type { Scenario, ScenarioReport } from "@/lib/types";
 // # Why the app needs one at all
 //
 // A deployment boots holding a BASE STATE: four banks, admitted to the scheme,
-// subscribed to the routing directory, priced and prefunded, and nothing else.
-// There is no customer, no payment and no facility until somebody runs one of
-// these, so this menu is the only way anything gets into the app. A reader
-// arriving at an empty screen is meant to come here first.
+// subscribed to the routing directory, priced and prefunded, one depositor
+// each, and nothing else. There is no payment and no facility until somebody
+// runs one of these or sends one by hand, so this menu is where most readers
+// arriving at an empty screen are meant to come first.
 //
 // # Why it warns
 //

@@ -3,6 +3,7 @@ package seed
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/raphi011/cbs/calendar"
 	"github.com/raphi011/cbs/iso20022"
@@ -22,14 +23,36 @@ const testCentralBankBIC iso20022.BIC = "CBSEDEFFXXX"
 // directly instead of carried. It is small because the base state is: nothing
 // here crosses a wire, and a scenario — which does — is driven over the real
 // deployment in cmd/server rather than over this.
-type testDeployment struct{ nets *payment.Networks }
+type testDeployment struct {
+	nets *payment.Networks
+	now  func() time.Time
+}
 
 // AddBank writes nothing. A bank's rows are provision.Bank's and are already
 // written by the time this is called; what a deployment adds on top is
 // reachability, and everything below reaches a bank through its own network.
 func (d *testDeployment) AddBank(context.Context, *payment.Bank) error { return nil }
 
-func (d *testDeployment) CentralBankBIC() iso20022.BIC { return testCentralBankBIC }
+// Lodge places a member's cash on reserve IN PROCESS, for Subscribe's reason:
+// there is no host here to POST a camt.050 to, and the rows both institutions
+// end up holding are the same.
+func (d *testDeployment) Lodge(ctx context.Context, bic iso20022.BIC, asset ledger.AssetCode,
+	amount ledger.Amount) (payment.LodgementInstruction, error) {
+
+	net, err := d.nets.Bank(ctx, payment.ParticipantID(bic))
+	if err != nil {
+		return payment.LodgementInstruction{}, err
+	}
+	in, _, err := net.LodgeReserves(ctx, asset, amount, payment.MessageContext{
+		From: bic, To: testCentralBankBIC, Now: d.now(),
+		MsgID: "seed-lodge-" + string(bic) + "-" + string(asset),
+	})
+	if err != nil {
+		return payment.LodgementInstruction{}, err
+	}
+	_, err = d.nets.CentralBank().ReceiveLodgement(ctx, in)
+	return in, err
+}
 
 // Subscribe delivers the roster to every member IN PROCESS. There is no host and
 // no listener here, so what the real one publishes and collects over a wire this
@@ -71,7 +94,7 @@ func testNetworkAndClock(t *testing.T) (testNets, *calendar.Clock) {
 	d := New(clock)
 	stores := testenv.NewSet(t, clock.Now)
 	nets := payment.NewNetworks(stores, clock.Now)
-	if err := d.Populate(context.Background(), nets, &testDeployment{nets: nets}); err != nil {
+	if err := d.Populate(context.Background(), nets, &testDeployment{nets: nets, now: clock.Now}); err != nil {
 		t.Fatalf("populate: %v", err)
 	}
 	return testNets{ClearingHouseNetwork: nets.ClearingHouse(), nets: nets, stores: stores}, clock
@@ -170,12 +193,13 @@ func TestEveryBankIsPrefundedAndOnReserve(t *testing.T) {
 			t.Errorf("%s's owners put in %d, want %d", pid, equity, Capital)
 		}
 		// What is left in the drawer, and it is deliberately not zero: reserves and
-		// cash are not the same money.
+		// cash are not the same money. The depositor's own money is in it too, and
+		// none of that was lodged — a customer's cash is theirs and is owed back.
 		cash, err := bank.Ledger.BookBalance(ctx, ledger.Position{Account: accts.VaultCash})
 		if err != nil {
 			t.Fatalf("%s's vault cash: %v", pid, err)
 		}
-		if want := Capital - Lodged; cash != want {
+		if want := Capital - Lodged + Opening; cash != want {
 			t.Errorf("%s holds %d in the vault, want %d", pid, cash, want)
 		}
 
@@ -217,9 +241,10 @@ func TestEveryBankIsPriced(t *testing.T) {
 	}
 }
 
-// The base state is a starting position and not a history: nothing has been
-// paid, nobody banks here, and no book has anything lent out of it.
-func TestTheBaseStateHoldsNoCustomersAndNoPayments(t *testing.T) {
+// The base state is a starting position and not a history: one depositor per
+// bank with money in the account, and nothing that has happened to it — nothing
+// paid, nothing lent, nothing signed.
+func TestTheBaseStateHoldsOneDepositorPerBankAndNoHistory(t *testing.T) {
 	ctx := context.Background()
 	net := testNetwork(t)
 
@@ -239,10 +264,20 @@ func TestTheBaseStateHoldsNoCustomersAndNoPayments(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%s's own row: %v", pid, err)
 		}
-		if accts, err := bank.Deposit.ListAccounts(ctx); err != nil {
+		accts, err := bank.Deposit.ListAccounts(ctx)
+		if err != nil {
 			t.Fatalf("%s's deposit accounts: %v", pid, err)
-		} else if len(accts) != 0 {
-			t.Errorf("%s holds %d deposit accounts, want none", pid, len(accts))
+		}
+		if len(accts) != 1 {
+			t.Fatalf("%s holds %d deposit accounts, want its one depositor", pid, len(accts))
+		}
+		balance, err := bank.Deposit.GetBalance(ctx, accts[0].ID)
+		if err != nil {
+			t.Fatalf("%s's depositor's balance: %v", pid, err)
+		}
+		if balance.Book != Opening {
+			t.Errorf("%s's depositor holds %d, want %d — an account nobody paid into cannot pay anyone",
+				pid, balance.Book, Opening)
 		}
 		if facilities, err := bank.Lending.ListFacilities(ctx); err != nil {
 			t.Fatalf("%s's facilities: %v", pid, err)
@@ -273,7 +308,7 @@ func TestPopulatingTwiceBuildsNothingNew(t *testing.T) {
 	d := New(clock)
 	stores := testenv.NewSet(t, clock.Now)
 	nets := payment.NewNetworks(stores, clock.Now)
-	dep := &testDeployment{nets: nets}
+	dep := &testDeployment{nets: nets, now: clock.Now}
 
 	if err := d.Populate(ctx, nets, dep); err != nil {
 		t.Fatalf("the first pass: %v", err)

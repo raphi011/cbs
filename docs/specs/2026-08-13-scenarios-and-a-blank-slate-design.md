@@ -53,9 +53,29 @@ What a fresh deployment holds, and nothing else:
 - Each one subscribed, so every member holds the routing table.
 - Each one's product catalogue priced.
 - Each one **prefunded**: vault cash, and that cash lodged onto reserve.
+- Each one holding **one depositor**, who has paid `seed.Opening` in over the
+  counter.
 
-No customers, no accounts, no payments, no facilities, no mandates, no cycles
-beyond the one open per scheme.
+No second customer, no payments, no facilities, no mandates, no cycles beyond
+the one open per scheme.
+
+**Why one depositor and not none.** A base state with no account at all is a
+deployment a reader cannot pay out of by hand: submitting anything needs an
+address to send to, money behind it, and a bank at each end. Making that reader
+open two accounts and fund them before they can see a single file move is a
+worse first screen than the empty one it avoids. The cost is that "the base
+state is what provisioning alone produces" stops being true — opening an account
+and taking cash in are acts, and the base state now performs four of each. It is
+still not a history: nothing has been paid, lent or signed.
+
+**The lodgement goes through the same door a scenario's does.** `seed.Deployment`
+carries `Lodge`, so the four `camt.050`s that put a fresh boot's reserves where
+they are are real files, in both hosts' message logs and on the mesh. Reserves
+placed in process would be the "settled on every screen, on no graph" defect the
+rule below exists to prevent, one layer under the guard that catches it;
+`TestTheBaseStatePlacesItsReservesByFile` is the matching guard here. `seed`'s own
+suite has no listener to POST to and hands the instruction over in process, as it
+already does for `Subscribe`.
 
 ### Prefunding needs an act that does not exist
 

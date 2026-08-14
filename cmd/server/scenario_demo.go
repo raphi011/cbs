@@ -22,6 +22,13 @@ import (
 // as settled on every screen and names no file, which is the first thing a
 // reader looks for.
 
+// Bruno's arranged overdraft, and what is left of it after the card settlement
+// spends him into it: EUR 500 limit, EUR 200 drawn.
+const (
+	brunoLimit    ledger.Amount = 50_000
+	brunoHeadroom ledger.Amount = 30_000
+)
+
 var scenarioDemoNetwork = Scenario{
 	ID:   "demo-network",
 	Name: "Demo network",
@@ -172,7 +179,7 @@ func (r *runner) lendingShowcase(aurora, verde, nord *payment.Bank, alice, bruno
 	must(verde.Deposit.SetOverdraftPricingOverlay(r.ctx, bruno.ID,
 		&product.OverdraftPricing{Rate: 150_000, UnarrangedRate: 350_000, DayCount: interest.ACT365},
 		now()))
-	must(verde.Deposit.SetOverdraftLimit(r.ctx, bruno.ID, 50_000, now()))
+	must(verde.Deposit.SetOverdraftLimit(r.ctx, bruno.ID, brunoLimit, now()))
 
 	// --- Bella, migrated onto Premium, effective a fortnight in -------------
 	must(verde.Deposit.ChangeProduct(r.ctx, bella.ID, r.premiumAt(verde), now().AddDate(0, 0, 14)))
@@ -206,9 +213,13 @@ func (r *runner) lendingShowcase(aurora, verde, nord *payment.Bank, alice, bruno
 	// --- Bruno, pushed into overdraft and accruing --------------------------
 	// A card settlement pushes him into his priced overdraft, and it is a real
 	// payment: submitted, uploaded, cleared and settled like any other.
+	//
+	// Spent down to a fixed HEADROOM inside the limit, off available rather than
+	// off the book: available is what the submitting bank checks, so an amount
+	// read off the book is refused by any hold this scenario happens to leave.
 	brunoBalance := must(verde.Deposit.GetBalance(r.ctx, bruno.ID))
-	overdrawBy := ledger.Amount(20_000) // EUR 200 into the EUR 500 arranged limit
-	r.submit(r.sct(verde, bruno, aurora, alice, brunoBalance.Book+overdrawBy, "SCT-030", "Card settlement"))
+	r.submit(r.sct(verde, bruno, aurora, alice, brunoBalance.Available-brunoHeadroom,
+		"SCT-030", "Card settlement"))
 
 	r.days(45)
 	must(verde.Deposit.ChargeOverdraftInterest(r.ctx, bruno.ID, now()))

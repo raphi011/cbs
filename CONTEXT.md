@@ -199,7 +199,8 @@ _Avoid_: dead letter, error (bare), failure
 
 **Base state**:
 What a fresh deployment holds and nothing else: four banks founded, admitted,
-subscribed, priced, capitalised and on reserve. No customers, no payments.
+subscribed, priced, capitalised and on reserve, each with one depositor who has
+paid money in. No second customer, no payments.
 _Avoid_: seed, sample dataset, fixture, demo data
 
 **Scenario**:

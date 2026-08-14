@@ -163,6 +163,23 @@ func TestTwoBanksOnOneAddressAreRefused(t *testing.T) {
 	}
 }
 
+// A second pass asking for an asset the bank was not founded in is refused
+// rather than passed over: founding builds the chart of accounts and runs once,
+// so nothing later in the pass could give that asset one.
+func TestASecondPassCannotAddAnAsset(t *testing.T) {
+	ctx := context.Background()
+	nets := newNetworks(t)
+	provisionOne(t, nets, joinerBIC, joinerName, fixtureAsts)
+
+	_, err := provision.Bank(ctx, nets, provision.BankSpec{
+		Name: joinerName, BIC: joinerBIC, Country: iban.DE,
+		Assets: []ledger.AssetCode{fixtureAsts, "USD"},
+	})
+	if !errors.Is(err, provision.ErrNotFoundedInAsset) {
+		t.Fatalf("a second pass adding USD = %v, want ErrNotFoundedInAsset", err)
+	}
+}
+
 // Running the same deployment twice writes nothing new.
 func TestProvisioningTheSameDeploymentTwiceIsANoOp(t *testing.T) {
 	ctx := context.Background()

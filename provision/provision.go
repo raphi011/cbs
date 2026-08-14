@@ -44,7 +44,8 @@ func Bank(ctx context.Context, nets *payment.Networks, spec BankSpec) (*payment.
 		return nil, err
 	}
 	// Founding builds a chart of accounts, so a second pass over a bank that has
-	// one must not run it: a fresh chart orphans every balance on the first.
+	// one must not run it: a fresh chart orphans every balance on the first. What
+	// a second pass would otherwise have changed is refused above.
 	if bank == nil {
 		if bank, err = applicant.FoundBank(ctx, spec.Name, spec.BIC, spec.Country, spec.Assets); err != nil {
 			return nil, err
@@ -112,8 +113,14 @@ func Subscribe(ctx context.Context, nets *payment.Networks) error {
 // ErrAddressTaken is a spec whose BIC already belongs to a different bank.
 var ErrAddressTaken = errors.New("provision: another bank already holds this address")
 
+// ErrNotFoundedInAsset is a spec asking a bank that already exists for an asset
+// its chart of accounts does not hold. Founding builds the chart and runs once,
+// so this cannot be granted on a second pass.
+var ErrNotFoundedInAsset = errors.New("provision: this bank was not founded in that asset")
+
 // alreadyFoundedHere is the bank already at this address, out of its own book,
-// or nil. A bank of another name on it is ErrAddressTaken.
+// or nil. A bank whose spec has since changed is refused rather than passed
+// over: everything a second pass could act on is written at founding.
 func alreadyFoundedHere(ctx context.Context, applicant *payment.BankNetwork, spec BankSpec) (*payment.Bank, error) {
 	held, err := applicant.GetBank(ctx, payment.ParticipantID(spec.BIC))
 	if errors.Is(err, payment.ErrParticipantNotFound) {
@@ -125,6 +132,12 @@ func alreadyFoundedHere(ctx context.Context, applicant *payment.BankNetwork, spe
 	if held.Name != spec.Name {
 		return nil, fmt.Errorf("%w: %s is %s, and this deployment lists %s on it",
 			ErrAddressTaken, spec.BIC, held.Name, spec.Name)
+	}
+	for _, asset := range spec.Assets {
+		if _, ok := held.Assets[asset]; !ok {
+			return nil, fmt.Errorf("%w: %s was founded in %v, and this deployment lists %s on it",
+				ErrNotFoundedInAsset, spec.BIC, slices.Sorted(maps.Keys(held.Assets)), asset)
+		}
 	}
 	return held, nil
 }
