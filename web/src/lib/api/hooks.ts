@@ -1072,15 +1072,15 @@ export function usePhases() {
   return useQuery({ queryKey: qk.phases(), queryFn: api.listPhases });
 }
 
-// Open one phase's door, then invalidate every query.
+// Run the day as far as one phase, then invalidate every query.
 //
 // Every query, for the same reason advancing a day does: a phase clears, or
 // settles, or accrues, and naming the subset a given phase touches would be
 // naming the whole of the domain one phase at a time.
-export function useRunPhase() {
+export function useRunThrough() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: api.runPhase,
+    mutationFn: api.runThrough,
     onSuccess: () => qc.invalidateQueries(),
   });
 }

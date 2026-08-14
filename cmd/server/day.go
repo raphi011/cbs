@@ -135,14 +135,10 @@ func toBusinessDateDTO(d BusinessDate) api.BusinessDateDTO {
 }
 
 func toDayReportDTO(r DayReport) api.DayReportDTO {
-	keys := make([]string, 0, len(r.Phases))
-	for _, p := range r.Phases {
-		keys = append(keys, phaseKey(p.name))
-	}
 	return api.DayReportDTO{
 		Ran:          toBusinessDateDTO(r.Ran),
 		Next:         toBusinessDateDTO(r.Next),
-		Phases:       keys,
+		Phases:       phaseKeys(r.Phases),
 		MovementsDTO: toMovementsDTO(r.Files, r.Outcomes, r.Problems),
 	}
 }
@@ -464,9 +460,19 @@ func toPhaseDTO(p phase, completed bool) api.PhaseDTO {
 func toPhaseReportDTO(r PhaseReport) api.PhaseReportDTO {
 	return api.PhaseReportDTO{
 		Phase:        toPhaseDTO(r.Phase, r.Completed),
+		Phases:       phaseKeys(r.Phases),
 		Ran:          toBusinessDateDTO(r.Ran),
 		MovementsDTO: toMovementsDTO(r.Files, r.Outcomes, r.Problems),
 	}
+}
+
+// phaseKeys is what a run took, in the order it took it.
+func phaseKeys(list []phase) []string {
+	keys := make([]string, 0, len(list))
+	for _, p := range list {
+		keys = append(keys, phaseKey(p.name))
+	}
+	return keys
 }
 
 // ---------------------------------------------------------------------------
@@ -516,16 +522,24 @@ func (d *Deployment) reach(p phase, on BusinessDate) error {
 	return nil
 }
 
-// Phases is the business day as it is declared, each phase carrying whether the
-// day the clock stands on has run it. It is the deployment's rather than the
-// console's because the marker is.
-func (d *Deployment) Phases() []api.PhaseDTO {
-	today := d.today(d.BusinessDate())
+// completed is the phases of one day the marker leaves behind it. A phase the
+// day does not run is in no answer here: it cannot be progress through a
+// sequence it is not part of.
+func (d *Deployment) completed(on BusinessDate) map[phaseID]bool {
+	today := d.today(on)
 	ran := reachedIn(today, d.clock.Reached())
 	done := make(map[phaseID]bool, ran+1)
 	for _, p := range today[:ran+1] {
 		done[p.id] = true
 	}
+	return done
+}
+
+// Phases is the business day as it is declared, each phase carrying whether the
+// day the clock stands on has run it. It is the deployment's rather than the
+// console's because the marker is.
+func (d *Deployment) Phases() []api.PhaseDTO {
+	done := d.completed(d.BusinessDate())
 
 	out := make([]api.PhaseDTO, 0, len(dayPhases))
 	for _, p := range dayPhases {
@@ -576,15 +590,18 @@ func (d *Deployment) AdvanceDay(ctx context.Context) (DayReport, error) {
 	return report, err
 }
 
-// A PhaseReport is one phase of a business day and everything it moved. It
-// carries no next date: a phase is a step inside a day, and only advancing the
-// day moves the clock.
+// A PhaseReport is a run that stopped at a named phase, and everything it
+// moved. It carries no next date: a phase is a step inside a day, and only
+// advancing the day moves the clock.
 type PhaseReport struct {
-	Phase phase
-	Ran   BusinessDate
+	// Phase is the door that was opened, and Phases is what running through it
+	// took, in order — the outstanding phases before it and then it.
+	Phase  phase
+	Phases []phase
+	Ran    BusinessDate
 
-	// Completed says the day now counts this phase as behind it, which a phase run
-	// out of turn is not: it ran, and the day will run it again in its place.
+	// Completed says the day counts the named phase as behind it, which a phase
+	// run out of turn is not: it ran, and the day will run it in its place.
 	Completed bool
 
 	Files    []node.FileMoved
@@ -592,12 +609,28 @@ type PhaseReport struct {
 	Problems []node.Problem
 }
 
-// RunPhase runs ONE named phase of the business day and hands back what it
-// moved. It runs the phase whatever day it is: settlementOnly is AdvanceDay's
-// question, and a caller that named a phase has already decided it wants it.
+// through is what running the day as far as p takes: every phase of today still
+// outstanding, up to and including p. A day holding p outstanding at all is the
+// condition — a phase already behind the marker, and one today does not run,
+// are each run ALONE, which is what makes asking twice run it twice.
+func (d *Deployment) through(p phase, on BusinessDate) []phase {
+	todo := remaining(d.today(on), d.clock.Reached())
+	at := slices.IndexFunc(todo, func(q phase) bool { return q.id == p.id })
+	if at < 0 {
+		return []phase{p}
+	}
+	return todo[:at+1]
+}
+
+// RunThrough runs the business day as far as one named phase and hands back
+// what the whole of that took. It runs the phase whatever day it is:
+// settlementOnly is AdvanceDay's question, and a caller that named a phase has
+// already decided it wants it.
 //
-// The day records it only if it was the phase due next — see reach.
-func (d *Deployment) RunPhase(ctx context.Context, key string) (PhaseReport, error) {
+// The stop is named from the day's own sequence and the sequence is the day's,
+// which is why this is not a route that composes one. See
+// [the design record](../../docs/specs/2026-08-14-a-day-cursor-design.md).
+func (d *Deployment) RunThrough(ctx context.Context, key string) (PhaseReport, error) {
 	p, ok := phaseDoors[key]
 	if !ok {
 		return PhaseReport{}, api.BadRequest("no phase of a business day is spelt %q", key)
@@ -606,14 +639,21 @@ func (d *Deployment) RunPhase(ctx context.Context, key string) (PhaseReport, err
 	defer d.resetMu.Unlock()
 
 	ran := d.BusinessDate()
-	d.journal.problem(runPhases(ctx, d, []phase{p})...)
-	err := d.reach(p, ran)
+	report := PhaseReport{Phase: p, Ran: ran}
+	var err error
+	for _, q := range d.through(p, ran) {
+		d.journal.problem(q.run(ctx, d)...)
+		report.Phases = append(report.Phases, q)
+		// A marker that cannot be written stops the run, for AdvanceDay's reason:
+		// carrying on would leave phases behind that nothing records.
+		if err = d.reach(q, ran); err != nil {
+			break
+		}
+	}
 
-	files, outcomes, problems := d.journal.take()
-	return PhaseReport{
-		Phase: p, Ran: ran, Completed: phaseKey(p.name) == d.clock.Reached(),
-		Files: files, Outcomes: outcomes, Problems: problems,
-	}, err
+	report.Completed = d.completed(ran)[p.id]
+	report.Files, report.Outcomes, report.Problems = d.journal.take()
+	return report, err
 }
 
 // Subscribe is the clearing house publishing its routing table and every member

@@ -326,8 +326,8 @@ func TestADayHalfSteppedBeforeARestartIsFinishedAfterIt(t *testing.T) {
 
 	stepped := []string{"publish", "refresh", "bank-cut-off", "clearing"}
 	for _, key := range stepped {
-		if _, err := r.dep.RunPhase(ctx, key); err != nil {
-			t.Fatalf("RunPhase %s: %v", key, err)
+		if _, err := r.dep.RunThrough(ctx, key); err != nil {
+			t.Fatalf("RunThrough %s: %v", key, err)
 		}
 	}
 

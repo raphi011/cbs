@@ -648,11 +648,15 @@ export interface Phase {
   completed: boolean;
 }
 
-// PhaseReport is what one phase moved. There is no `next`, and that absence is
-// the whole difference between stepping a day and advancing one: only advancing
-// moves the clock.
+// PhaseReport is what running the day as far as one phase moved. There is no
+// `next`, and that absence is the whole difference between stepping a day and
+// advancing one: only advancing moves the clock.
+//
+// `phase` is the door that was opened and `phases` is the keys it took, which is
+// longer whenever phases before it were still outstanding.
 export interface PhaseReport {
   phase: Phase;
+  phases: string[];
   ran: BusinessDate;
   files: FileMoved[];
   outcomes: TransactionOutcome[];

@@ -140,7 +140,9 @@ operator surface, so a reader can run the clearing and stop. This is the
 deployment's, so it needs no institution to change, and
 the rule that a business day is a declared sequence's ruling holds:
 a phase is named, never parameterised, and a caller composes derived runs around
-it rather than splicing.
+it rather than splicing. What a door then RUNS became the day's own prefix up to
+that name once there was a cursor to measure it from — see
+[the day cursor](2026-08-14-a-day-cursor-design.md).
 
 **The doors sit with the clock**, on the settlement agent's listener beside
 `POST /clock/day`, because they are the same act at a finer grain: `GET
@@ -172,8 +174,8 @@ decision:
 **What it cost is that stepping and advancing overlapped.** A phase run by hand
 and then a whole day ran that phase twice, because nothing recorded how far the
 day had got. [The day cursor](2026-08-14-a-day-cursor-design.md) is what closed
-it: the day now finishes rather than starting again, and this door is where the
-need for it came from.
+it: the day now finishes rather than starting again, a door carries it up to the
+phase it names, and this door is where the need for both came from.
 
 **`Collect` is journalled.** Gap 4 above. A file is put into a queue in one event
 and taken out in another, and the graph renders a queued-and-uncollected file as

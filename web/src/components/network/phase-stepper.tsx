@@ -9,9 +9,9 @@ import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 import { describeError } from "@/lib/api/errors";
-import { useClock, usePhases, useRunPhase } from "@/lib/api/hooks";
+import { useClock, usePhases, useRunThrough } from "@/lib/api/hooks";
 import { describeMovements } from "@/lib/movements";
-import type { Phase } from "@/lib/types";
+import type { Phase, PhaseReport } from "@/lib/types";
 
 // A door per phase of the business day, so a reader can run the clearing and
 // stop. Advancing the whole day is the topbar's; this is the same act at a
@@ -21,16 +21,17 @@ import type { Phase } from "@/lib/types";
 // The doors sit here rather than beside the day's button because stepping is
 // only interesting next to the thing it moves.
 //
-// # What a tick means
+// # What a tick means, and what a door runs
 //
 // The day records how far it has got, so a phase already run is marked and
-// advancing the day runs only the rest. The door stays open anyway: a phase can
-// be run again, and running one out of turn is not progress — the day will run
-// it in its place. See docs/specs/2026-08-14-a-day-cursor-design.md.
+// advancing the day runs only the rest. Naming a LATER phase runs the ones still
+// outstanding before it and then it, which is the day's own order and not one
+// assembled here; a phase the day has already run is run on its own. See
+// docs/specs/2026-08-14-a-day-cursor-design.md.
 
 export function PhaseStepper() {
   const { data: phases, isLoading } = usePhases();
-  const run = useRunPhase();
+  const run = useRunThrough();
   // Which door is open. The mutation's own `isPending` cannot say, because
   // there is one mutation behind every button.
   const [running, setRunning] = useState<string | null>(null);
@@ -61,8 +62,8 @@ export function PhaseStepper() {
             <Button
               variant="ghost"
               size="icon"
-              aria-label={`Run ${phase.name}`}
-              title={`Run ${phase.name}`}
+              aria-label={runLabel(phase)}
+              title={runLabel(phase)}
               // Every door is disabled while any one is open: there is ONE
               // deployment behind every shell, and a second run would queue
               // behind the first on the same lock the day takes.
@@ -72,7 +73,7 @@ export function PhaseStepper() {
                 try {
                   const report = await run.mutateAsync(phase.key);
                   toast.success(report.phase.name, {
-                    description: describeMovements(report),
+                    description: describeRun(report),
                   });
                 } catch (e) {
                   toast.error(describeError(e));
@@ -88,6 +89,24 @@ export function PhaseStepper() {
       </ol>
     </div>
   );
+}
+
+// What opening this door will do, which is not the same for every row: a phase
+// the day has already run is run again on its own, one after the roll runs on
+// its own whatever the day has reached, and any other carries the day up to it.
+function runLabel(phase: Phase): string {
+  if (phase.afterClock) return `Run ${phase.name}`;
+  if (phase.completed) return `Run ${phase.name} again`;
+  return `Run the day through ${phase.name}`;
+}
+
+// What a run did, in one line. The phases are the SERVER's account of what it
+// took — the day owns that order, so a count assembled here could disagree with
+// what actually ran.
+function describeRun(report: PhaseReport): string {
+  const moved = describeMovements(report);
+  if (report.phases.length <= 1) return moved;
+  return `${report.phases.length} phases · ${moved}`;
 }
 
 // How far this day has got, in words. The ticks below say which phases; this

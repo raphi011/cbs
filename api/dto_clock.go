@@ -49,11 +49,15 @@ type PhaseDTO struct {
 	Completed bool `json:"completed"`
 }
 
-// PhaseReportDTO is what one phase moved. There is no next date: a phase is a
-// step inside a day, and only advancing the day moves the clock.
+// PhaseReportDTO is what running the day as far as one phase moved. There is no
+// next date: a phase is a step inside a day, and only advancing the day moves
+// the clock.
 type PhaseReportDTO struct {
-	Phase PhaseDTO        `json:"phase"`
-	Ran   BusinessDateDTO `json:"ran"`
+	// Phase is the door that was opened; Phases is the keys running through it
+	// took, in order, which is longer whenever phases before it were outstanding.
+	Phase  PhaseDTO        `json:"phase"`
+	Phases []string        `json:"phases"`
+	Ran    BusinessDateDTO `json:"ran"`
 
 	MovementsDTO
 }

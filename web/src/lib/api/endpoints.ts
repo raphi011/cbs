@@ -832,18 +832,19 @@ export function advanceDay(): Promise<DayReport> {
   return request("POST", cb("/clock/day"));
 }
 
-// listPhases is the day as it is declared, in the order it runs. runPhase opens
-// one of those doors and answers with what that phase moved — the clock stays
-// where it stood, which is the difference between stepping a day and advancing
-// one.
+// listPhases is the day as it is declared, in the order it runs. runThrough
+// opens one of those doors and runs the day as far as it — the phases still
+// outstanding before it, and then it — answering with what all of that moved.
+// The clock stays where it stood, which is the difference between stepping a day
+// and advancing one.
 //
-// A phase is named, never parameterised, so the key is the whole of what a door
-// takes and a caller composes derived runs around it rather than splicing.
+// The stop is named, never parameterised: the key is the whole of what a door
+// takes, and the sequence it runs is the day's own rather than one composed here.
 export function listPhases(): Promise<Phase[]> {
   return request("GET", cb("/clock/phases"));
 }
 
-export function runPhase(key: string): Promise<PhaseReport> {
+export function runThrough(key: string): Promise<PhaseReport> {
   return request("POST", cb(`/clock/phases/${encodeURIComponent(key)}`));
 }
 

@@ -36,10 +36,11 @@ type Operator interface {
 	BusinessDate() api.BusinessDateDTO
 	AdvanceDay(ctx context.Context) (api.DayReportDTO, error)
 
-	// Phases is the business day as it is declared, in order, and RunPhase runs
-	// one of them without moving the clock. A phase is named, never parameterised.
+	// Phases is the business day as it is declared, in order, and RunThrough runs
+	// it as far as one of them without moving the clock. The stop is named, never
+	// parameterised.
 	Phases() []api.PhaseDTO
-	RunPhase(ctx context.Context, phase string) (api.PhaseReportDTO, error)
+	RunThrough(ctx context.Context, phase string) (api.PhaseReportDTO, error)
 
 	// NetworkFlow is the mesh: every institution's traffic paired into the
 	// crossings both ends observed. Limit bounds the crossings already delivered.

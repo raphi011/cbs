@@ -94,8 +94,8 @@ func TestAPhaseIsNamedAndNeverParameterised(t *testing.T) {
 }
 
 // TestAReaderCanRunTheClearingAndStop is what the doors are for: a payment
-// carried one hop at a time, with the clock standing still and each phase
-// moving exactly its own files.
+// carried as far as a named phase and no further, with the clock standing still
+// and each run moving exactly the files its phases move.
 func TestAReaderCanRunTheClearingAndStop(t *testing.T) {
 	s := newServer(t, nil)
 	a, b, _ := threeBanks(t, s)
@@ -114,7 +114,9 @@ func TestAReaderCanRunTheClearingAndStop(t *testing.T) {
 
 	day := doJSON(t, cbSurface(s), "GET", "/clock", "", http.StatusOK)["date"]
 
-	// One: the payer's bank reaches its cut-off, and the pacs.008 is uploaded.
+	// One: the day as far as the banks' cut-off — the roster published and
+	// collected first, because those are the phases before it — and the pacs.008
+	// is uploaded.
 	cutoff := step(t, s, "bank-cut-off")
 	assertPutTo(t, cutoff, a.bic, string(testConfig.ClearingHouseBIC))
 	if got := paymentOn(t, bankSurface(s, a.pid), payid); got.Status != payment.Initiated.String() {
@@ -122,8 +124,9 @@ func TestAReaderCanRunTheClearingAndStop(t *testing.T) {
 			got.Status, payment.Initiated)
 	}
 
-	// Two: the clearing house works through what it was sent, and answers. Its
-	// own copy exists from here, and the payer's bank has not heard yet.
+	// Two: the clearing house works through what it was sent, and answers — one
+	// phase, the cut-off being the only thing that stood before it. Its own copy
+	// exists from here, and the payer's bank has not heard yet.
 	work := step(t, s, "clearing")
 	if len(work.Outcomes) == 0 {
 		t.Fatal("the clearing phase decided nothing about the transaction it was sent")
@@ -136,21 +139,31 @@ func TestAReaderCanRunTheClearingAndStop(t *testing.T) {
 			got.Status, payment.Initiated)
 	}
 
-	// Three: it collects, and only now does it know. That gap between a file put
-	// in a queue and a file taken out of one is the thing the doors make visible.
-	collect := step(t, s, "collection")
-	assertTakenBy(t, collect, a.bic)
-	if got := paymentOn(t, bankSurface(s, a.pid), payid); got.Status != payment.Accepted.String() {
-		t.Errorf("the payer's bank calls its payment %s after collecting, want %s", got.Status, payment.Accepted)
-	}
-
-	// And the payee's bank still holds nothing at all: the cycle has not settled,
-	// so the output file has not been released. Settle-before-release, stopped
-	// in the middle and looked at.
+	// And the payee's bank holds nothing at all: the cycle has not settled, so the
+	// output file has not been released. Settle-before-release, stopped in the
+	// middle and looked at.
 	var theirs []api.PaymentDTO
 	getJSON(t, bankSurface(s, b.pid), "/payments", &theirs)
 	if len(theirs) != 0 {
 		t.Errorf("the payee's bank holds %d payments before the cycle settled, want none", len(theirs))
+	}
+
+	// Three: the collection, which the day holds four phases behind, so naming it
+	// runs those too. Only now does the payer's bank know — that gap between a
+	// file put in a queue and a file taken out of one is what the doors make
+	// visible, and reaching it does not let the day skip the settlement.
+	collect := step(t, s, "collection")
+	want := []string{"clearing-house-cut-off", "discharge", "settlement", "release", "collection"}
+	if got := collect.Phases; !slices.Equal(got, want) {
+		t.Errorf("naming the collection ran %s, want %s", strings.Join(got, " → "), strings.Join(want, " → "))
+	}
+	assertTakenBy(t, collect, a.bic)
+	if got := paymentOn(t, bankSurface(s, a.pid), payid); got.Status != payment.Settled.String() {
+		t.Errorf("the payer's bank calls its payment %s after collecting, want %s", got.Status, payment.Settled)
+	}
+	getJSON(t, bankSurface(s, b.pid), "/payments", &theirs)
+	if len(theirs) != 1 {
+		t.Errorf("the payee's bank holds %d payments once the cycle settled and released, want 1", len(theirs))
 	}
 
 	// Through all of it the clock stood still. A phase is a step inside a day and

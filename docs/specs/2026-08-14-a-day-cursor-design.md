@@ -15,7 +15,7 @@ declaration.
 
 **Nothing records how far a business day has got.**
 
-`RunPhase` runs the phase it is named whatever has already happened, and
+A door runs the phase it is named whatever has already happened, and
 `AdvanceDay` runs the whole of `beforeClock` whatever has already happened. So an
 operator who steps the clearing and then advances the day runs the clearing
 twice, and neither the engine nor the reader can say which phases of today are
@@ -34,7 +34,8 @@ RECORDED, and the record is what makes a second run a no-op.
 ## The design
 
 **The clock's record gains a marker naming how far the current day has got.
-`AdvanceDay` runs the phases after it, and completing a phase in turn moves it.**
+`AdvanceDay` runs the phases after it, a door runs them up to the one it names,
+and completing a phase in turn is what moves it.**
 
 ### The marker is on the clock's own record, and it is opaque there
 
@@ -62,20 +63,43 @@ behind books that already hold later entries.
 
 ### The marker moves only in turn
 
-`RunPhase` records the phase it ran **only when that phase is the one the day
-would have run next**. A phase run out of turn runs, and moves nothing.
+The marker records a phase **only when that phase is the one the day would have
+run next**, so it advances one phase at a time and never jumps.
 
 This is the whole safety argument. A marker that jumped to whatever was last
-stepped would let `AdvanceDay` skip the phases *before* it: stepping `release`
-alone would leave a day that never settled and then declined to release. Out of
-turn, the phase is an extra run the operator asked for — which is what a door has
-always been — and the day still runs it in its place.
+named would let `AdvanceDay` skip the phases *before* it: reaching `release`
+would leave a day that never settled and then declined to release. What follows
+from it is the door below, and what is left over — a phase the day is not
+holding outstanding at all — runs out of turn, moves nothing, and is run by the
+day in its place.
 
 "Next" is read from the day's EFFECTIVE sequence, which is `beforeClock` narrowed
 by `settlementOnly` for the date the clock stands on. So on a day the scheme is
 shut, `end of day` is the first phase and stepping `clearing` moves nothing —
 consistent with `settlementOnly` staying reported rather than enforced, because
 the phase still runs.
+
+### A door runs the day AS FAR AS the phase it names
+
+`RunThrough(key)` runs every phase of today still outstanding up to and
+including the named one, in the day's own order, and stops without moving the
+clock. Naming the phase due next runs one; naming `settlement` five phases ahead
+runs the four between and then it.
+
+**This is not a route that composes a sequence.** The sequence is the day's, the
+stop is named from the day's own listing, and what runs is the prefix
+`POST /clock/day` would have run — stopped earlier and without the roll. The
+refusals that stand are the ones about what a door TAKES: one name, no range, no
+list, no phase narrowed to a queue.
+
+**A phase the day is not holding outstanding is run alone**: one already behind
+the marker, and one today does not run because the scheme is shut. That keeps
+"ask twice and it runs twice", which is what a door has always been, and it is
+the only path left to an out-of-turn run.
+
+The report says which phases the run took, because a caller that named one phase
+and got five needs to be told so — and it is the same field a day's report
+already carries.
 
 ### It covers the phases before the roll, and only those
 
@@ -97,9 +121,10 @@ not declare — claim progress through a sequence it is not walking.
 
 ### What a failed write does
 
-`Reach` writes a file, so it can fail. When it does, `AdvanceDay` stops where it
-is, does not move the clock, and returns the error beside the report of what it
-moved — the same shape a failed `Advance` already has. The marker then names one
+`Reach` writes a file, so it can fail. When it does, the run stops where it is —
+`AdvanceDay` without moving the clock, a door short of the phase it was named —
+and the error comes back beside the report of what moved, the same shape a failed
+`Advance` already has. The marker then names one
 phase less than actually ran, so the resumed day re-runs that one: **the marker
 can only ever under-report**, which is the direction the drain-shaped phases
 already tolerate.
@@ -109,9 +134,10 @@ already tolerate.
 - `PhaseDTO` gains `completed` — whether the day the clock stands on has run this
   phase. Not `ran`: `PhaseReportDTO.ran` is the DATE a phase ran on, and one
   object carrying both under one name reads as a contradiction.
-- `DayReportDTO` gains `phases` — the keys this call ran, in order. A report is
-  what *this call* did, which is the rule the doors were built on, and a day that
-  skipped four phases had no way to say so.
+- `DayReportDTO` and `PhaseReportDTO` gain `phases` — the keys this call ran, in
+  order. A report is what *this call* did, which is the rule the doors were built
+  on, and neither a day that skipped four phases nor a door that ran five had any
+  way to say so.
 - `GET /clock` is unchanged. The phase listing is where progress is read, because
   progress is per-phase and a count would be a second way to derive it.
 - No new SSE event name is strictly needed — the watcher invalidates every query
@@ -135,9 +161,12 @@ already tolerate.
   day on the date it leaves and lands on a day nothing has run on, which is what
   an empty marker already says; a seed that wrote one would be recording a day it
   had not driven a door of.
-- **Nothing refuses a door.** A phase can still be stepped out of turn, twice, or
-  on a day the scheme is shut. The marker records what happened; it is not a
-  gate.
+- **Nothing refuses a door.** A phase can still be run again, or on a day the
+  scheme is shut, and a door reaching forward runs the phases before it rather
+  than refusing. The marker records what happened; it is not a gate.
+- **No door runs the roll.** Reaching `end of day` leaves the date where it
+  stood, and only `POST /clock/day` moves it. That is the scheduled business
+  day's to change.
 
 ## Verification
 
@@ -145,8 +174,9 @@ already tolerate.
   with nothing reached; a file holding neither is still refused; `Advance` and
   `Rewind` clear the marker, and a reopened directory sees the clearing.
 - `cmd/server`: stepping the day's first phases and then advancing runs only the
-  rest, read off `DayReport.Phases`; a phase stepped out of turn leaves the
-  marker where it was and the day runs it in its place; a day the scheme is shut
+  rest, read off `DayReport.Phases`; naming a later phase runs the outstanding
+  ones before it, read off `PhaseReport.Phases`; a phase the day has already run
+  is run alone and leaves the marker where it was; a day the scheme is shut
   begins at `end of day`; the listing marks exactly the phases that ran.
 - A restart: a file-backed deployment steps four phases, the process ends, and
   the next one advances the remaining seven. `restartable.boot` opens the clock
@@ -174,3 +204,10 @@ the one the cursor protects.
 - **A `phase` column on `messages`.** The schema already refuses it, in writing,
   and it would make every institution record something only the deployment knows.
 - **A second file beside `business-date`.** No atomicity with the date.
+- **A second route for reaching forward**, leaving the door at one phase. Two
+  routes over one act, and the console would have carried two controls per row to
+  say what one already says: the phase you name is where the day stops.
+- **The console running the doors in order itself.** It would put the day's
+  sequence in a browser, take the deployment's lock once per phase with anything
+  else free to interleave, and leave a run that failed half way through reported
+  as five things rather than one.

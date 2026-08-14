@@ -65,35 +65,55 @@ func TestAdvancingADayRunsOnlyWhatWasNotStepped(t *testing.T) {
 	}
 }
 
-// TestAPhaseSteppedOutOfTurnLeavesTheDayWhereItWas is the safety rule: a marker
-// that jumped to whatever was last stepped would let the day skip the phases
-// BEFORE it, and settling after releasing is the one order the system exists to
-// keep.
-func TestAPhaseSteppedOutOfTurnLeavesTheDayWhereItWas(t *testing.T) {
+// TestNamingALaterPhaseRunsTheOnesBeforeIt is the safety rule that makes the
+// door reach forward at all: settling before releasing is the one order the
+// system exists to keep, so a door named ahead of the marker runs the day up to
+// it rather than skipping to it.
+func TestNamingALaterPhaseRunsTheOnesBeforeIt(t *testing.T) {
 	s := newServer(t, nil)
 
 	report := step(t, s, "release")
-	if report.Phase.Completed {
-		t.Error("releasing before anything cleared counts as progress through the day")
+	want := []string{
+		"publish", "refresh", "bank-cut-off", "clearing",
+		"clearing-house-cut-off", "discharge", "settlement", "release",
 	}
-	if got := completedOn(t, s); len(got) != 0 {
-		t.Errorf("the day has run %s after one phase out of turn", strings.Join(got, " → "))
+	if got := report.Phases; !slices.Equal(got, want) {
+		t.Errorf("naming release ran %s, want %s", strings.Join(got, " → "), strings.Join(want, " → "))
+	}
+	if !report.Phase.Completed {
+		t.Error("the day ran up to release and does not count release as behind it")
+	}
+	if got := completedOn(t, s); !slices.Equal(got, want) {
+		t.Errorf("the day has run %s, want %s", strings.Join(got, " → "), strings.Join(want, " → "))
+	}
+}
+
+// TestAPhaseTheDayHasRunIsRunAloneAndMovesNothing: the door stays open on a
+// phase behind the marker, and asking twice runs it twice — but a marker that
+// moved BACK would put the phases between it and the day's edge up for a second
+// run, which is the skip this rule exists to refuse.
+func TestAPhaseTheDayHasRunIsRunAloneAndMovesNothing(t *testing.T) {
+	s := newServer(t, nil)
+	step(t, s, "clearing")
+
+	report := step(t, s, "publish")
+	if got, want := report.Phases, []string{"publish"}; !slices.Equal(got, want) {
+		t.Errorf("re-running publish ran %s, want %s", strings.Join(got, " → "), strings.Join(want, " → "))
+	}
+	if !report.Phase.Completed {
+		t.Error("publish is behind the marker and the report says the day has not run it")
 	}
 
-	// The day runs it in its place, which is after the settlement it belongs
-	// behind.
+	want := []string{"publish", "refresh", "bank-cut-off", "clearing"}
+	if got := completedOn(t, s); !slices.Equal(got, want) {
+		t.Errorf("the day has run %s, want %s", strings.Join(got, " → "), strings.Join(want, " → "))
+	}
 	day, err := s.dep.AdvanceDay(t.Context())
 	if err != nil {
 		t.Fatalf("AdvanceDay: %v", err)
 	}
-	ran := keysOf(day.Phases)
-	settlement := slices.Index(ran, "settlement")
-	release := slices.Index(ran, "release")
-	if settlement < 0 || release < 0 {
-		t.Fatalf("advancing ran %s, and it was expected to run both", strings.Join(ran, " → "))
-	}
-	if settlement > release {
-		t.Errorf("advancing ran %s, which releases before it settles", strings.Join(ran, " → "))
+	if got := keysOf(day.Phases); slices.Contains(got, "clearing") {
+		t.Errorf("advancing ran %s, which clears a second time", strings.Join(got, " → "))
 	}
 }
 
