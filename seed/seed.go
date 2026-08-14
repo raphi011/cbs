@@ -99,6 +99,10 @@ type builder struct {
 	// because each needs more than one institution. See Deployment.
 	dep   Deployment
 	clock *calendar.Clock
+	// banks is every bank this build has provisioned, in the order it did. A
+	// business day is every one of them closing, so the seed's own day needs the
+	// whole list rather than the bank whose figures it is about to read.
+	banks []*payment.Bank
 	// cats holds each bank's product IDs, keyed by participant: the
 	// catalogue is book-scoped, so every bank has its own Basic and Premium and
 	// the same name at two banks is two products.
@@ -148,6 +152,7 @@ func (b *builder) provision(name string, bic iso20022.BIC, country iban.Country,
 		Name: name, BIC: bic, Country: country, Assets: assets,
 	}))
 	check(b.dep.AddBank(b.ctx, bank))
+	b.banks = append(b.banks, bank)
 	return bank
 }
 
@@ -216,17 +221,20 @@ func (b *builder) openLine(p *payment.Bank, borrower deposit.Account, name strin
 	return must(p.Lending.GetFacility(b.ctx, line.ID))
 }
 
-// day moves the business date on by one, and it is the only step this builder
-// takes.
-func (b *builder) day() { must(b.clock.Advance()) }
+// day is one business day: every bank's end of day for the date being LEFT, and
+// then the date moves. That is `AdvanceDay`'s own order, over `AdvanceDay`'s own
+// entry point, so the seed leaves every book where a running deployment would.
+func (b *builder) day() {
+	for _, p := range b.banks {
+		check(p.RunEndOfDay(b.ctx, b.clock.Now()))
+	}
+	must(b.clock.Advance())
+}
 
-// runDays advances the clock a day at a time, driving RunEndOfDay through each
-// one — the same entry point payment.Bank exposes to the API — so the
-// seed's accrual and arrears move exactly as a running day would produce them.
-func (b *builder) runDays(p *payment.Bank, days int) {
+// runDays runs that many of them.
+func (b *builder) runDays(days int) {
 	for i := 0; i < days; i++ {
 		b.day()
-		check(p.RunEndOfDay(b.ctx, b.clock.Now()))
 	}
 }
 
@@ -493,16 +501,16 @@ func (b *builder) lendingShowcase(aurora, verde, nord *payment.Bank, alice, brun
 	loan := b.openLoan(aurora, alice, "Alice Home Loan", 1_000_000, 60_000, 60, firstDue, "Home loan payout")
 	alicePos := must(aurora.Deposit.Position(ctx, alice.ID))
 
-	b.runDays(aurora, int(firstDue.Sub(t1)/(24*time.Hour)))
+	b.runDays(int(firstDue.Sub(t1)/(24*time.Hour)))
 	sched := must(aurora.Lending.Schedule(ctx, loan.ID))
 	must(aurora.Lending.Repay(ctx, loan.ID, alicePos, sched[0].Total(), b.clock.Now(), "Instalment 1"))
 
 	secondDue := t1.AddDate(0, 2, 0)
-	b.runDays(aurora, int(secondDue.Sub(firstDue)/(24*time.Hour)))
+	b.runDays(int(secondDue.Sub(firstDue)/(24*time.Hour)))
 	sched = must(aurora.Lending.Schedule(ctx, loan.ID))
 	must(aurora.Lending.Repay(ctx, loan.ID, alicePos, sched[1].Total(), b.clock.Now(), "Instalment 2"))
 
-	b.runDays(aurora, 10) // a fresh accrual builds up; the third instalment is not yet due
+	b.runDays(10) // a fresh accrual builds up; the third instalment is not yet due
 
 	// --- A delinquent loan (Niklas, Nordhaven) ------------------------------- A
 	// smaller loan than Alice's, disbursed and then left unpaid past two due
@@ -512,17 +520,15 @@ func (b *builder) lendingShowcase(aurora, verde, nord *payment.Bank, alice, brun
 	niklasFirstDue := t3.AddDate(0, 1, 0)
 	b.openLoan(nord, niklas, "Niklas Car Loan", 300_000, 90_000, 24, niklasFirstDue, "Car loan payout")
 	target := t3.AddDate(0, 2, 20)
-	b.runDays(nord, int(target.Sub(t3)/(24*time.Hour)))
+	b.runDays(int(target.Sub(t3)/(24*time.Hour)))
 
 	// --- Bruno, pushed into overdraft and accruing -------------------------- A
 	// card settlement pushes him into his priced overdraft.
-	check(verde.RunEndOfDay(ctx, b.clock.Now()))
-
 	brunoBalance := must(verde.Deposit.GetBalance(ctx, bruno.ID))
 	overdrawBy := ledger.Amount(20_000) // EUR 200 into the EUR 500 arranged limit
 	b.submit(b.sct(verde, bruno, aurora, alice, brunoBalance.Book+overdrawBy, "SCT-030", "Card settlement"))
 
-	b.runDays(verde, 45)
+	b.runDays(45)
 	must(verde.Deposit.ChargeOverdraftInterest(ctx, bruno.ID, b.clock.Now()))
 
 	// --- Bruno, repriced mid-life ------------------------------------------- The
@@ -533,12 +539,12 @@ func (b *builder) lendingShowcase(aurora, verde, nord *payment.Bank, alice, brun
 		&product.OverdraftPricing{Rate: 180_000, UnarrangedRate: 350_000, DayCount: interest.ACT365},
 		b.clock.Now().AddDate(0, 0, -20)))
 
-	b.runDays(verde, 15)
+	b.runDays(15)
 
 	// --- A revolving line, partly drawn and billed (Bella, Verde) ----------- EUR
 	// 2,500 limit, 18%, 2% minimum payment.
 	line := b.openLine(verde, bella, "Bella Card Line", 250_000, 180_000, 20_000, 100_000, "Card line draw")
-	b.runDays(verde, 30)
+	b.runDays(30)
 	must(verde.Lending.ChargeInterest(ctx, line.ID, b.clock.Now()))
 }
 

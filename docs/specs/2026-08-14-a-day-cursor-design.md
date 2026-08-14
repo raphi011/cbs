@@ -131,9 +131,10 @@ already tolerate.
   the accident matter less — the day no longer re-runs what was stepped — and the
   audit stays where the roadmap has it. This record's own failed-write path
   depends on it, which is worth stating plainly rather than hiding.
-- **The seed still closes a day the deployment has not reached.** A seed that set
-  the marker would fix the roadmap's filed defect, and it moves interest figures,
-  so it stays the domain decision it is filed as.
+- **The seed sets no marker, and it does not need one.** It closes every bank's
+  day on the date it leaves and lands on a day nothing has run on, which is what
+  an empty marker already says; a seed that wrote one would be recording a day it
+  had not driven a door of.
 - **Nothing refuses a door.** A phase can still be stepped out of turn, twice, or
   on a day the scheme is shut. The marker records what happened; it is not a
   gate.

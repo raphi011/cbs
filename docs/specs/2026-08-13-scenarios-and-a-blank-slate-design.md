@@ -145,9 +145,9 @@ returned*.
 a trigger instead of at boot. Nothing is rewritten and nothing is lost.
 
 This is the whole mitigation for the cost below, and it is what makes the blank
-slate affordable. It also demotes the roadmap's `runDays` defect — *the seed
-closes a business day the deployment has not reached* — from a claim about every
-boot to a claim about one optional scenario.
+slate affordable. The `runDays` defect it would also have demoted — *the seed
+closes a business day the deployment has not reached* — has since been fixed
+outright rather than made optional, so nothing here rests on it.
 
 ## What it costs
 

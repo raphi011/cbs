@@ -599,10 +599,10 @@ func TestReservesConserved(t *testing.T) {
 }
 
 // TestBrunoOverdraftRepricing pins the one figure seed.go's comments argue for
-// at length: Bruno's overdraft ends the build with three terms rows (opening,
-// 15%, 18%) and a final accrued interest blending both rates. 487 (EUR 4.87) is
-// derived, not read off a run — 15% ACT/365 on EUR 200.00 up to the repricing's
-// effective date, 18% from it.
+// at length: three terms rows (opening, 15%, 18%) and an accrued blending both
+// rates — 15% ACT/365 on EUR 200.00 to the repricing's effective date and 18%
+// from it, through the last day the build CLOSED rather than the one it left
+// the clock standing on.
 func TestBrunoOverdraftRepricing(t *testing.T) {
 	ctx := context.Background()
 	net := testNetwork(t)
@@ -631,8 +631,8 @@ func TestBrunoOverdraftRepricing(t *testing.T) {
 		t.Fatal("Bruno Bianchi not found")
 	}
 
-	if got := bruno.Accrued.Minor(); got != 487 {
-		t.Errorf("Bruno's accrued interest = %d, want 487 (EUR 4.87)", got)
+	if got := bruno.Accrued.Minor(); got != 485 {
+		t.Errorf("Bruno's accrued interest = %d, want 485 (EUR 4.85)", got)
 	}
 
 	rows, err := verde.Deposit.OverdraftTermsHistory(ctx, bruno.ID)
@@ -806,6 +806,43 @@ func TestAMutationAfterTheBuildIsDatedOnTheDeploymentsTimeline(t *testing.T) {
 	}
 	if !m.CreatedAt.After(BaseDate) {
 		t.Fatalf("mandate CreatedAt = %v, want a day the scenario advanced to past the anchor %v", m.CreatedAt, BaseDate)
+	}
+}
+
+// Every book the build touched is accrued through the day it LEFT, and no bank
+// is further behind than another. Before this held, the seed ran one bank's end
+// of day per advanced day, so the first operator advance booked the months the
+// other banks had missed.
+func TestTheSeedLeavesEveryBookLevelOnTheDayItClosed(t *testing.T) {
+	ctx := context.Background()
+	net, clock := testNetworkAndClock(t)
+	closed := ledger.DayStart(clock.Now().AddDate(0, 0, -1))
+
+	for _, p := range listParticipants(t, ctx, net) {
+		accts, err := p.Deposit.ListAccounts(ctx)
+		if err != nil {
+			t.Fatalf("list deposit accounts: %v", err)
+		}
+		for _, a := range accts {
+			// A closed account accrues nothing, so it keeps the date it was closed on.
+			if a.Status == deposit.Closed {
+				continue
+			}
+			if got := ledger.DayStart(a.LastAccrualDate); !got.Equal(closed) {
+				t.Errorf("%s %s accrued through %s, want %s", p.BIC, a.Name,
+					got.Format(time.DateOnly), closed.Format(time.DateOnly))
+			}
+		}
+		facs, err := p.Lending.ListFacilities(ctx)
+		if err != nil {
+			t.Fatalf("list facilities: %v", err)
+		}
+		for _, f := range facs {
+			if got := ledger.DayStart(f.LastAccrualDate); !got.Equal(closed) {
+				t.Errorf("%s %s accrued through %s, want %s", p.BIC, f.Name,
+					got.Format(time.DateOnly), closed.Format(time.DateOnly))
+			}
+		}
 	}
 }
 

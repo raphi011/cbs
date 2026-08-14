@@ -120,28 +120,6 @@ unique and the collision is a documented sentinel. Either make the ambiguity a
 sentinel too, or pin the current behaviour with a test that builds two payments
 claiming one reference; today nothing does.
 
-### The seed closes a business day the deployment has not reached
-
-`AdvanceDay` runs each bank's end of day for the day it is LEAVING and then moves
-the clock (`beforeClock`'s end-of-day phase, then the pivot). `seed/seed.go:226`
-`runDays` does the opposite: `b.day()` advances first, and `RunEndOfDay` is then
-called with `b.clock.Now()`, the day just arrived at. Over N days the seed closes
-D+1…D+N where a deployment closes D…D+N-1.
-
-It is **not** a correctness defect today — the advancement guards
-(`deposit/register.go:1183`, `lending/accrual.go:57`,
-`DayCount.Days(LastAccrualDate, date) <= 0`) make the re-close a no-op. Two things
-are wrong anyway: `runDays`' own comment claims the seed's accrual moves *"exactly
-as a running day would produce them"*, which this makes false; and the first
-operator advance after a boot re-closes a day the seed already closed, so it
-accrues nothing on any seeded facility.
-
-Fixing it moves interest figures, so it is a domain decision and does not ride
-along inside a refactor — the same reason the capitalisation defect above is
-filed rather than fixed. [The day cursor](specs/2026-08-14-a-day-cursor-design.md)
-does not cover it: the seed drives no door and marks nothing, so the first
-advance after a boot still re-closes the day the seed closed.
-
 ### `api/respond.go:21` puts a raw `err.Error()` in 500 bodies
 
 Where `recoverPanic` is careful to emit a fixed string. One of the two is wrong

@@ -77,10 +77,10 @@ A catch-up may re-run a phase after a crash, and today nothing says whether that
 is safe. Some phases are guarded by accident of their own design —
 `RunCutoff` empties the hub, `csm.Work` walks a pending list, and the end-of-day
 advancement guards (`deposit/register.go:1183`, `lending/accrual.go:57`) make a
-re-close a no-op. None of that is written down as a rule, and the roadmap already
-carries a live defect in exactly this area: *the seed closes a business day the
-deployment has not reached*, whose only reason for being harmless is those same
-guards.
+re-close a no-op. None of that is written down as a rule. The seed leaned on
+exactly those guards until it was made to close every bank's day on the date it
+leaves; nothing leans on them by design now, which is why the answer is owed
+here rather than borrowed from a caller that survives without one.
 
 **Every phase gets a stated answer and a test.** Running a phase twice from the
 same cursor position produces the same books as running it once, or the phase is
