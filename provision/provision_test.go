@@ -179,6 +179,12 @@ func TestProvisioningTheSameDeploymentTwiceIsANoOp(t *testing.T) {
 		t.Errorf("the second pass produced %s/%s, want the first pass's %s/%s",
 			second.ID, second.BookID, first.ID, first.BookID)
 	}
+	// The chart of accounts above all: a second founding builds a whole new one,
+	// and every balance on the first is then money nothing can reach.
+	if second.Assets[fixtureAsts] != first.Assets[fixtureAsts] {
+		t.Errorf("the second pass left the bank on %+v, want the first pass's %+v",
+			second.Assets[fixtureAsts], first.Assets[fixtureAsts])
+	}
 	entries, err := nets.ClearingHouse().ListRosterEntries(ctx)
 	if err != nil {
 		t.Fatalf("ListRosterEntries: %v", err)
@@ -192,5 +198,90 @@ func TestProvisioningTheSameDeploymentTwiceIsANoOp(t *testing.T) {
 	}
 	if len(banks) != 1 {
 		t.Errorf("two passes left %d bank databases, want 1", len(banks))
+	}
+}
+
+// A bank with no customers can still hold money, and this is the only act that
+// puts any there.
+func TestACapitalisedBankHoldsCashItOwesNobody(t *testing.T) {
+	ctx := context.Background()
+	nets := newNetworks(t)
+
+	bank, err := provision.Bank(ctx, nets, provision.BankSpec{
+		Name: joinerName, BIC: joinerBIC, Country: iban.DE, Capital: 1_000_000,
+	})
+	if err != nil {
+		t.Fatalf("provisioning a capitalised bank: %v", err)
+	}
+
+	accts, err := bank.AccountsFor(fixtureAsts)
+	if err != nil {
+		t.Fatalf("AccountsFor: %v", err)
+	}
+	cash, err := bank.Ledger.BookBalance(ctx, ledger.Position{Account: accts.VaultCash})
+	if err != nil {
+		t.Fatalf("vault cash: %v", err)
+	}
+	if cash != 1_000_000 {
+		t.Errorf("the bank holds %d in cash, want 1000000 — nothing was subscribed", cash)
+	}
+	equity, err := bank.Ledger.BookBalance(ctx, ledger.Position{Account: accts.ShareCapital})
+	if err != nil {
+		t.Fatalf("share capital: %v", err)
+	}
+	if equity != 1_000_000 {
+		t.Errorf("share capital stands at %d, want 1000000", equity)
+	}
+}
+
+// Capital is paid up once. Provisioning is idempotent and a second pass quoting
+// the same subscription must not double what the owners put in.
+func TestASecondProvisioningDoesNotSubscribeAgain(t *testing.T) {
+	ctx := context.Background()
+	nets := newNetworks(t)
+	spec := provision.BankSpec{
+		Name: joinerName, BIC: joinerBIC, Country: iban.DE, Capital: 1_000_000,
+	}
+	if _, err := provision.Bank(ctx, nets, spec); err != nil {
+		t.Fatalf("the first pass: %v", err)
+	}
+	bank, err := provision.Bank(ctx, nets, spec)
+	if err != nil {
+		t.Fatalf("the second pass: %v", err)
+	}
+
+	accts, err := bank.AccountsFor(fixtureAsts)
+	if err != nil {
+		t.Fatalf("AccountsFor: %v", err)
+	}
+	cash, err := bank.Ledger.BookBalance(ctx, ledger.Position{Account: accts.VaultCash})
+	if err != nil {
+		t.Fatalf("vault cash: %v", err)
+	}
+	if cash != 1_000_000 {
+		t.Errorf("two passes left %d in cash, want 1000000 — the subscription was paid twice", cash)
+	}
+}
+
+// A bank founded with nothing is a real state rather than a broken one: it can
+// take a deposit, and it has nothing of its own to lodge.
+func TestABankMayBeFoundedWithNoCapitalAtAll(t *testing.T) {
+	ctx := context.Background()
+	nets := newNetworks(t)
+	bank := provisionOne(t, nets, joinerBIC, joinerName)
+
+	accts, err := bank.AccountsFor(fixtureAsts)
+	if err != nil {
+		t.Fatalf("AccountsFor: %v", err)
+	}
+	if accts.ShareCapital == "" {
+		t.Fatal("the bank has no equity account; founding opens one whether or not anything is paid into it")
+	}
+	cash, err := bank.Ledger.BookBalance(ctx, ledger.Position{Account: accts.VaultCash})
+	if err != nil {
+		t.Fatalf("vault cash: %v", err)
+	}
+	if cash != 0 {
+		t.Errorf("an uncapitalised bank holds %d in cash, want 0", cash)
 	}
 }

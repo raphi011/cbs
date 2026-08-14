@@ -33,7 +33,7 @@ export default function BankPaymentsPage() {
         <PaymentsTable
           rows={data}
           isLoading={isLoading}
-          empty="No payments yet. This bank has neither sent nor received one."
+          empty="No payments yet. This bank has neither sent nor received one — run a scenario from the topbar to give it some traffic."
         />
       )}
     </div>

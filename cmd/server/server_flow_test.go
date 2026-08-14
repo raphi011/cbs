@@ -27,8 +27,24 @@ import (
 
 // What this file is for: the seam between HTTP and the business day.
 
-// newAPIHarness is a seeded deployment with both hosts really listening.
+// newAPIHarness is a deployment holding the demo network, with both hosts really
+// listening. It is newBaseHarness plus the one scenario that fills it.
 func newAPIHarness(t *testing.T) *server {
+	t.Helper()
+	srv := newBaseHarness(t)
+	// Boot leaves a base state, so the dataset every test below reads is a
+	// SCENARIO — which is the whole point: it was built through the same doors an
+	// operator has, so its payments name the files that carried them.
+	if _, err := srv.dep.RunScenario(context.Background(), scenarioDemoNetwork.ID); err != nil {
+		t.Fatalf("the demo network scenario: %v", err)
+	}
+	return srv
+}
+
+// newBaseHarness is what a fresh deployment holds and nothing else: four banks
+// founded, admitted, subscribed, priced and prefunded, with no customer and no
+// payment anywhere.
+func newBaseHarness(t *testing.T) *server {
 	t.Helper()
 	ctx := context.Background()
 
@@ -62,6 +78,18 @@ func newAPIHarness(t *testing.T) *server {
 		t.Fatalf("populate: %v", err)
 	}
 	return s
+}
+
+// buildDemoNetwork triggers the demo network through the operator's own door,
+// which is the only way anything gets into a deployment that boots holding a
+// base state. A reset rewinds to that base state, so every test below that
+// resets and then expects customers runs this afterwards.
+func buildDemoNetwork(t *testing.T, srv *server) {
+	t.Helper()
+	rec := post(t, srv.CentralBankRoutes(), "/scenarios/"+scenarioDemoNetwork.ID)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("running the demo network scenario = %d (body: %s)", rec.Code, rec.Body)
+	}
 }
 
 // seededParty is the participant and account behind one of the seed's IBANs.
@@ -275,9 +303,10 @@ func TestAReseededNetworkCanStillBePaidThrough(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("reset = %d (body: %s)", rec.Code, rec.Body)
 	}
+	buildDemoNetwork(t, srv)
 
-	// The seed's own two customers, resolved again: the reseed rebuilt them, and
-	// their ids are not the ones the first build had reason to be.
+	// The scenario's own two customers, resolved again: the rebuild made them,
+	// and their ids are not the ones the first build had reason to be.
 	pay := postJSON(t, payerRoutes(t, srv), "/payments", validSubmission(t, srv))
 	if pay.Code != http.StatusAccepted {
 		t.Fatalf("submitting after a reset = %d (body: %s)", pay.Code, pay.Body)
@@ -347,8 +376,8 @@ func TestAReadmittedBankCanBePaidThroughAfterAReset(t *testing.T) {
 // The reseeded banks are rejoined, not just recreated. seed.Populate drives
 // payment.Network directly and knows nothing about a deployment, so every bank
 // it creates is a row with no actor until Reset rejoins the roster — without
-// which a reset leaves a system that answers every read and cannot carry a
-// payment.
+// which a reset leaves a base state that answers every read and that no
+// scenario can build on.
 func TestPayingAfterAResetGoesThroughTheReseededBanks(t *testing.T) {
 	srv := newAPIHarness(t)
 
@@ -356,6 +385,7 @@ func TestPayingAfterAResetGoesThroughTheReseededBanks(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("reset = %d (body: %s)", rec.Code, rec.Body.String())
 	}
+	buildDemoNetwork(t, srv)
 
 	rec = postJSON(t, payerRoutes(t, srv), "/payments", validSubmission(t, srv))
 	if rec.Code != http.StatusAccepted {
@@ -612,7 +642,7 @@ func TestAResetThrowsAwayTheSharesTheClearingHouseHolds(t *testing.T) {
 	srv := newAPIHarness(t)
 	ctx := context.Background()
 	csm := srv.dep.ClearingHouse()
-	seeded := heldTransactions(t, csm)
+	held := heldTransactions(t, csm)
 
 	// A return placed by hand, because the seed carries none and a return this
 	// deployment really relays is answered in the same business day — there is no
@@ -626,8 +656,8 @@ func TestAResetThrowsAwayTheSharesTheClearingHouseHolds(t *testing.T) {
 	postJSON(t, payerRoutes(t, srv), "/payments", validSubmission(t, srv))
 	doJSON(t, payerRoutes(t, srv), "POST", "/payments/cutoff", "", http.StatusAccepted)
 	carry(t, srv)
-	if got := heldTransactions(t, csm); got <= seeded {
-		t.Fatalf("the clearing house holds %d held transactions and held %d before this test's own; it added no share, so this test would pass on nothing", got, seeded)
+	if got := heldTransactions(t, csm); got <= held {
+		t.Fatalf("the clearing house holds %d held transactions and held %d before this test's own; it added no share, so this test would pass on nothing", got, held)
 	}
 
 	rec := post(t, srv.CentralBankRoutes(), "/admin/reset")
@@ -635,8 +665,9 @@ func TestAResetThrowsAwayTheSharesTheClearingHouseHolds(t *testing.T) {
 		t.Fatalf("reset = %d (body: %s)", rec.Code, rec.Body)
 	}
 
-	if got := heldTransactions(t, csm); got != seeded {
-		t.Errorf("the clearing house holds shares over %d transactions after the reset and a fresh build leaves %d; the difference survived, addressed against cycle ids the store will mint again", got, seeded)
+	// A reset rewinds to the base state, which holds no file and no share at all.
+	if got := heldTransactions(t, csm); got != 0 {
+		t.Errorf("the clearing house holds shares over %d transactions after the reset and the base state holds none; the difference survived, addressed against cycle ids the store will mint again", got)
 	}
 	if _, err := csm.Network().GetHeldReturn(ctx, "pay_sentinel"); !errors.Is(err, payment.ErrHeldReturnNotFound) {
 		t.Errorf("a held return survived the reset (%v); it names a payment no institution now holds", err)
@@ -676,6 +707,7 @@ func TestABankConsoleBoundBeforeAResetStillHoldsItsOwnHub(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("reset = %d (body: %s)", rec.Code, rec.Body)
 	}
+	buildDemoNetwork(t, srv)
 
 	postJSON(t, payerRoutes(t, srv), "/payments", validSubmission(t, srv))
 	if got := doJSONArray(t, payer, "GET", "/payments/pending", "", http.StatusOK); len(got) != 1 {

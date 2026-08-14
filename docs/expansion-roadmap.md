@@ -132,8 +132,8 @@ about what a 500 may disclose.
 **21, EBICS and the business day, has shipped**, and it was first for two
 reasons that now hold for everything below: it replaced the transport every item
 here is built on, and the business date it brought is a prerequisite the other
-four had each been paying for separately. **7c has shipped too**, so the sequence
-starts at 2.
+four had each been paying for separately. **7c has shipped too, and so has 2**, so the
+sequence starts at 3.
 
 1. **7c, the message log**, and the per-phase stepping that makes it worth
    watching. The last piece of sub-project 7, and it makes every flow already
@@ -208,16 +208,36 @@ pairing from. The trail and the files are two cards. The trail itself was the
 whereabouts design's first task and had never been built, so the viewer brought
 its own scaffolding with it.
 
-### 2. Scenarios, and a deployment that starts blank — `spec`
+### 2. Scenarios, and a deployment that starts blank — `done`
 
 [`2026-08-13-scenarios-and-a-blank-slate-design.md`](specs/2026-08-13-scenarios-and-a-blank-slate-design.md).
-Boot leaves banks provisioned, subscribed and prefunded and nothing else; a
-payment, a rejection, a return and a borrower in arrears are scenarios an
-operator triggers. Every scenario drives the doors an operator has and never
-`payment/flow`, whose bypass has already produced one silent defect.
+Boot leaves four banks provisioned, subscribed, priced, capitalised and on
+reserve and nothing else; `GET /scenarios` and `POST /scenarios/{id}` are what
+fill it, and the old build is one of them. Every scenario drives the doors an
+operator has and never `payment/flow`, which is the defect this shipped to
+remove: a seeded payment read as settled on every screen and named no file.
 
-Wants a capital injection that does not exist: vault cash enters only through a
-customer deposit, so a bank with no customers has nothing to lodge.
+**All six tasks have shipped**, and three things found while building changed
+what it had to build.
+
+**The capital subscription is a domain act and it grew a chart entry.**
+`BankNetwork.InjectCapital` posts vault cash against a `Share Capital (<asset>)`
+account that founding now opens per asset, and `provision.BankSpec.Capital` is
+what pays it up. It is idempotent on a reference, which is what keeps
+provisioning idempotent.
+
+**Provisioning was not idempotent and its own test said it was.** A second pass
+re-founded the bank, building a WHOLE NEW chart of accounts and orphaning every
+balance on the first; the standing test asserted the ids and the roster count and
+never the chart. `provision.Bank` now founds only a bank it does not already
+find, and the test asserts the chart survives.
+
+**The rejection could not reach `AC01` and the scenario says so instead.** An
+address no account stands behind is the RECEIVING bank's judgement, made when it
+collects a released file, so it comes back as a `pacs.004` after settlement and
+never as a refusal. The reachable refusal a clearing house decides for itself is
+`TM01` — submitted after the window shut — and the scenario is named for it.
+Nothing in it names a code.
 
 ### 3. A scheduled business day — `spec`
 

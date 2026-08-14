@@ -61,6 +61,11 @@ func RunPayment(t *testing.T, newStore func(*testing.T, ledger.BookID) payment.B
 		assertEqual(t, "bic in listings", string(listed[0].BIC), string(auroraBIC))
 		assertEqual(t, "suspense account", string(got.Assets["EUR"].Suspense), "200.200.001")
 		assertEqual(t, "reserve account", string(got.Assets["EUR"].Reserve), "100.200.001")
+		// The two sides of a capital subscription, which is the only act that funds
+		// a bank holding no depositors.
+		assertEqual(t, "vault cash account", string(got.Assets["EUR"].VaultCash), "100.300.001")
+		assertEqual(t, "share capital account", string(got.Assets["EUR"].ShareCapital), "300.400.001")
+		assertEqual(t, "share capital account in listings", string(listed[0].Assets["EUR"].ShareCapital), "300.400.001")
 		// The settlement account number, in both queries, because a store can lose a
 		// column in one and not the other.
 		assertEqual(t, "settlement account", string(got.Assets["EUR"].Settlement), "200.100.001")
@@ -1554,7 +1559,11 @@ func bankRow(bic iso20022.BIC, name string, createdAt time.Time) payment.Bank {
 		ProductID:         "prd_basic",
 		AdmissionRef:      "adm-" + string(id),
 		Assets: map[ledger.AssetCode]payment.BankAccounts{
-			"EUR": {Suspense: "200.200.001", Reserve: "100.200.001", Settlement: "200.100.001"},
+			"EUR": {
+				Suspense: "200.200.001", Reserve: "100.200.001",
+				VaultCash: "100.300.001", ShareCapital: "300.400.001",
+				Settlement: "200.100.001",
+			},
 		},
 		CreatedAt: createdAt,
 	}

@@ -1065,6 +1065,28 @@ export function useAdvanceDay() {
   });
 }
 
+// What an operator may trigger. A deployment boots holding a base state — four
+// banks and no customers — so this list is the only way anything gets into it.
+//
+// The registry is fixed before the process starts, so this is never invalidated:
+// running a scenario changes the deployment and not what may be run.
+export function useScenarios() {
+  return useQuery({ queryKey: qk.scenarios(), queryFn: api.listScenarios, staleTime: Infinity });
+}
+
+// Run one, then invalidate every query.
+//
+// Every query, for the reason advancing a day does and more so: a scenario opens
+// accounts, moves money and advances the business date, often by months. Naming
+// the subset would be naming the whole of the domain.
+export function useRunScenario() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: api.runScenario,
+    onSuccess: () => qc.invalidateQueries(),
+  });
+}
+
 // The day's declared steps, each carrying whether the day the clock stands on
 // has already run it. The declaration is fixed before the process starts and
 // `completed` is not, which is why this is a live read rather than a constant.

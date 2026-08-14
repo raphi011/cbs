@@ -32,6 +32,10 @@ type BankAccounts struct {
 	// side of a deposit paid in over the counter.
 	VaultCash ledger.AccountID
 
+	// ShareCapital is what the bank's owners put in, and the credit side of the
+	// only act that funds a bank holding no depositors. See InjectCapitalTx.
+	ShareCapital ledger.AccountID
+
 	Settlement ledger.AccountID
 }
 

@@ -195,6 +195,30 @@ A file an institution could not process, named against the order id it arrived
 under.
 _Avoid_: dead letter, error (bare), failure
 
+## What a deployment starts with
+
+**Base state**:
+What a fresh deployment holds and nothing else: four banks founded, admitted,
+subscribed, priced, capitalised and on reserve. No customers, no payments.
+_Avoid_: seed, sample dataset, fixture, demo data
+
+**Scenario**:
+A named script of operator acts, triggered by hand, that fills a base state.
+Every one drives the doors an operator has, so what it makes is indistinguishable
+from what a reader makes by hand.
+_Avoid_: seed, fixture, demo, sample
+
+**Demo network**:
+The one scenario that fills all four banks at once — thirteen customers, every
+account status, five credit facilities, settled and returned payments, six in
+flight.
+_Avoid_: the seed, the sample dataset
+
+**Capital subscription**:
+A bank's owners paying money in: vault cash up, share capital up. The only act
+that funds a bank with no depositors, and it runs at provisioning.
+_Avoid_: capital injection, funding, prefunding, share issue
+
 ## Accumulating, cutting off, releasing
 
 **Payment hub**:

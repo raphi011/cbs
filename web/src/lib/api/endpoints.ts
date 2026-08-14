@@ -11,6 +11,8 @@ import type {
   NetworkFlow,
   Phase,
   PhaseReport,
+  Scenario,
+  ScenarioReport,
   Account,
   AcceptedPayment,
   Asset,
@@ -846,6 +848,23 @@ export function listPhases(): Promise<Phase[]> {
 
 export function runThrough(key: string): Promise<PhaseReport> {
   return request("POST", cb(`/clock/phases/${encodeURIComponent(key)}`));
+}
+
+// --- Scenarios --------------------------------------------------------------
+
+// listScenarios is what an operator may trigger; runScenario drives one and
+// answers with what it moved.
+//
+// On the SETTLEMENT AGENT's listener for the clock's reason: a scenario drives
+// every institution in the deployment and is therefore nobody's act but the
+// operator's. It takes the same lock advancing a day takes, so two cannot run
+// side by side, and it moves the shared business date.
+export function listScenarios(): Promise<Scenario[]> {
+  return request("GET", cb("/scenarios"));
+}
+
+export function runScenario(id: string): Promise<ScenarioReport> {
+  return request("POST", cb(`/scenarios/${encodeURIComponent(id)}`));
 }
 
 // --- The network mesh -------------------------------------------------------

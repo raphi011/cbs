@@ -67,11 +67,11 @@ func (t *tx) PutBank(ctx context.Context, b payment.Bank) error {
 	for _, asset := range slices.Sorted(maps.Keys(b.Assets)) {
 		accts := b.Assets[asset]
 		if _, err := t.tx.ExecContext(ctx, `
-			INSERT INTO bank_assets (bank_id, asset, suspense, reserve, unclaimed, returns_receivable, vault_cash, settlement, seq)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, `+nextRowSeq("bank_assets")+`)`,
+			INSERT INTO bank_assets (bank_id, asset, suspense, reserve, unclaimed, returns_receivable, vault_cash, share_capital, settlement, seq)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, `+nextRowSeq("bank_assets")+`)`,
 			string(b.ID), string(asset),
 			string(accts.Suspense), string(accts.Reserve), string(accts.Unclaimed), string(accts.ReturnsReceivable),
-			string(accts.VaultCash), string(accts.Settlement)); err != nil {
+			string(accts.VaultCash), string(accts.ShareCapital), string(accts.Settlement)); err != nil {
 			return fmt.Errorf("sqlite: put bank %s asset %s: %w", b.ID, asset, err)
 		}
 	}
@@ -101,7 +101,7 @@ func scanBank(row interface{ Scan(...any) error }) (payment.Bank, error) {
 // bankAssets reads the internal accounts of one bank, or of every bank when id
 // is empty.
 func (t *tx) bankAssets(ctx context.Context, id payment.ParticipantID) (map[payment.ParticipantID]map[ledger.AssetCode]payment.BankAccounts, error) {
-	query := "SELECT bank_id, asset, suspense, reserve, unclaimed, returns_receivable, vault_cash, settlement FROM bank_assets"
+	query := "SELECT bank_id, asset, suspense, reserve, unclaimed, returns_receivable, vault_cash, share_capital, settlement FROM bank_assets"
 	args := []any{}
 	if id != "" {
 		query += " WHERE bank_id = ?"
@@ -123,7 +123,7 @@ func (t *tx) bankAssets(ctx context.Context, id payment.ParticipantID) (map[paym
 			accts payment.BankAccounts
 		)
 		if err := rows.Scan(&id, &asset, &accts.Suspense, &accts.Reserve, &accts.Unclaimed, &accts.ReturnsReceivable,
-			&accts.VaultCash, &accts.Settlement); err != nil {
+			&accts.VaultCash, &accts.ShareCapital, &accts.Settlement); err != nil {
 			return nil, fmt.Errorf("sqlite: bank assets: %w", err)
 		}
 		if out[id] == nil {

@@ -1,6 +1,6 @@
-// Package flow drives a conversation between institutions, for a caller that IS
-// the deployment: the seed and the suites. No institution may call it, and
-// nothing on the transport path does.
+// Package flow drives a conversation between institutions with no transport
+// under it. It is a TEST HELPER: `payment`'s own suite is the one caller, and a
+// scenario driving the real doors is what replaced the other.
 package flow
 
 import (

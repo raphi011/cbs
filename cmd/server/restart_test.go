@@ -34,6 +34,11 @@ type restartable struct {
 	// here is about the TRANSPORT's rows and the domain has no way to reach them.
 	// See queuedForTheMembers.
 	set *sqlite.Set
+
+	// built says the demo network has been run. A scenario is a script of
+	// operator acts, so a second process running it again would open a second set
+	// of customers rather than find the first.
+	built bool
 }
 
 // newRestartable boots a deployment over a directory of SQLite files and seeds
@@ -58,9 +63,9 @@ func newRestartable(t *testing.T) *restartable {
 	return r
 }
 
-// boot opens the databases and builds a deployment over them. The seed runs and
-// finds its own work already done on every boot after the first, so what the
-// second process sees is what the first one left.
+// boot opens the databases and builds a deployment over them. The base state is
+// built and finds its own work already done on every boot after the first, so
+// what the second process sees is what the first one left.
 //
 // The clock is opened over the same directory, so the business date and how far
 // into it the deployment had got survive the process too.
@@ -89,6 +94,16 @@ func (r *restartable) boot(t *testing.T) {
 	r.server.nets, r.server.clock, r.server.dep = nets, clock, dep
 	if err := data.Populate(ctx, nets, dep); err != nil {
 		t.Fatalf("populate: %v", err)
+	}
+	// And the dataset these tests restart across, which is a SCENARIO: the base
+	// state holds no payment, so there would be nothing in flight to carry over a
+	// restart. Run once, on the first boot; a later one finds the banks built and
+	// must not build a second network on top of them.
+	if !r.built {
+		if _, err := dep.RunScenario(ctx, scenarioDemoNetwork.ID); err != nil {
+			t.Fatalf("the demo network scenario: %v", err)
+		}
+		r.built = true
 	}
 }
 
@@ -122,7 +137,7 @@ func (r *restartable) closeEveryCycleWithPaymentsInIt(t *testing.T) []payment.Cy
 		closed = append(closed, c.ID)
 	}
 	if len(closed) == 0 {
-		t.Fatal("the seeded dataset holds no open cut-off with payments in it; this test has nothing in flight to restart across")
+		t.Fatal("the demo network holds no open cut-off with payments in it; this test has nothing in flight to restart across")
 	}
 	return closed
 }

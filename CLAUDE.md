@@ -178,21 +178,34 @@ say about. `NewSet` opens the whole system, which is what `payment`, `seed` and
 that checks the books agree anyway is `payment/recon` — the reconciliation
 harness, which opens all N+2 databases at once precisely because no institution in the
 system may. It is test-only by convention: `cmd/server/recon_test.go` calibrates
-it against five deliberately broken states and `seed` runs it over the widest
-deployment. If a change could make two institutions' books disagree, that is the
+it against five deliberately broken states and every scenario's test runs it over
+the deployment that scenario left. If a change could make two institutions' books disagree, that is the
 test to add.
 
 **No institution owns the ORDER its acts go in, and `payment/flow` does.** The
 four conversations — `Initiate`, `Reject`, `Return`, `Settle` — over
-`*payment.Networks`, for a caller that IS the deployment: `seed` and the suites,
-never an institution and nothing on the transport path, where each performs its
-own half off the file it is handed. Every act stays in its own unit of work; the
-package opens no transaction and holds no store. `provision` is the same shape
-one layer over, and a driver that writes the sequence out again is how the seed
-and the suite came to build two different
-payments. Which agent plays which part is `payment.SubmitterOf`, `ReceiverOf`,
-`ReturnerOf` and `CounterpartyOf` — one rule, and the receiving side and the
-returning side are the same body under two act names.
+`*payment.Networks`, with no transport under them. It is now a **test helper
+with one caller**, `payment`'s own suite: a payment built this way names no file
+and appears on no graph, so anything a reader will see has to be built the other
+way. Every act stays in its own unit of work; the package opens no transaction
+and holds no store. `provision` is the same shape one layer over. Which agent
+plays which part is `payment.SubmitterOf`, `ReceiverOf`, `ReturnerOf` and
+`CounterpartyOf` — one rule, and the receiving side and the returning side are
+the same body under two act names.
+
+**A deployment boots holding a BASE STATE, and a SCENARIO is what fills it.**
+`seed.Populate` writes four banks founded, admitted, subscribed, priced,
+capitalised and on reserve, and nothing else — no customer, no payment, no
+facility. The registry is `cmd/server/scenarios.go`, served on the settlement
+agent's operator surface, and **every scenario drives the doors an operator has
+and never `payment/flow`**: `Deployment.Submit`, `Return`, `Lodge`, a bank's own
+acts and the clock. `cmd/server/scenario_test.go` holds each one to having moved
+a file and left `payment/recon` clean, which is the guard on that rule. See
+[the design record](docs/specs/2026-08-13-scenarios-and-a-blank-slate-design.md).
+
+**A bank is capitalised at provisioning**, which is the only act that funds one
+with no depositors: `BankNetwork.InjectCapital` debits vault cash and credits a
+`Share Capital (<asset>)` account founding opens per asset.
 
 **Nothing cross-checks the SQL.** There is one implementation, so anything that
 would need proving against a second has to be proved before it lands. What
@@ -255,8 +268,8 @@ boundary. Nothing on that path is an in-process call, and nothing new may become
 one.
 
 **What reflects reality is separated; what simulates a deployment is not.** The
-business day, its phase order, the journal, `Reset` and the seed are the
-DEPLOYMENT'S, and they are allowed to see every institution at once — that is
+business day, its phase order, the journal, `Reset`, the base state and the
+scenarios are the DEPLOYMENT'S, and they are allowed to see every institution at once — that is
 the rule above (`payment/flow`, `payment/recon`) one layer up, and it is why
 they are not being
 taken apart. What must hold is the DIRECTION: an institution's code may not know

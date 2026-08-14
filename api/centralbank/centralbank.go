@@ -42,6 +42,11 @@ type Operator interface {
 	Phases() []api.PhaseDTO
 	RunThrough(ctx context.Context, phase string) (api.PhaseReportDTO, error)
 
+	// Scenarios is what an operator may trigger, and RunScenario drives one. A
+	// scenario advances the shared clock, so it takes the lock the day takes.
+	Scenarios() []api.ScenarioDTO
+	RunScenario(ctx context.Context, id string) (api.ScenarioReportDTO, error)
+
 	// NetworkFlow is the mesh: every institution's traffic paired into the
 	// crossings both ends observed. Limit bounds the crossings already delivered.
 	NetworkFlow(ctx context.Context, limit int) (api.NetworkFlowDTO, error)

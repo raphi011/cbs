@@ -1313,6 +1313,24 @@ CREATE TABLE bank_assets (
     -- this bank's customers paid in has not been placed on reserve, and a bank
     -- that never lodges cannot settle with it.
     vault_cash         TEXT NOT NULL,
+    -- What the bank's owners put in, and the ONLY credit in this row that is
+    -- owed to nobody. suspense, unclaimed and a customer's deposit are all money
+    -- the bank owes somebody; this is money it has. Equity, not a liability.
+    --
+    -- It exists because vault_cash otherwise has exactly one source — a
+    -- customer paying cash in over the counter — which makes "a bank funded
+    -- before it has a single depositor" a state this system cannot reach at
+    -- all. Every real bank is in that state on its first day, and a nominal
+    -- funding customer standing in for a shareholder would reach the same
+    -- balances while saying something false about whose money it is.
+    --
+    -- A capital injection debits vault_cash and credits this, in one book, and
+    -- is the third act that moves vault_cash: cash in (up), lodgement (down),
+    -- capitalisation (up). Nothing else may post here — retained earnings and
+    -- distributions are absent from this schema, so an equity balance only ever
+    -- rises, and it rises exactly once per bank in every deployment this
+    -- repository builds.
+    share_capital      TEXT NOT NULL,
     -- This bank's reserve account at the central bank: an account in ANOTHER
     -- institution's book, which is why it is the one column in this table naming
     -- an id this table's owner did not allocate. Every other account here was

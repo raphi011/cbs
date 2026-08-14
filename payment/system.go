@@ -454,6 +454,12 @@ func (s *BankNetwork) FoundBankTx(ctx context.Context, tx BankTx, name string, b
 	if err != nil {
 		return nil, err
 	}
+	// And what its owners put in, which is the one block on this chart that is
+	// neither an asset nor owed to anybody outside the bank.
+	capital, err := bank.CreateSubledgerTx(ctx, tx, gl.ID, "Capital")
+	if err != nil {
+		return nil, err
+	}
 
 	// One set of internal accounts per asset. Naming them with the asset in
 	// parentheses keeps them apart in a chart of accounts that now holds
@@ -495,12 +501,19 @@ func (s *BankNetwork) FoundBankTx(ctx context.Context, tx BankTx, name string, b
 		if err != nil {
 			return nil, err
 		}
+		// Equity, and the only credit on this chart that is owed to nobody: a
+		// depositor is owed their balance and a shareholder is not.
+		shareCapital, err := bank.CreateAccountTx(ctx, tx, capital.ID, "Share Capital ("+string(asset)+")", ledger.Equity, asset)
+		if err != nil {
+			return nil, err
+		}
 		accounts[asset] = BankAccounts{
 			Suspense:          suspense.ID,
 			Reserve:           reserve.ID,
 			Unclaimed:         unclaimed.ID,
 			ReturnsReceivable: returnsReceivable.ID,
 			VaultCash:         vaultCash.ID,
+			ShareCapital:      shareCapital.ID,
 		}
 	}
 
@@ -873,6 +886,50 @@ func (s *BankNetwork) DepositTx(ctx context.Context, tx BankTx, participant Part
 		Entries: []ledger.Entry{
 			{AccountID: accts.VaultCash, Amount: amount, Direction: ledger.Debit},
 			{AccountID: pos.Account, Subsidiary: pos.Subsidiary, Amount: amount, Direction: ledger.Credit},
+		},
+	})
+	return err
+}
+
+// InjectCapital is a bank's owners paying money in, which is where a bank's own
+// money comes from before it has a single depositor.
+func (s *BankNetwork) InjectCapital(ctx context.Context, participant ParticipantID,
+	asset ledger.AssetCode, amount ledger.Amount, ref string) error {
+
+	return s.store.Update(ctx, func(ctx context.Context, tx BankTx) error {
+		return s.InjectCapitalTx(ctx, tx, participant, asset, amount, ref)
+	})
+}
+
+// InjectCapitalTx is InjectCapital within a caller-supplied unit of work: debit
+// Vault Cash, credit Share Capital, in this bank's own book and naming no other
+// institution. ref is the subscription this is payment for, and a second call
+// quoting it is ledger.ErrDuplicateIdempotencyKey.
+func (s *BankNetwork) InjectCapitalTx(ctx context.Context, tx BankTx, participant ParticipantID,
+	asset ledger.AssetCode, amount ledger.Amount, ref string) error {
+
+	if amount <= 0 {
+		return ErrInvalidPaymentAmount
+	}
+	if err := ledger.ValidateText("ref", ref); err != nil {
+		return err
+	}
+	p, err := s.bankTx(ctx, tx, participant)
+	if err != nil {
+		return err
+	}
+	accts, err := p.AccountsFor(asset)
+	if err != nil {
+		return err
+	}
+	// Cash the bank OWNS rather than owes, which is the whole contrast with
+	// DepositTx: the same debit, and a credit to equity instead of to a customer.
+	_, err = p.Ledger.PostTransactionTx(ctx, tx, ledger.PostTransactionRequest{
+		Description:    "Capital subscription: " + string(asset),
+		IdempotencyKey: "capital:" + ref + ":" + string(asset),
+		Entries: []ledger.Entry{
+			{AccountID: accts.VaultCash, Amount: amount, Direction: ledger.Debit},
+			{AccountID: accts.ShareCapital, Amount: amount, Direction: ledger.Credit},
 		},
 	})
 	return err

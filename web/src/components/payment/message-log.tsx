@@ -48,14 +48,14 @@ export function PaymentDocuments({ payid }: { payid: string }) {
         ) : isLoading ? (
           <Skeleton className="h-32 w-full" />
         ) : !data || data.length === 0 ? (
-          // Two things make a log empty and neither is a defect, so the absence
-          // says which rather than promising a file that may never come: a
-          // payment the sample dataset placed was never sent by anybody.
+          // One thing makes a log empty and it is not a defect: a payment its own
+          // bank is still holding has been instructed and not yet sent. Every
+          // payment in this deployment was submitted through a bank and carried in
+          // a file, so there is no second case to distinguish.
           <p className="text-sm text-muted-foreground">
-            No file the clearing house has sent or received names this payment. Either its
-            bank&apos;s next cut-off has yet to carry it, or it came from the sample dataset,
-            which builds a deployment by playing every institution rather than by sending
-            anything.
+            No file the clearing house has sent or received names this payment. It is still in
+            the submitting bank&apos;s hub, waiting for that bank&apos;s next cut-off to carry
+            it.
           </p>
         ) : (
           <ul className="divide-y">

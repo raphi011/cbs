@@ -1428,7 +1428,7 @@ The general rule: an invariant is enforceable where the whole of it is visible, 
   },
   "participant-assets": {
     title: "Internal accounts, one set per asset",
-    body: `A bank's internal accounts — [[clearing-suspense|clearing suspense]], [[reserve-account|reserve at the central bank]], [[unclaimed-balances|unclaimed balances]], [[returns-receivable|returns receivable]], [[vault-cash|vault cash]], and its [[settlement-account|settlement account]] in the central bank's own book — exist **once per [[asset]] it operates in**.
+    body: `A bank's internal accounts — [[clearing-suspense|clearing suspense]], [[reserve-account|reserve at the central bank]], [[unclaimed-balances|unclaimed balances]], [[returns-receivable|returns receivable]], [[vault-cash|vault cash]], [[share-capital|share capital]], and its [[settlement-account|settlement account]] in the central bank's own book — exist **once per [[asset]] it operates in**.
 
 A bank clearing both a euro scheme and a dollar one holds two suspense accounts and two reserve accounts, not two currencies inside one. Partly because [[asset|an account is bound to a single asset]], and partly because [[net-positions|netting]] a euro position against a dollar one does not produce a smaller number, it produces a meaningless one.
 
@@ -1436,13 +1436,13 @@ A bank clearing both a euro scheme and a dollar one holds two suspense accounts 
 Bank A
 ├── EUR: suspense, reserve, unclaimed,
 │        returns receivable, vault cash,
-│        settlement
+│        share capital, settlement
 └── USD: suspense, reserve, unclaimed,
          returns receivable, vault cash,
-         settlement
+         share capital, settlement
 \`\`\`
 
-They are a child row keyed \`(bank, asset)\` rather than a column apiece on the bank, which also makes adding a *kind* of account cheap: returns receivable joined the row when the return path needed somewhere to book a forced clawback, and vault cash joined it when taking cash in stopped being the same act as putting it on reserve. One column there is one account per asset automatically.
+They are a child row keyed \`(bank, asset)\` rather than a column apiece on the bank, which also makes adding a *kind* of account cheap: returns receivable joined the row when the return path needed somewhere to book a forced clawback, vault cash joined it when taking cash in stopped being the same act as putting it on reserve, and share capital joined it when a bank needed money before it had a depositor. One column there is one account per asset automatically.
 
 All but one of them are created in the bank's own book when it is [[bank-founding|founded]]. The settlement account is the exception: the central bank opens that one, in its own book, when it answers the bank's application — so on a founded bank the column is empty.
 
@@ -1473,9 +1473,28 @@ Credit Alice's deposit (EUR) 100  (Liability ↑)
 
 Every [[bank-founding|founded]] bank has one, per asset, from the moment it is founded — **before** any scheme has heard of it and whether or not one ever does. That is the shape of "a bank's counter has nothing to do with its central bank account": taking cash in is one institution's act, and it needs nothing from anybody. (In this system a founded bank has no customer to take it in *for*, because addressing an account needs a [[bank-code|code]] a registry allocates. The refusal is about the address, not about the counter, and the two are worth keeping apart.)
 
-**A bank cannot settle out of it.** Interbank obligations are discharged in [[central-bank-reserves|central-bank money]], not in the bank's own cash, so a bank that takes deposits and never [[lodgement|lodges]] accumulates vault cash it cannot pay anyone with. So the balance here is a real figure and not a way-station: it is **how much of what this bank's customers paid in has not been placed on reserve**.
+**Three acts move it, and only one of them is a customer's.** A [[share-capital|capital subscription]] puts the owners' money in; a deposit puts a customer's money in; a [[lodgement]] takes money out onto reserve. Which of the three a balance came from matters, because only the middle one is owed back to anybody.
+
+**A bank cannot settle out of it.** Interbank obligations are discharged in [[central-bank-reserves|central-bank money]], not in the bank's own cash, so a bank that takes deposits and never [[lodgement|lodges]] accumulates vault cash it cannot pay anyone with. So the balance here is a real figure and not a way-station: it is **how much of the money paid in — by customers and by owners — has not been placed on reserve**.
 
 A deposit that debited the [[reserve-account|reserve]] directly and posted the matching credit in the central bank's own ledger would be one bank writing in another institution's book — which is the thing that cannot survive each entity owning its own database.`,
+  },
+  "share-capital": {
+    title: "Where a bank's own money comes from",
+    body: `A **capital subscription** is the bank's owners paying money in. It is the only act that funds a bank which has no depositors, and it is the same debit as a deposit with a completely different credit:
+
+\`\`\`
+Debit  Vault Cash (EUR)     1,000  (Asset ↑ — the bank is holding it)
+Credit Share Capital (EUR)  1,000  (Equity ↑ — and it is owed to nobody)
+\`\`\`
+
+Compare the deposit beside it. A depositor is [[account-type-liability|owed]] their balance; a shareholder is not. That is the whole of the difference between a liability and [[account-type-equity|equity]], and share capital is the one credit on a bank's chart that is nobody's claim on it.
+
+**Every bank starts here.** On its first day it has no customers, so [[vault-cash|vault cash]] paid in over the counter is not available to it — and a bank with an empty vault has nothing to [[lodgement|lodge]] and therefore no [[central-bank-reserves|reserves]] and therefore nothing to settle with. The subscription is what breaks that circle, which is why it runs when the bank is [[bank-founding|founded]] rather than later.
+
+It is per [[asset]], like every other account on the chart: a bank operating in euro and dollars was subscribed in each, and equity denominated in one currency does not fund obligations in another.
+
+**Nothing else posts here.** There are no retained earnings in this system and no distributions, so a bank's equity is written once and never moves again. A real bank's equity account moves every time it makes or loses money; the absence here is a limit of what is built, not a claim about banking.`,
   },
   "lodgement": {
     title: "A lodgement is a conversation; a deposit is not",

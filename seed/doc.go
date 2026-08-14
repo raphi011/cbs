@@ -1,6 +1,4 @@
-// Package seed builds a comprehensive, internally consistent sample payment
-// network for the core-banking system: four banks, customer deposit accounts in
-// every lifecycle status, authorization holds, end-of-day snapshots,
-// direct-debit mandates, and payments spanning the lifecycle (settled,
-// returned, accepted and rejected) across settled and open clearing cycles.
+// Package seed builds the base state a fresh deployment holds: four banks
+// founded, admitted, subscribed, priced, capitalised and on reserve. No
+// customers and no payments — a scenario makes those, through the real doors.
 package seed

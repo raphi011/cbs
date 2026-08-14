@@ -559,6 +559,15 @@ func (d *Deployment) AdvanceDay(ctx context.Context) (DayReport, error) {
 	d.resetMu.Lock()
 	defer d.resetMu.Unlock()
 
+	report, err := d.advanceDay(ctx)
+	report.Files, report.Outcomes, report.Problems = d.journal.take()
+	return report, err
+}
+
+// advanceDay is AdvanceDay without the lock and without emptying the journal,
+// which is what lets a SCENARIO run several days and report what all of them
+// moved as one. Every caller holds resetMu.
+func (d *Deployment) advanceDay(ctx context.Context) (DayReport, error) {
 	ran := d.BusinessDate()
 	report := DayReport{Ran: ran, Next: ran}
 
@@ -569,7 +578,6 @@ func (d *Deployment) AdvanceDay(ctx context.Context) (DayReport, error) {
 		// leave phases behind that nothing records, and the write that moves the
 		// date is the same one.
 		if err := d.reach(p, ran); err != nil {
-			report.Files, report.Outcomes, report.Problems = d.journal.take()
 			return report, err
 		}
 	}
@@ -585,8 +593,6 @@ func (d *Deployment) AdvanceDay(ctx context.Context) (DayReport, error) {
 	after := onSettlementDay(afterClock, ran.SettlementDay)
 	d.journal.problem(runPhases(ctx, d, after)...)
 	report.Phases = append(report.Phases, after...)
-
-	report.Files, report.Outcomes, report.Problems = d.journal.take()
 	return report, err
 }
 
@@ -631,12 +637,22 @@ func (d *Deployment) through(p phase, on BusinessDate) []phase {
 // which is why this is not a route that composes one. See
 // [the design record](../../docs/specs/2026-08-14-a-day-cursor-design.md).
 func (d *Deployment) RunThrough(ctx context.Context, key string) (PhaseReport, error) {
+	d.resetMu.Lock()
+	defer d.resetMu.Unlock()
+
+	report, err := d.runThrough(ctx, key)
+	report.Files, report.Outcomes, report.Problems = d.journal.take()
+	return report, err
+}
+
+// runThrough is RunThrough without the lock and without emptying the journal.
+// See advanceDay, which is split for the same reason: a scenario steps the day
+// and reports what all of its steps moved as one.
+func (d *Deployment) runThrough(ctx context.Context, key string) (PhaseReport, error) {
 	p, ok := phaseDoors[key]
 	if !ok {
 		return PhaseReport{}, api.BadRequest("no phase of a business day is spelt %q", key)
 	}
-	d.resetMu.Lock()
-	defer d.resetMu.Unlock()
 
 	ran := d.BusinessDate()
 	report := PhaseReport{Phase: p, Ran: ran}
@@ -652,7 +668,6 @@ func (d *Deployment) RunThrough(ctx context.Context, key string) (PhaseReport, e
 	}
 
 	report.Completed = d.completed(ran)[p.id]
-	report.Files, report.Outcomes, report.Problems = d.journal.take()
 	return report, err
 }
 
@@ -667,7 +682,14 @@ func (d *Deployment) Subscribe(ctx context.Context) error {
 // every member's cut-off, the clearing house's work over what they uploaded,
 // and each member collecting the answers.
 func (d *Deployment) CarryToClearing(ctx context.Context) error {
-	problems := runPhases(ctx, d, carryToClearingPhases)
+	err := node.JoinProblemDetails(d.carryToClearing(ctx))
 	d.journal.take()
-	return node.JoinProblemDetails(problems)
+	return err
+}
+
+// carryToClearing is CarryToClearing without emptying the journal, for
+// advanceDay's reason: a scenario carries files several times and reports what
+// all of it moved as one.
+func (d *Deployment) carryToClearing(ctx context.Context) []node.Problem {
+	return runPhases(ctx, d, carryToClearingPhases)
 }

@@ -127,7 +127,7 @@ export default function MandatesPage() {
           rows={data}
           rowKey={(m) => m.id}
           isLoading={isLoading}
-          empty="No mandates yet. Create one to let a customer of this bank collect by direct debit."
+          empty="No mandates yet. Create one to let a customer of this bank collect by direct debit, or run a scenario from the topbar."
         />
       )}
     </div>

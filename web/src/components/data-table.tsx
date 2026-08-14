@@ -89,7 +89,11 @@ export function DataTable<T>({
                 colSpan={columns.length}
                 className="py-10 text-center text-sm text-muted-foreground"
               >
-                {empty}
+                {/* `whitespace-normal` because a cell does not wrap by default,
+                    and an empty state is a SENTENCE rather than a value: left
+                    nowrap it widens the table until the row scrolls sideways and
+                    the explanation is the one thing clipped. */}
+                <p className="mx-auto max-w-prose whitespace-normal text-pretty">{empty}</p>
               </TableCell>
             </TableRow>
           ) : (

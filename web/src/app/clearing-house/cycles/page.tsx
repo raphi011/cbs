@@ -50,7 +50,7 @@ export default function CyclesPage() {
           rowKey={(c) => c.id}
           isLoading={isLoading}
           onRowClick={(c) => router.push(`/clearing-house/cycles/${c.id}`)}
-          empty="No cycles yet. Open one for a scheme, then route payments into it."
+          empty="No cycles yet. A fresh deployment opens one window per scheme, and a day closes and reopens them; open one here to route payments into it."
         />
       )}
     </div>

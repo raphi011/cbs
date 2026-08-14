@@ -337,7 +337,7 @@ function Settlements({
           rows={settlements}
           rowKey={(s) => s.id}
           isLoading={isLoading}
-          empty="Nothing settled yet. Reserves move when the clearing house instructs a cut-off and this central bank answers it."
+          empty="Nothing settled yet. Reserves move when the clearing house instructs a cut-off and this central bank answers it — run a scenario from the topbar, or advance the day with payments in flight."
         />
       )}
     </section>

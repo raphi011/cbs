@@ -5,6 +5,7 @@ import { BookOpen } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { BusinessDay } from "@/components/business-day";
+import { ScenarioPicker } from "@/components/scenario-picker";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { useConceptPanel } from "@/components/concept-panel-provider";
 import { IdentityPicker } from "./identity-picker";
@@ -40,6 +41,10 @@ function ConceptTrigger() {
 // on every screen is the deployment's, about a year behind the wall clock, so a
 // shell that did not show which day it is on would be read wrong. See
 // BusinessDay.
+//
+// And the scenario picker beside it, for a stronger reason still: a deployment
+// boots holding four banks and no customers, so until somebody runs a scenario
+// every screen in the app is empty. See ScenarioPicker.
 export function Topbar({
   mobile = false,
   mobileSidebar,
@@ -68,6 +73,7 @@ export function Topbar({
           row is sized by its contents and simply overflows the viewport rather
           than letting the identity label truncate. */}
       <div className="ml-auto flex min-w-0 items-center gap-2">
+        <ScenarioPicker />
         <BusinessDay />
         {mobile && <ConceptTrigger />}
         <IdentityPicker />

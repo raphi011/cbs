@@ -63,6 +63,19 @@ func (o operator) RunThrough(ctx context.Context, phase string) (api.PhaseReport
 	return toPhaseReportDTO(report), nil
 }
 
+// Scenarios and RunScenario are how anything gets into a deployment at all: it
+// boots holding a base state, and every scenario drives the doors above rather
+// than writing rows behind them.
+func (o operator) Scenarios() []api.ScenarioDTO { return o.d.Scenarios() }
+
+func (o operator) RunScenario(ctx context.Context, id string) (api.ScenarioReportDTO, error) {
+	report, err := o.d.RunScenario(ctx, id)
+	if err != nil {
+		return api.ScenarioReportDTO{}, err
+	}
+	return toScenarioReportDTO(report), nil
+}
+
 // NetworkFlow and Watch are the mesh: every institution at once, which is the
 // deployment's to answer because no institution may — and then the same thing
 // as it happens.

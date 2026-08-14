@@ -45,6 +45,11 @@ export const qk = {
   // fixed before the process starts, and only which of them run varies.
   phases: () => ["clock", "phases"] as const,
 
+  // What an operator may trigger. Fixed before the process starts — a scenario
+  // is a Go function in a registry, not data — so this is fetched once and
+  // never invalidated by anything that happens.
+  scenarios: () => ["scenarios"] as const,
+
   // The mesh, keyed under nobody. It is the deployment's read of every
   // institution at once, so keying it under the listener that serves it would
   // say it was the settlement agent's — which is the one thing it is not.

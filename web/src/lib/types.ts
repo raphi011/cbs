@@ -629,6 +629,30 @@ export interface DayReport {
   problems: DayProblem[];
 }
 
+// Scenario is a named thing an operator can make happen. A deployment boots
+// holding a base state — four banks, admitted, subscribed, priced and prefunded
+// — and every customer, payment and facility in it came from one of these.
+//
+// `id` is the whole of what the route takes: a scenario is named, never
+// parameterised, so what it does is decided where it is written.
+export interface Scenario {
+  id: string;
+  name: string;
+  description: string;
+}
+
+// ScenarioReport is what running one moved, and where it left the clock. There
+// IS a `next`, unlike a phase report: a scenario advances the shared business
+// date, which is the cost the picker warns about before it runs one.
+export interface ScenarioReport {
+  scenario: Scenario;
+  ran: BusinessDate;
+  next: BusinessDate;
+  files: FileMoved[];
+  outcomes: TransactionOutcome[];
+  problems: DayProblem[];
+}
+
 // Phase is one step of the business day, as the door an operator opens it
 // through. `key` is the name spelt for a URL and is the whole of what a door
 // takes: a phase is named, never parameterised, so there is nothing to compose.

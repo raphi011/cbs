@@ -209,6 +209,46 @@ the UI. No quiz chapter and no hint body changes: a scenario is a property of
 this app rather than of banking, and the learner-facing layers name no repo
 machinery.
 
+## What shipped, where it differs
+
+Three things the design could not know before it was built.
+
+**The rejection scenario refuses on `TM01`, not `AC01`.** The table above says a
+creditor address no bank resolves produces a genuine `pacs.002` carrying `AC01`.
+It does not, and cannot: `AC01` maps from `ErrAccountNotInParticipant`, which is
+the RECEIVING bank's judgement, made when it applies a released file — that is
+after settlement, and its outcome is a `pacs.004` sent back rather than a
+refusal. The submitting bank cannot make it either: it resolves the counterparty
+*bank* from the address's bank code through its own directory copy, and knows
+nothing about which accounts that bank holds.
+
+The refusal a clearing house genuinely decides out of its own rows is `TM01` —
+the window was shut. The scenario steps the day to the clearing house's own
+cut-off, submits, and carries the file: the clearing house has no open cycle to
+take it into and says so. The rule the design was defending survives intact and
+is the thing to keep — **the outcome is reached naturally and nothing in the
+scenario names a code** — and the scenario is renamed for what it actually
+teaches: *A payment that misses the cut-off*.
+
+**The demo network was rewritten after all.** The design says it moves behind a
+trigger unchanged. It could not: the whole point of this sub-project is that a
+scenario names the files that carried it, and a demo network still built on
+`payment/flow` would have left the reported defect in place on the one dataset
+every reader sees first. It now submits through `Deployment.Submit`, settles by
+advancing the business day and returns through `Deployment.Return`, and its
+payment history had to move **before** the lending months rather than after —
+five months of business days would otherwise carry every payment meant to be left
+in flight to settlement, and the payer's overdraft arithmetic depends on the
+original order.
+
+**Provisioning was not idempotent, and its own test claimed it was.** Found by
+the capital subscription's idempotency case. A second `provision.Bank` for the
+same spec re-founded the bank, building a whole new chart of accounts and
+orphaning every balance on the first; the standing test asserted the ids and the
+roster count and never the chart. `provision.Bank` now founds only a bank it does
+not already find. This is a defect the design did not know about and would have
+hit as soon as anything ran the base state twice over a live store.
+
 ## Verification
 
 `go test ./...`, and three claims that need a test each:
