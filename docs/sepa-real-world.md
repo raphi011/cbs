@@ -98,11 +98,308 @@ stayed in. Consequences:
   No sponsor, no membership hurdle.
 - **Cost-covering pricing by statute.** No margin. This is the main reason
   small and mid-size German banks use it.
-- **Bulk only**, several settlement cycles per business day, settling in T2.
-  It has no instant product — that is TIPS.
+- **Bulk only**, six settlement cycles per business day, settling in T2 — the
+  next section counts them. It has no instant product; that is TIPS.
 - **Reachability by interoperability.** SEPA-Clearer is linked to STEP2 and
   other European ACHs, so a bank clearing only through it still reaches every
   bank in SEPA. Without those links it would be a German island.
+
+## Inside one SEPA-Clearer cycle
+
+The rest of this document draws the CSM as one box. This section opens it, for
+the one CSM whose rulebook is public in full detail. Times are from the
+Bundesbank's *Procedural rules for SEPA credit transfers*, March 2024 v1.0, and
+they drift — that document's own version history records a decade of cut-off
+changes, so treat the shape as durable and the clock as current-as-of.
+
+### Six submission windows, eight delivery windows
+
+| # | Submission cut-off | Debit · submitter | Delivery + credit · receiver | Value |
+| --- | --- | --- | --- | --- |
+| 1 | 08:00 | ~08:10 | ~08:10 | D |
+| 2 | 10:00 | ~10:10 | ~10:10 | D |
+| 3 | 11:00 | ~11:10 | ~11:10 | D |
+| 4 | 14:00 | ~14:10 | ~14:10 | D |
+| 5 | 15:00 | ~15:10 | ~15:10 | D |
+| 6 | 20:00 | ~20:10 | ~20:10 | **D+1** |
+| 7 | — inbound only | — | ~16:10, from other CSMs | D |
+| 8 | — inbound only | — | ~17:10, from STEP2 | D |
+
+Settlement trails a cut-off by roughly ten minutes; the exact moment depends on
+how many instructions are queued. Windows 7 and 8 take no submissions at all —
+they exist only to deliver payments arriving from elsewhere, which is what the
+*reachability by interoperability* bullet above costs in practice.
+
+Files are accepted 00:00–24:00 Monday to Sunday, but anything arriving after
+20:00, or on a weekend or TARGET holiday, is buffered until validation starts
+around 06:00 on the next business day.
+
+### Nothing reaches the creditor's bank before settlement
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor DTR as Debtor
+    participant DB as Debtor bank
+    participant SCL as SEPA-Clearer
+    participant T2 as T2 - central bank
+    participant CB as Creditor bank
+    actor CDT as Creditor
+
+    Note over DTR,CDT: Third window of the day. Cut-off 11:00, settlement from 11:10.
+
+    Note over DTR,DB: Initiation
+    DTR->>DB: 09:40 pain.001 over EBICS
+    Note over DB: DR Debtor account<br/>CR SEPA suspense
+
+    Note over DB,SCL: Submission, before the cut-off
+    DB->>SCL: 10:35 EBICS upload of an ICF carrying a pacs.008 bulk
+    SCL-->>DB: EBICS ack HAC / HAK, transport only
+    SCL->>SCL: schema check, business check, SCL Directory reachability
+    SCL-->>DB: on failure only, a pacs.002SCL inside a CVF
+
+    Note over SCL: 11:00 cut-off. Later files roll<br/>into the 14:00 window.
+
+    Note over DB,T2: Debit cycle, from 11:10
+    SCL->>T2: settlement order, debit leg
+    T2->>T2: liquidity transfer of the exact sum,<br/>debtor bank RTGS DCA to its sub-account
+    Note over T2: DR Debtor bank sub-account<br/>CR SEPA-Clearer technical account
+    Note over DB: DR SEPA suspense<br/>CR Central bank account
+
+    Note over T2,CB: Credit cycle, a separate cycle
+    SCL->>T2: settlement order, credit leg
+    Note over T2: DR SEPA-Clearer technical account<br/>CR Creditor bank sub-account
+    Note over CB: DR Central bank account<br/>CR Incoming SEPA suspense
+    T2->>T2: sweep leftovers back to the RTGS DCA<br/>once the whole procedure ends, 20-25 min
+
+    Note over SCL,CDT: Delivery, only now
+    SCL->>SCL: build the SCF, a Settled Credit File
+    CB->>SCL: EBICS download, the creditor bank polls
+    SCL-->>CB: SCF carrying the pacs.008 bulk
+    Note over CB: DR Incoming SEPA suspense<br/>CR Creditor account
+    CB-->>CDT: funds available
+```
+
+The invariant is in the file's own name: the creditor's bank collects an
+**SCF — Settled Credit File**. Deliveries are made "once the submitted payment
+messages have been processed and, where applicable, the relevant bookings have
+been carried out". There is no advised-but-unsettled state on this rail, and the
+receiver therefore never carries credit risk on the sender.
+
+Two consequences that are easy to miss:
+
+- **The creditor's bank cannot refuse a payment.** It has no pre-settlement
+  sight of it, so account-closed, unknown-IBAN and compliance outcomes can only
+  become a *Return* afterwards. See the R-transaction section below.
+- **What the CSM checks is reachability, not existence.** The SCL Directory
+  answers whether both PSPs are reachable — a BIC-level question. Whether the
+  IBAN exists, is open, or matches a name is knowable only inside the creditor's
+  bank, which has not been asked yet.
+
+### Gross coverage, not netting
+
+The SEPA-Clearer settles as a T2 **ancillary system using "procedure C"** —
+settlement on sub-accounts of RTGS DCAs. This is *not* the multilateral netting
+picture drawn under "Who pushes the button at the end of a cycle" below, and the
+difference is worth holding separately:
+
+- **The sum is known in advance, and it is gross.** Before each cycle the SCL
+  transfers liquidity from the participant's RTGS DCA into its dedicated
+  sub-account, equal to the amount it is about to debit. Nothing is netted
+  against incoming payments. Counter-values settle **per logical file (bulk)**,
+  not per net position.
+- **Debiting and crediting are separate cycles.** They have to be: a debit can
+  fail, so the set of payments that can be credited is not knowable until every
+  debit has been attempted.
+- **Between the two cycles the money is on the SCL's technical account** in T2 —
+  the intermediary account an ancillary system uses to collect debits and pay out
+  credits. It belongs to neither bank for those minutes.
+- **No second attempt on a shortfall.** Insufficient funds means direct
+  rejection by CVF. The payment is not queued, not retried; it simply never
+  entered the credit cycle. A payment is settled or rejected, never pending.
+- **The sub-account is not released per cycle.** Leftover liquidity returns to
+  the RTGS DCA only once the *entire* procedure has run — SCT, SDD and card
+  collections are processed in one combined settlement procedure, taking roughly
+  20–25 minutes.
+
+### The books, step by step
+
+Four postings across three institutions, for one payment of 100:
+
+| When | Institution | Debit | Credit |
+| --- | --- | --- | --- |
+| 09:40 | Debtor bank | Debtor account | SEPA suspense |
+| ~11:10 | T2 | Debtor bank sub-account | SCL technical account |
+| ~11:10 | Debtor bank | SEPA suspense | Central bank account |
+| ~11:10 | T2 | SCL technical account | Creditor bank sub-account |
+| ~11:10 | Creditor bank | Central bank account | Incoming SEPA suspense |
+| ~11:2x | Creditor bank | Incoming SEPA suspense | Creditor account |
+
+The suspense accounts are the interesting rows. The payer's money leaves their
+balance at 09:40 and reaches the payee's at 11:2x — for those two hours it is on
+neither customer's account, and for a few minutes of that it is on neither
+bank's.
+
+### Where a file can end up instead
+
+```mermaid
+flowchart TD
+    A["Bank submits an ICF<br/>carrying a pacs.008 bulk"] --> B{"Schema valid?"}
+    B -->|no| R1["<b>File reject</b> to the submitter.<br/>Nothing settles."]
+    B -->|yes| C{"Both PSPs reachable<br/>in the SCL Directory?"}
+    C -->|no| R2["<b>pacs.002SCL</b> inside a CVF.<br/>Payment dropped."]
+    C -->|yes| D["Held for the next cut-off"]
+    D --> E{"Which window?"}
+    E -->|"windows 1-5, 08:00 to 15:00"| F["Debit cycle at cut-off + 10 min<br/>value date D"]
+    E -->|"window 6, 20:00"| G["Debit cycle from 20:10<br/>value date D+1"]
+    F --> H{"Cover on the RTGS DCA?"}
+    G --> H
+    H -->|no| R3["<b>Direct CVF rejection.</b><br/>No second attempt."]
+    H -->|yes| I["Credit cycle: technical account<br/>to the receiver sub-account"]
+    I --> J{"Creditor PSP a direct<br/>SCL participant?"}
+    J -->|yes| K["SCF delivered in the same window,<br/>collected over EBICS"]
+    J -->|no| L["Routed on to STEP2 or another CSM.<br/><b>Same-day arrival not guaranteed.</b>"]
+    K --> M["Creditor credited.<br/>D+1 at the very latest."]
+    L --> M
+```
+
+A bulk is rejected wholesale once more than 999 of its individual transactions
+are erroneous. And the onward-routing branch is why the rules advise submitting
+no later than window 4 for anything the payer did not initiate that day.
+
+### What a payer actually experiences
+
+Morning transfer, both banks direct SCL participants: **one to three hours**
+door to door. Four things stretch it, and none of them are the clearing house:
+
+- the submitting bank's own batching — the scheme clock starts when the bank
+  accepts, not when the customer clicks;
+- the receiving bank's posting run — interbank settled is not customer credited;
+- onward routing to another CSM, where same-day is not promised;
+- weekends and TARGET holidays, when the SCL does not run at all.
+
+The legal ceiling is unchanged throughout: the payee's PSP must be credited by
+the end of the next business day, D+1.
+
+**And this timetable increasingly describes the wrong rail.** Since 9 October
+2025 euro-area PSPs must offer instant credit transfers on the same channels as
+ordinary ones at no higher charge, so a euro transfer initiated from a phone
+most likely goes over TIPS or RT1 in about five seconds. What the batch windows
+still show clearly is the shape a settlement-before-delivery rail has to take:
+collect, then distribute, with an account in the middle holding the money for
+the minutes in between.
+
+## When two clearing houses are involved
+
+The *reachability by interoperability* bullet is doing a lot of work. A bank
+clearing only through the SEPA-Clearer can pay a bank that has never heard of
+it, and the mechanism is worth spelling out because the obvious guess — that the
+two clearing houses pay each other — is wrong.
+
+### The clearing houses exchange files, not money
+
+CSMs interoperate by sending each other the same things a participant sends:
+files of payments, validation reports, settlement information and reconciliation
+reports, over the same networks. The Bundesbank's rules put it plainly: "the
+SEPA-Clearer exchanges payment files with the systems of other CSMs". It holds
+bilateral cooperative agreements with several European clearing houses and a
+connection to STEP2.
+
+This is why interoperability costs nothing in format terms. Every CSM speaks
+`pacs.008`, so a file crossing from one to another needs no translation — the
+standardisation the EPC rulebooks impose on banks turns out to be what lets the
+infrastructures talk to each other too.
+
+### The money moves the only way it can — in central bank money, on a bank's account
+
+A clearing house cannot pay another clearing house, because a clearing house
+holds no money. What actually happens is **two settlements bridged by one
+account**:
+
+```mermaid
+sequenceDiagram
+    participant DB as Debtor bank<br/>SCL participant
+    participant SCL as SEPA-Clearer
+    participant T2 as T2
+    participant S2 as STEP2
+    participant CB as Creditor bank<br/>STEP2 participant
+
+    DB->>SCL: pacs.008, EBICS, before the cut-off
+    Note over SCL: destination BIC is not an SCL participant.<br/>Route it on.
+
+    Note over SCL,T2: Settlement 1 - the SEPA-Clearer's own cycle
+    SCL->>T2: debit leg
+    Note over T2: DR Debtor bank sub-account<br/>CR SEPA-Clearer technical account
+
+    SCL->>S2: pacs.008 handed on in an inter-CSM file
+
+    Note over S2,T2: Settlement 2 - STEP2's own cycle
+    Note over S2: the SEPA-Clearer has designated a<br/>STEP2 participant to settle for it
+    S2->>T2: settlement instruction for the cycle
+    Note over T2: DR the designated participant<br/>CR Creditor bank
+    S2->>CB: pacs.008 in STEP2's output file
+```
+
+Three properties of that picture:
+
+- **Each CSM only ever touches its own participants' central bank accounts.**
+  Neither system instructs a movement in the other's world. The join is that
+  *the sending CSM is represented inside the receiving CSM's settlement.*
+- **The bridge is a financial institution, not the clearing house.** Any SEPA CSM
+  may channel payments through STEP2 on behalf of its participants and
+  **designate a participant for settlement in T2 RTGS**; the settlement
+  obligation for those payments is assumed by that institution. That is what
+  brings the payments under the Settlement Finality Directive — a clearing house
+  cannot give finality to its own IOU, a central bank account movement can.
+- **Money never leaves central bank money.** There is no correspondent account,
+  no commercial-bank exposure between the two systems, and no moment where one
+  clearing house owes the other.
+
+The exact plumbing of a given link is set in the bilateral agreement between the
+two operators, so the account shape varies. The invariant does not: whatever the
+arrangement, the movement is in T2, on an account belonging to a bank.
+
+### What it costs: a cycle, not a fee
+
+Each hop adds a full clearing cycle, because the receiving CSM cannot settle a
+file before its own next cut-off. That is the whole reason for delivery windows
+7 and 8:
+
+| Window | Time | Carries |
+| --- | --- | --- |
+| 7 | ~16:10 | payments arriving from other CSMs |
+| 8 | ~17:10 | payments from STEP2, for BICs registered as STEP2-reachable via the Bundesbank |
+
+They sit after the last outbound cycle because inbound inter-CSM traffic arrives
+after the domestic day has run. The rulebook's own conclusion is the practical
+one: where a payment is routed to another CSM, "it cannot generally be assumed
+that these payments will reach the payee's payment service provider on the same
+business day". The D+1 ceiling is what absorbs the extra hop.
+
+The same arithmetic bites harder on R-transactions, which must retrace the route:
+a post-settlement direct debit R-transaction routed via another CSM cannot go out
+before the fourth submission window (SDD Core) or the fifth (SDD B2B).
+
+### Two things this does not mean
+
+- **Interoperability is not how most reach works.** It covers roughly 20% of the
+  4,800-plus BICs in STEP2's SCT routing table. The large majority are reached
+  because the bank, or its gateway, is a participant directly.
+- **The submitting bank does not choose the route.** It submits to its own CSM
+  and the CSM's routing directory decides — for the SEPA-Clearer, the SCL
+  Directory, which is also what the reachability check at submission is run
+  against. A bank publishes no opinion about which clearing houses exist.
+
+### Instant is a different design again
+
+Multi-CSM instant payments cannot work this way: there is no cycle to wait for
+and no moment at which a file can be handed over. The EACHA instant framework
+therefore builds inter-CSM settlement on **funding position rather than
+sequence** — a prefunded model and a post-funded one, with the prefunded case
+using the T2 real-time ancillary system interface and full cash cover. RT1 now
+holds its liquidity in TIPS for the same reason: when settlement is per payment
+and permanent, the only way two systems can interoperate is by both drawing on
+liquidity that is already there.
 
 ## Direct and indirect participation
 
@@ -169,6 +466,11 @@ sequenceDiagram
 The payee's bank is obliged to credit by the end of the next business day
 (D+1). The netting is the point: a hundred thousand payments between two banks
 become one T2 movement.
+
+One caveat on that diagram, and it is the reason the SEPA-Clearer gets a section
+of its own above: **netting is STEP2's shape, not every bulk CSM's.** The
+SEPA-Clearer settles gross, per logical file, against liquidity pulled in
+advance. Both are deferred and cyclical; only one of them nets.
 
 ## The whole chain, and the two things that travel
 
@@ -370,6 +672,12 @@ window, a guarantee fund, or removal of the failing participant and
 recomputation of everyone's position. The detail varies by CSM; the
 all-or-nothing property does not.
 
+**That picture is the netting one.** A gross CSM has no information period to
+offer, because there is no position to be told: the SEPA-Clearer transfers the
+exact sum it is about to debit and rejects outright what it cannot cover. Read
+the diagram above as STEP2's, and the section on the SEPA-Clearer as the other
+answer to the same problem.
+
 For the SEPA-Clearer, **Bundesbank appears on both sides of this diagram** — as
 the ancillary system instructing settlement, and as the NCB providing the
 account being instructed. Two of the three hats, in one cycle, and still two
@@ -377,8 +685,10 @@ separate systems.
 
 One caveat: TARGET2 numbered its ancillary system settlement procedures 1–6 and
 the 2023 consolidation restructured them. The current labels are in the T2
-UDFS; they are not reproduced here because getting them subtly wrong is worse
-than not stating them.
+UDFS and are not reproduced here in full, because getting them subtly wrong is
+worse than not stating them. One is worth naming, since its rulebook says so
+outright: the SEPA-Clearer settles under **"procedure C"** — settlement on
+sub-accounts of RTGS DCAs, with liquidity moved in before each cycle.
 
 ## How a bank sees its central bank balance
 
@@ -515,7 +825,7 @@ STEP2, returns via STEP2.
 flowchart LR
     A["Original<br/>pacs.008 / pacs.003"] --> B{"Where did it<br/>get stopped?"}
     B -->|"before settlement"| R1["<b>Reject</b><br/>pacs.002"]
-    B -->|"after settlement,<br/>≤5 TARGET days"| R2["<b>Return</b><br/>pacs.004"]
+    B -->|"after settlement<br/>≤3 days for a CT<br/>≤5 days for a DD"| R2["<b>Return</b><br/>pacs.004"]
     B -->|"debtor disputes an SDD,<br/>≤8 weeks authorised<br/>≤13 months unauthorised"| R3["<b>Refund</b><br/>pacs.004, MD06"]
     B -->|"creditor pulls back<br/>its own SDD"| R4["<b>Reversal</b><br/>pacs.007"]
     B -->|"sending bank wants<br/>a CT back"| R5["<b>Recall</b><br/>camt.056 → camt.029"]
@@ -526,6 +836,106 @@ flowchart LR
 Common reason codes: `AC01` account identifier incorrect, `AC04` account
 closed, `AC06` account blocked, `AM04` insufficient funds, `MD01` no mandate,
 `MD06` refund requested by debtor, `MD07` debtor deceased.
+
+Three things the diagram flattens:
+
+- **A Reject is not the beneficiary bank's.** On a bulk rail it belongs to the
+  originator's bank and to either CSM, because the beneficiary bank has no
+  pre-settlement sight of the payment. Its only instrument is a Return. Instant
+  inverts this: there the beneficiary bank must answer within ten seconds and
+  settlement happens only on a positive `pacs.002`, so account-closed and
+  compliance outcomes become rejects instead of returns.
+- **A Return is a new payment.** It carries the original's message id, amount
+  and settlement date, must be for the full amount, and settles in its own cycle
+  going the other way. Nothing is unwound — a second settlement offsets the
+  first. A returned payment cannot itself be returned.
+- **The CSM does not police any of this.** The Bundesbank's rules state that for
+  a recall "no check is made as to whether the recalled credit transfer was
+  processed in the SEPA-Clearer" — it is forwarded without settlement and without
+  matching. What guards against a mismatched R-message is the counterparty bank's
+  reconciliation, not the clearing house.
+
+A sanctions hit is the case with no R-transaction at all: the receiving bank
+holds funds it may be legally barred from returning, so it freezes and reports.
+The payer sees money that has left and is not coming back on any timetable.
+
+## Verification of Payee, and the check that never existed before
+
+Every return above is expensive: money leaves, comes back days later, and two
+banks reconcile a payment neither wanted. Verification of Payee is the scheme's
+attempt to stop the common cases before authorisation — and it is a genuinely
+new capability, not a tightened old one.
+
+**Nothing previously let a bank ask.** An IBAN's mod-97 check digits validate
+its *format*, so a well-formed IBAN for an account that never existed passes
+cleanly. The routing directory answers whether the destination *BIC* is
+reachable, never anything about the account. The first party able to tell truth
+from fiction was the creditor's bank, which on a bulk rail does not see the
+payment until after settlement.
+
+VoP is its own EPC scheme with its own rulebook, sitting in front of both SCT
+and SCT Inst. Under Regulation (EU) 2024/886 euro-area PSPs have had to offer
+it, free, since 9 October 2025.
+
+### It asks about the name, not the account
+
+The payer's PSP sends an `acmt.023` — is the holder of this IBAN called X? — and
+the payee's PSP answers `acmt.024`. Five outcomes are defined:
+
+| Response | Means |
+| --- | --- |
+| Match | the name and the account agree |
+| Close Match | they nearly agree — the actual name is returned |
+| No Match | **the account exists** and the holder is not called that |
+| Identification code not supported/known | only for the account-plus-code variant |
+| Verification check not possible | no matching result could be produced |
+
+**An account that does not exist is the last row, not "No Match".** The rulebook
+puts it in the bucket for reasons "other than those linked to a verification of
+the combination", listing "Payment Account Number not maintained by the
+Responding PSP" alongside a malformed account number and the responding PSP's
+service being down. A reason code carries the detail, and those codes live in
+the Inter-PSP API specifications rather than the rulebook.
+
+That collapsing matters. A negative answer is ambiguous by construction: the
+payer cannot tell "no such account" from "their VoP service is down". Whatever
+the intent, the effect is that VoP is a poor account-existence oracle — you
+cannot cheaply mine which IBANs are live.
+
+### It warns, it does not block
+
+For No Match, verification-not-possible, *or* no response at all, the payer's PSP
+must instantly say that authorising "may lead to transferring Funds to a Payment
+Account not held by the Payment Counterparty as indicated by the Requester" —
+the same sentence in all three cases. The payer may then send it anyway. What
+changes is liability, not routing: proceed past a warning and the refund claim
+against the PSP is gone.
+
+Three limits keep the returns coming:
+
+- **Five seconds, then it counts as not-possible.** No answer inside the maximum
+  execution time is treated as verification not possible, and a response
+  arriving after the payer has been answered must be discarded.
+- **It is a snapshot at initiation.** An account open at 09:40 can be closed
+  before the 11:10 cycle settles.
+- **Bulk can opt out.** A non-consumer payer may agree with its PSP to skip VoP
+  when submitting payment orders as a package — which is precisely the corporate
+  file traffic the SEPA-Clearer's windows carry.
+
+### Why it is architecturally odd
+
+Everything else a bank answers about a counterparty it answers from its own
+rows — its registry, its routing directory, its register. VoP is a bank
+querying *another bank's customer data* before any payment exists, with a
+five-second budget, in front of a rail whose own answer takes hours.
+
+It is not a read across institutions, though, and the distinction is the whole
+design: it is a request over the wire that the other institution chooses how to
+answer. The responding PSP decides what a close match is, what to disclose, and
+whether it can answer at all.
+
+Scheme status: rulebook EPC218-23, v1.0 issued 10 October 2024, v1.1 effective
+20 September 2026. The taxonomy above is v1.0's.
 
 ## The message set
 
@@ -543,10 +953,14 @@ closed, `AC06` account blocked, `AM04` insufficient funds, `MD01` no mandate,
 | `camt.029` | bank → bank | resolution of the above |
 | `camt.053` | bank → customer | statement |
 | `camt.054` | bank → customer | debit / credit notification |
+| `acmt.023` | bank → bank | Verification of Payee request |
+| `acmt.024` | bank → bank | its answer — match, close match, no match, not possible |
 
 `pain` = **pa**yment **in**itiation, customer-to-bank. `pacs` = **pa**yments
 **c**learing and **s**ettlement, bank-to-bank. `camt` = **ca**sh
-**m**anage**m**en**t**, reporting and exceptions.
+**m**anage**m**en**t**, reporting and exceptions. `acmt` = **ac**count
+**m**anage**m**en**t**, which is where Verification of Payee lands — it asks
+about an account, not about a payment.
 
 ## One bank's whole picture
 
@@ -573,3 +987,23 @@ CSM). One is instant. One is the account where money is actually held and
 everything ultimately settles.
 
 Everything else in this document is detail about which box goes in slot two.
+
+## Where the numbers come from
+
+Cut-off times, settlement deadlines and return windows all drift. Every specific
+figure above is traceable, so it can be re-checked rather than re-guessed:
+
+| Claim | Source |
+| --- | --- |
+| Submission and delivery windows, procedure C, gross coverage, the SCF, CVF rejections, inter-CSM file exchange | Deutsche Bundesbank, *Procedural rules for SEPA credit transfers*, March 2024 v1.0 — sections IV.3, V.3 and VI |
+| Return within three banking business days of the settlement date | EPC125-05, *SEPA Credit Transfer Scheme Rulebook* |
+| Technical accounts as intermediary accounts for collecting debits and paying credits | ECB, *T2 Glossary* v3.0, and the *T2-T2S Consolidation Business Description* |
+| CSMs designating a participant to settle for them in T2 RTGS; ~20% of STEP2 routing-table reach via interoperability | EBA CLEARING, STEP2-T reachability |
+| Prefunded and post-funded models for inter-CSM instant settlement | EACHA, *Instant Payments Interoperability Framework* |
+| Instant offered on the same channels at no higher charge from 9 October 2025 | Regulation (EU) 2024/886, and the Commission's clarification of its requirements |
+| VoP response types, the non-existent-account case, the five-second budget and the wording of the warning | EPC218-23, *Verification Of Payee Scheme Rulebook*, 2024 v1.0 — sections 3.2.1 and 3.3 |
+
+Two figures are deliberately given as shapes rather than facts, because they
+depend on an agreement this document cannot see: the account plumbing of any
+particular bilateral CSM link, and how long a receiving bank takes to post to
+its customer after settlement.
