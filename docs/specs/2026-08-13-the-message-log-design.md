@@ -169,13 +169,11 @@ decision:
   `AdvanceDay` and `CarryToClearing` already do. So a report is what *this call*
   did, and a day advanced after some phases were stepped reports only the rest.
 
-**What it costs is that stepping and advancing overlap.** A phase run by hand
-and then a whole day runs that phase twice, and nothing refuses it, because
-nothing records how far the day has got. The guards that make this survivable
-today are the ones the scheduled business day's *phase re-entrancy* section
-names — and this is the change that first puts a re-run within reach of a
-browser, which is an argument for that record's phase 2 rather than against this
-door.
+**What it cost is that stepping and advancing overlapped.** A phase run by hand
+and then a whole day ran that phase twice, because nothing recorded how far the
+day had got. [The day cursor](2026-08-14-a-day-cursor-design.md) is what closed
+it: the day now finishes rather than starting again, and this door is where the
+need for it came from.
 
 **`Collect` is journalled.** Gap 4 above. A file is put into a queue in one event
 and taken out in another, and the graph renders a queued-and-uncollected file as

@@ -90,6 +90,15 @@ func (j *journal) problem(ps ...node.Problem) {
 	}
 }
 
+// phase is told and never accumulated: a report already names the phase it is
+// about, and what the phase moved is in the three slices. It is pushed because
+// end of day moves no file, so nothing else would say the day had got past it.
+func (j *journal) phase(p api.PhaseDTO) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	j.tell(api.EventPhase, p)
+}
+
 // take empties the journal and hands back everything in it.
 func (j *journal) take() ([]node.FileMoved, []node.TransactionOutcome, []node.Problem) {
 	j.mu.Lock()
@@ -107,6 +116,10 @@ type DayReport struct {
 	Ran  BusinessDate
 	Next BusinessDate
 
+	// Phases is what THIS call ran, in order, which is not the whole day when
+	// some of it had already been stepped.
+	Phases []phase
+
 	Files    []node.FileMoved
 	Outcomes []node.TransactionOutcome
 	Problems []node.Problem
@@ -122,9 +135,14 @@ func toBusinessDateDTO(d BusinessDate) api.BusinessDateDTO {
 }
 
 func toDayReportDTO(r DayReport) api.DayReportDTO {
+	keys := make([]string, 0, len(r.Phases))
+	for _, p := range r.Phases {
+		keys = append(keys, phaseKey(p.name))
+	}
 	return api.DayReportDTO{
 		Ran:          toBusinessDateDTO(r.Ran),
 		Next:         toBusinessDateDTO(r.Next),
+		Phases:       keys,
 		MovementsDTO: toMovementsDTO(r.Files, r.Outcomes, r.Problems),
 	}
 }
@@ -435,32 +453,112 @@ func afterTheClock(p phase) bool {
 	return slices.ContainsFunc(afterClock, func(q phase) bool { return q.id == p.id })
 }
 
-func toPhaseDTO(p phase) api.PhaseDTO {
+func toPhaseDTO(p phase, completed bool) api.PhaseDTO {
 	return api.PhaseDTO{
 		Key: phaseKey(p.name), Name: p.name,
 		SettlementOnly: p.settlementOnly, AfterClock: afterTheClock(p),
+		Completed: completed,
 	}
 }
 
 func toPhaseReportDTO(r PhaseReport) api.PhaseReportDTO {
 	return api.PhaseReportDTO{
-		Phase:        toPhaseDTO(r.Phase),
+		Phase:        toPhaseDTO(r.Phase, r.Completed),
 		Ran:          toBusinessDateDTO(r.Ran),
 		MovementsDTO: toMovementsDTO(r.Files, r.Outcomes, r.Problems),
 	}
 }
 
 // ---------------------------------------------------------------------------
+// The cursor: how far the day the clock stands on has got
+// ---------------------------------------------------------------------------
+
+// The marker lives on the clock's own record, so the date and how far into it
+// the deployment has got move in one write. See
+// [the design record](../../docs/specs/2026-08-14-a-day-cursor-design.md).
+
+// today is the phases the date the clock stands on will run before the roll.
+// afterClock is not among them: those run on the date the roll landed on, so
+// they cannot be progress through the one being left.
+func (d *Deployment) today(on BusinessDate) []phase {
+	return onSettlementDay(beforeClock, on.SettlementDay)
+}
+
+// reachedIn is where the marker sits in a sequence, or -1 for a sequence it
+// names no phase of — which is how a day that has run nothing and a marker from
+// a sequence this one is not walking both come out as "all of it still to run".
+func reachedIn(list []phase, marker string) int {
+	if marker == "" {
+		return -1
+	}
+	return slices.IndexFunc(list, func(p phase) bool { return phaseKey(p.name) == marker })
+}
+
+// remaining is the part of a sequence the marker leaves to run.
+func remaining(list []phase, marker string) []phase {
+	return list[reachedIn(list, marker)+1:]
+}
+
+// reach records p as how far the day has got, and only when p is the phase the
+// day would have run NEXT. A phase stepped out of turn moves nothing: a marker
+// that jumped to it would let the day skip the phases before it, and the day
+// runs it in its place instead.
+func (d *Deployment) reach(p phase, on BusinessDate) error {
+	todo := remaining(d.today(on), d.clock.Reached())
+	if len(todo) == 0 || todo[0].id != p.id {
+		return nil
+	}
+	if err := d.clock.Reach(phaseKey(p.name)); err != nil {
+		return fmt.Errorf("server: %s ran on %s and how far the day has got could not be recorded: %w",
+			p.name, on.Date.Format(time.DateOnly), err)
+	}
+	d.journal.phase(toPhaseDTO(p, true))
+	return nil
+}
+
+// Phases is the business day as it is declared, each phase carrying whether the
+// day the clock stands on has run it. It is the deployment's rather than the
+// console's because the marker is.
+func (d *Deployment) Phases() []api.PhaseDTO {
+	today := d.today(d.BusinessDate())
+	ran := reachedIn(today, d.clock.Reached())
+	done := make(map[phaseID]bool, ran+1)
+	for _, p := range today[:ran+1] {
+		done[p.id] = true
+	}
+
+	out := make([]api.PhaseDTO, 0, len(dayPhases))
+	for _, p := range dayPhases {
+		out = append(out, toPhaseDTO(p, done[p.id]))
+	}
+	return out
+}
+
+// ---------------------------------------------------------------------------
 // The day itself
 // ---------------------------------------------------------------------------
 
-// AdvanceDay runs one business day and moves the clock to the next.
+// AdvanceDay runs what is left of this business day and moves the clock to the
+// next. What is left is the phases after the marker, so a day some of whose
+// phases were stepped by hand finishes rather than starting again.
 func (d *Deployment) AdvanceDay(ctx context.Context) (DayReport, error) {
 	d.resetMu.Lock()
 	defer d.resetMu.Unlock()
 
 	ran := d.BusinessDate()
-	d.journal.problem(runPhases(ctx, d, onSettlementDay(beforeClock, ran.SettlementDay))...)
+	report := DayReport{Ran: ran, Next: ran}
+
+	for _, p := range remaining(d.today(ran), d.clock.Reached()) {
+		d.journal.problem(p.run(ctx, d)...)
+		report.Phases = append(report.Phases, p)
+		// A marker that cannot be written is the end of the day: carrying on would
+		// leave phases behind that nothing records, and the write that moves the
+		// date is the same one.
+		if err := d.reach(p, ran); err != nil {
+			report.Files, report.Outcomes, report.Problems = d.journal.take()
+			return report, err
+		}
+	}
 
 	next, err := d.clock.Advance()
 	if err != nil {
@@ -468,17 +566,14 @@ func (d *Deployment) AdvanceDay(ctx context.Context) (DayReport, error) {
 			ran.Date.Format(time.DateOnly), err)
 		next = d.clock.Now()
 	}
+	report.Next = businessDateOf(next)
 
-	d.journal.problem(runPhases(ctx, d, onSettlementDay(afterClock, ran.SettlementDay))...)
+	after := onSettlementDay(afterClock, ran.SettlementDay)
+	d.journal.problem(runPhases(ctx, d, after)...)
+	report.Phases = append(report.Phases, after...)
 
-	files, outcomes, problems := d.journal.take()
-	return DayReport{
-		Ran:      ran,
-		Next:     businessDateOf(next),
-		Files:    files,
-		Outcomes: outcomes,
-		Problems: problems,
-	}, err
+	report.Files, report.Outcomes, report.Problems = d.journal.take()
+	return report, err
 }
 
 // A PhaseReport is one phase of a business day and everything it moved. It
@@ -488,6 +583,10 @@ type PhaseReport struct {
 	Phase phase
 	Ran   BusinessDate
 
+	// Completed says the day now counts this phase as behind it, which a phase run
+	// out of turn is not: it ran, and the day will run it again in its place.
+	Completed bool
+
 	Files    []node.FileMoved
 	Outcomes []node.TransactionOutcome
 	Problems []node.Problem
@@ -496,6 +595,8 @@ type PhaseReport struct {
 // RunPhase runs ONE named phase of the business day and hands back what it
 // moved. It runs the phase whatever day it is: settlementOnly is AdvanceDay's
 // question, and a caller that named a phase has already decided it wants it.
+//
+// The day records it only if it was the phase due next — see reach.
 func (d *Deployment) RunPhase(ctx context.Context, key string) (PhaseReport, error) {
 	p, ok := phaseDoors[key]
 	if !ok {
@@ -506,9 +607,13 @@ func (d *Deployment) RunPhase(ctx context.Context, key string) (PhaseReport, err
 
 	ran := d.BusinessDate()
 	d.journal.problem(runPhases(ctx, d, []phase{p})...)
+	err := d.reach(p, ran)
 
 	files, outcomes, problems := d.journal.take()
-	return PhaseReport{Phase: p, Ran: ran, Files: files, Outcomes: outcomes, Problems: problems}, nil
+	return PhaseReport{
+		Phase: p, Ran: ran, Completed: phaseKey(p.name) == d.clock.Reached(),
+		Files: files, Outcomes: outcomes, Problems: problems,
+	}, err
 }
 
 // Subscribe is the clearing house publishing its routing table and every member

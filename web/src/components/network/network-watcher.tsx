@@ -84,6 +84,10 @@ export function NetworkWatcher({ children }: { children: React.ReactNode }) {
 
     source.addEventListener("file", refresh);
     source.addEventListener("outcome", refresh);
+    // How far the day has got. It is its own event because end of day moves no
+    // file, so a watcher told only about movements would never hear that the day
+    // had got past it.
+    source.addEventListener("phase", refresh);
     // A problem is a file an institution could not process, and there is nobody
     // to answer: the sender was told its file arrived and went away. So it is
     // said out loud rather than counted.

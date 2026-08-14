@@ -193,3 +193,111 @@ func TestRewindReplaysTheSameTimeline(t *testing.T) {
 		t.Errorf("a restart after a rewind is at %s, want %s", got, start)
 	}
 }
+
+// The marker: how far into the current day the deployment has got. The calendar
+// never interprets it — these cases are about it surviving, moving and being
+// cleared with the date it belongs to.
+
+func TestTheMarkerSurvivesARestartWithTheDate(t *testing.T) {
+	dir := t.TempDir()
+
+	first, err := calendar.OpenClock(dir, start)
+	if err != nil {
+		t.Fatalf("OpenClock: %v", err)
+	}
+	if got := first.Reached(); got != "" {
+		t.Errorf("a fresh clock has reached %q, want a day nothing has run on", got)
+	}
+	if _, err := first.Advance(); err != nil {
+		t.Fatalf("Advance: %v", err)
+	}
+	if err := first.Reach("clearing"); err != nil {
+		t.Fatalf("Reach: %v", err)
+	}
+
+	second, err := calendar.OpenClock(dir, start)
+	if err != nil {
+		t.Fatalf("reopening: %v", err)
+	}
+	if got := second.Reached(); got != "clearing" {
+		t.Errorf("a restarted deployment has reached %q, want clearing", got)
+	}
+	if got, want := second.Now(), start.AddDate(0, 0, 1); !got.Equal(want) {
+		t.Errorf("it is at %s, want %s — the date and the marker are one record", got, want)
+	}
+}
+
+// The date and the marker move together, because a date moved without its marker
+// cleared would be a day already half over.
+func TestAdvanceLeavesTheNewDayWithNothingRunOnIt(t *testing.T) {
+	dir := t.TempDir()
+
+	c, err := calendar.OpenClock(dir, start)
+	if err != nil {
+		t.Fatalf("OpenClock: %v", err)
+	}
+	if err := c.Reach("end-of-day"); err != nil {
+		t.Fatalf("Reach: %v", err)
+	}
+	if _, err := c.Advance(); err != nil {
+		t.Fatalf("Advance: %v", err)
+	}
+	if got := c.Reached(); got != "" {
+		t.Errorf("the new day has reached %q, want nothing", got)
+	}
+
+	reopened, err := calendar.OpenClock(dir, start)
+	if err != nil {
+		t.Fatalf("reopening: %v", err)
+	}
+	if got := reopened.Reached(); got != "" {
+		t.Errorf("a restart after an advance has reached %q, want nothing", got)
+	}
+}
+
+func TestRewindLeavesNothingRunOnTheDayItLandsOn(t *testing.T) {
+	c := calendar.NewClock(start)
+	if err := c.Reach("settlement"); err != nil {
+		t.Fatalf("Reach: %v", err)
+	}
+	if err := c.Rewind(start); err != nil {
+		t.Fatalf("Rewind: %v", err)
+	}
+	if got := c.Reached(); got != "" {
+		t.Errorf("a rewound clock has reached %q, want nothing", got)
+	}
+}
+
+// A directory an earlier process wrote holds one RFC3339 line, which is a record
+// of an instant nothing has run on. A file holding neither shape is still
+// refused — see TestADateThatCannotBeReadStopsStartup.
+func TestABareDateIsReadAsADayNothingHasRunOn(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "business-date"),
+		[]byte(start.Format(time.RFC3339Nano)+"\n"), 0o644); err != nil {
+		t.Fatalf("writing the clock file: %v", err)
+	}
+
+	c, err := calendar.OpenClock(dir, start.AddDate(1, 0, 0))
+	if err != nil {
+		t.Fatalf("OpenClock: %v", err)
+	}
+	if got := c.Now(); !got.Equal(start) {
+		t.Errorf("Now = %s, want %s", got, start)
+	}
+	if got := c.Reached(); got != "" {
+		t.Errorf("Reached = %q, want nothing", got)
+	}
+}
+
+// An ephemeral clock forgets the marker with the date: there is nowhere to put
+// either, which is the same bargain the ephemeral store makes.
+func TestAnEphemeralClockKeepsTheMarkerInMemoryOnly(t *testing.T) {
+	c := calendar.NewClock(start)
+	if err := c.Reach("clearing"); err != nil {
+		t.Fatalf("Reach: %v", err)
+	}
+	if got := c.Reached(); got != "clearing" {
+		t.Errorf("Reached = %q, want clearing", got)
+	}
+}

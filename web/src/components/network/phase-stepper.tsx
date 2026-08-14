@@ -1,14 +1,15 @@
 "use client";
 
 import { useState } from "react";
-import { Play } from "lucide-react";
+import { Check, Play } from "lucide-react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
+import { cn } from "@/lib/utils";
 import { describeError } from "@/lib/api/errors";
-import { usePhases, useRunPhase } from "@/lib/api/hooks";
+import { useClock, usePhases, useRunPhase } from "@/lib/api/hooks";
 import { describeMovements } from "@/lib/movements";
 import type { Phase } from "@/lib/types";
 
@@ -20,11 +21,12 @@ import type { Phase } from "@/lib/types";
 // The doors sit here rather than beside the day's button because stepping is
 // only interesting next to the thing it moves.
 //
-// # What it costs
+// # What a tick means
 //
-// Stepping a phase by hand and then advancing the day runs that phase twice,
-// and nothing refuses it: nothing records how far a day has got. The design
-// record for the message log says so, and names the record that fixes it.
+// The day records how far it has got, so a phase already run is marked and
+// advancing the day runs only the rest. The door stays open anyway: a phase can
+// be run again, and running one out of turn is not progress — the day will run
+// it in its place. See docs/specs/2026-08-14-a-day-cursor-design.md.
 
 export function PhaseStepper() {
   const { data: phases, isLoading } = usePhases();
@@ -37,41 +39,79 @@ export function PhaseStepper() {
   if (!phases || phases.length === 0) return null;
 
   return (
-    <ol className="divide-y rounded-lg border">
-      {phases.map((phase) => (
-        <li key={phase.key} className="flex items-center gap-2 py-1.5 pl-3 pr-1.5">
-          <span className="flex min-w-0 flex-1 items-center gap-1.5">
-            <span className="truncate text-sm">{phase.name}</span>
-            <PhaseMarks phase={phase} />
-          </span>
-          <Button
-            variant="ghost"
-            size="icon"
-            aria-label={`Run ${phase.name}`}
-            title={`Run ${phase.name}`}
-            // Every door is disabled while any one is open: there is ONE
-            // deployment behind every shell, and a second run would queue
-            // behind the first on the same lock the day takes.
-            disabled={running !== null}
-            onClick={async () => {
-              setRunning(phase.key);
-              try {
-                const report = await run.mutateAsync(phase.key);
-                toast.success(report.phase.name, {
-                  description: describeMovements(report),
-                });
-              } catch (e) {
-                toast.error(describeError(e));
-              } finally {
-                setRunning(null);
-              }
-            }}
-          >
-            <Play className={running === phase.key ? "size-4 animate-pulse" : "size-4"} />
-          </Button>
-        </li>
-      ))}
-    </ol>
+    <div className="space-y-2">
+      <DayProgress phases={phases} />
+      <ol className="divide-y rounded-lg border">
+        {phases.map((phase) => (
+          <li key={phase.key} className="flex items-center gap-2 py-1.5 pl-3 pr-1.5">
+            <span className="flex min-w-0 flex-1 items-center gap-1.5">
+              <span className={cn("truncate text-sm", phase.completed && "text-muted-foreground")}>
+                {phase.name}
+              </span>
+              <PhaseMarks phase={phase} />
+            </span>
+            {phase.completed && (
+              <span
+                className="shrink-0"
+                title="Run on this day — advancing the day will not run it again"
+              >
+                <Check role="img" aria-label="run on this day" className="size-3.5 text-success-strong" />
+              </span>
+            )}
+            <Button
+              variant="ghost"
+              size="icon"
+              aria-label={`Run ${phase.name}`}
+              title={`Run ${phase.name}`}
+              // Every door is disabled while any one is open: there is ONE
+              // deployment behind every shell, and a second run would queue
+              // behind the first on the same lock the day takes.
+              disabled={running !== null}
+              onClick={async () => {
+                setRunning(phase.key);
+                try {
+                  const report = await run.mutateAsync(phase.key);
+                  toast.success(report.phase.name, {
+                    description: describeMovements(report),
+                  });
+                } catch (e) {
+                  toast.error(describeError(e));
+                } finally {
+                  setRunning(null);
+                }
+              }}
+            >
+              <Play className={running === phase.key ? "size-4 animate-pulse" : "size-4"} />
+            </Button>
+          </li>
+        ))}
+      </ol>
+    </div>
+  );
+}
+
+// How far this day has got, in words. The ticks below say which phases; this
+// says whether advancing the day is a whole day or the tail of one, which is the
+// thing a reader is about to click.
+//
+// It counts the phases THIS day runs, so a day the scheme is shut on is two
+// phases long rather than eleven: the ones a closed day skips were never
+// waiting to run.
+function DayProgress({ phases }: { phases: Phase[] }) {
+  const { data: clock } = useClock();
+  const today = phases.filter((p) => clock?.settlementDay !== false || !p.settlementOnly);
+  const done = today.filter((p) => p.completed).length;
+
+  if (done === 0) {
+    return <p className="text-xs text-muted-foreground">Nothing has run on this day yet.</p>;
+  }
+  const left = today.length - done;
+  return (
+    <p className="text-xs text-muted-foreground">
+      <span className="font-medium text-foreground tabular-nums">{done}</span>
+      {` of ${today.length} run — advancing the day runs `}
+      {left === 1 ? "the last one" : `the other ${left}`}.
+    </p>
   );
 }
 

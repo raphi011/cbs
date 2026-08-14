@@ -403,6 +403,12 @@ func (d *Deployment) Reset(ctx context.Context) error {
 	d.cb.Host().Enrol(ebics.SubscriberID(d.cfg.ClearingHouseBIC))
 	d.journal.take()
 
+	// Nothing has run on the day the rebuilt dataset starts on. The seed rewinds
+	// the date, and it only does so when it finds nothing built; this is the
+	// deployment's own record and it is cleared either way.
+	if err := d.clock.Reach(""); err != nil {
+		return err
+	}
 	if err := d.nets.Stores().Reset(ctx); err != nil {
 		return err
 	}

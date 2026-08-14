@@ -26,6 +26,10 @@ type DayReportDTO struct {
 	Ran  BusinessDateDTO `json:"ran"`
 	Next BusinessDateDTO `json:"next"`
 
+	// The phase keys THIS call ran, in order. A day some of whose phases were
+	// stepped by hand runs only the rest, and this is where it says so.
+	Phases []string `json:"phases"`
+
 	MovementsDTO
 }
 
@@ -39,6 +43,10 @@ type PhaseDTO struct {
 	// AfterClock says the phase runs once the date has moved, which is where the
 	// day's own advance sits among the doors.
 	AfterClock bool `json:"afterClock"`
+	// Completed says the day the clock stands on has run this phase, so advancing
+	// the day will not run it again. A phase stepped out of turn is not completed:
+	// it ran, and the day will run it in its place.
+	Completed bool `json:"completed"`
 }
 
 // PhaseReportDTO is what one phase moved. There is no next date: a phase is a

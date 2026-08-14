@@ -621,6 +621,9 @@ export interface DayProblem {
 export interface DayReport {
   ran: BusinessDate;
   next: BusinessDate;
+  // The phase keys THIS call ran, in order. A day some of whose phases were
+  // stepped by hand runs only the rest, so this is shorter than the whole day.
+  phases: string[];
   files: FileMoved[];
   outcomes: TransactionOutcome[];
   problems: DayProblem[];
@@ -633,11 +636,16 @@ export interface DayReport {
 // `settlementOnly` is reported and not enforced — a caller that named a phase
 // has decided it wants it, and a day the scheme is shut simply skips it.
 // `afterClock` says the phase runs once the date has moved.
+//
+// `completed` is whether the day the clock stands on has already run it, so
+// advancing the day will not run it again. A phase stepped OUT of turn is not
+// completed: it ran, and the day will run it in its place.
 export interface Phase {
   key: string;
   name: string;
   settlementOnly: boolean;
   afterClock: boolean;
+  completed: boolean;
 }
 
 // PhaseReport is what one phase moved. There is no `next`, and that absence is

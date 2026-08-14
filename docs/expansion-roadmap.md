@@ -138,7 +138,9 @@ accrues nothing on any seeded facility.
 
 Fixing it moves interest figures, so it is a domain decision and does not ride
 along inside a refactor — the same reason the capitalisation defect above is
-filed rather than fixed.
+filed rather than fixed. [The day cursor](specs/2026-08-14-a-day-cursor-design.md)
+does not cover it: the seed drives no door and marks nothing, so the first
+advance after a boot still re-closes the day the seed closed.
 
 ### `api/respond.go:21` puts a raw `err.Error()` in 500 bodies
 
@@ -251,6 +253,13 @@ there is no time of day within a settlement day.
 Overturns two standing claims — that no background goroutine runs under this
 process, and that a business day is a sequence of *untimed* phases. The largest piece is a re-entrancy answer
 for every phase, since a catch-up may re-run one.
+
+**The durable cursor has shipped** ahead of the rest of it, in the untimed day:
+[`2026-08-14-a-day-cursor-design.md`](specs/2026-08-14-a-day-cursor-design.md).
+`business-date` holds the instant and the last completed phase, `AdvanceDay` runs
+what is after it, and the phase listing says which of today's phases have run. The
+re-entrancy answer is untouched and still the largest piece: the cursor makes a
+re-run rarer, not safe.
 
 ### 4. Instant payments — `todo`
 

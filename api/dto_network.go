@@ -14,13 +14,15 @@ const (
 	RoleSettlementAgent = "settlement agent"
 )
 
-// The event names a watcher listens for. Each selects one of the three shapes a
-// day's report is made of, because the stream is that report arriving without
-// anybody having asked for it.
+// The event names a watcher listens for. Three select one of the shapes a day's
+// report is made of, because the stream is that report arriving without anybody
+// having asked for it; the fourth is a PhaseDTO, which is how far the day has got
+// rather than something that moved.
 const (
 	EventFile    = "file"
 	EventOutcome = "outcome"
 	EventProblem = "problem"
+	EventPhase   = "phase"
 )
 
 // NetworkFlowDTO is the mesh: every institution this deployment holds, the

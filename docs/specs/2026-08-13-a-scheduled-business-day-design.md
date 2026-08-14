@@ -60,11 +60,16 @@ completed.
 `CarryToClearing` becomes `RunUntil(this morning's clearing)`. The derived
 sequences the suites use stay derived.
 
-The cursor is **persisted**, and this is not optional. `business-date` today
-holds one RFC3339 line and is written through a temp-file-and-rename; it becomes
-a small record holding the instant **and the last completed event**. Without it a
-process killed part-way through a catch-up re-runs phases it already ran, and
-with a year of accelerated time behind it that is not a theoretical window.
+The cursor is **persisted**, and this is not optional. Without it a process
+killed part-way through a catch-up re-runs phases it already ran, and with a year
+of accelerated time behind it that is not a theoretical window.
+
+**That half has landed**, ahead of the rest of this record and in the untimed day:
+`business-date` is a record holding the instant and a marker naming the last
+phase completed, and `AdvanceDay` runs what is after it. See
+[the day cursor](2026-08-14-a-day-cursor-design.md), which also records what a
+phase stepped OUT of turn does. What is left here is the schedule the marker
+becomes a position in.
 
 ### Phase re-entrancy is the risk, and it is stated rather than hoped for
 

@@ -1065,14 +1065,11 @@ export function useAdvanceDay() {
   });
 }
 
-// The day's declared steps. They are fixed before the process starts, so this
-// is read once and never refetched — only which of them RUN varies by day.
+// The day's declared steps, each carrying whether the day the clock stands on
+// has already run it. The declaration is fixed before the process starts and
+// `completed` is not, which is why this is a live read rather than a constant.
 export function usePhases() {
-  return useQuery({
-    queryKey: qk.phases(),
-    queryFn: api.listPhases,
-    staleTime: Infinity,
-  });
+  return useQuery({ queryKey: qk.phases(), queryFn: api.listPhases });
 }
 
 // Open one phase's door, then invalidate every query.

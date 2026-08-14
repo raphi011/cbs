@@ -97,10 +97,14 @@ export function BusinessDay() {
 // A day the scheme was shut says so instead of counting zeros. That is the
 // lesson rather than an empty result — interest still accrued, and nothing
 // cleared because nothing may.
+//
+// The phase count is carried because it is not always the whole day: a day some
+// of whose phases were stepped by hand runs only the rest.
 function describeDay(report: DayReport): string {
+  const phases = `${report.phases.length} ${report.phases.length === 1 ? "phase" : "phases"}`;
   if (!report.ran.settlementDay) {
     const why = report.ran.closure ?? "weekend";
-    return `TARGET closed (${why}) — interest accrued, nothing cleared`;
+    return `TARGET closed (${why}) — ${phases}, interest accrued, nothing cleared`;
   }
-  return describeMovements(report);
+  return `${phases} · ${describeMovements(report)}`;
 }

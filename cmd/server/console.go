@@ -51,14 +51,9 @@ func (o operator) AdvanceDay(ctx context.Context) (api.DayReportDTO, error) {
 }
 
 // Phases and RunPhase are the same day one step at a time: every phase the day
-// declares is a door of its own, so a reader can run the clearing and stop.
-func (o operator) Phases() []api.PhaseDTO {
-	out := make([]api.PhaseDTO, 0, len(dayPhases))
-	for _, p := range dayPhases {
-		out = append(out, toPhaseDTO(p))
-	}
-	return out
-}
+// declares is a door of its own, so a reader can run the clearing and stop. The
+// listing says which of them today has already run.
+func (o operator) Phases() []api.PhaseDTO { return o.d.Phases() }
 
 func (o operator) RunPhase(ctx context.Context, phase string) (api.PhaseReportDTO, error) {
 	report, err := o.d.RunPhase(ctx, phase)

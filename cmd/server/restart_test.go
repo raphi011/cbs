@@ -7,6 +7,8 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"slices"
+	"strings"
 	"testing"
 
 	"github.com/raphi011/cbs/api"
@@ -59,11 +61,17 @@ func newRestartable(t *testing.T) *restartable {
 // boot opens the databases and builds a deployment over them. The seed runs and
 // finds its own work already done on every boot after the first, so what the
 // second process sees is what the first one left.
+//
+// The clock is opened over the same directory, so the business date and how far
+// into it the deployment had got survive the process too.
 func (r *restartable) boot(t *testing.T) {
 	t.Helper()
 	ctx := context.Background()
 
-	clock := calendar.NewClock(seed.BaseDate)
+	clock, err := calendar.OpenClock(r.dir, seed.BaseDate)
+	if err != nil {
+		t.Fatalf("OpenClock: %v", err)
+	}
 	set, err := sqlite.OpenSet(ctx, r.dir, clock.Now)
 	if err != nil {
 		t.Fatalf("OpenSet: %v", err)
@@ -306,5 +314,51 @@ func (r *restartable) everyPaymentReachedItsReceivingBank(t *testing.T, closed [
 	for _, u := range books.Unreconciled {
 		t.Logf("unreconciled: %s (%s) suspense %d, %d in flight, unbooked %v",
 			u.Bank, u.Asset, u.Suspense, len(u.InFlight), u.Unbooked)
+	}
+}
+
+// A day stepped part of the way through is finished by the next process, not
+// begun again. This is the case the marker is persisted for: without it, a
+// deployment killed mid-day re-runs whatever it had already done.
+func TestADayHalfSteppedBeforeARestartIsFinishedAfterIt(t *testing.T) {
+	ctx := context.Background()
+	r := newRestartable(t)
+
+	stepped := []string{"publish", "refresh", "bank-cut-off", "clearing"}
+	for _, key := range stepped {
+		if _, err := r.dep.RunPhase(ctx, key); err != nil {
+			t.Fatalf("RunPhase %s: %v", key, err)
+		}
+	}
+
+	r.restart(t)
+
+	// What the second process knows before it does anything: the same four.
+	var completed []string
+	for _, p := range r.dep.Phases() {
+		if p.Completed {
+			completed = append(completed, p.Key)
+		}
+	}
+	if !slices.Equal(completed, stepped) {
+		t.Errorf("the restarted deployment has run %s, want %s",
+			strings.Join(completed, " → "), strings.Join(stepped, " → "))
+	}
+
+	report, err := r.dep.AdvanceDay(ctx)
+	if err != nil {
+		t.Fatalf("AdvanceDay: %v", err)
+	}
+	ran := make([]string, 0, len(report.Phases))
+	for _, p := range report.Phases {
+		ran = append(ran, phaseKey(p.name))
+	}
+	want := []string{
+		"clearing-house-cut-off", "discharge", "settlement", "release", "collection",
+		"end-of-day", "open-cycles",
+	}
+	if !slices.Equal(ran, want) {
+		t.Errorf("the day after the restart ran %s, want %s",
+			strings.Join(ran, " → "), strings.Join(want, " → "))
 	}
 }
